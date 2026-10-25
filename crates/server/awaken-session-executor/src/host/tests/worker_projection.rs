@@ -1633,7 +1633,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
             ),
         )
         .tool(
-            crate::config::hand_tool_descriptors()
+            awaken_session_run_delivery::hand_tool_descriptors()
                 .into_iter()
                 .find(|descriptor| descriptor.id == "read")
                 .expect("canonical read descriptor"),
@@ -1818,6 +1818,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .expect("installed Sessions");
     for _ in 0..2 {
         host.coordination
+            .threads()
             .continue_session_agent_report(report.clone())
             .await
             .expect("R4 report admission needs no local Environment");
@@ -1840,6 +1841,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     invalid.message.role = Role::Assistant;
     assert!(
         host.coordination
+            .threads()
             .continue_session_agent_report(invalid)
             .await
             .is_err()

@@ -1677,7 +1677,16 @@ async fn session_mcp_realizer_is_constructed_once_without_a_host_cycle() {
     );
     let roles = host.session_execution_roles();
     assert!(
-        std::ptr::addr_eq(Arc::as_ptr(&roles.realization), Arc::as_ptr(&assembly)),
+        std::ptr::addr_eq(
+            Arc::as_ptr(
+                &roles
+                    .placement
+                    .colocated()
+                    .expect("the executor realizes its Sessions")
+                    .realization
+            ),
+            Arc::as_ptr(&assembly)
+        ),
         "R1 the realization role is the same assembly"
     );
     let weak = Arc::downgrade(&assembly);

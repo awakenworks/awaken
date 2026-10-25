@@ -14,21 +14,26 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 
-use awaken_agent_contract::agent::awaiting::{
-    AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket, ToolCallAuthority,
-};
+use awaken_agent_contract::agent::awaiting::{AwaitReason, AwaitTarget, PermissionDecision};
+#[cfg(test)]
+use awaken_agent_contract::agent::awaiting::{ResumeTicket, ToolCallAuthority};
 #[cfg(test)]
 use awaken_agent_contract::agent::message::Id as MessageId;
-use awaken_agent_contract::agent::message::{Message, Role};
+use awaken_agent_contract::agent::message::Message;
+#[cfg(test)]
+use awaken_agent_contract::agent::message::Role;
 #[cfg(test)]
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-use awaken_agent_contract::agent::state::{StateKey, Store};
+#[cfg(test)]
+use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
+use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+#[cfg(test)]
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_dispatch_contract::CompletionSink;
 #[cfg(test)]
 use awaken_dispatch_contract::RunDispatch;
@@ -40,11 +45,12 @@ use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::{CancellationToken, activation::RunActivation};
+#[cfg(test)]
 use awaken_session_application_contract::Pending;
 use awaken_tool_contract::tool::ToolOutput;
 
@@ -181,7 +187,7 @@ pub struct ExecutorComponents {
     /// Session Outcome orchestration.
     pub(crate) outcomes: Arc<crate::Outcomes>,
     /// Session usage and budget-paused Runs.
-    pub(crate) budget: Arc<crate::BudgetAccounting>,
+    pub(crate) budget: Arc<awaken_session_run_delivery::SessionBudgets>,
     /// Resources-context ports: Memory, Files, Artifacts.
     pub(crate) resources: Arc<capability::ResourcePorts>,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.

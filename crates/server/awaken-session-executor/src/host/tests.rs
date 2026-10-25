@@ -113,6 +113,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     stale.expected_thread_version = Some(version + 1);
     assert!(
         host.coordination
+            .threads()
             .session_thread_tool_reply_fence(&stale)
             .await
             .is_err(),
@@ -124,6 +125,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     );
     assert!(
         host.coordination
+            .threads()
             .session_thread_tool_reply_fence(&wrong_kind)
             .await
             .is_err(),
@@ -131,6 +133,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     );
     let fence = host
         .coordination
+        .threads()
         .session_thread_tool_reply_fence(&command)
         .await
         .unwrap();
@@ -140,10 +143,12 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         session_activity_epoch: Some(11),
     };
     host.coordination
+        .threads()
         .reply_session_thread_tool(delivery.clone())
         .await
         .unwrap();
     host.coordination
+        .threads()
         .reply_session_thread_tool(delivery)
         .await
         .unwrap();
@@ -188,11 +193,13 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .unwrap();
     let replay = host
         .coordination
+        .threads()
         .session_thread_tool_reply_fence(&command)
         .await
         .unwrap();
     assert!(replay.already_applied, "R4");
     host.coordination
+        .threads()
         .reply_session_thread_tool(
             awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
@@ -207,6 +214,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         awaken_session_execution_contract::SessionThreadToolReply::Input("changed answer".into());
     assert!(
         host.coordination
+            .threads()
             .session_thread_tool_reply_fence(&changed)
             .await
             .is_err(),

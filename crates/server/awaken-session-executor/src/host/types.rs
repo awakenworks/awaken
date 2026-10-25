@@ -32,17 +32,9 @@ impl HostResume {
 
 impl From<awaken_dispatch_erasure::RuntimeAuthorityError> for SessionExecutionError {
     fn from(error: awaken_dispatch_erasure::RuntimeAuthorityError) -> Self {
-        match error {
-            awaken_dispatch_erasure::RuntimeAuthorityError::Unavailable(message) => {
-                Self::unavailable(message)
-            }
-            awaken_dispatch_erasure::RuntimeAuthorityError::Corrupt(message) => {
-                Self::classified("runtime_authority_corrupt", message)
-            }
-            awaken_dispatch_erasure::RuntimeAuthorityError::Misconfigured(message) => {
-                Self::classified("runtime_authority_misconfigured", message)
-            }
-        }
+        crate::session_execution_error::from_run_error(
+            awaken_session_run_delivery::runtime_authority_error(error),
+        )
     }
 }
 

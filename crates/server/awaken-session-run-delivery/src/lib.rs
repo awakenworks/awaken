@@ -16,6 +16,8 @@
 //! outcome, these only notify and preview.
 #![warn(unreachable_pub)]
 
+mod authority_commits;
+mod child_dispatch;
 mod commit_boundary;
 mod committed_reads;
 mod committed_step;
@@ -26,13 +28,20 @@ mod lock;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
+mod session_budgets;
+mod session_capabilities;
+mod session_inputs;
 mod session_projections;
+mod session_run_activation;
 mod session_run_reservation;
 mod session_skills;
 mod settled_step;
 #[cfg(test)]
 mod test_support;
+mod thread_coordination;
 
+pub use authority_commits::{AuthorityCommits, runtime_authority_error};
+pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
 pub use commit_boundary::{
     CommittedAuthority, SessionCommit, SessionCommitBoundary, WorkerRecoveryCommit,
 };
@@ -51,7 +60,7 @@ pub use completion::{
     CompletionRegistry, CompletionSignalClosed, WaiterGuard, activate_and_await_session_run,
     await_completion_state,
 };
-pub use delivery::{ResourceBindingVerifiers, SessionRunDelivery};
+pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use outcome_projection::{
@@ -63,7 +72,16 @@ pub use session_activation::{
     project_session_tool_override, project_session_tools, session_activation_snapshot,
     session_client_tool_descriptor,
 };
+pub use session_budgets::SessionBudgets;
+pub use session_capabilities::{
+    builtin_hand_tools, hand_tool_descriptors, supports_mid_conversation_system,
+};
+pub use session_inputs::{
+    client_result_for_ticket, resume_activation, session_system_message,
+    session_thread_reply_result,
+};
 pub use session_projections::{DispatchProjection, SessionProjections};
+pub use session_run_activation::{activate_session_run_reservation, read_settled_phase};
 pub use session_run_reservation::{
     SESSION_RUN_RESERVATION_TTL_MS, SessionRunInputs, reserve_session_run,
     validate_session_run_command,
@@ -74,6 +92,10 @@ pub use session_skills::{
     session_allows_filesystem_tools,
 };
 pub use settled_step::settled_step;
+pub use thread_coordination::{
+    ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
+    check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
+};
 
 /// Poison `lock` the way production can: a holder panics while holding it.
 #[cfg(test)]

@@ -120,7 +120,7 @@ pub struct SessionResourceManifests {
     repository_participants: Arc<crate::SessionRepositoryParticipants>,
     resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
     resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
 
 /// The collaborators one [`SessionResourceManifests`] is built from.
@@ -132,7 +132,7 @@ pub(crate) struct SessionResourceManifestCollaborators {
     pub(crate) repository_participants: Arc<crate::SessionRepositoryParticipants>,
     pub(crate) resource_reconciliation: Arc<crate::SessionResourceReconciliation>,
     pub(crate) resource_registry: Option<Arc<dyn awaken_resource_contract::ResourceRegistry>>,
-    pub(crate) realization_effects: Arc<dyn awaken_session_execution_contract::RealizationEffects>,
+    pub(crate) placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
 
 impl SessionResourceManifests {
@@ -145,7 +145,7 @@ impl SessionResourceManifests {
             repository_participants,
             resource_reconciliation,
             resource_registry,
-            realization_effects,
+            placement,
         } = collaborators;
         Self {
             mutations,
@@ -155,7 +155,7 @@ impl SessionResourceManifests {
             repository_participants,
             resource_reconciliation,
             resource_registry,
-            realization_effects,
+            placement,
         }
     }
 
@@ -174,7 +174,7 @@ impl SessionResourceManifests {
         ResourceLowering::new(
             self.resource_registry.as_deref(),
             &self.repository_participants,
-            self.realization_effects.as_ref(),
+            &self.placement,
             session_id,
             owner_scope,
         )

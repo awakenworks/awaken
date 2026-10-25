@@ -73,6 +73,14 @@ pub(crate) enum AgentRunError {
     Runtime(awaken_runtime_contract::execution::Error),
 }
 
+/// A child Run that cannot be frozen into its durable request is a
+/// configuration failure of the delegating Agent.
+impl From<awaken_session_run_delivery::ChildDispatchRefusal> for AgentRunError {
+    fn from(refusal: awaken_session_run_delivery::ChildDispatchRefusal) -> Self {
+        Self::Configuration(refusal.to_string())
+    }
+}
+
 /// Run the agent identified by `agent_id` — its config resolved from `catalog` —
 /// on its own `thread`, seeded with `seed`, to completion, returning its last
 /// assistant line **and its accumulated token usage**. A child Run receives the

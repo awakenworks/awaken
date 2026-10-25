@@ -713,7 +713,7 @@ async fn claimed_child_commit_uses_guarded_parent_partition_and_logical_child_th
     let publication_source =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor])
             .expect("exact child auxiliary publication source");
-    let request = crate::agent_runner::child_dispatch_request(
+    let request = awaken_session_run_delivery::child_dispatch_request(
         activation,
         ThreadId(parent_thread.into()),
         Some(manifest),
@@ -1044,7 +1044,7 @@ async fn retained_memory_settlement_observes_frozen_child_after_executor_release
             "legacy" | "disabled" | "absent" => None,
             _ => Some(claimed_memory_manifest(&store_id)),
         };
-        let request = crate::agent_runner::child_dispatch_request(
+        let request = awaken_session_run_delivery::child_dispatch_request(
             activation,
             ThreadId(parent.clone()),
             manifest,

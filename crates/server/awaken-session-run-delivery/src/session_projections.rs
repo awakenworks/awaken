@@ -227,6 +227,25 @@ impl SessionProjections {
             .cloned())
     }
 
+    /// Replace the tool configuration of `session`'s held projection; the
+    /// next projection the Session installs carries the same replacement.
+    pub fn replace_tools(
+        &self,
+        session: &str,
+        tools: SessionToolConfiguration,
+    ) -> Result<(), RunError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| DeliveryLock::SessionProjections)?;
+        if let Some(held) = sessions.get_mut(session) {
+            let mut replaced = held.as_ref().clone();
+            replaced.tools = tools;
+            *held = Arc::new(replaced);
+        }
+        Ok(())
+    }
+
     /// Forget `session`'s projection (the Session ended).
     pub fn forget(&self, session: &str) -> Result<(), RunError> {
         self.sessions
@@ -289,6 +308,75 @@ impl DispatchAdmissionReads for SessionProjections {
     }
 }
 
+/// Coordinated Thread admission lowers over the installed projection: the
+/// Coordinator holds no other Session input.
+#[async_trait::async_trait]
+impl crate::SessionLowering for SessionProjections {
+    fn child_run_inputs(&self, session: &str) -> Result<crate::ChildRunInputs, RunError> {
+        let projection = self.installed(session)?;
+        Ok(crate::ChildRunInputs {
+            baseline: projection.baseline().clone(),
+            tools: Some(projection.tools().clone()),
+            manifest: projection.manifest().clone(),
+            coordinator_publication: projection.publication().cloned(),
+        })
+    }
+
+    async fn continuation_snapshot(
+        &self,
+        session: &str,
+    ) -> Result<ExecutableAgentSnapshot, RunError> {
+        self.primary_snapshot(session)
+    }
+
+    async fn resume_snapshot(&self, session: &str) -> Result<ExecutableAgentSnapshot, RunError> {
+        self.primary_snapshot(session)
+    }
+
+    fn model_ref_override(&self, session: &str) -> Result<Option<String>, RunError> {
+        Ok(Some(
+            self.installed(session)?
+                .baseline()
+                .execution_model_ref
+                .clone(),
+        ))
+    }
+
+    fn prepare(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+    ) -> awaken_dispatch_execution::session_dispatch::DispatchPreparation<'_> {
+        awaken_dispatch_execution::session_dispatch::DispatchPreparation::new(
+            activation,
+            Box::new(self),
+            self.local_workspace(),
+            self.publications(),
+            crate::RUN_PUBLICATIONS,
+            false,
+        )
+    }
+}
+
+/// An advisor link is labelled with the advisor model the Session's effective
+/// publication pins.
+impl crate::AdvisorModelSource for SessionProjections {
+    fn advisor_model(&self, session: &str) -> Result<Option<String>, RunError> {
+        Ok(self.projection(session)?.and_then(|projection| {
+            projection
+                .publication()
+                .and_then(|publication| {
+                    publication
+                        .resolved_spec
+                        .plugin_config
+                        .agent
+                        .advisor
+                        .as_ref()
+                })
+                .map(|advisor| advisor.model.clone())
+        }))
+    }
+}
+
 impl SessionProjections {
     /// The Workspace a flat-protocol Thread runs in.
     #[must_use]
@@ -300,6 +388,57 @@ impl SessionProjections {
     #[must_use]
     pub fn publications(&self) -> Option<&dyn PublishedAgentSnapshotSource> {
         self.publications.as_deref()
+    }
+
+    /// The delegation roster of the Workspace default Agent.
+    #[must_use]
+    pub fn default_delegates(&self, workspace: &str) -> Vec<String> {
+        self.publications
+            .as_ref()
+            .and_then(|source| {
+                source.current(
+                    workspace,
+                    &awaken_runtime_contract::snapshot::AgentId("assistant".into()),
+                )
+            })
+            .map(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .delegates
+                    .into_iter()
+                    .map(|binding| binding.agent_id.0)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The shared Agent publication source, for admission that freezes it.
+    #[must_use]
+    pub fn publication_source(&self) -> Option<Arc<dyn PublishedAgentSnapshotSource>> {
+        self.publications.clone()
+    }
+
+    /// The installed projection of `session`; a Run of a Session whose
+    /// projection is not installed yet is refused as retryable.
+    pub fn installed(&self, session: &str) -> Result<Arc<DispatchProjection>, RunError> {
+        self.projection(session)?.ok_or_else(|| {
+            RunError::unavailable_classified(
+                "session_projection_not_installed",
+                format!("Session {session} has no installed frozen projection on this Coordinator"),
+            )
+        })
+    }
+
+    /// The snapshot a primary Run of `session` executes: its effective
+    /// publication under its tool replacement and the Managed primary surface.
+    pub fn primary_snapshot(&self, session: &str) -> Result<ExecutableAgentSnapshot, RunError> {
+        let projection = self.installed(session)?;
+        let publication = projection.publication().cloned().ok_or_else(|| {
+            RunError::bad_request("a Worker-placed Session requires a pinned Agent publication")
+        })?;
+        crate::session_activation_snapshot(publication, Some(projection.tools()), true)
     }
 }
 
@@ -441,5 +580,54 @@ mod tests {
         unavailable.baseline.agent_revision = Some(9);
         let refused = pinned.install("pinned", unavailable).expect_err("I9");
         assert_eq!(refused.code, "session_realization_invariant_violated", "I9");
+    }
+
+    #[tokio::test]
+    async fn coordinated_admission_lowers_over_the_installed_projection_only() {
+        use crate::SessionLowering as _;
+        let projections = SessionProjections::new("local", None);
+        // L1: a Session with no installed projection is a retryable refusal.
+        let cold = projections.child_run_inputs("session").err().expect("L1");
+        assert_eq!(cold.code, "session_projection_not_installed", "L1");
+        assert!(
+            projections.continuation_snapshot("session").await.is_err(),
+            "L1"
+        );
+
+        // L2: an installed projection supplies the child inputs, the frozen
+        // model and the primary snapshot from the same frozen projection.
+        let published = publication("agent");
+        projections
+            .install(
+                "session",
+                projection(1, "provider/model", Some(published.clone())),
+            )
+            .expect("install");
+        let inputs = projections.child_run_inputs("session").expect("L2 inputs");
+        assert_eq!(inputs.baseline.agent_id, "agent", "L2 baseline");
+        assert_eq!(inputs.manifest.workspace_id, "workspace", "L2 manifest");
+        assert_eq!(
+            inputs.coordinator_publication,
+            Some(published.clone()),
+            "L2 publication"
+        );
+        assert_eq!(
+            projections.model_ref_override("session").expect("L2 model"),
+            Some(inputs.baseline.execution_model_ref.clone()),
+            "L2 frozen model"
+        );
+        assert_eq!(
+            projections
+                .continuation_snapshot("session")
+                .await
+                .expect("L2 snapshot"),
+            crate::session_activation_snapshot(
+                published,
+                Some(&inputs.tools.unwrap_or_default()),
+                true
+            )
+            .expect("L2 primary"),
+            "L2 primary snapshot"
+        );
     }
 }

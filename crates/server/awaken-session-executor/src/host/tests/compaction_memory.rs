@@ -642,7 +642,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             .dispatch_binding()
             .map(|binding| binding.queue())
             .expect("shared dispatch authority");
-        let request = crate::agent_runner::child_dispatch_request(
+        let request = awaken_session_run_delivery::child_dispatch_request(
             activation,
             ThreadId(parent.clone()),
             Some(manifest),

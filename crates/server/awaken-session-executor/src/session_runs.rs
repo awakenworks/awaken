@@ -12,6 +12,7 @@
 
 mod roles;
 mod run_application;
+mod session_lowering;
 
 use std::sync::Arc;
 
@@ -63,6 +64,8 @@ pub struct SessionRuns {
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
     pub(crate) thread_reads: Arc<crate::CommittedReads>,
     pub(crate) dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
+    /// The Agent coordination of the Sessions these Runs belong to.
+    pub(crate) threads: Arc<awaken_session_run_delivery::CoordinatedThreads>,
 }
 
 impl SessionRuns {
@@ -73,7 +76,21 @@ impl SessionRuns {
         completion: Arc<crate::host::CompletionRegistry>,
         dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     ) -> Self {
+        let threads = Arc::new(awaken_session_run_delivery::CoordinatedThreads::new(
+            awaken_session_run_delivery::CoordinationAuthorities {
+                owner: capability::local_dispatch_owner(run_assembly.authority.as_ref()),
+                dispatch: dispatch.clone(),
+                reads: run_assembly.thread_reads.clone(),
+                lowering: Arc::new(session_lowering::InstalledSessionLowering {
+                    run_assembly: run_assembly.clone(),
+                }),
+                publications: run_assembly.capabilities.agent.agent_publications.clone(),
+                wake: run_assembly.authority.dispatch_wake(),
+                clock: run_assembly.clock.clone(),
+            },
+        ));
         Self {
+            threads,
             installed_sessions: run_assembly.installed_sessions.clone(),
             authority: run_assembly.authority.clone(),
             clock: run_assembly.clock.clone(),

@@ -2,11 +2,12 @@
 // @formal reason: Static owner: Session budget accounting. It reads committed usage and BudgetReached tickets
 // @formal reason: and resumes a budget-paused Run through the canonical resume dispatch; the budget decision
 // @formal reason: stays in the Session application. This is a product-requirement classification.
-//! [`BudgetAccounting`] — Session usage and budget-paused Runs.
+//! [`SessionBudgets`] — Session usage and budget-paused Runs.
 //!
 //! It reads committed Thread usage, lists the BudgetReached tickets a Session
-//! holds, and resumes a budget-paused Run through [`crate::SessionRuns`]. It
-//! serves the Session application's `BudgetRuntime` role.
+//! holds, and resumes a budget-paused Run by staging its resume on the Run's
+//! dispatch row; a foreground root Run that has none is dispatched to a Worker
+//! as a Run. It serves the Session application's `BudgetRuntime` role.
 
 use std::sync::Arc;
 
@@ -17,39 +18,43 @@ use awaken_dispatch_contract::{DispatchReads as _, PendingInput, SessionContinua
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_session_types::RunError;
 
-use crate::SessionExecutionError;
-use crate::session_execution_error::to_run_error;
-use awaken_session_run_delivery::recovery_ticket;
+use crate::{CommittedReads, CoordinatedThreads, recovery_ticket};
 
 /// Budget accounting for one process. Consumer: the Session application's
 /// `BudgetRuntime` role.
-pub struct BudgetAccounting {
-    session_runs: Arc<crate::SessionRuns>,
-    thread_reads: Arc<crate::CommittedReads>,
+pub struct SessionBudgets {
+    threads: Arc<CoordinatedThreads>,
+    dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
+    thread_reads: Arc<CommittedReads>,
 }
 
-impl BudgetAccounting {
-    pub(crate) fn new(session_runs: Arc<crate::SessionRuns>) -> Self {
+impl SessionBudgets {
+    /// Budgets of the Sessions `threads` coordinates, staging resumes through
+    /// `dispatch` and reading committed truth through `thread_reads`.
+    #[must_use]
+    pub fn new(
+        threads: Arc<CoordinatedThreads>,
+        dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
+        thread_reads: Arc<CommittedReads>,
+    ) -> Self {
         Self {
-            thread_reads: session_runs.thread_reads.clone(),
-            session_runs,
+            threads,
+            dispatch,
+            thread_reads,
         }
     }
 
-    pub(crate) async fn session_budget_resume_tickets(
+    pub async fn session_budget_resume_tickets(
         &self,
         session_id: &str,
-    ) -> Result<
-        Vec<awaken_session_application_contract::SessionBudgetResumeTicket>,
-        SessionExecutionError,
-    > {
+    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, RunError> {
         let parent = ThreadId(session_id.to_string());
         let mut thread_ids = vec![parent.clone()];
-        let dispatch_rows = if let Some(store) = self.session_runs.optional_dispatch_store() {
+        let dispatch_rows = if let Ok(store) = self.threads.owner() {
             store
                 .list_dispatches()
                 .await
-                .map_err(|error| SessionExecutionError::internal(error.to_string()))?
+                .map_err(|error| RunError::internal(error.to_string()))?
         } else {
             Vec::new()
         };
@@ -72,14 +77,14 @@ impl BudgetAccounting {
             let Some(latest) = commit
                 .authoritative_latest_run(&thread_id)
                 .await
-                .map_err(SessionExecutionError::internal)?
+                .map_err(RunError::internal)?
             else {
                 continue;
             };
             let snapshot = commit
                 .recovery_snapshot(&thread_id, &latest.id)
                 .await
-                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+                .map_err(|error| RunError::internal(error.to_string()))?;
             if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)?
                 && ticket.reason() == AwaitReason::BudgetReached
             {
@@ -101,15 +106,12 @@ impl BudgetAccounting {
     /// RunResume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
     /// Fails closed unless `tool_use_id` names the pending tool and its binding
     /// (built-in vs client-executed) matches the resume variant.
-    pub(crate) async fn resume_budget_reached(
+    pub async fn resume_budget_reached(
         &self,
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
-    ) -> Result<
-        awaken_session_application_contract::SessionBudgetResumeDisposition,
-        SessionExecutionError,
-    > {
+    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, RunError> {
         if delivery.session_activity_epoch == 0 {
-            return Err(SessionExecutionError::bad_request(
+            return Err(RunError::bad_request(
                 "budget resume requires a newly admitted Session activity",
             ));
         }
@@ -120,7 +122,7 @@ impl BudgetAccounting {
         let snapshot = commit
             .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
             .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+            .map_err(|error| RunError::internal(error.to_string()))?;
         let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id)? else {
             return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
         };
@@ -132,12 +134,12 @@ impl BudgetAccounting {
             return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
         }
 
-        let store = self.session_runs.optional_dispatch_store();
+        let store = self.threads.owner().ok().cloned();
         let dispatch = match &store {
             Some(store) => store
                 .list_dispatches()
                 .await
-                .map_err(|error| SessionExecutionError::internal(error.to_string()))?
+                .map_err(|error| RunError::internal(error.to_string()))?
                 .into_iter()
                 .find(|row| row.run_id == delivery.run_id),
             None => None,
@@ -147,7 +149,7 @@ impl BudgetAccounting {
                 || dispatch.session_thread_id.as_ref()
                     != Some(&ThreadId(delivery.session_id.to_string()))
             {
-                return Err(SessionExecutionError::bad_request(
+                return Err(RunError::bad_request(
                     "budget resume dispatch affinity is inconsistent",
                 ));
             }
@@ -171,11 +173,11 @@ impl BudgetAccounting {
             if delivery.thread_id.0 != delivery.session_id
                 || delivery.prior_session_activity_epoch.is_some()
             {
-                return Err(SessionExecutionError::internal(
+                return Err(RunError::internal(
                     "budget-paused child Run has no durable dispatch row",
                 ));
             }
-            self.session_runs
+            self.threads
                 .enqueue_foreground_session_resume_dispatch(
                     delivery.session_id.as_str(),
                     &ticket,
@@ -216,34 +218,29 @@ impl BudgetAccounting {
                 Some(delivery.session_activity_epoch),
             )
             .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-        self.session_runs
-            .dispatch
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        self.dispatch
             .publish_staged(&store)
             .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+            .map_err(|error| RunError::internal(error.to_string()))?;
         Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Dispatched)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for BudgetAccounting {
+impl awaken_session_execution_contract::BudgetRuntime for SessionBudgets {
     async fn resume_budget_reached(
         &self,
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
     ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, RunError> {
-        self.resume_budget_reached(delivery)
-            .await
-            .map_err(to_run_error)
+        SessionBudgets::resume_budget_reached(self, delivery).await
     }
 
     async fn session_budget_resume_tickets(
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, RunError> {
-        self.session_budget_resume_tickets(session_id.as_str())
-            .await
-            .map_err(to_run_error)
+        SessionBudgets::session_budget_resume_tickets(self, session_id.as_str()).await
     }
 
     async fn session_usage(

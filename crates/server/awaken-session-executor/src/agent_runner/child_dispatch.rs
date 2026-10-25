@@ -1,87 +1,5 @@
-// @formal entrypoint delegation.independent_child_scheduling_lease
-//! Durable dispatch construction for a child Run.
-//!
-//! A delegated child is admitted to the same queue as a root Run. This module
-//! owns the one place that freezes a child's publication closure, resource
-//! manifest, and backend placement into that durable request.
-
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch_contract::RunDispatch;
-use awaken_runtime_contract::activation::RunActivation;
-
-use super::AgentRunError;
-
-pub(crate) fn child_dispatch_request(
-    activation: RunActivation,
-    parent_thread_id: ThreadId,
-    session_resources: Option<crate::session_resource::SessionResourceManifest>,
-    publication_source: Option<&dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
-) -> Result<RunDispatch, AgentRunError> {
-    // Delegated publications are frozen FROM a Workspace, so this coordinate
-    // selects whose published Agent a child may inherit. A compiled-in default
-    // would let a child freeze another tenant's publication, so an unknown
-    // Workspace is refused rather than guessed. A parent that delegates to
-    // nothing never consults it, and keeps working without a resource manifest.
-    let workspace = match session_resources.as_ref() {
-        Some(resources) => resources.workspace_id.as_str(),
-        None if activation
-            .snapshot
-            .resolved_spec
-            .plugin_config
-            .agent
-            .delegates
-            .is_empty() =>
-        {
-            ""
-        }
-        None => {
-            return Err(AgentRunError::Configuration(
-                "child dispatch cannot freeze delegated publications without the \
-                 session's Workspace"
-                    .to_string(),
-            ));
-        }
-    };
-    let child_publications = awaken_session_run_delivery::RUN_PUBLICATIONS
-        .freeze(&activation.snapshot, publication_source, workspace)
-        .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let inference_holder =
-        awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation)
-            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let mut placement = awaken_dispatch_execution::placement::remote_worker_placement(
-        &activation.snapshot.resolved_spec,
-        None,
-        session_resources.as_ref(),
-        false,
-    );
-    if activation.inherited_toolsets().is_some() {
-        placement
-            .required_capabilities
-            .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
-    }
-    let mut request = RunDispatch::new(activation)
-        .for_session(parent_thread_id)
-        .with_traceparent(awaken_observability::current_traceparent())
-        .with_agent_publications(child_publications)
-        .with_placement(placement);
-    if let Some(holder) = inference_holder {
-        request = request.with_inference_plaintext_holder(holder);
-    }
-    if let Some(resources) = session_resources {
-        let envelope = awaken_dispatch_execution::session_envelope::resource_envelope(&resources)
-            .map_err(|error| {
-            AgentRunError::Configuration(format!(
-                "serialize child Session resource manifest: {error}"
-            ))
-        })?;
-        request = request
-            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
-            ))
-            .with_session_resources(envelope);
-    }
-    Ok(request)
-}
+//! Durable dispatch construction for a child Run, as this executor's
+//! delegated children reach it (`awaken_session_run_delivery::child_dispatch_request`).
 
 #[cfg(test)]
 mod tests {
@@ -89,8 +7,8 @@ mod tests {
     use awaken_runtime::RunInput;
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 
-    use super::child_dispatch_request;
     use crate::agent_runner::fixtures::{agent, user};
+    use awaken_session_run_delivery::child_dispatch_request;
 
     fn published_model(
         model: &str,

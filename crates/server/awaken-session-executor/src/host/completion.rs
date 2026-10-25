@@ -52,56 +52,15 @@ impl crate::SessionRuns {
         &self,
         delivery: SessionRunDelivery,
     ) -> Result<SessionRunActivation, SessionExecutionError> {
-        if delivery.session_activity_epoch == 0 {
-            return Err(SessionExecutionError::bad_request(
-                "Session User Run activity epoch must be nonzero",
-            ));
-        }
         let store = self.coordinator_dispatch()?;
-        let outcome = store
-            .activate_session_run_reservation(
-                &delivery.run_id,
-                &ThreadId(delivery.session_id.into_string()),
-                delivery.session_activity_epoch,
+        Ok(
+            awaken_session_run_delivery::activate_session_run_reservation(
+                store.as_ref(),
+                &self.dispatch,
+                delivery,
             )
-            .await
-            .map_err(|error| SessionExecutionError::unavailable(error.to_string()))?;
-        let projected = match outcome {
-            awaken_dispatch_contract::SessionRunReservationActivation::Activated => {
-                SessionRunActivation::Activated
-            }
-            awaken_dispatch_contract::SessionRunReservationActivation::AlreadyActivated {
-                session_activity_epoch,
-            } => SessionRunActivation::AlreadyActivated {
-                session_activity_epoch,
-            },
-            awaken_dispatch_contract::SessionRunReservationActivation::RecoveryClaimed => {
-                SessionRunActivation::RecoveryClaimed
-            }
-            awaken_dispatch_contract::SessionRunReservationActivation::Completed => {
-                SessionRunActivation::Completed
-            }
-            awaken_dispatch_contract::SessionRunReservationActivation::MissingOrRejected => {
-                return Err(SessionExecutionError::bad_request(
-                    "Session User Run reservation is missing or rejected",
-                ));
-            }
-            awaken_dispatch_contract::SessionRunReservationActivation::Conflict => {
-                return Err(SessionExecutionError::bad_request(
-                    "Session User Run reservation activation conflicts with durable truth",
-                ));
-            }
-        };
-        if matches!(
-            projected,
-            SessionRunActivation::Activated | SessionRunActivation::AlreadyActivated { .. }
-        ) {
-            self.dispatch
-                .publish_staged(store.as_ref())
-                .await
-                .map_err(|error| SessionExecutionError::unavailable(error.to_string()))?;
-        }
-        Ok(projected)
+            .await?,
+        )
     }
 
     /// Register before activation and observe only the committed Run lifecycle.
@@ -246,58 +205,14 @@ impl crate::SessionRuns {
         run_id: &RunId,
         answered_correlation: Option<&str>,
     ) -> Result<Option<RunState>, SessionExecutionError> {
-        let record = ctx
-            .commit
-            .authoritative_run(run_id)
-            .await
-            .map_err(SessionExecutionError::internal)?;
-        match record {
-            Some(
-                record @ awaken_agent_contract::agent::run::Record {
-                    state: RunState::Ended(_),
-                    ..
-                },
-            ) => Ok(Some(record.state)),
-            Some(
-                record @ awaken_agent_contract::agent::run::Record {
-                    state: RunState::Awaiting,
-                    ..
-                },
-            ) => {
-                let Some(answered_correlation) = answered_correlation else {
-                    return Ok(Some(record.state));
-                };
-                // Before a remote Worker consumes the answer, committed truth is
-                // still Awaiting on the answered ticket. That is not a settlement
-                // of this resume. Only a newly committed ticket (or Ended above)
-                // releases the foreground caller.
-                let current = ctx
-                    .commit
-                    .open_wait_for_thread(&ctx.thread_id)
-                    .await
-                    .map_err(SessionExecutionError::internal)?;
-                Ok(awaiting_ticket_advanced(
-                    run_id,
-                    answered_correlation,
-                    current
-                        .as_ref()
-                        .map(|(current_run, ticket)| (current_run, ticket.correlation_id.as_str())),
-                )
-                .then_some(record.state))
-            }
-            _ => Ok(None),
-        }
+        Ok(awaken_session_run_delivery::read_settled_phase(
+            ctx.commit.as_ref(),
+            &ctx.thread_id,
+            run_id,
+            answered_correlation,
+        )
+        .await?)
     }
-}
-
-fn awaiting_ticket_advanced(
-    observed_run: &RunId,
-    answered_correlation: &str,
-    current_wait: Option<(&RunId, &str)>,
-) -> bool {
-    current_wait.is_some_and(|(current_run, current_correlation)| {
-        current_run == observed_run && current_correlation != answered_correlation
-    })
 }
 
 /// A resume ticket is a one-answer idempotency boundary. Encoding the exact
@@ -361,4 +276,4 @@ impl CompletionSink for SettlementWakeup {
 #[cfg(test)]
 mod completion_tests;
 
-use awaken_dispatch_contract::{DispatchEnqueue as _, SessionRunReservations as _};
+use awaken_dispatch_contract::DispatchEnqueue as _;

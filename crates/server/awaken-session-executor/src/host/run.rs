@@ -5,15 +5,14 @@
 
 use super::*;
 
-mod projection;
 mod quiescence;
-mod step_verification;
 
 use awaken_session_run_delivery::StepCommitExpectation;
 use awaken_session_run_delivery::delegation_registry_from_snapshot;
 use awaken_session_run_delivery::message_prefix_before_exact_inputs;
-use projection::client_result_for_ticket;
-pub(super) use projection::session_thread_reply_result;
+#[cfg(test)]
+use awaken_session_run_delivery::session_thread_reply_result;
+use awaken_session_run_delivery::{check_pending, client_result_for_ticket};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunIngressScope {
@@ -161,6 +160,7 @@ impl crate::SessionRuns {
                 .as_ref()
                 .map_or_else(|| ThreadId(thread.to_string()), |ctx| ctx.thread_id.clone());
             let executable = self
+                .threads
                 .executable_session_dispatch_runs(thread, &logical_thread_id, &commit)
                 .await?;
             for run_id in executable {
@@ -575,125 +575,6 @@ impl crate::SessionRuns {
             .collect())
     }
 
-    /// Rebuild the sole durable resume target for a foreground root Run whose
-    /// committed Awaiting ticket predates dispatch ownership. Budget and tool
-    /// replies share this handoff; child Runs must already have a durable row.
-    pub(crate) async fn enqueue_foreground_session_resume_dispatch(
-        &self,
-        session_id: &str,
-        ticket: &ResumeTicket,
-        session_activity_epoch: u64,
-    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, SessionExecutionError> {
-        if ticket.thread_id.0 != session_id || session_activity_epoch == 0 {
-            return Err(SessionExecutionError::internal(
-                "only an exact foreground Session root can enter durable resume",
-            ));
-        }
-        let store = self.coordinator_dispatch()?;
-        let ctx = self.run_assembly.ctx_for(session_id, None).await?;
-        if ticket.inherited_toolsets.is_none()
-            && !ctx
-                .config
-                .resolved_spec
-                .plugin_config
-                .agent
-                .delegates
-                .is_empty()
-        {
-            return Err(SessionExecutionError::bad_request(
-                "legacy Run ticket cannot resume a delegation-capable root without frozen tool sources",
-            ));
-        }
-        let activation = ctx
-            .resume_activation(ticket)
-            .with_model_ref_override(self.agent.inference_routing.override_for(session_id)?);
-        let request = self
-            .run_assembly
-            .prepare_dispatch(activation)
-            .resume()?
-            .for_session(ThreadId(session_id.to_string()))
-            .with_session_activity_epoch(session_activity_epoch);
-        // One exact enqueue closes the foreground-to-durable crash window. A
-        // concurrent exact retry is idempotent; a changed Run payload is rejected
-        // by the existing dispatch identity fence before any resume is staged.
-        store
-            .enqueue(request)
-            .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-        Ok(store)
-    }
-
-    /// Persist interruption of every executable dispatch for one logical child.
-    /// A row whose Run already committed `Ended` is the worker's current
-    /// before-settle boundary, not executable work; skipping it lets a failed
-    /// boundary cancel raced later continuations without fencing its own claim.
-    /// Awaiting native children are resolved by the DispatchWorker's specialized
-    /// claim-fenced interruption command; running/remote children retain the
-    /// canonical cancellation path.
-    pub(crate) async fn interrupt_session_thread(
-        &self,
-        session_id: &str,
-        child_thread_id: &ThreadId,
-    ) -> Result<(), SessionExecutionError> {
-        if child_thread_id.0 == session_id {
-            return Err(SessionExecutionError::bad_request(
-                "a coordinated child Thread must differ from its parent Session",
-            ));
-        }
-        let commit = self.thread_reads.commit_for_read(session_id).await?;
-        let child_runs = self
-            .executable_session_dispatch_runs(session_id, child_thread_id, &commit)
-            .await?;
-        for run_id in child_runs {
-            self.durable_run_control()?
-                .persist_recoverable_cancellation(&run_id, None)
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// Select interruptible work only from the one Session-affined dispatch
-    /// authority. Retry-exhausted work remains interruptible because it still
-    /// owns an accepted Session Event; the control path requeues that same row
-    /// only to let the canonical cancellation claim settle it. Primary
-    /// interruption requires one result; child interruption deliberately
-    /// consumes every result so a raced continuation is fenced too.
-    async fn executable_session_dispatch_runs(
-        &self,
-        session_id: &str,
-        logical_thread_id: &ThreadId,
-        commit: &SessionCommit,
-    ) -> Result<Vec<RunId>, SessionExecutionError> {
-        let store = self.coordinator_dispatch()?;
-        let parent = ThreadId(session_id.to_string());
-        let rows = store
-            .list_dispatches()
-            .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-        Ok(rows
-            .into_iter()
-            .filter(|dispatch| {
-                dispatch.thread_id == *logical_thread_id
-                    && dispatch.session_thread_id.as_ref() == Some(&parent)
-                    && matches!(
-                        dispatch.state,
-                        awaken_dispatch_contract::DispatchState::Reserved
-                            | awaken_dispatch_contract::DispatchState::ReservationLeased
-                            | awaken_dispatch_contract::DispatchState::Pending
-                            | awaken_dispatch_contract::DispatchState::Leased
-                            | awaken_dispatch_contract::DispatchState::Awaiting
-                            | awaken_dispatch_contract::DispatchState::DeadLetter
-                    )
-            })
-            .filter(|dispatch| {
-                !commit
-                    .run_state(&dispatch.run_id)
-                    .is_some_and(|state| state.is_terminal())
-            })
-            .map(|dispatch| dispatch.run_id)
-            .collect())
-    }
-
     pub async fn resume(
         &self,
         thread: &str,
@@ -761,7 +642,7 @@ impl crate::SessionRuns {
             )
             .await?;
             let result = if let Some(child_ticket) = child {
-                self.check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
+                check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
                 match resume {
                     HostResume::Permission(decision) => ResumeResult::Permission(decision),
                     HostResume::ClientResult { content, is_error } => {
@@ -810,7 +691,7 @@ impl crate::SessionRuns {
             return Ok(result);
         }
 
-        self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
+        check_pending(&ticket, tool_use_id, resume.wants_client())?;
         let (call_id, _) = ticket.tool_call().ok_or_else(|| {
             SessionExecutionError::internal("awaiting run has no pending tool call")
         })?;
@@ -961,7 +842,7 @@ impl crate::SessionRuns {
 }
 
 use awaken_dispatch_contract::{
-    DispatchAdministration as _, DispatchEnqueue as _, DispatchMaintenance as _, DispatchReads as _,
+    DispatchAdministration as _, DispatchMaintenance as _, DispatchReads as _,
 };
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use super::{
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
-    awaiting_ticket_advanced, durable_resume_input, remote_worker_placement,
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId, durable_resume_input,
+    remote_worker_placement,
 };
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -170,37 +170,6 @@ fn durable_resume_identity_is_exactly_the_answered_ticket() {
     let left = durable_resume_input(resume_command("a", "bc", "yes"));
     let right = durable_resume_input(resume_command("ab", "c", "yes"));
     assert_ne!(left.message_id, right.message_id, "R3");
-}
-
-#[test]
-fn peer_completion_waits_for_exact_ticket_advancement() {
-    // Cause/effect graph: C1 initial durable submit vs resumed wait; C2 the
-    // committed Run is still Awaiting; C3 open ticket is the answered ticket,
-    // a new ticket, absent, or belongs to another Run. Effects: E1 old truth
-    // cannot prematurely release a resume waiter; E2 a new ticket releases it;
-    // E3 missing/inconsistent truth remains fail-closed. Ended and initial
-    // Awaiting are handled by the enclosing read-settled state match.
-    //
-    // | Rule | observed Run | current ticket | Effect |
-    // | R1 | run-1 | same correlation | E1 false |
-    // | R2 | run-1 | new correlation | E2 true |
-    // | R3 | run-1 | absent | E3 false |
-    // | R4 | run-1 | ticket for run-2 | E3 false |
-    let run_1 = RunId("run-1".into());
-    let run_2 = RunId("run-2".into());
-    assert!(
-        !awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_1, "ticket-1"))),
-        "R1"
-    );
-    assert!(
-        awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_1, "ticket-2"))),
-        "R2"
-    );
-    assert!(!awaiting_ticket_advanced(&run_1, "ticket-1", None), "R3");
-    assert!(
-        !awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_2, "ticket-2"))),
-        "R4"
-    );
 }
 
 #[test]

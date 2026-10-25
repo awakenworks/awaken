@@ -96,9 +96,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         &self,
         command: awaken_session_execution_contract::CoordinatedRunCommand,
     ) -> Result<awaken_session_execution_contract::SessionAgentMessageReceipt, RunError> {
-        self.admit_coordinated_run(command)
-            .await
-            .map_err(to_run_error)
+        self.threads().admit_coordinated_run(command).await
     }
 
     async fn subscribe_session_thread_live(
@@ -131,9 +129,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         &self,
         command: awaken_session_execution_contract::SessionAgentReportContinuation,
     ) -> Result<(), RunError> {
-        self.continue_session_agent_report(command)
-            .await
-            .map_err(to_run_error)
+        self.threads().continue_session_agent_report(command).await
     }
 
     async fn interrupt_session_thread(
@@ -141,19 +137,16 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError> {
-        self.session_runs
+        self.threads()
             .interrupt_session_thread(session_id.as_str(), child_thread_id)
             .await
-            .map_err(to_run_error)
     }
 
     async fn reply_session_thread_tool(
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
-        self.reply_session_thread_tool(delivery)
-            .await
-            .map_err(to_run_error)
+        self.threads().reply_session_thread_tool(delivery).await
     }
 
     async fn reply_and_observe_session_thread_tool(
@@ -173,12 +166,12 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
-        self.archive_session_thread(
-            session_id.as_str(),
-            &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-        )
-        .await
-        .map_err(to_run_error)
+        self.threads()
+            .archive_session_thread(
+                session_id.as_str(),
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
     }
 
     async fn quiesce_terminal_delegations(
@@ -198,27 +191,14 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         &self,
         session: &awaken_session_state_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
-        let Ok(source) = self.session_runs.coordinator_dispatch() else {
-            return Default::default();
-        };
-        awaken_dispatch_execution::read_source_dispatch_observation(source.as_ref(), session).await
+        self.threads().source_dispatch_observation(session).await
     }
 
     async fn execution_recovery_observation(
         &self,
         session: &awaken_session_state_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionExecutionRecoveryObservation {
-        let Ok(source) = self.session_runs.coordinator_dispatch() else {
-            return awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven {
-                reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::HistoryUnavailable,
-            };
-        };
-        awaken_dispatch_execution::read_execution_recovery(
-            source.as_ref(),
-            self.thread_reads.as_ref(),
-            session,
-        )
-        .await
+        self.threads().execution_recovery_observation(session).await
     }
 
     async fn coordinated_admission_receipt(
@@ -226,52 +206,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
     ) -> Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError>
     {
-        use awaken_dispatch_contract::SessionRunAdmissionObservation;
-        if command.activity_epoch() == Some(0)
-            || matches!(command, awaken_session_execution_contract::CoordinatedAdmissionRef::Report(_, baseline)
-                if baseline.agent_revision.is_none_or(|revision| revision == 0))
-        {
-            return Err(RunError::unavailable(
-                "original coordination activity epoch is invalid",
-            ));
-        }
-        let run = command.run_id();
-        let source = self
-            .session_runs
-            .coordinator_dispatch()
-            .map_err(|error| RunError::unavailable(error.message))?;
-        let reads: &dyn awaken_dispatch_contract::SessionRunAdmissionReads = source.as_ref();
-        let observed = reads
-            .observe_session_run_admission(&run)
-            .await
-            .map_err(|error| RunError::unavailable(error.to_string()))?;
-        match observed {
-            SessionRunAdmissionObservation::Missing => Ok(None),
-            SessionRunAdmissionObservation::Live(request)
-                if request.identity_scope
-                    == awaken_dispatch_contract::DispatchIdentityScope::FullDispatch
-                    && request.session_command_fingerprint.is_none()
-                    && request.session_thread_id.as_ref()
-                        == Some(&awaken_agent_contract::agent::thread::Id(
-                            command.session_id().to_string(),
-                        ))
-                    && command.activity_epoch().is_some_and(|epoch| epoch != 0)
-                    && request.session_activity_epoch == command.activity_epoch()
-                    && awaken_dispatch_execution::coordinated_activation_matches(
-                        &command,
-                        &request.activation,
-                    ) =>
-            {
-                Ok(Some(
-                    awaken_session_execution_contract::SessionAgentMessageReceipt {
-                        thread_id: command.thread_id(),
-                    },
-                ))
-            }
-            _ => Err(RunError::unavailable(
-                "original coordinated admission evidence is incomplete or mismatched",
-            )),
-        }
+        self.threads().coordinated_admission_receipt(command).await
     }
 
     async fn session_run_state(
@@ -279,19 +214,11 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         session_id: &awaken_session_types::SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
-        let commit = self
-            .thread_reads
-            .commit_for_read(session_id.as_str())
-            .await?;
-        commit
-            .authoritative_run(run_id)
-            .await
-            .map(|record| record.map(|record| record.state))
-            .map_err(|error| RunError::unavailable(error.to_string()))
+        self.threads().session_run_state(session_id, run_id).await
     }
 
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.thread_reads.delegated_runs(thread).await
+        self.threads().delegated_runs(thread).await
     }
 
     async fn coordinated_threads(
@@ -299,8 +226,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         session_id: &awaken_session_types::SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-        self.thread_reads
-            .coordinated_threads(session_id.as_str(), observed_root)
+        self.threads()
+            .coordinated_threads(session_id, observed_root)
             .await
     }
 
@@ -308,17 +235,21 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoo
         &self,
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
-        self.session_thread_tool_reply_fence(command)
-            .await
-            .map_err(to_run_error)
+        awaken_session_execution_contract::SessionCoordinationReads::session_thread_tool_reply_fence(
+            self.threads(),
+            command,
+        )
+        .await
     }
 
     async fn validate_session_agent_message_source(
         &self,
         command: &awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<awaken_session_execution_contract::SessionAgentMessageCommand, RunError> {
-        self.validate_session_agent_message_source(command)
-            .await
-            .map_err(to_run_error)
+        awaken_session_execution_contract::SessionCoordinationReads::validate_session_agent_message_source(
+            self.threads(),
+            command,
+        )
+        .await
     }
 }

@@ -7,7 +7,7 @@
 //! assembly ([`RunCapabilities`]), child Runs ([`ChildRunLauncher`]), Session
 //! context assembly ([`RunAssembly`]), Run delivery ([`SessionRuns`]),
 //! coordination ([`ChildRunCoordination`]), Outcomes ([`Outcomes`]) and
-//! budgets ([`BudgetAccounting`]). Every protocol drives the same components,
+//! budgets (`awaken_session_run_delivery::SessionBudgets`). Every protocol drives the same components,
 //! so none can create a protocol-specific run, resume, or terminal-state path.
 //!
 //! This crate consumes capabilities selected by process startup. It never opens
@@ -64,7 +64,6 @@ mod lazy_sandbox;
 mod live_inbox;
 pub use live_inbox::LiveInboxes;
 mod managed_input_projection;
-mod managed_model_capability;
 mod managed_outcome;
 mod mcp_host;
 mod memory;
@@ -87,8 +86,6 @@ mod outcomes;
 pub use outcomes::Outcomes;
 mod process_roles;
 pub use process_roles::{CoordinatorRoles, WorkerRoles};
-mod budget_accounting;
-pub use budget_accounting::BudgetAccounting;
 mod session_runs;
 pub use session_runs::SessionRuns;
 mod run_exec;
@@ -145,7 +142,6 @@ use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
 pub(crate) use awaken_session_run_delivery::{CommittedReads, ThreadEvent, ThreadEventHub};
-pub(crate) use managed_input_projection::session_system_message;
 #[cfg(test)]
 pub(crate) use managed_input_projection::user_message;
 /// Composition failure for the one process-local Session coordination port.

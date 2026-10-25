@@ -20,7 +20,7 @@ use awaken_time::WallClockExt;
 /// external realization and is the one seam used before create, live
 /// Resource and final root persistence boundaries.
 pub(crate) fn validate_session_sandbox_layout(
-    effects: &dyn awaken_session_execution_contract::RealizationEffects,
+    placement: &awaken_session_execution_contract::SessionPlacementRoles,
     session_id: &str,
     layout: &awaken_session_configuration_contract::SessionSandboxLayout,
 ) -> Result<(), RunError> {
@@ -31,7 +31,7 @@ pub(crate) fn validate_session_sandbox_layout(
         ),
         &layout.environment.idle_retention,
     )?;
-    effects.validate_session_sandbox_layout(session_id, layout)
+    placement.validate_session_sandbox_layout(session_id, layout)
 }
 
 /// Reject a layout whose idle policy its placement cannot honour

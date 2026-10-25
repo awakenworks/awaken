@@ -21,6 +21,7 @@ use awaken_runtime_contract::llm::ThreadUsage;
 use crate::config::latest_assistant_text;
 
 mod child_attempt;
+#[cfg(test)]
 mod child_dispatch;
 mod child_execution;
 mod child_worker;
@@ -31,7 +32,6 @@ pub(crate) use child_attempt::{
     ChildAcpExecutorFactory, ChildExecutionAdapters, child_attempt_executor,
     configure_child_native_runtime, validate_child_tool_configuration,
 };
-pub(crate) use child_dispatch::child_dispatch_request;
 pub(crate) use child_execution::{
     AbortOnDropTask, ChildRunRequest, RunScheduler, run_configured_agent_until_boundary,
 };
