@@ -26,6 +26,7 @@ mod delivery;
 mod hub;
 mod lock;
 mod memory_content;
+mod memory_proposals;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
@@ -66,6 +67,9 @@ pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlaceme
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use memory_content::PlatformMemoryHandle;
+pub use memory_proposals::{
+    MemoryProposalError, MemoryWriteProposals, committed_memory_writes, memory_extraction_input,
+};
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
 };

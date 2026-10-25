@@ -1,11 +1,15 @@
 use super::*;
 use crate::ExecutorComponents;
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_memory::{MEMORY_AGENT_ID, MemoryExtractionStatus, RecallSelector as _};
 use awaken_resource_contract::{MemoryVersionQueries as _, MemoryWriter as _};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
 };
+use awaken_session_run_delivery::PlatformMemoryHandle;
 use awaken_tool_contract::tool::ToolCall;
 
 #[test]
@@ -180,45 +184,6 @@ fn snapshot(thread: &str, messages: Vec<Message>) -> TranscriptSnapshot {
         awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
         messages,
     )
-}
-
-#[test]
-fn committed_agent_tool_calls_rebuild_only_policy_accepted_mutations() {
-    let messages = vec![Message::new(
-        MessageId("assistant".into()),
-        Role::Assistant,
-        vec![
-            ContentBlock::tool_use(
-                "valid",
-                "write_memory",
-                serde_json::json!({
-                    "name": "User Pref",
-                    "content": "The user prefers concise reviews."
-                }),
-            ),
-            ContentBlock::tool_use(
-                "rejected",
-                "write_memory",
-                serde_json::json!({
-                    "name": "fix",
-                    "content": "Fixed the bug by patching queue.rs."
-                }),
-            ),
-            ContentBlock::tool_use(
-                "other",
-                "unrelated",
-                serde_json::json!({"name": "ignored", "content": "ignored"}),
-            ),
-        ],
-    )];
-
-    assert_eq!(
-        writes_from_committed_agent(&messages),
-        BTreeMap::from([(
-            "/User-Pref.md".to_string(),
-            "The user prefers concise reviews.".to_string()
-        )])
-    );
 }
 
 fn extractor(
@@ -482,6 +447,80 @@ async fn extraction_writes_a_memory_then_recall_reads_it_back() {
         awaken_ext_memory::recall::render(&entries, &awaken_ext_memory::RecallBounds::default())
             .expect("recall block");
     assert!(block.contains("user likes rust"), "got: {block}");
+}
+
+struct MalformedExtractorModel;
+
+#[async_trait]
+impl LlmExecutor for MalformedExtractorModel {
+    async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+        if request
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+        {
+            return ExtractorModel.infer(request).await;
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![
+                ToolCall {
+                    call_id: "valid".into(),
+                    tool_id: "write_memory".into(),
+                    arguments: serde_json::json!({"name":"valid","content":"prefers tea"}),
+                },
+                ToolCall {
+                    call_id: "malformed".into(),
+                    tool_id: "write_memory".into(),
+                    arguments: serde_json::json!({"name":"malformed"}),
+                },
+            ]),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_extractor_batch_commits_failure_without_partial_memory() {
+    // Cause/effect table: C1 one valid call precedes a malformed write in the
+    // same real extractor Run; C2 the Run reaches its committed boundary.
+    // M2 C1+C2 => the existing durable intent becomes TerminalFailed, no
+    // mutations/receipt are admitted, and even the earlier valid content is
+    // absent. Drain is only a join: committed intent/content are the oracles.
+    let root = tempfile::tempdir().unwrap();
+    let (runtime, extraction, content, intents) = bound_test_memory(
+        Arc::new(MalformedExtractorModel),
+        "malformed-thread",
+        root.path(),
+        root.path(),
+    )
+    .await;
+    extraction
+        .trigger(
+            "terminal",
+            snapshot("malformed-thread", vec![user("prefers tea")]),
+            extractor(None, None),
+        )
+        .await
+        .unwrap();
+    assert!(runtime.drain(Duration::from_secs(10)).await);
+    let intent = intents
+        .get_extraction("memory-extraction:malformed-thread:terminal")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(intent.status, MemoryExtractionStatus::TerminalFailed);
+    assert!(intent.mutations.is_empty());
+    assert!(intent.receipt.is_none());
+    assert!(
+        awaken_resource_contract::MemorySnapshotSource::snapshot_heads(
+            content.as_ref(),
+            "test-store"
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
 }
 
 /// An extractor that saves whatever non-prompt text it was seeded with, so the
