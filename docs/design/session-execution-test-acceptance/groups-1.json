@@ -892,7 +892,7 @@
           "B119",
           "B120"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -910,14 +910,6 @@
           "unaccepted": [
             "L2 real adapters and process crash are separate scenarios",
             "T35 platform gate open"
-          ]
-        },
-        "product_gap": {
-          "reason": "部分内部入口（event batch 追加等）不带所有者参数，可绕过 HTTP 校验；run admission 对未知 id 创建、对外来 id 报未找到，泄露存在性。需设计决定：为内部入口引入所有者证明会改变跨 crate 的 append 接口，且 T12 等现有测试与内部调用方均以无所有者方式调用同一入口；使缺失与外来 id 不可区分与“未知 Thread 的首个 Run 创建默认 Session”的既定行为冲突，ADR 未裁定",
-          "follow_up": "session-application：先在 ADR 中裁定内部 append 的所有者证明形态及 create-on-missing 的存在性语义，再实现（M）",
-          "reproducers": [
-            "owner_less_event_append_refuses_without_owner_proof",
-            "foreign_run_admission_is_indistinguishable_from_missing"
           ]
         }
       },

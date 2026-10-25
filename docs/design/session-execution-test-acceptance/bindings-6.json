@@ -438,21 +438,49 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 407,
-        "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
+        "line": 405,
+        "file_sha256": "a1bfa02b3bf0088adb9a36052ce3fd85217704f66541ba9b4f13fd8e5c73b09e"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E41",
+        "case": "awaken-session-application tests::authority::budget_resume::budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
+        "package": "awaken-session-application",
+        "target": "lib (nextest)",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "8ea4bbe38307404b1d335da108ccaccdc0faf580",
+        "historical": false,
+        "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T13-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a budget-rejected bypass Run keeps its reservation and repair admits it after the raise",
-    "limitation": "Not execution evidence. Follow-up: run admission reservation release (M)",
-    "id": "B140"
+    "review": "Refuses a bypass Run at the budget boundary, raises the budget, and asserts reservation repair rejects it and no activity exists for it.",
+    "limitation": null,
+    "id": "B140",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 429
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 439
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 444
+      }
+    ]
   },
   {
     "name": "failed_second_input_or_stale_version_keeps_the_original_manifest",
