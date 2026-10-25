@@ -3,20 +3,17 @@
 //! Run driving for [`ExecutorComponents`]: the neutral `run`/`resume`/`define_outcome`
 //! entry points, step finalization, queries, and the durable-ops verbs.
 
-use super::types::VerifiedStepProjection;
 use super::*;
 
 mod projection;
 mod quiescence;
 mod step_verification;
 
-use awaken_session_run_delivery::{
-    delegation_registry_from_snapshot, project_delegated_runs, recovery_ticket,
-    visible_pending_tool,
-};
+use awaken_session_run_delivery::StepCommitExpectation;
+use awaken_session_run_delivery::delegation_registry_from_snapshot;
+use awaken_session_run_delivery::message_prefix_before_exact_inputs;
+use projection::client_result_for_ticket;
 pub(super) use projection::session_thread_reply_result;
-use projection::{StepCommitExpectation, client_result_for_ticket};
-use step_verification::{message_prefix_before_exact_inputs, verify_committed_step};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunIngressScope {
@@ -881,10 +878,12 @@ impl crate::SessionRuns {
         ctx: &SessionCtx,
         run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, SessionExecutionError> {
-        ctx.commit
-            .recovery_snapshot(&ctx.thread_id, run_id)
-            .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))
+        Ok(awaken_session_run_delivery::authoritative_step_snapshot(
+            ctx.commit.as_ref(),
+            &ctx.thread_id,
+            run_id,
+        )
+        .await?)
     }
 
     /// Project an admitted Session Run from its exact committed input identities.
@@ -948,56 +947,16 @@ impl crate::SessionRuns {
         expectation: StepCommitExpectation<'_>,
         thread: &str,
     ) -> Result<CommittedStepReceipt, SessionExecutionError> {
-        // Cause/effect: when peer P commits this Run, this Coordinator's local
-        // projection is stale but the recovery snapshot contains P's messages,
-        // state, and tickets. Project that one committed truth or fail closed;
-        // never return an idle response with an empty/old assistant delta.
-        let committed = self.authoritative_step_snapshot(ctx, &run_id).await?;
-        let new_messages = verify_committed_step(
-            &committed,
+        Ok(awaken_session_run_delivery::project_committed_step(
+            ctx.commit.as_ref(),
+            &self.hub,
             &ctx.thread_id,
-            &run_id,
-            &state,
-            expectation.messages_before,
-            expectation.input_ids,
-        )?;
-        let delegation_registry = delegation_registry_from_snapshot(&committed, &run_id)?;
-        let (pending, awaiting, await_reason) = match &state {
-            RunState::Awaiting => {
-                let ticket = recovery_ticket(&committed, &run_id)?;
-                let await_reason = ticket.as_ref().map(ResumeTicket::reason);
-                let pending = if let Some(ticket) = ticket {
-                    // A parent waiting on a child exposes the CHILD's ordinary
-                    // interaction request. The protocol still addresses the
-                    // parent session; it never obtains a bypass around the
-                    // parent-child relationship.
-                    visible_pending_tool(ctx.commit.as_ref(), &ticket, delegation_registry.as_ref())
-                        .await?
-                } else {
-                    None
-                };
-                (pending, true, await_reason)
-            }
-            _ => (None, false, None),
-        };
-        if !new_messages.is_empty() {
-            self.hub
-                .publish(thread, ThreadEvent::Committed(new_messages.clone()));
-        }
-        self.hub
-            .publish(thread, ThreadEvent::StepEnded { awaiting });
-        let delegated_runs = project_delegated_runs(delegation_registry.as_ref());
-        Ok(CommittedStepReceipt::from_verified(
-            VerifiedStepProjection {
-                run_id,
-                new_messages,
-                state,
-                pending,
-                await_reason,
-                delegated_runs,
-            },
-            &committed,
-        ))
+            run_id,
+            state,
+            expectation,
+            thread,
+        )
+        .await?)
     }
 }
 

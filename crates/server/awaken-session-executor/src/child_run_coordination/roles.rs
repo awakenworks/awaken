@@ -89,7 +89,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
             .activate_and_observe_session_run(admission, input_message_ids, sink)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(receipt)
+        awaken_session_run_delivery::settled_step(receipt)
     }
 
     async fn admit_coordinated_run(
@@ -165,7 +165,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
             .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(receipt)
+        awaken_session_run_delivery::settled_step(receipt)
     }
 
     async fn archive_session_thread(

@@ -115,7 +115,7 @@ pub use crate::authority::UpstreamAuthority;
 pub(crate) use crate::authority::{LocalAuthority, SessionAuthority};
 // Internal use of the canonical adapter owner; these are not public compatibility exports.
 pub(crate) use crate::host::HostOutcomeIteration;
-pub use crate::host::{CommittedStepReceipt, HostOutcomeDrive, HostOutcomeReport};
+pub use crate::host::{HostOutcomeDrive, HostOutcomeReport};
 pub(crate) use crate::installed_session::InstalledSessions;
 use awaken_dispatch_erasure::LocalCommit;
 #[cfg(any(test, feature = "test-support"))]

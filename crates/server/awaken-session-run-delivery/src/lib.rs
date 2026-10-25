@@ -18,6 +18,7 @@
 
 mod commit_boundary;
 mod committed_reads;
+mod committed_step;
 mod completion;
 mod delivery;
 mod hub;
@@ -28,6 +29,7 @@ mod session_activation;
 mod session_projections;
 mod session_run_reservation;
 mod session_skills;
+mod settled_step;
 #[cfg(test)]
 mod test_support;
 
@@ -39,6 +41,11 @@ pub use committed_reads::{
     SessionCommitSource, application_error, authoritative_child_ticket,
     delegation_registry_from_snapshot, project_committed_coordination, project_delegated_runs,
     recovery_ticket, visible_pending_tool,
+};
+pub use committed_step::{
+    CommittedStepReceipt, StepCommitExpectation, VerifiedStepProjection,
+    authoritative_step_snapshot, message_prefix_before_exact_inputs, project_committed_step,
+    verify_committed_step,
 };
 pub use completion::{
     CompletionRegistry, CompletionSignalClosed, WaiterGuard, activate_and_await_session_run,
@@ -66,6 +73,7 @@ pub use session_skills::{
     published_skill_ids, requires_filesystem, session_allows_agent_tool,
     session_allows_filesystem_tools,
 };
+pub use settled_step::settled_step;
 
 /// Poison `lock` the way production can: a holder panics while holding it.
 #[cfg(test)]

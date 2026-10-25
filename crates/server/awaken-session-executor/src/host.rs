@@ -17,8 +17,12 @@ use std::sync::atomic::AtomicU64;
 use awaken_agent_contract::agent::awaiting::{
     AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket, ToolCallAuthority,
 };
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+#[cfg(test)]
+use awaken_agent_contract::agent::message::Id as MessageId;
+use awaken_agent_contract::agent::message::{Message, Role};
+#[cfg(test)]
+use awaken_agent_contract::agent::run::EndCause;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
@@ -46,8 +50,8 @@ use awaken_tool_contract::tool::ToolOutput;
 
 use awaken_ext_compact::CompactConfig;
 
+use crate::ThreadEventHub;
 use crate::background::BackgroundRuns;
-use crate::{ThreadEvent, ThreadEventHub};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use awaken_session_run_delivery::SessionCommit;
 
@@ -113,6 +117,7 @@ mod types;
 mod worker_resolver;
 
 pub(crate) use awaken_dispatch_execution::session_worker_resolver::SessionWorkerResolver;
+use awaken_session_run_delivery::CommittedStepReceipt;
 pub(crate) use awaken_session_run_delivery::CompletionRegistry;
 pub(crate) use completion::SettlementWakeup;
 pub(crate) use foreground_run::{ForegroundRun, ForegroundRunPoisoned, ForegroundRunRecord};
@@ -122,9 +127,7 @@ pub(crate) use run_control::{
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };
-pub use types::{
-    CommittedStepReceipt, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, HostResume,
-};
+pub use types::{HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, HostResume};
 #[cfg(test)]
 pub(crate) use worker_resolver::test_support::{
     eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
