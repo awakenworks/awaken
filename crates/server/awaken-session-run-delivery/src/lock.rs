@@ -18,6 +18,8 @@ pub enum DeliveryLock {
     SessionProjections,
     #[error("Session step projection lock poisoned")]
     StepProjections,
+    #[error("Session Outcome command lock poisoned")]
+    OutcomeCommands,
 }
 
 impl From<DeliveryLock> for awaken_session_types::RunError {
@@ -45,6 +47,7 @@ mod tests {
             DeliveryLock::ThreadEventHub,
             DeliveryLock::SessionProjections,
             DeliveryLock::StepProjections,
+            DeliveryLock::OutcomeCommands,
         ] {
             let run = awaken_session_types::RunError::from(lock);
             assert_eq!(

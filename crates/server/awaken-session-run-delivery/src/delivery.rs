@@ -13,8 +13,11 @@
 //! slash commands expand from, each against its digest; it stages, mounts and
 //! realizes nothing.
 
+mod durable_operations;
 mod inputs;
+mod outcomes;
 mod roles;
+mod thread_runs;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -93,6 +96,8 @@ pub struct WorkerPlacedSessions {
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
     step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One Outcome command at a time per Session.
+    outcome_commands: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl WorkerPlacedSessions {
@@ -114,6 +119,7 @@ impl WorkerPlacedSessions {
             threads,
             budgets,
             step_projections: Mutex::default(),
+            outcome_commands: Mutex::default(),
         }
     }
 
@@ -123,10 +129,42 @@ impl WorkerPlacedSessions {
         &self.ports.projections
     }
 
+    /// The Session application's role set for the Sessions registered Workers
+    /// realize: every role is served here, over the committed reads.
+    #[must_use]
+    pub fn session_execution_roles(
+        self: &Arc<Self>,
+    ) -> awaken_session_execution_contract::SessionExecutionRoles {
+        awaken_session_execution_contract::SessionExecutionRoles {
+            core: self.clone(),
+            placement: awaken_session_execution_contract::SessionPlacementRoles::RegisteredWorkers(
+                self.clone(),
+            ),
+            coordination: self.clone(),
+            coordination_reads: self.clone(),
+            budget: self.clone(),
+            streaming_runs: self.clone(),
+            thread_reads: self.ports.reads.clone(),
+            outcomes: self.clone(),
+            live_inbox: self.clone(),
+            capability: self.clone(),
+        }
+    }
+
     /// The Agent coordination of the Sessions' Threads.
     #[must_use]
     pub fn threads(&self) -> &CoordinatedThreads {
         &self.threads
+    }
+
+    fn outcome_command(&self, session: &str) -> Result<Arc<tokio::sync::Mutex<()>>, RunError> {
+        Ok(self
+            .outcome_commands
+            .lock()
+            .map_err(|_| DeliveryLock::OutcomeCommands)?
+            .entry(session.to_owned())
+            .or_default()
+            .clone())
     }
 
     fn step_projection(&self, session: &str) -> Result<Arc<tokio::sync::Mutex<()>>, RunError> {
@@ -275,7 +313,9 @@ mod tests {
     use awaken_agent_contract::AgentSkillKind;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::Id as RunId;
-    use awaken_dispatch_contract::{SessionRunAdmissionObservation, SessionRunAdmissionReads as _};
+    use awaken_dispatch_contract::{
+        DispatchReads as _, SessionRunAdmissionObservation, SessionRunAdmissionReads as _,
+    };
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, ResourceRegistryError, RetentionPolicy,
         SkillBundleFile, SkillVersion, skill_bundle_sha256,
@@ -376,20 +416,36 @@ mod tests {
         }
     }
 
-    /// Committed truth the reservation and activation rules never read.
-    struct NoCommits;
+    /// Every Thread's committed truth, in memory.
+    #[derive(Default)]
+    struct MemoryCommits(
+        std::sync::Mutex<HashMap<String, Arc<dyn awaken_dispatch_erasure::LocalCommit>>>,
+    );
 
     #[async_trait::async_trait]
-    impl crate::SessionCommitSource for NoCommits {
+    impl crate::SessionCommitSource for MemoryCommits {
         async fn open_for_read(
             &self,
-            _session: &str,
+            session: &str,
         ) -> Result<Arc<crate::SessionCommit>, RunError> {
-            Err(RunError::unavailable("no committed truth under test"))
+            let commit = self
+                .0
+                .lock()
+                .expect("commit map")
+                .entry(session.to_owned())
+                .or_insert_with(|| {
+                    Arc::new(awaken_dispatch_erasure::LocalCommitAdapter::projected(
+                        awaken_store_inmem::MemoryCommitCoordinator::new(
+                            awaken_time::system_clock(),
+                        ),
+                    ))
+                })
+                .clone();
+            Ok(Arc::new(crate::SessionCommit::Local(commit)))
         }
 
-        async fn durable_thread_exists(&self, _thread: &str) -> Result<bool, RunError> {
-            Ok(false)
+        async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RunError> {
+            Ok(self.0.lock().expect("commit map").contains_key(thread))
         }
     }
 
@@ -419,7 +475,10 @@ mod tests {
                 awaken_dispatch::MemoryDispatchStore::new(clock),
                 None,
             )),
-            reads: Arc::new(CommittedReads::new(Arc::new(NoCommits), projections)),
+            reads: Arc::new(CommittedReads::new(
+                Arc::new(MemoryCommits::default()),
+                projections,
+            )),
             hub,
             completion,
             skill_bundles: stored.map(|version| {
@@ -808,5 +867,164 @@ mod tests {
             delivery.live_inbox_queue("session", Vec::new()).await,
             Err(awaken_session_execution_contract::LiveInboxError::Inactive)
         ));
+    }
+
+    #[tokio::test]
+    async fn coordinator_thread_runs_follow_their_decision_table() {
+        let delivery = delivery(None);
+        // T1: a Managed Session root admits its own Runs.
+        install(&delivery, "session", Vec::new(), Vec::new());
+        let root = delivery
+            .run_thread(super::thread_runs::ThreadRun {
+                agent: None,
+                thread: "session",
+                input: Vec::new(),
+                sink: None,
+                data_subject_id: None,
+            })
+            .await
+            .expect_err("T1");
+        assert_eq!(
+            root.message, "Managed Session roots must use Session-owned Run ingress",
+            "T1"
+        );
+        // T3: an Agent with no publication does not run on a Coordinator.
+        let unpublished = delivery
+            .run_thread(super::thread_runs::ThreadRun {
+                agent: Some("ghost"),
+                thread: "flat",
+                input: Vec::new(),
+                sink: None,
+                data_subject_id: None,
+            })
+            .await
+            .expect_err("T3");
+        assert!(
+            unpublished.message.contains("has no publication"),
+            "T3: {}",
+            unpublished.message
+        );
+        // A Thread with nothing awaiting has nothing to resume, and an idle
+        // Thread has nothing to interrupt.
+        let resume = delivery
+            .resume_thread(
+                "flat",
+                "call",
+                awaken_session_application_contract::RunResume::Permission(
+                    awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
+                        note: None,
+                    },
+                ),
+                None,
+            )
+            .await
+            .expect_err("no awaiting Run");
+        assert_eq!(resume.message, "no awaiting run to resume");
+        delivery
+            .interrupt_thread("flat")
+            .await
+            .expect("idle interrupt");
+    }
+
+    #[tokio::test]
+    async fn coordinator_outcomes_drive_only_installed_sessions() {
+        use awaken_session_execution_contract::OutcomeRuntime as _;
+        let delivery = delivery(None);
+        // An Outcome needs the Session's installed projection.
+        let cold = delivery
+            .prepare_outcome("session", "outcome-1", "goal", "rubric", 2)
+            .await
+            .expect_err("cold");
+        assert_eq!(cold.code, "session_projection_not_installed");
+        install(&delivery, "session", Vec::new(), Vec::new());
+        // No active Outcome: continuing drives nothing and dispatches no Run.
+        assert!(
+            delivery
+                .continue_outcome("session")
+                .await
+                .expect("idle continuation")
+                .is_none()
+        );
+        // Preparation persists only the aggregate; no Worker Run is dispatched.
+        delivery
+            .prepare_outcome("session", "outcome-1", "goal", "rubric", 2)
+            .await
+            .expect("prepare");
+        assert!(
+            delivery
+                .ports
+                .owner
+                .list_dispatches()
+                .await
+                .expect("dispatch rows")
+                .is_empty(),
+            "no Run before Session activity"
+        );
+        // A grader Thread is bound to one Workspace.
+        let projections = delivery.projections();
+        projections
+            .register_thread_workspace("outcome/outcome-1/grader/1", "workspace")
+            .expect("bind");
+        assert!(
+            projections
+                .register_thread_workspace("outcome/outcome-1/grader/1", "other")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_worker_placement_role_set_realizes_no_session() {
+        let delivery = Arc::new(delivery(None));
+        let roles = delivery.session_execution_roles();
+        assert!(roles.placement.colocated().is_none());
+        assert!(roles.placement.require_colocated().is_err());
+    }
+
+    #[tokio::test]
+    async fn coordinator_durable_operations_follow_their_decision_table() {
+        use awaken_session_execution_contract::DurableRunOperations as _;
+        let delivery = delivery(Some(skill()));
+        install(&delivery, "session", Vec::new(), Vec::new());
+        delivery
+            .reserve_session_run(command("session", "hello"))
+            .await
+            .expect("reserve");
+        // O1: a live row's cancellation is its durable intent.
+        delivery.cancel("session", "session-run").await.expect("O1");
+        // O2: an unknown Run reaches no owner.
+        assert!(delivery.cancel("session", "unknown").await.is_err(), "O2");
+        // O3: the Coordinator owns no attempt.
+        assert!(delivery.pause("session", None).await.is_err(), "O3 pause");
+        assert!(
+            delivery.wake("session", "session-run").await.is_err(),
+            "O3 wake"
+        );
+        // O5: nothing awaits on the Thread.
+        assert!(
+            delivery.deliver("session", true).await.is_err(),
+            "O5 deliver"
+        );
+        assert!(
+            delivery.resume("session", "go on".into()).await.is_err(),
+            "O5 resume"
+        );
+        // O6: reconciliation is the Coordinator loop's.
+        assert!(delivery.reconcile("session").await.is_err(), "O6");
+        // Operational reads list the Thread's rows.
+        let rows = delivery.dispatches("session").await.expect("rows");
+        assert_eq!(rows.len(), 1, "one reserved row");
+        assert!(
+            delivery
+                .dead_letters("session")
+                .await
+                .expect("dead letters")
+                .is_empty()
+        );
+        assert!(
+            !delivery
+                .requeue_dead_letter("session", "session-run")
+                .await
+                .expect("requeue")
+        );
     }
 }

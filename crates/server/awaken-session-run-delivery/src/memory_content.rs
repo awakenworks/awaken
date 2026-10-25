@@ -1,20 +1,20 @@
 // @formal surface requirement=resource.memory.memory_consistency
-// @formal reason: Static owner: Runtime Host adapts the frozen Session Memory binding to the canonical
+// @formal reason: Static owner: Run delivery adapts the frozen Session Memory binding to the canonical
 // @formal reason: MemoryWriter complete-generation API without owning a second CAS rule. Dynamic path:
 // @formal reason: create has no predecessor, while write, delete and extraction replay pass the exact
 // @formal reason: immutable-id/version/content token into the repository; path-sensitive operations use
 // @formal reason: update_materialized so a renamed or replaced materialization conflicts. Repository locks
 // @formal reason: and transactions remain the only mutation authorities, and adjacent runtime tests
 // @formal reason: provide executable wiring evidence rather than a direct backend or durability proof.
-//! Data-plane adapter for one already-authorized platform MemoryStore binding.
+//! Data-plane adapter for one already-authorized platform MemoryStore binding:
+//! the Session's Memory tools, recall and extraction on a Worker, and the
+//! Coordinator applying a dispatched extraction's proposals, write through it.
 //!
 //! Resource resolution owns the binding identity and maximum access. This
 //! adapter only translates the common Memory tool/extraction operations onto
 //! that exact store; it owns no catalog, lifecycle, or extraction-outbox truth.
 
 use std::collections::BTreeMap;
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_memory::{
@@ -58,22 +58,6 @@ impl PlatformMemoryHandle {
             });
         }
         Ok(entries)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new<M>(backend: Arc<M>, store_id: String, writable: bool) -> Self
-    where
-        M: awaken_resource_contract::MemoryQueries
-            + awaken_resource_contract::MemorySnapshotSource
-            + awaken_resource_contract::MemoryWriter
-            + awaken_resource_contract::MemoryCopyWriteback
-            + 'static,
-    {
-        Self::from_roles(
-            awaken_resource_contract::MemoryExecutionContent::new(backend.clone()),
-            store_id,
-            writable,
-        )
     }
 
     pub fn from_roles(
@@ -283,3 +267,6 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
         Self::entries_from_snapshot(self.content.snapshots().as_ref(), &self.store_id).await
     }
 }
+
+#[cfg(test)]
+mod tests;

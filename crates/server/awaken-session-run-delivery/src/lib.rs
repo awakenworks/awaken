@@ -25,6 +25,7 @@ mod completion;
 mod delivery;
 mod hub;
 mod lock;
+mod memory_content;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
@@ -39,6 +40,7 @@ mod settled_step;
 #[cfg(test)]
 mod test_support;
 mod thread_coordination;
+mod thread_resume;
 
 pub use authority_commits::{AuthorityCommits, runtime_authority_error};
 pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
@@ -63,6 +65,7 @@ pub use completion::{
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
+pub use memory_content::PlatformMemoryHandle;
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
 };
@@ -95,6 +98,9 @@ pub use settled_step::settled_step;
 pub use thread_coordination::{
     ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
     check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
+};
+pub use thread_resume::{
+    decision_input, durable_resume_input, manual_resume_input, resume_result, resume_wants_client,
 };
 
 /// Poison `lock` the way production can: a holder panics while holding it.

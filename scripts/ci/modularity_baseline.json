@@ -337,7 +337,6 @@
     "awaken-session-executor::application.rs::install_frozen_session_projection_with_resource_authority": 302,
     "awaken-session-executor::background_task.rs::launch": 182,
     "awaken-session-executor::background_task.rs::launch_remote": 342,
-    "awaken-session-executor::host/run.rs::resume": 153,
     "awaken-session-executor::host/session/context/assembly.rs::assemble": 518,
     "awaken-session-executor::host/session/context/execution.rs::prepare": 231,
     "awaken-session-executor::host/session/context/extensions.rs::skills": 179,

@@ -163,7 +163,7 @@ impl crate::SessionRuns {
         // Register before append so a local pool cannot settle between input
         // publication and waiter installation.
         let (settled, _waiter_guard) = self.completion.register(&run_id, None)?;
-        let input = durable_resume_input(command);
+        let input = awaken_session_run_delivery::durable_resume_input(command);
         if !ctx.delivery.is_durable() {
             return Err(SessionExecutionError::internal(
                 "durable resume requires durable delivery",
@@ -212,28 +212,6 @@ impl crate::SessionRuns {
             answered_correlation,
         )
         .await?)
-    }
-}
-
-/// A resume ticket is a one-answer idempotency boundary. Encoding the exact
-/// `(run, correlation)` pair with a run-length prefix is collision-free for
-/// arbitrary string contents; replaying another payload for that same ticket is
-/// rejected by the Inbox's existing idempotency-conflict rule.
-fn durable_resume_input(command: ResumeCommand) -> PendingInput {
-    let message_id = format!(
-        "foreground-resume:{}:{}{}",
-        command.run_id.0.len(),
-        command.run_id.0,
-        command.correlation_id
-    );
-    PendingInput {
-        message_id,
-        run_id: command.run_id,
-        thread_id: command.thread_id,
-        correlation_id: command.correlation_id,
-        available_at_ms: None,
-        context_messages: Vec::new(),
-        result: command.result,
     }
 }
 

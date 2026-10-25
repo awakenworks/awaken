@@ -43,7 +43,8 @@ use awaken_session_run_delivery::SessionCommit;
 
 mod selector;
 mod terminal_observer;
-pub(crate) use crate::memory_binding::{MemoryBinding, PlatformMemoryHandle};
+pub(crate) use crate::memory_binding::MemoryBinding;
+pub(crate) use awaken_session_run_delivery::PlatformMemoryHandle;
 pub(crate) use selector::AgentSelector;
 pub(crate) use terminal_observer::MemoryTerminalObservers;
 

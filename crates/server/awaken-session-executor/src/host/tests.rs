@@ -859,11 +859,13 @@ pub(crate) fn bind_test_memory(
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let handle = Arc::new(crate::memory_binding::PlatformMemoryHandle::from_roles(
-        host.resources.memory_stores.clone(),
-        store_id.to_string(),
-        writable,
-    ));
+    let handle = Arc::new(
+        awaken_session_run_delivery::PlatformMemoryHandle::from_roles(
+            host.resources.memory_stores.clone(),
+            store_id.to_string(),
+            writable,
+        ),
+    );
     host.run_assembly
         .installed_sessions
         .install(thread)
