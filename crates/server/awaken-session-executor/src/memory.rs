@@ -12,24 +12,20 @@ use awaken_credential_contract::{
     AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationProfile,
     CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
-use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
-    EXTRACT_PROMPT, MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
+    MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
     MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionOutcome,
     MemoryExtractionRepository, MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
-    MemoryTerminalExtractionRequest, WriteMemoryTool, accepts_memory_content, sanitize_stem,
+    MemoryTerminalExtractionRequest, WriteMemoryTool,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -44,14 +40,10 @@ use awaken_session_run_delivery::SessionCommit;
 mod selector;
 mod terminal_observer;
 pub(crate) use crate::memory_binding::MemoryBinding;
-pub(crate) use awaken_session_run_delivery::PlatformMemoryHandle;
 pub(crate) use selector::AgentSelector;
 pub(crate) use terminal_observer::MemoryTerminalObservers;
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
-
-mod captured_writes;
-use captured_writes::{CapturedMemoryWrites, writes_from_committed_agent};
 
 /// Host-level extraction/selection capability. It owns the auxiliary-agent
 /// machinery but deliberately owns no MemoryStore identity or content handle.
@@ -369,26 +361,15 @@ impl BoundMemory {
     }
 
     async fn extract_mutations(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
-        let capture = Arc::new(CapturedMemoryWrites::default());
-        let mut seed = intent.transcript.clone();
-        seed.push(Message {
-            id: MessageId(format!("{}-mem-prompt", intent.terminal_commit_id)),
-            role: Role::User,
-            content: vec![ContentBlock::text(
-                intent
-                    .extractor
-                    .extraction_prompt
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(EXTRACT_PROMPT),
-            )],
-        });
+        let seed = awaken_session_run_delivery::memory_extraction_input(intent);
         let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
         let (executor, context) = match self.runtime.materialize_extractor(intent) {
             Ok(materialized) => materialized,
             Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
         };
-        let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
+        let tool = erase(WriteMemoryTool::from_handle(Arc::new(
+            awaken_session_run_delivery::MemoryWriteProposals,
+        )));
         let commit = match self.binding.extraction_commit() {
             Ok(Some(commit)) => commit,
             Err(error) => {
@@ -428,27 +409,11 @@ impl BoundMemory {
                 error,
             );
         }
-        // The committed auxiliary transcript is the authority the capture
-        // shortcuts; it is decoded whenever the capture holds nothing usable:
-        //
-        // | Rule | capture lock | captured writes | proposal source |
-        // |---|---|---|---|
-        // | X1 | healthy  | some  | the capture |
-        // | X2 | healthy  | none  | the committed transcript |
-        // | X3 | poisoned | -     | the committed transcript (reported) |
-        let mut writes = capture.take().unwrap_or_else(|error| {
-            tracing::error!(
-                code = crate::session_execution_error::EXECUTOR_LOCK_POISONED_CODE,
-                %error,
-                "Memory extraction reads its committed transcript instead of the capture"
-            );
-            BTreeMap::new()
-        });
-        if writes.is_empty() {
-            writes = writes_from_committed_agent(
-                &commit.committed_messages(&ThreadId(auxiliary_thread_id)),
-            );
-        }
+        let writes =
+            match awaken_session_run_delivery::committed_memory_writes(intent, commit.as_ref()) {
+                Ok(writes) => writes,
+                Err(error) => return error.into_extraction_outcome(intent),
+            };
         match self.binding.platform().plan_mutations(writes).await {
             Ok(mutations) => MemoryExtractionOutcome::Mutations(mutations),
             Err(reason) => MemoryExtractionOutcome::Retryable { reason },
@@ -618,11 +583,13 @@ impl crate::RunAssembly {
         resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
     ) -> Result<(), crate::realization_error::RealizationError> {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
-        let handle = Arc::new(PlatformMemoryHandle::from_roles(
-            self.resources.memory_stores.clone(),
-            config.memory_store_id.to_string(),
-            writable,
-        ));
+        let handle = Arc::new(
+            awaken_session_run_delivery::PlatformMemoryHandle::from_roles(
+                self.resources.memory_stores.clone(),
+                config.memory_store_id.to_string(),
+                writable,
+            ),
+        );
         let binding = MemoryBinding::new(
             thread,
             workspace_id,
