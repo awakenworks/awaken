@@ -277,5 +277,3 @@ impl CompletionSink for SettlementWakeup {
 mod completion_tests;
 
 use awaken_dispatch_contract::DispatchEnqueue as _;
-#[cfg(test)]
-use awaken_dispatch_contract::SessionRunReservations as _;

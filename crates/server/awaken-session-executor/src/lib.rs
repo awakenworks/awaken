@@ -145,7 +145,6 @@ use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
 pub(crate) use awaken_session_run_delivery::{CommittedReads, ThreadEvent, ThreadEventHub};
-pub(crate) use managed_input_projection::session_system_message;
 #[cfg(test)]
 pub(crate) use managed_input_projection::user_message;
 /// Composition failure for the one process-local Session coordination port.

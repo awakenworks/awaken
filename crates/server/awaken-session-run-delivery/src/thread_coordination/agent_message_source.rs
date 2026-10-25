@@ -2,30 +2,32 @@
 // @formal entrypoint session.agent_message_requires_exact_committed_tool_source_and_payload
 //! Refinement from one committed model tool call to a Session command.
 
-use super::*;
+use awaken_agent_contract::agent::state::{StateKey as _, Store};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_ext_builtin_tools::{AgentMessageTarget, SendMessageArgs};
+use awaken_session_execution_contract::SessionAgentMessageCommand;
 use awaken_session_execution_contract::SessionAgentTarget;
+use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolCallPhase;
 
 pub(super) fn validate(
     snapshot: &RunRecoverySnapshot,
     command: &SessionAgentMessageCommand,
-) -> Result<SessionAgentMessageCommand, SessionExecutionError> {
+) -> Result<SessionAgentMessageCommand, RunError> {
     if snapshot.thread_id != command.source_thread_id
         || snapshot.claimed_run_id != command.source_run_id
     {
-        return Err(SessionExecutionError::bad_request(
+        return Err(RunError::bad_request(
             "Agent message source does not match its committed Thread prefix",
         ));
     }
     let state = Store::rebuild(&snapshot.state);
     let batch = awaken_tool_contract::ActiveToolBatch::load(&state)
-        .map_err(|error| SessionExecutionError::internal(error.to_string()))?
-        .ok_or_else(|| {
-            SessionExecutionError::bad_request("Agent message source has no active tool batch")
-        })?;
+        .map_err(|error| RunError::internal(error.to_string()))?
+        .ok_or_else(|| RunError::bad_request("Agent message source has no active tool batch"))?;
     if batch.run_id() != &command.source_run_id {
-        return Err(SessionExecutionError::bad_request(
+        return Err(RunError::bad_request(
             "Agent message source batch belongs to another Run",
         ));
     }
@@ -34,26 +36,19 @@ pub(super) fn validate(
         .iter()
         .find(|entry| entry.call.call_id == command.source_call_id)
         .ok_or_else(|| {
-            SessionExecutionError::bad_request(
-                "Agent message source call is absent from its active tool batch",
-            )
+            RunError::bad_request("Agent message source call is absent from its active tool batch")
         })?;
     if call.call.tool_id != awaken_ext_builtin_tools::SEND_MESSAGE
         || batch.operation_id(&command.source_call_id) != command.operation_id
         || !matches!(call.phase, ToolCallPhase::Executing { .. })
     {
-        return Err(SessionExecutionError::bad_request(
+        return Err(RunError::bad_request(
             "Agent message source does not match an executing send_message operation",
         ));
     }
-    let args: SendMessageArgs =
-        serde_json::from_value(call.call.arguments.clone()).map_err(|_| {
-            SessionExecutionError::bad_request("Agent message source arguments are invalid")
-        })?;
-    let target = match args
-        .normalized_target()
-        .map_err(SessionExecutionError::bad_request)?
-    {
+    let args: SendMessageArgs = serde_json::from_value(call.call.arguments.clone())
+        .map_err(|_| RunError::bad_request("Agent message source arguments are invalid"))?;
+    let target = match args.normalized_target().map_err(RunError::bad_request)? {
         AgentMessageTarget::Spawn { agent_id } => SessionAgentTarget::Spawn { agent_id },
         AgentMessageTarget::ExistingThread { session_thread_id } => {
             SessionAgentTarget::ExistingThread {
@@ -76,12 +71,12 @@ pub(super) fn validate(
 fn refine_committed_command(
     committed: SessionAgentMessageCommand,
     requested: &SessionAgentMessageCommand,
-) -> Result<SessionAgentMessageCommand, SessionExecutionError> {
+) -> Result<SessionAgentMessageCommand, RunError> {
     if !agent_message_operation_matches(
         agent_message_operation(&committed),
         agent_message_operation(requested),
     ) {
-        return Err(SessionExecutionError::bad_request(
+        return Err(RunError::bad_request(
             "Agent message command differs from its committed tool call",
         ));
     }
@@ -179,6 +174,7 @@ fn session_agent_message_admission_requires_every_committed_field() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_tool_contract::tool::ToolCall;
     use awaken_tool_contract::tool::ToolRecoveryPolicy;
     use awaken_tool_contract::tool_batch::ToolBatch;

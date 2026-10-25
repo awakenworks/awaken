@@ -24,8 +24,6 @@ pub struct ChildRunCoordination {
     pub(crate) capabilities: Arc<crate::RunCapabilities>,
     pub(crate) installed_sessions: Arc<crate::InstalledSessions>,
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
-    pub(crate) authority: Arc<dyn crate::SessionAuthority>,
-    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) hub: Arc<crate::ThreadEventHub>,
 }
 
@@ -38,8 +36,6 @@ impl ChildRunCoordination {
             capabilities: session_runs.capabilities.clone(),
             installed_sessions: session_runs.installed_sessions.clone(),
             realization_executor: run_assembly.realization_executor.clone(),
-            authority: session_runs.authority.clone(),
-            clock: session_runs.clock.clone(),
             hub: session_runs.hub.clone(),
             run_assembly,
             session_runs,
@@ -57,6 +53,11 @@ impl ChildRunCoordination {
         self.coordinator_dispatch()
             .map(|source| source as Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>)
             .map_err(|_| crate::AgentCoordinationInstallError::DispatchObservationUnavailable)
+    }
+
+    /// The Agent coordination of this process's Sessions.
+    pub(crate) fn threads(&self) -> &awaken_session_run_delivery::CoordinatedThreads {
+        &self.session_runs.threads
     }
 
     /// The Coordinator dispatch owner Session Runs are admitted through.

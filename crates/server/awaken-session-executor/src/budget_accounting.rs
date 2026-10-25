@@ -176,6 +176,7 @@ impl BudgetAccounting {
                 ));
             }
             self.session_runs
+                .threads
                 .enqueue_foreground_session_resume_dispatch(
                     delivery.session_id.as_str(),
                     &ticket,

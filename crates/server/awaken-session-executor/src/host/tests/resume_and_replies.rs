@@ -448,10 +448,12 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     };
 
     host.coordination
+        .threads()
         .continue_session_agent_report(command.clone())
         .await
         .expect("R1 terminal continuation");
     host.coordination
+        .threads()
         .continue_session_agent_report(command)
         .await
         .expect("R2 exact replay");
@@ -467,6 +469,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     let bad_run = RunId("other-child".into());
     let rejected = host
         .coordination
+        .threads()
         .continue_session_agent_report(
             awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: "primary-report".into(),
@@ -485,6 +488,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R3");
     let zero_epoch = host
         .coordination
+        .threads()
         .continue_session_agent_report(
             awaken_session_execution_contract::SessionAgentReportContinuation {
                 session_id: "primary-report".into(),
@@ -775,6 +779,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     };
     let fence = host
         .coordination
+        .threads()
         .session_thread_tool_reply_fence(&command)
         .await
         .expect("trusted Awaiting fence");
@@ -789,6 +794,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     }
     assert!(
         host.coordination
+            .threads()
             .reply_session_thread_tool(
                 awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command: command.clone(),
@@ -806,6 +812,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         "CR4/E5"
     );
     host.coordination
+        .threads()
         .reply_session_thread_tool(
             awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
@@ -865,6 +872,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
 
     host.coordination
+        .threads()
         .reply_session_thread_tool(
             awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
@@ -927,6 +935,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .expect("commit the accepted reply receipt while consuming its ticket");
     let replay_fence = host
         .coordination
+        .threads()
         .session_thread_tool_reply_fence(&command)
         .await
         .expect("CR8 receipt replaces the consumed ticket for exact retry");
@@ -935,6 +944,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         "CR8 exact receipt is terminal"
     );
     host.coordination
+        .threads()
         .reply_session_thread_tool(
             awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                 command: command.clone(),
@@ -962,6 +972,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .content = vec![ContentBlock::text("changed reply context")];
     assert!(
         host.coordination
+            .threads()
             .reply_session_thread_tool(
                 awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command: conflicting_system,
@@ -997,6 +1008,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .thread_version;
     let delayed_old_fence = host
         .coordination
+        .threads()
         .session_thread_tool_reply_fence(&command)
         .await
         .expect("CR10 old receipt absorbs a delayed old occurrence");
@@ -1011,6 +1023,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
     let later_fence = host
         .coordination
+        .threads()
         .session_thread_tool_reply_fence(&later_occurrence)
         .await
         .expect("CR11 current occurrence targets the later active await");
@@ -1024,6 +1037,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     );
     assert!(
         host.coordination
+            .threads()
             .reply_session_thread_tool(
                 awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command: conflicting,
@@ -1116,7 +1130,7 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
         awaken_tool_contract::ToolWaitKind::ToolPermission,
     )];
     assert!(
-        crate::host::coordination::validate_awaiting_tool_authority(
+        awaken_session_run_delivery::validate_awaiting_tool_authority(
             &thread,
             &runtime,
             &exact_state
@@ -1125,7 +1139,7 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
         "A1/E1"
     );
     assert!(
-        crate::host::coordination::validate_awaiting_tool_authority(&thread, &runtime, &[])
+        awaken_session_run_delivery::validate_awaiting_tool_authority(&thread, &runtime, &[])
             .is_err(),
         "A2/E1"
     );
@@ -1136,8 +1150,10 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
     );
     for (rule, state) in [("A3a", &[][..]), ("A3b", &exact_state[..])] {
         assert!(
-            crate::host::coordination::validate_awaiting_tool_authority(&thread, &executor, state)
-                .is_ok(),
+            awaken_session_run_delivery::validate_awaiting_tool_authority(
+                &thread, &executor, state
+            )
+            .is_ok(),
             "{rule}/E2"
         );
     }
@@ -1146,7 +1162,7 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
         ToolAwaitReason::Permission,
     );
     assert!(
-        crate::host::coordination::validate_awaiting_tool_authority(
+        awaken_session_run_delivery::validate_awaiting_tool_authority(
             &thread,
             &legacy_permission,
             &exact_state,
@@ -1155,7 +1171,7 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
         "A4/E3"
     );
     assert!(
-        crate::host::coordination::validate_awaiting_tool_authority(
+        awaken_session_run_delivery::validate_awaiting_tool_authority(
             &thread,
             &legacy_permission,
             &[]
@@ -1168,7 +1184,7 @@ fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
         ToolAwaitReason::ClientExecution,
     );
     assert!(
-        crate::host::coordination::validate_awaiting_tool_authority(&thread, &legacy_client, &[])
+        awaken_session_run_delivery::validate_awaiting_tool_authority(&thread, &legacy_client, &[])
             .is_err(),
         "A6/E5"
     );
@@ -1252,6 +1268,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
     };
     assert!(
         host.coordination
+            .threads()
             .validated_session_thread_tool_reply(&command)
             .await
             .is_ok(),
@@ -1261,6 +1278,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
     stale.tool_use_id = "another-task".into();
     assert!(
         host.coordination
+            .threads()
             .validated_session_thread_tool_reply(&stale)
             .await
             .is_err(),
@@ -1333,6 +1351,7 @@ async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
     assert!(
         tool_host
             .coordination
+            .threads()
             .validated_session_thread_tool_reply(&tool_command)
             .await
             .is_err(),
@@ -1498,6 +1517,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         stale.expected_run_id = RunId("later-primary-run".into());
         assert!(
             host.coordination
+                .threads()
                 .session_thread_tool_reply_fence(&stale)
                 .await
                 .is_err(),
@@ -1544,6 +1564,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .expect("PR3 commit conflicting batch projection");
         assert!(
             host.coordination
+                .threads()
                 .session_thread_tool_reply_fence(&command)
                 .await
                 .is_err(),
@@ -1572,10 +1593,12 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
 
         let fence = host
             .coordination
+            .threads()
             .session_thread_tool_reply_fence(&command)
             .await
             .expect("PR1 exact primary fence");
         host.coordination
+            .threads()
             .reply_session_thread_tool(
                 awaken_session_execution_contract::SessionThreadToolReplyDelivery {
                     command,

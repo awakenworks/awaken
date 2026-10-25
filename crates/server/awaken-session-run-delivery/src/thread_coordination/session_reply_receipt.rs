@@ -6,10 +6,15 @@
 //! receipt authority. This module only classifies that committed history; it
 //! owns no receipt store, cache, or alternate admission state.
 
-use super::*;
+use awaken_agent_contract::agent::awaiting::ToolCallAuthority;
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket};
+use awaken_agent_contract::agent::state::{StateKey as _, Store};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource as _;
+use awaken_session_types::RunError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::host) enum SessionReplyReceipt {
+pub(super) enum SessionReplyReceipt {
     Absent,
     Exact,
     Conflict,
@@ -19,27 +24,27 @@ pub(in crate::host) enum SessionReplyReceipt {
 /// authority. This is the only bridge between the neutral ResumeTicket and the
 /// Runtime-owned ToolBatch cell; protocol handlers must not infer ownership
 /// from a projected public event.
-pub(in crate::host) fn validate_awaiting_tool_authority(
+pub fn validate_awaiting_tool_authority(
     thread_id: &ThreadId,
     ticket: &ResumeTicket,
     state_commands: &[awaken_agent_contract::agent::state::Command],
-) -> Result<(), SessionExecutionError> {
+) -> Result<(), RunError> {
     let AwaitTarget::ToolCall {
         reason, authority, ..
     } = ticket.target()
     else {
-        return Err(SessionExecutionError::internal(
+        return Err(RunError::internal(
             "tool authority validation requires a tool-call ticket",
         ));
     };
     let state = Store::rebuild(state_commands);
     let batch = awaken_tool_contract::ActiveToolBatch::load(&state)
-        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+        .map_err(|error| RunError::internal(error.to_string()))?;
     let validate_batch = |batch: &awaken_tool_contract::ToolBatch| {
         batch
             .validate_awaiting_ticket(thread_id, ticket)
             .map_err(|_| {
-                SessionExecutionError::bad_request(
+                RunError::bad_request(
                     "Session Thread awaiting ticket changed after Event admission",
                 )
             })
@@ -48,7 +53,7 @@ pub(in crate::host) fn validate_awaiting_tool_authority(
         // Native/client tools remain owned by one durable ToolBatch; its
         // complete identity and payload are mandatory.
         (ToolCallAuthority::RuntimeToolBatch, Some(batch)) => validate_batch(batch),
-        (ToolCallAuthority::RuntimeToolBatch, None) => Err(SessionExecutionError::internal(
+        (ToolCallAuthority::RuntimeToolBatch, None) => Err(RunError::internal(
             "Runtime-owned awaiting tool Run has no ActiveToolBatch",
         )),
         // ACP and another opaque attempt executor commit the closed ticket
@@ -64,7 +69,7 @@ pub(in crate::host) fn validate_awaiting_tool_authority(
         {
             Ok(())
         }
-        (ToolCallAuthority::LegacyUnspecified, None) => Err(SessionExecutionError::internal(
+        (ToolCallAuthority::LegacyUnspecified, None) => Err(RunError::internal(
             "legacy awaiting tool Run has no recoverable execution authority",
         )),
     }
@@ -120,7 +125,7 @@ fn resume_receipt_classification_is_exact_and_conflict_absorbing() {
     }
 }
 
-impl crate::ChildRunCoordination {
+impl super::CoordinatedThreads {
     /// Classify the committed receipt only after the current active ticket fails
     /// validation. A successful resume intentionally deletes that ticket, while
     /// the audit fact lives in the same ThreadCommit and therefore survives
@@ -128,21 +133,21 @@ impl crate::ChildRunCoordination {
     pub(super) async fn session_thread_tool_reply_receipt(
         &self,
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<SessionReplyReceipt, SessionExecutionError> {
+    ) -> Result<SessionReplyReceipt, RunError> {
         if !command.has_complete_coordinates() {
-            return Err(SessionExecutionError::bad_request(
+            return Err(RunError::bad_request(
                 "Session Thread tool reply is incomplete",
             ));
         }
         let thread_id = command.target.thread_id(&command.session_id);
         let commit = self
-            .thread_reads
+            .reads
             .commit_for_read(command.session_id.as_str())
             .await?;
         let snapshot = commit
             .recovery_snapshot(&thread_id, &command.expected_run_id)
             .await
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+            .map_err(|error| RunError::internal(error.to_string()))?;
         let expected_operation = command.delivery_operation_id();
         let mut receipt = SessionReplyReceipt::Absent;
         for event in snapshot.events.iter().filter(|event| {
