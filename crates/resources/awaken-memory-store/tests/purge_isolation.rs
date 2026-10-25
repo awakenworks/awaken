@@ -193,6 +193,7 @@ where
     neighbour
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn assert_reopened<M: Purgeable + ?Sized>(fs: &M, neighbour: &StoreImage) {
     assert!(image(fs, A).await.is_empty(), "P4 A empty after reopen");
     assert_eq!(

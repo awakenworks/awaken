@@ -299,12 +299,58 @@ class PostgresFixtureTests(unittest.TestCase):
                 service.log = mock.Mock()
                 if pid == '987' and folder == 'owned':
                     self.assertTrue(service.close()['stopped'])
-                    service.command.assert_called_once_with('pg_ctl', ['stop', '-D', str(data), '-m', 'fast', '-w', '-t', '10'], timeout=15)
+                    service.command.assert_called_once_with('pg_ctl', ['stop', '-D', str(data), '-m', 'fast', '-w', '-t', '90'], timeout=95)
                 else:
                     with self.assertRaisesRegex(RuntimeError, 'ownership changed'):
                         service.close()
                     service.command.assert_not_called()
                 service.log.close.assert_called_once()
+
+    def test_native_checkpoint_longer_than_ten_seconds_can_stop_cleanly(self):
+        # The real Windows acceptance run needed 37 seconds to checkpoint.
+        # Model that duration without sleeping: an insufficient pg_ctl wait
+        # fails before the owned process can report a clean terminal state.
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / 'postmaster.pid').write_text('987\n' + str(data) + '\n')
+            service = object.__new__(pg.PostgresService)
+            service.data = data
+            service.process = mock.Mock(pid=987, returncode=0)
+            service.process.poll.return_value = None
+            service.log = mock.Mock()
+
+            def checkpoint(name, arguments, *, timeout):
+                self.assertEqual(name, 'pg_ctl')
+                self.assertEqual(arguments[:6], ['stop', '-D', str(data), '-m', 'fast', '-w'])
+                wait = int(arguments[arguments.index('-t') + 1])
+                if wait < 37 or timeout <= wait:
+                    raise RuntimeError('checkpoint still syncing; server has not stopped')
+
+            service.command = mock.Mock(side_effect=checkpoint)
+            result = service.close()
+            self.assertTrue(result['stopped'])
+            self.assertEqual(result['exit_code'], 0)
+            service.process.wait.assert_called_once()
+            service.process.kill.assert_not_called()
+            service.process.terminate.assert_not_called()
+            service.log.close.assert_called_once()
+
+    def test_failed_fast_stop_never_reports_a_stopped_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / 'postmaster.pid').write_text('987\n' + str(data) + '\n')
+            service = object.__new__(pg.PostgresService)
+            service.data = data
+            service.process = mock.Mock(pid=987, returncode=None)
+            service.process.poll.return_value = None
+            service.command = mock.Mock(side_effect=RuntimeError('shutdown failed'))
+            service.log = mock.Mock()
+            with self.assertRaisesRegex(RuntimeError, 'shutdown failed'):
+                service.close()
+            service.process.wait.assert_not_called()
+            service.process.kill.assert_not_called()
+            service.process.terminate.assert_not_called()
+            service.log.close.assert_called_once()
 
     def test_initdb_failure_removes_only_its_ephemeral_password_file(self):
         with tempfile.TemporaryDirectory() as directory:

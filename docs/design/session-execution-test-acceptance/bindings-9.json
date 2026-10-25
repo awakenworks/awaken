@@ -4,22 +4,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 136,
+        "line": 138,
         "file_sha256": "443b90386704a53a82cb106d85ef4040541f80b7c516124c429aeb92d4eb61e2"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 161
+        "line": 163
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 165
+        "line": 167
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 175
+        "line": 177
       }
     ],
     "execution_witnesses": [
@@ -54,22 +54,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 208,
+        "line": 210,
         "file_sha256": "443b90386704a53a82cb106d85ef4040541f80b7c516124c429aeb92d4eb61e2"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 217
+        "line": 219
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 251
+        "line": 253
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 255
+        "line": 257
       }
     ],
     "execution_witnesses": [
@@ -147,22 +147,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 94,
+        "line": 96,
         "file_sha256": "cf62581440082e8303a5901d5d73dbdbc0cae8707e24c8660c32112cd0706506"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 36
+        "line": 38
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 39
+        "line": 41
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 43
+        "line": 45
       }
     ],
     "execution_witnesses": [

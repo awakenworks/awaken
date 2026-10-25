@@ -124,7 +124,10 @@ class PostgresService:
                 return {"stopped": True, "not_started": True}
             if self.process.poll() is None:
                 self.assert_owned_pid()
-                self.command("pg_ctl", ["stop", "-D", str(self.data), "-m", "fast", "-w", "-t", "10"], timeout=15)
+                # A native Windows checkpoint can need tens of seconds to sync its
+                # relation files under build I/O. Keep a bounded clean stop and
+                # the retained process/data identity; never kill by PID alone.
+                self.command("pg_ctl", ["stop", "-D", str(self.data), "-m", "fast", "-w", "-t", "90"], timeout=95)
             self.process.wait(timeout=10)
             return {"stopped": True, "pid": self.process.pid,
                     "exit_code": self.process.returncode, "method": "owned-pid-and-data-directory-fast-stop"}

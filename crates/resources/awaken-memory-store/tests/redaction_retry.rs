@@ -10,6 +10,8 @@
 //! Backends: real-file SQLite (two independently opened handles) and PostgreSQL
 //! (two independent pools on one fresh schema).
 
+#![cfg(any(feature = "sqlite", feature = "postgres"))]
+
 use std::sync::Arc;
 
 use awaken_lease_testkit::FixedClock;

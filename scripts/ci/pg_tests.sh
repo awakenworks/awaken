@@ -124,10 +124,23 @@ backend_parity() {
     --require-case=sqlite_backend_conforms --require-case=postgres_backend_conforms \
     --require-case=postgres_fixture_absence_and_configured_failure_are_distinct \
     -- --skip postgres_session_capacity_reference_and_indexed_observation --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-memory-store --features postgres,sqlite,test-support --test conformance \
+  # Package-wide selection keeps new acceptance targets in the real-service
+  # lane. Only owned private participants are excluded; parents execute them.
+  pg_required_test -p awaken-memory-store --features postgres,sqlite,test-support --lib --tests \
     --require-case=volatile_materialized_path_cas --require-case=sqlite_materialized_path_cas \
     --require-case=postgres::postgres_memory_repository_conforms \
-    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct -- --test-threads=1 || record_failure "$?"
+    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
+    --require-case=file_sqlite_concurrent_writeback_and_rename_linearize_across_clients \
+    --require-case=postgres_writeback_checks_every_condition_across_pools \
+    --require-case=file_sqlite_independent_clients_snapshot_one_committed_prefix \
+    --require-case=postgres_independent_pools_snapshot_one_committed_prefix \
+    --require-case=postgres_redaction_and_delete_history_survive_an_independent_pool \
+    --require-case=postgres_memory_quota_rejects_atomically_across_independent_pools \
+    --require-case=volatile_memory_quota_rejects_atomically_and_retry_commits_once \
+    --require-case=postgres_process_death_inside_the_production_write_path_exposes_only_the_old_state \
+    --require-case=postgres_process_death_after_acknowledgement_exposes_the_complete_new_state \
+    --require-case=postgres_sql_error_inside_the_production_write_path_rolls_the_command_back \
+    -- --exact --skip sqlite::transaction_crash_tests::transaction_interruption_child --skip postgres_write_path_crash_child --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-skill-store --features postgres,sqlite,test-support --test conformance \
     --require-case=in_memory_conforms --require-case=sqlite_conforms --require-case=postgres::postgres_conforms \
     --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
