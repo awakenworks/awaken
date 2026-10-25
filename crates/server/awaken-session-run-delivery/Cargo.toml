@@ -48,6 +48,7 @@ tokio = { workspace = true, features = ["sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-deployment-config.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-environment-contract.workspace = true

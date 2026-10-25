@@ -605,12 +605,25 @@ impl ExecutorComponents {
     }
 }
 
+/// The budget accounting of the Sessions `runs` delivers.
+fn session_budgets(runs: &crate::SessionRuns) -> awaken_session_run_delivery::SessionBudgets {
+    awaken_session_run_delivery::SessionBudgets::new(
+        runs.threads.clone(),
+        runs.dispatch.clone(),
+        runs.thread_reads.clone(),
+    )
+}
+
 #[cfg(test)]
 mod startup_tests {
     use super::*;
 
     #[tokio::test]
     async fn explicit_extraction_repository_is_the_initial_authority() {
+        // Item-order maintenance changes no constructor or selected handle:
+        // cfg(test) + a production item after this module triggers Clippy;
+        // keeping the unchanged helper above it admits all-target validation.
+        // The T1-T3 and R0-R3 cases retain runtime construction coverage.
         // Cause/effect graph: C1 an extraction repository is explicit; C2 local
         // storage is configured. Effects: E1 exact injected identity is installed;
         // E2 a local SQLite repository is derived; E3 volatile fixture is derived.
@@ -815,13 +828,4 @@ mod startup_tests {
             "R3 Worker authority cannot become local",
         );
     }
-}
-
-/// The budget accounting of the Sessions `runs` delivers.
-fn session_budgets(runs: &crate::SessionRuns) -> awaken_session_run_delivery::SessionBudgets {
-    awaken_session_run_delivery::SessionBudgets::new(
-        runs.threads.clone(),
-        runs.dispatch.clone(),
-        runs.thread_reads.clone(),
-    )
 }

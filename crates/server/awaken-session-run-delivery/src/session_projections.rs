@@ -110,6 +110,9 @@ pub struct SessionProjections {
     local_workspace: String,
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
     sessions: Mutex<HashMap<String, Arc<DispatchProjection>>>,
+    /// The Workspace of each auxiliary Thread a Session's work runs on (an
+    /// Outcome grader's), bound before its first Run.
+    thread_workspaces: Mutex<HashMap<String, String>>,
 }
 
 impl SessionProjections {
@@ -124,6 +127,7 @@ impl SessionProjections {
             local_workspace: local_workspace.into(),
             publications,
             sessions: Mutex::default(),
+            thread_workspaces: Mutex::default(),
         }
     }
 
@@ -227,6 +231,35 @@ impl SessionProjections {
             .cloned())
     }
 
+    /// Bind auxiliary `thread` to `workspace`; a Thread already bound to
+    /// another Workspace is refused.
+    pub fn register_thread_workspace(&self, thread: &str, workspace: &str) -> Result<(), RunError> {
+        let mut bound = self
+            .thread_workspaces
+            .lock()
+            .map_err(|_| DeliveryLock::SessionProjections)?;
+        match bound.get(thread) {
+            Some(existing) if existing != workspace => Err(RunError::bad_request(format!(
+                "Thread {thread} is bound to another Workspace"
+            ))),
+            Some(_) => Ok(()),
+            None => {
+                bound.insert(thread.to_owned(), workspace.to_owned());
+                Ok(())
+            }
+        }
+    }
+
+    /// The Workspace auxiliary `thread` is bound to, if any.
+    fn bound_thread_workspace(&self, thread: &str) -> Result<Option<String>, RunError> {
+        Ok(self
+            .thread_workspaces
+            .lock()
+            .map_err(|_| DeliveryLock::SessionProjections)?
+            .get(thread)
+            .cloned())
+    }
+
     /// Replace the tool configuration of `session`'s held projection; the
     /// next projection the Session installs carries the same replacement.
     pub fn replace_tools(
@@ -267,16 +300,18 @@ impl SessionProjections {
 /// flat-protocol Thread of the local Workspace with no Session inputs.
 impl DispatchAdmissionReads for SessionProjections {
     fn execution_workspace(&self, thread: &str, fallback: &str) -> Result<String, AdmissionError> {
-        Ok(self.admission_projection(thread)?.map_or_else(
-            || fallback.to_owned(),
-            |projection| projection.workspace.clone(),
-        ))
+        Ok(self
+            .registered_workspace(thread)?
+            .unwrap_or_else(|| fallback.to_owned()))
     }
 
     fn registered_workspace(&self, thread: &str) -> Result<Option<String>, AdmissionError> {
-        Ok(self
-            .admission_projection(thread)?
-            .map(|projection| projection.workspace.clone()))
+        match self.admission_projection(thread)? {
+            Some(projection) => Ok(Some(projection.workspace.clone())),
+            None => self
+                .bound_thread_workspace(thread)
+                .map_err(AdmissionError::Run),
+        }
     }
 
     fn credential_realization(

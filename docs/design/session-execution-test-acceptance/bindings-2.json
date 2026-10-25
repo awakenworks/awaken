@@ -678,9 +678,9 @@
     "name": "recall_entries_use_only_the_atomic_memory_snapshot",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/memory/tests.rs",
-        "line": 650,
-        "file_sha256": "bf92d7f0fec1309144a7d8a22e6d6443e412ecf73850e7345a4b565029094edb"
+        "path": "crates/server/awaken-session-run-delivery/src/memory_content/tests.rs",
+        "line": 186,
+        "file_sha256": "027bef19fa0230931603ce5aecd1e7c19805fbc856da2524b485a9d9e042d8d3"
       }
     ],
     "execution_witnesses": [
@@ -710,7 +710,7 @@
       }
     ],
     "relation": "supports_subset_only",
-    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。",
+    "review": "声明/实际执行身份已核对；是否覆盖本清单全部 oracle 须按各病例逐条复核，不凭名称推断。 测试随唯一数据平面实现迁移；E02/E03 保留迁移前原包的历史执行身份，不构成迁移后的执行证明。",
     "limitation": null
   },
   {

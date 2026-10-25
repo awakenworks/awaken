@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_application_contract::{DelegatedRun, DelegatedRunSnapshot, StepOutcome};
+use awaken_session_application_contract::{
+    DelegatedRun, DelegatedRunSnapshot, RunResume, StepOutcome,
+};
 use awaken_session_execution_contract::LiveInboxError;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedAdmissionRef, CoordinatedRunCommand,
@@ -21,6 +23,7 @@ use awaken_session_execution_contract::{
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::{RunError, SessionId};
 
+use super::thread_runs::ThreadRun;
 use super::{SETTLED_RECONCILIATION_INTERVAL, WorkerPlacedSessions};
 use crate::session_run_activation::read_settled_phase;
 use crate::{
@@ -382,5 +385,219 @@ impl awaken_session_execution_contract::CapabilityRuntime for WorkerPlacedSessio
             capabilities.delegates = projection.baseline().delegate_ids.clone();
         }
         Ok(capabilities)
+    }
+}
+
+/// A fresh user message carrying `content`.
+fn user_message(
+    content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+) -> awaken_agent_contract::agent::message::Message {
+    awaken_agent_contract::agent::message::Message::new(
+        awaken_agent_contract::agent::message::Id(awaken_agent_contract::fresh_process_id("usr")),
+        awaken_agent_contract::agent::message::Role::User,
+        content,
+    )
+}
+
+fn thread_run<'a>(
+    agent: Option<&'a str>,
+    thread: &'a str,
+    input: Vec<awaken_agent_contract::agent::message::Message>,
+) -> ThreadRun<'a> {
+    ThreadRun {
+        agent,
+        thread,
+        input,
+        sink: None,
+        data_subject_id: None,
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionRuntime for WorkerPlacedSessions {
+    async fn run(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        self.run_thread(thread_run(Some(agent), thread, vec![user_message(content)]))
+            .await
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: awaken_session_execution_contract::ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_thread(thread, tool_use_id, RunResume::Permission(decision), None)
+            .await
+    }
+
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        is_error: bool,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_thread(
+            thread,
+            tool_use_id,
+            RunResume::ClientResult { content, is_error },
+            None,
+        )
+        .await
+    }
+
+    fn model(&self) -> String {
+        self.ports.default_model.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::StreamingRunRuntime for WorkerPlacedSessions {
+    async fn run_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        data_subject_id: Option<String>,
+    ) -> Result<StepOutcome, RunError> {
+        let mut run = thread_run(Some(agent), thread, vec![user_message(content)]);
+        run.data_subject_id = data_subject_id.map(awaken_runtime_contract::DataSubjectId);
+        self.run_thread(run).await
+    }
+
+    async fn run_streaming(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        let mut run = thread_run(Some(agent), thread, vec![user_message(content)]);
+        run.sink = Some(sink);
+        self.run_thread(run).await
+    }
+
+    async fn run_streaming_attributed(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        data_subject_id: Option<String>,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        let mut run = thread_run(Some(agent), thread, vec![user_message(content)]);
+        run.sink = Some(sink);
+        run.data_subject_id = data_subject_id.map(awaken_runtime_contract::DataSubjectId);
+        self.run_thread(run).await
+    }
+
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.interrupt_thread(thread).await
+    }
+
+    /// The Coordinator selects no model per Run: a Session's model is the one
+    /// its baseline froze.
+    async fn rebind_model(&self, _thread: &str, _model: &str) -> Result<(), RunError> {
+        Err(RunError::bad_request(
+            "a Worker-placed Session runs the model its baseline froze",
+        ))
+    }
+
+    async fn supports_mid_conversation_system(&self, thread: &str) -> Result<bool, RunError> {
+        Ok(crate::supports_mid_conversation_system(
+            &self.model_for_thread(thread)?,
+        ))
+    }
+
+    async fn pending_tool(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_session_application_contract::Pending>, RunError> {
+        self.ports.reads.pending_tool(thread).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_application_contract::RunApplication for WorkerPlacedSessions {
+    async fn run(
+        &self,
+        _operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<awaken_agent_contract::agent::message::Message>,
+    ) -> Result<StepOutcome, RunError> {
+        self.run_thread(thread_run(agent.as_deref(), thread, messages))
+            .await
+    }
+
+    async fn run_streaming(
+        &self,
+        _operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<awaken_agent_contract::agent::message::Message>,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        let mut run = thread_run(agent.as_deref(), thread, messages);
+        run.sink = Some(sink);
+        self.run_thread(run).await
+    }
+
+    async fn resume(
+        &self,
+        _operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_thread(thread, tool_use_id, resume, None).await
+    }
+
+    async fn resume_streaming(
+        &self,
+        _operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_thread(thread, tool_use_id, resume, Some(sink))
+            .await
+    }
+
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.interrupt_thread(thread).await
+    }
+
+    async fn pending(
+        &self,
+        thread: &str,
+    ) -> Result<Option<awaken_session_application_contract::Pending>, RunError> {
+        self.ports.reads.pending_tool(thread).await
+    }
+
+    async fn history(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, RunError> {
+        self.ports.reads.committed_messages(thread).await
+    }
+
+    fn model(&self) -> String {
+        self.ports.default_model.clone()
+    }
+
+    async fn usage(&self, thread: &str) -> Result<(u64, u64), RunError> {
+        let usage = self
+            .ports
+            .reads
+            .session_thread_usage(thread, &ThreadId(thread.to_owned()))
+            .await?;
+        Ok((usage.input_tokens, usage.output_tokens))
     }
 }

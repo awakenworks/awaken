@@ -8,11 +8,11 @@ use super::*;
 mod quiescence;
 
 use awaken_session_run_delivery::StepCommitExpectation;
-use awaken_session_run_delivery::delegation_registry_from_snapshot;
+#[cfg(test)]
+use awaken_session_run_delivery::client_result_for_ticket;
 use awaken_session_run_delivery::message_prefix_before_exact_inputs;
 #[cfg(test)]
 use awaken_session_run_delivery::session_thread_reply_result;
-use awaken_session_run_delivery::{check_pending, client_result_for_ticket};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunIngressScope {
@@ -590,122 +590,15 @@ impl crate::SessionRuns {
             .map_err(SessionExecutionError::internal)?
             .ok_or_else(|| SessionExecutionError::bad_request("no awaiting run to resume"))?;
         let awaiting_snapshot = self.authoritative_step_snapshot(&ctx, &run_id).await?;
-
-        if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
-            if ticket.call_id() != Some(tool_use_id) {
-                return Err(SessionExecutionError::bad_request(format!(
-                    "tool_use_id {tool_use_id:?} does not match the pending remote input"
-                )));
-            }
-            let HostResume::ClientResult { content, .. } = resume else {
-                return Err(SessionExecutionError::bad_request(
-                    "awaiting remote input requires a client result",
-                ));
-            };
-            let activation = ctx.resume_activation(&ticket);
-            let before = self
-                .authoritative_step_snapshot(&ctx, &activation.run_id)
-                .await?
-                .messages
-                .len();
-            let command = ResumeCommand::from_ticket(
-                &ticket,
-                client_result_for_ticket(&ticket, tool_use_id, content, false),
-                0,
-            );
-            let state = self.drive_resume(&ctx, activation, command).await?;
-            let _projection = ctx.projection.lock().await;
-            let result = self
-                .finish_active_step(
-                    &ctx,
-                    run_id,
-                    state,
-                    StepCommitExpectation {
-                        messages_before: before,
-                        input_ids: &[],
-                    },
-                    thread,
-                )
-                .await?;
-            return Ok(result);
-        }
-
-        // A awaiting delegation resumes through the kernel resolver with the user's
-        // typed answer; the kernel routes it through the parent relationship to the
-        // child's own Run service. The user never resumes the child directly.
-        if ticket.reason() == AwaitReason::Delegation {
-            let registry = delegation_registry_from_snapshot(&awaiting_snapshot, &run_id)?;
-            let child = awaken_session_run_delivery::authoritative_child_ticket(
-                ctx.commit.as_ref(),
-                registry.as_ref(),
-                ticket.call_id(),
-            )
-            .await?;
-            let result = if let Some(child_ticket) = child {
-                check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
-                match resume {
-                    HostResume::Permission(decision) => ResumeResult::Permission(decision),
-                    HostResume::ClientResult { content, is_error } => {
-                        client_result_for_ticket(&child_ticket, tool_use_id, content, is_error)
-                    }
-                }
-            } else {
-                // Remote adapters may expose an opaque follow-up without a locally
-                // committed child ticket. Keep that adapter boundary as typed user
-                // input while still validating the parent call identity.
-                if ticket.call_id() != Some(tool_use_id) {
-                    return Err(SessionExecutionError::bad_request(format!(
-                        "tool_use_id {tool_use_id:?} does not match the pending delegate"
-                    )));
-                }
-                let HostResume::ClientResult { content, .. } = resume else {
-                    return Err(SessionExecutionError::bad_request(
-                        "awaiting remote Agent input requires a client result",
-                    ));
-                };
-                ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
-                    &content,
-                ))
-            };
-            let activation = ctx.resume_activation(&ticket);
-            let before = self
-                .authoritative_step_snapshot(&ctx, &activation.run_id)
-                .await?
-                .messages
-                .len();
-            let command = ResumeCommand::from_ticket(&ticket, result, 0);
-            let state = self.drive_resume(&ctx, activation, command).await?;
-            let _projection = ctx.projection.lock().await;
-            let result = self
-                .finish_active_step(
-                    &ctx,
-                    run_id,
-                    state,
-                    StepCommitExpectation {
-                        messages_before: before,
-                        input_ids: &[],
-                    },
-                    thread,
-                )
-                .await?;
-            return Ok(result);
-        }
-
-        check_pending(&ticket, tool_use_id, resume.wants_client())?;
-        let (call_id, _) = ticket.tool_call().ok_or_else(|| {
-            SessionExecutionError::internal("awaiting run has no pending tool call")
-        })?;
-        let result = match resume {
-            HostResume::Permission(decision) => ResumeResult::Permission(decision),
-            HostResume::ClientResult { content, is_error } => {
-                let output = if is_error {
-                    ToolOutput::error_blocks(call_id, content)
-                } else {
-                    ToolOutput::ok_blocks(call_id, content)
-                };
-                ResumeResult::ToolResult(output)
-            }
-        };
+        let result = awaken_session_run_delivery::resume_result(
+            ctx.commit.as_ref(),
+            &awaiting_snapshot,
+            &run_id,
+            &ticket,
+            tool_use_id,
+            resume.into(),
+        )
+        .await?;
         let activation = ctx.resume_activation(&ticket);
         let before = self
             .authoritative_step_snapshot(&ctx, &activation.run_id)
@@ -715,19 +608,17 @@ impl crate::SessionRuns {
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = self.drive_resume(&ctx, activation, command).await?;
         let _projection = ctx.projection.lock().await;
-        let result = self
-            .finish_active_step(
-                &ctx,
-                run_id,
-                state,
-                StepCommitExpectation {
-                    messages_before: before,
-                    input_ids: &[],
-                },
-                thread,
-            )
-            .await?;
-        Ok(result)
+        self.finish_active_step(
+            &ctx,
+            run_id,
+            state,
+            StepCommitExpectation {
+                messages_before: before,
+                input_ids: &[],
+            },
+            thread,
+        )
+        .await
     }
 
     fn clear_active_run(ctx: &SessionCtx, run_id: &RunId) -> Result<(), SessionExecutionError> {
