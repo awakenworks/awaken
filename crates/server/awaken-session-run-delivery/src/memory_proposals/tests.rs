@@ -398,3 +398,60 @@ fn memory_proposal_refusals_keep_uncertainty_distinct_from_corrupt_output() {
         }
     }
 }
+
+#[test]
+fn committed_memory_proposals_reject_other_execution_owners() {
+    // C1 committed successful same-named call; C2 frozen descriptor owner is
+    // absent/client/session-store/foreign/detached/provider-native. N1 all six
+    // partitions refuse the whole map; a result name alone grants no proposal
+    // authority. N2 the canonical descriptor may change display text while its
+    // existing execution owner and typed arguments remain the same.
+    use awaken_runtime_contract::resolved::{ProviderServerTool, ToolKind};
+    let base = intent();
+    let canonical = awaken_ext_memory::write_memory_descriptor();
+    for descriptor in [
+        None,
+        Some(ToolDescriptor::client_executed(
+            canonical.id.clone(),
+            "client",
+            canonical.model_parameters(),
+        )),
+        Some(ToolDescriptor::pinned(
+            "session-memory",
+            canonical.id.clone(),
+            "store",
+            canonical.model_parameters(),
+        )),
+        Some(ToolDescriptor::pinned(
+            "foreign",
+            canonical.id.clone(),
+            "foreign",
+            canonical.model_parameters(),
+        )),
+        Some(canonical.clone().with_kind(ToolKind::DetachedOnly)),
+        Some(
+            canonical
+                .clone()
+                .with_provider_server_tool(ProviderServerTool::openai_web_search()),
+        ),
+    ] {
+        let mut i = base.clone();
+        i.extractor.agent.resolved_spec.tool_descriptors = descriptor.into_iter().collect();
+        i.extractor.agent.recompute_fingerprint().unwrap();
+        let outputs = write(&i, 0, "call", "pref", "prefers tea");
+        assert_eq!(
+            committed_memory_writes(&i, &committed(&i, outputs)),
+            Err(MemoryProposalError::InvalidWrite)
+        );
+    }
+    let mut i = base;
+    i.extractor.agent.resolved_spec.tool_descriptors[0].description = "custom display text".into();
+    i.extractor.agent.recompute_fingerprint().unwrap();
+    assert!(
+        committed_memory_writes(
+            &i,
+            &committed(&i, write(&i, 0, "call", "pref", "prefers tea"))
+        )
+        .is_ok()
+    );
+}
