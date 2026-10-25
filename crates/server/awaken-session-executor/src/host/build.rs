@@ -562,15 +562,19 @@ impl ExecutorComponents {
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
             core: self.session_runs.clone(),
-            realization: self.run_assembly.clone(),
-            realization_effects: self.realization_executor.clone(),
+            placement: awaken_session_execution_contract::SessionPlacementRoles::Colocated(
+                awaken_session_execution_contract::ColocatedRealizationRoles {
+                    realization: self.run_assembly.clone(),
+                    realization_effects: self.realization_executor.clone(),
+                    environment: self.run_assembly.clone(),
+                    terminal_cleanup: self.run_assembly.clone(),
+                },
+            ),
             coordination: self.coordination.clone(),
             coordination_reads: self.coordination.clone(),
             budget: self.budget.clone(),
             streaming_runs: self.session_runs.clone(),
-            environment: self.run_assembly.clone(),
             thread_reads: self.thread_reads.clone(),
-            terminal_cleanup: self.run_assembly.clone(),
             outcomes: self.outcomes.clone(),
             live_inbox: self.live_inboxes.clone(),
             capability: self.capabilities.clone(),

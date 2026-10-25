@@ -202,7 +202,7 @@ pub struct SessionRealizations {
     credentials: Arc<crate::SessionCredentials>,
     lifecycle: Arc<crate::SessionLifecycle>,
     resource_references: Arc<crate::SessionResourceReferences>,
-    realization: Arc<dyn RealizationRuntime>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
     mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     executable_projections: crate::ExecutableProjections,
     execution_admission: Arc<crate::SessionExecutionAdmission>,
@@ -226,7 +226,7 @@ pub(crate) struct SessionRealizationCollaborators {
     pub(crate) credentials: Arc<crate::SessionCredentials>,
     pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
     pub(crate) resource_references: Arc<crate::SessionResourceReferences>,
-    pub(crate) realization: Arc<dyn RealizationRuntime>,
+    pub(crate) placement: awaken_session_execution_contract::SessionPlacementRoles,
     pub(crate) mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     pub(crate) executable_projections: crate::ExecutableProjections,
     pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
@@ -244,7 +244,7 @@ impl SessionRealizations {
             credentials,
             lifecycle,
             resource_references,
-            realization,
+            placement,
             mcp,
             executable_projections,
             execution_admission,
@@ -259,7 +259,7 @@ impl SessionRealizations {
             credentials,
             lifecycle,
             resource_references,
-            realization,
+            placement,
             mcp,
             executable_projections,
             execution_admission,
@@ -296,7 +296,7 @@ impl SessionRealizations {
         owner_scope: &str,
         session: &PersistedSession,
     ) -> Result<(), RunError> {
-        let realization_runtime = self.realization.as_ref();
+        let realization_runtime = self.placement.realization()?;
 
         if !matches!(
             session.environment,
@@ -348,8 +348,6 @@ impl SessionRealizations {
         owner_scope: &str,
         session: &PersistedSession,
     ) -> Result<(), SessionRealizationDriveError> {
-        let realization_runtime = self.realization.as_ref();
-
         let projection = self
             .queries
             .frozen_session_projection(owner_scope.to_string(), session, true)
@@ -357,12 +355,8 @@ impl SessionRealizations {
             .map_err(|error| {
                 SessionRealizationDriveError::from(RunError::internal(error.to_string()))
             })?;
-        realization_runtime
-            .install_session_projection(
-                session.session_id.as_str(),
-                projection,
-                awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-            )
+        self.placement
+            .install_dispatch_projection(session.session_id.as_str(), projection)
             .await
             .map_err(SessionRealizationDriveError::from)
     }
@@ -390,7 +384,10 @@ impl SessionRealizations {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRealizationDriveError> {
-        let realization_runtime = self.realization.as_ref();
+        let realization_runtime = self
+            .placement
+            .realization()
+            .map_err(SessionRealizationDriveError::from)?;
 
         // One co-located phase driver per Session. The request path and the
         // recovery sweep share this process; letting both drive interleaves
@@ -423,7 +420,7 @@ impl SessionRealizations {
             })
             .await
             .map_err(SessionRealizationDriveError::Control)?;
-        self.drive_local_realization(&permit, directive, request_started)
+        self.drive_local_realization(&permit, directive, request_started, realization_runtime)
             .await?;
         self.mutations
             .session_aggregate(session_id)
@@ -438,6 +435,7 @@ impl SessionRealizations {
         permit: &awaken_session_realization_contract::SessionRealizationPermit,
         directive: SessionRealizationDirective,
         request_started: awaken_lease_contract::authority::AuthorityProofStarted,
+        realization: &dyn RealizationRuntime,
     ) -> Result<(), SessionRealizationDriveError> {
         let control = RefreshedSessionRealizationControl(self);
         crate::drive_session_realization(
@@ -445,7 +443,7 @@ impl SessionRealizations {
             None,
             &control,
             &LocalProjectionSynchronizer {
-                runtime: self.realization.as_ref(),
+                runtime: realization,
             },
             self.mcp.as_ref(),
             directive,
@@ -458,9 +456,7 @@ impl SessionRealizations {
     pub async fn renew_due_session_realizations(
         &self,
     ) -> Result<usize, SessionRealizationDriveError> {
-        let realization_runtime = self.realization.as_ref();
-
-        realization_runtime
+        self.placement
             .renew_session_realization_projections(
                 &RefreshedSessionRealizationControl(self),
                 self.local_realization_owner(),

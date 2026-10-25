@@ -99,7 +99,7 @@ pub(crate) async fn resolve_session_inputs(
 pub(crate) struct ResourceLowering<'a> {
     registry: Option<&'a dyn awaken_resource_contract::ResourceRegistry>,
     participants: &'a crate::SessionRepositoryParticipants,
-    effects: &'a dyn awaken_session_execution_contract::RealizationEffects,
+    placement: &'a awaken_session_execution_contract::SessionPlacementRoles,
     session_id: &'a str,
     owner_scope: &'a str,
     configured: Vec<ConfiguredSessionRepository>,
@@ -109,14 +109,14 @@ impl<'a> ResourceLowering<'a> {
     pub(crate) fn new(
         registry: Option<&'a dyn awaken_resource_contract::ResourceRegistry>,
         participants: &'a crate::SessionRepositoryParticipants,
-        effects: &'a dyn awaken_session_execution_contract::RealizationEffects,
+        placement: &'a awaken_session_execution_contract::SessionPlacementRoles,
         session_id: &'a str,
         owner_scope: &'a str,
     ) -> Self {
         Self {
             registry,
             participants,
-            effects,
+            placement,
             session_id,
             owner_scope,
             configured: Vec::new(),
@@ -165,7 +165,7 @@ impl<'a> ResourceLowering<'a> {
             .frozen_baseline()
             .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
         crate::validate_session_sandbox_layout(
-            self.effects,
+            self.placement,
             session.session_id.as_str(),
             &awaken_session_configuration_contract::SessionSandboxLayout {
                 workspace_id: self.owner_scope.to_string(),

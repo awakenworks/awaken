@@ -13,6 +13,7 @@
 //! slash commands expand from, each against its digest; it stages, mounts and
 //! realizes nothing.
 
+mod inputs;
 mod roles;
 
 use std::collections::HashMap;
@@ -73,6 +74,9 @@ pub struct WorkerPlacement {
     /// The content-addressed store of pinned Skill bundles.
     pub skill_bundles: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
     pub resource_bindings: ResourceBindingVerifiers,
+    /// The Workspaces' Skill catalog a Session's Skill selections pin from.
+    pub skill_catalog:
+        Option<Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>>,
     /// The cross-node dispatch wake, a latency hint only.
     pub wake: Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>,
     pub clock: Arc<dyn awaken_time::WallClock>,
@@ -419,6 +423,7 @@ mod tests {
                 memory: Some(Arc::new(Memory)),
                 repositories: None,
             },
+            skill_catalog: None,
             wake: None,
             clock: awaken_time::system_clock(),
         })
@@ -646,5 +651,115 @@ mod tests {
             .await
             .expect_err("A4");
         assert_eq!(unknown.code, "invalid_request", "A4");
+    }
+
+    fn layout(
+        placement: awaken_session_types::SessionRuntimePlacement,
+        resources: Vec<awaken_resource_contract::InputBinding>,
+    ) -> awaken_session_configuration_contract::SessionSandboxLayout {
+        awaken_session_configuration_contract::SessionSandboxLayout {
+            workspace_id: "workspace".into(),
+            agent_id: "agent".into(),
+            agent_revision: None,
+            runtime_placement: placement,
+            model_override: None,
+            runtime: None,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            environment: crate::test_support::environment(),
+            resources,
+        }
+    }
+
+    fn repository(mount_path: &str) -> awaken_resource_contract::InputBinding {
+        awaken_resource_contract::InputBinding {
+            binding_id: awaken_resource_contract::BindingId::from(mount_path),
+            target: awaken_resource_contract::InputResourceId::Repository(
+                awaken_resource_contract::RepositoryId::from("repo"),
+            ),
+            mount_path: mount_path.into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn coordinator_input_admission_follows_its_decision_table() {
+        use awaken_session_execution_contract::SessionInputAdmission as _;
+        use awaken_session_types::SessionRuntimePlacement::{Local, Worker};
+        let delivery = delivery(None);
+
+        // V2: a local placement needs a co-located Worker.
+        let local = delivery
+            .validate_session_sandbox_layout("session", &layout(Local, Vec::new()))
+            .expect_err("V2");
+        assert_eq!(
+            local.message,
+            awaken_session_execution_contract::NO_COLOCATED_WORKER,
+            "V2"
+        );
+        // V3: a Repository nested in another Repository breaks a structural rule.
+        assert!(
+            delivery
+                .validate_session_sandbox_layout(
+                    "session",
+                    &layout(
+                        Worker,
+                        vec![
+                            repository("/workspace/repo"),
+                            repository("/workspace/repo/child")
+                        ],
+                    ),
+                )
+                .is_err(),
+            "V3"
+        );
+        // V4: a structurally valid Worker placement is admitted.
+        delivery
+            .validate_session_sandbox_layout(
+                "session",
+                &layout(Worker, vec![repository("/workspace/repo")]),
+            )
+            .expect("V4");
+
+        // Skills: an empty selection pins nothing; a custom one needs a catalog.
+        assert!(
+            delivery
+                .resolve_session_skills("workspace", &[])
+                .await
+                .expect("no Skill")
+                .is_empty()
+        );
+        assert!(
+            delivery
+                .resolve_session_skills(
+                    "workspace",
+                    &[awaken_agent_contract::AgentSkillBinding::custom("review")]
+                )
+                .await
+                .is_err(),
+            "no catalog"
+        );
+
+        // Tools: a replacement reaches the held projection.
+        install(&delivery, "session", Vec::new(), Vec::new());
+        let mut tools = awaken_session_configuration_contract::SessionToolConfiguration::default();
+        tools.toolsets.push(awaken_agent_contract::ToolsetPolicy {
+            source: awaken_agent_contract::ToolsetSource::Agent,
+            default: awaken_agent_contract::ToolExecutionPolicy::default(),
+            overrides: Vec::new(),
+        });
+        delivery
+            .replace_session_tools("session", tools.clone())
+            .await
+            .expect("replace tools");
+        assert_eq!(
+            delivery
+                .projections()
+                .installed("session")
+                .expect("held")
+                .tools(),
+            &tools
+        );
     }
 }

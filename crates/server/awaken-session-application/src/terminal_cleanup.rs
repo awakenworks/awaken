@@ -15,10 +15,7 @@
 use std::sync::Arc;
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_execution_contract::{
-    CoordinationRuntime, RealizationEffects, RealizationRuntime, SessionCoordinationReads,
-    TerminalCleanupRuntime,
-};
+use awaken_session_execution_contract::{CoordinationRuntime, SessionCoordinationReads};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionTerminalCleanupAssignment,
 };
@@ -41,9 +38,7 @@ pub struct SessionTerminalCleanups {
     realizations: Arc<crate::SessionRealizations>,
     executable_projections: crate::ExecutableProjections,
     execution_admission: Arc<crate::SessionExecutionAdmission>,
-    realization: Arc<dyn RealizationRuntime>,
-    realization_effects: Arc<dyn RealizationEffects>,
-    cleanup: Arc<dyn TerminalCleanupRuntime>,
+    placement: awaken_session_execution_contract::SessionPlacementRoles,
     coordination: Arc<dyn CoordinationRuntime>,
     coordination_reads: Arc<dyn SessionCoordinationReads>,
 }
@@ -89,9 +84,7 @@ impl SessionTerminalCleanups {
             realizations,
             executable_projections,
             execution_admission,
-            realization: runtime.realization.clone(),
-            realization_effects: runtime.realization_effects.clone(),
-            cleanup: runtime.terminal_cleanup.clone(),
+            placement: runtime.placement.clone(),
             coordination: runtime.coordination.clone(),
             coordination_reads: runtime.coordination_reads.clone(),
         }

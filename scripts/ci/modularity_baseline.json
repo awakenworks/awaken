@@ -330,7 +330,7 @@
     "awaken-session-application::repository_participants.rs::configure": 261,
     "awaken-session-application::resource_reconciliation.rs::rotate_repository_credential": 153,
     "awaken-session-application::terminal_cleanup/claims.rs::claim_terminal_cleanup_root": 172,
-    "awaken-session-application::terminal_cleanup/local_drive.rs::release_terminal_resources_once": 178,
+    "awaken-session-application::terminal_cleanup/local_drive.rs::release_terminal_resources_once": 168,
     "awaken-session-application::update.rs::update_session_once": 155,
     "awaken-session-event-contract::lib.rs::compile_attributed": 168,
     "awaken-session-executor::agent_runner/child_execution.rs::run_configured_agent_until_boundary": 277,

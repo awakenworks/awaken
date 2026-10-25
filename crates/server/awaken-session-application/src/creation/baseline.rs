@@ -30,11 +30,7 @@ impl SessionCreationCommands {
         session_id: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
-        crate::validate_session_sandbox_layout(
-            self.realization_effects.as_ref(),
-            session_id,
-            layout,
-        )
+        crate::validate_session_sandbox_layout(&self.placement, session_id, layout)
     }
 
     pub async fn resolve_managed_list_price_snapshot(
@@ -340,9 +336,7 @@ impl SessionCreationCommands {
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, RunError> {
-        let environment_runtime = self.environment.as_ref();
-
-        environment_runtime
+        self.placement
             .resolve_session_skills(workspace_id, skills)
             .await
     }

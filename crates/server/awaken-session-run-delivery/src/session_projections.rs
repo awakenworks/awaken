@@ -227,6 +227,25 @@ impl SessionProjections {
             .cloned())
     }
 
+    /// Replace the tool configuration of `session`'s held projection; the
+    /// next projection the Session installs carries the same replacement.
+    pub fn replace_tools(
+        &self,
+        session: &str,
+        tools: SessionToolConfiguration,
+    ) -> Result<(), RunError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| DeliveryLock::SessionProjections)?;
+        if let Some(held) = sessions.get_mut(session) {
+            let mut replaced = held.as_ref().clone();
+            replaced.tools = tools;
+            *held = Arc::new(replaced);
+        }
+        Ok(())
+    }
+
     /// Forget `session`'s projection (the Session ended).
     pub fn forget(&self, session: &str) -> Result<(), RunError> {
         self.sessions

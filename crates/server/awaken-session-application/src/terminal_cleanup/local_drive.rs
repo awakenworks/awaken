@@ -228,9 +228,13 @@ impl SessionTerminalCleanups {
         &self,
         assignment: &SessionTerminalCleanupAssignment,
     ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
-        let realization_runtime = self.realization.as_ref();
-        let effects = self.realization_effects.as_ref();
-        let cleanup_runtime = self.cleanup.as_ref();
+        let colocated = self
+            .placement
+            .require_colocated()
+            .map_err(SessionRealizationDriveError::from)?;
+        let realization_runtime = colocated.realization.as_ref();
+        let effects = colocated.realization_effects.as_ref();
+        let cleanup_runtime = colocated.terminal_cleanup.as_ref();
 
         let session_id = assignment.session_id.as_str();
         supervise_local_terminal_cleanup_lease(
@@ -301,6 +305,26 @@ impl SessionTerminalCleanups {
         Err(SessionPreparationError::Conflict)
     }
 
+    /// The disposal receipt CAS may lose its response. One aggregate-level
+    /// acknowledgement drains the retained local projection without
+    /// reconstructing the deleted one-stage per-thread effect registry; only a
+    /// co-located Worker retains one.
+    async fn acknowledge_completed_cleanup(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+    ) {
+        if let Some(colocated) = self.placement.colocated() {
+            colocated
+                .terminal_cleanup
+                .acknowledge_completed_terminal_cleanup(
+                    &awaken_session_types::SessionId::from(session_id),
+                    lease,
+                )
+                .await;
+        }
+    }
+
     fn release_terminal_resources_once<'a>(
         &'a self,
         owner_scope: &'a str,
@@ -314,7 +338,6 @@ impl SessionTerminalCleanups {
     > {
         let mutations = &self.mutations;
         let coordination_runtime = self.coordination.as_ref();
-        let cleanup_runtime = self.cleanup.as_ref();
 
         Box::pin(async move {
             let mut session = match mutations
@@ -447,16 +470,7 @@ impl SessionTerminalCleanups {
                 && !drove_local_cleanup
                 && let Some(lease) = session.realization.as_ref()
             {
-                // The disposal receipt CAS may lose its response. One
-                // aggregate-level acknowledgement drains the retained local
-                // projection without reconstructing the deleted one-stage
-                // per-thread effect registry.
-                cleanup_runtime
-                    .acknowledge_completed_terminal_cleanup(
-                        &awaken_session_types::SessionId::from(session_id),
-                        lease,
-                    )
-                    .await;
+                self.acknowledge_completed_cleanup(session_id, lease).await;
             }
             if !cleanup_completed {
                 // Pending local or remote work remains represented by this
