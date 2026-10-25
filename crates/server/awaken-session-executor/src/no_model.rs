@@ -7,9 +7,6 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
 
-/// Stable, non-provider identity of the inert placeholder.
-pub const UNCONFIGURED_MODEL_REF: &str = "unconfigured";
-
 /// A deterministic, provider-free executor that ends the Step with guidance.
 pub struct NoModelConfiguredExecutor;
 
@@ -34,6 +31,7 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Role;
+    use awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF;
     use awaken_runtime_contract::llm::{ChatMessage, ChatRequest};
     use awaken_runtime_contract::resolved::ModelBinding;
 

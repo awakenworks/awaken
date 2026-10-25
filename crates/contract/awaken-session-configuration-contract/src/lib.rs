@@ -9,6 +9,7 @@ mod agent_config;
 mod application_origin;
 mod baseline;
 mod inspection;
+pub mod managed_layout;
 pub use inspection::{SessionConfigurationInspection, publication_inspection};
 mod dispatched_runtime;
 pub mod environment_projection;
@@ -19,6 +20,8 @@ mod model_resolution;
 mod network_policy;
 pub mod resource;
 mod runtime_projection;
+pub mod sandbox_layout;
+pub mod skill_delivery;
 mod skill_execution;
 mod tool_configuration;
 

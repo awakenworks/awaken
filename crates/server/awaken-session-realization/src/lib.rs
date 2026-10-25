@@ -2,6 +2,8 @@
 //! Canonical Session resource realization effects (ADR-0089).
 //! Durable truth stays in Session; only process-local handles and projections live here.
 
+use awaken_session_configuration_contract::{managed_layout, sandbox_layout};
+
 pub mod artifact_harvest;
 pub mod cache_volume;
 pub mod environment_capacity;

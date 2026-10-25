@@ -14,54 +14,6 @@ pub(super) fn pre_authorized_tool_ids(admin_ids: &[String]) -> Vec<String> {
     admin_ids.to_vec()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::host) enum ManagedCoordinationRole {
-    Primary,
-    Child,
-}
-
-fn is_replaced_managed_coordination_descriptor(
-    descriptor: &awaken_runtime_contract::resolved::ToolDescriptor,
-) -> bool {
-    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::AgentDelegation
-        || descriptor.id == awaken_ext_builtin_tools::AGENT_RUN
-        || descriptor.id == awaken_ext_builtin_tools::LIST_AGENTS
-        || descriptor.id == awaken_ext_builtin_tools::SEND_MESSAGE
-}
-
-/// Project the one-level Managed coordination surface on a per-Session clone.
-/// Primary and child projections share one removal predicate; only the primary
-/// receives the fixed coordination descriptors, while a child also loses its
-/// Advisor/delegate capability. The immutable publication remains unchanged.
-pub(in crate::host) fn project_managed_coordination_surface(
-    config: &mut awaken_runtime_contract::ExecutableAgentSnapshot,
-    role: ManagedCoordinationRole,
-) -> bool {
-    let before = config.resolved_spec.tool_descriptors.clone();
-    let before_delegates = config.resolved_spec.plugin_config.agent.delegates.clone();
-    let before_advisor = config.resolved_spec.plugin_config.agent.advisor.clone();
-    if role == ManagedCoordinationRole::Child {
-        config.resolved_spec.plugin_config.agent.delegates.clear();
-        config.resolved_spec.plugin_config.agent.advisor = None;
-    }
-    config.resolved_spec.tool_descriptors.retain(|descriptor| {
-        !is_replaced_managed_coordination_descriptor(descriptor)
-            && (role == ManagedCoordinationRole::Primary
-                || descriptor.kind != awaken_runtime_contract::resolved::ToolKind::Advisor)
-    });
-    if role == ManagedCoordinationRole::Primary {
-        config.resolved_spec.tool_descriptors.extend(
-            awaken_ext_builtin_tools::builtin_tools()
-                .into_iter()
-                .filter(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Coordination)
-                .map(awaken_ext_builtin_tools::BuiltinTool::into_descriptor),
-        );
-    }
-    config.resolved_spec.tool_descriptors != before
-        || config.resolved_spec.plugin_config.agent.delegates != before_delegates
-        || config.resolved_spec.plugin_config.agent.advisor != before_advisor
-}
-
 pub(super) fn merge_acp_mcp_servers(
     publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
     staged: impl IntoIterator<Item = awaken_acp_contract::SessionMcpServer>,

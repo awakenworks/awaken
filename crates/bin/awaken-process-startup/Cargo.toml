@@ -25,6 +25,7 @@ path = "src/lib.rs"
 [dependencies]
 awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
+awaken-dispatch-execution.workspace = true
 awaken-plugin-composition.workspace = true
 awaken-acp-contract = { workspace = true }
 # Deployment policy fields and the broker wire consume their canonical contract.

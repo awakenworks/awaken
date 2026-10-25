@@ -27,7 +27,7 @@ impl RunApplication for SessionRuns {
             .run(agent.as_deref(), thread, messages)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(result)
+        awaken_session_run_delivery::settled_step(result)
     }
 
     async fn run_streaming(
@@ -42,7 +42,7 @@ impl RunApplication for SessionRuns {
             .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(result)
+        awaken_session_run_delivery::settled_step(result)
     }
 
     async fn resume(
@@ -62,7 +62,7 @@ impl RunApplication for SessionRuns {
             .resume(thread, tool_use_id, resume)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(result)
+        awaken_session_run_delivery::settled_step(result)
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {

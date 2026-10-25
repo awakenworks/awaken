@@ -89,7 +89,7 @@ impl EnvironmentHolding {
 }
 
 use crate::realization_error::RealizationError;
-use crate::sandbox_projection::{
+use crate::sandbox_layout::{
     ProjectedSandboxLayout, create_time_resource_mounts, project_sandbox_spec,
 };
 use awaken_provisioning_contract as pc;

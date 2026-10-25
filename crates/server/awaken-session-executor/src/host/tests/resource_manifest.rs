@@ -780,7 +780,9 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     assert!(
         environment
             .skills()
-            .scan_skill_dir(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
+            .scan_skill_dir(
+                awaken_session_configuration_contract::skill_delivery::DELIVERED_SKILLS_SUBDIR
+            )
             .expect("scan delivered Skill projection")
             .iter()
             .any(|skill| skill.id == "governed"),
@@ -810,7 +812,9 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     assert!(
         environment
             .skills()
-            .scan_skill_dir(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
+            .scan_skill_dir(
+                awaken_session_configuration_contract::skill_delivery::DELIVERED_SKILLS_SUBDIR
+            )
             .expect("scan after Skill removal")
             .is_empty(),
         "the old delivered tree is gone before another Run can read it"

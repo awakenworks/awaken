@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use awaken_dispatch_contract::SessionRunReservations as _;
 use awaken_session_application_contract::{DelegatedRun, StepOutcome};
 use awaken_session_types::RunError;
 
@@ -21,124 +20,43 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
     ) -> Result<awaken_session_execution_contract::SessionRunReservation, RunError> {
+        awaken_session_run_delivery::validate_session_run_command(&command)?;
         let session_id = command.session_id.clone();
-        if command.session_id.as_str().trim().is_empty()
-            || command.agent_id.trim().is_empty()
-            || command.operation_id.trim().is_empty()
-            || command.run_id.0.trim().is_empty()
-            || command.messages.is_empty()
-        {
-            return Err(RunError::bad_request(
-                "Session Run reservation is incomplete",
-            ));
-        }
-        // Freeze the Session application's complete immutable command before
-        // Skill expansion or any current Agent/model/Resource/placement
-        // projection can change the delivery payload reconstructed by a retry.
-        let command_fingerprint = command.command_fingerprint();
-        let input = command.messages.clone();
         // The Session application's Run reservation enters this host for the
         // Session: its install path, so the Session-dispatch mark has an installed Session.
         self.installed_sessions
-            .install(command.session_id.as_str())
+            .install(session_id.as_str())
             .map_err(crate::installed_session::registry_run_error)?;
         self.realization_executor
-            .validate_thread_resource_bindings(command.session_id.as_str())
+            .validate_thread_resource_bindings(session_id.as_str())
             .await?;
         let ctx = self
             .run_assembly
-            .ctx_for_session_coordination(command.session_id.as_str(), Some(&command.agent_id))
+            .ctx_for_session_coordination(session_id.as_str(), Some(&command.agent_id))
             .await
             .map_err(to_run_error)?;
         let reservation_context_is_ephemeral = ctx.is_coordination_envelope();
         let reservation = async {
-            let input = match &ctx.skill_registry {
-                Some(registry) => awaken_ext_skills::expand_slash_commands(
-                    registry.as_ref(),
-                    command.session_id.as_str(),
-                    input,
-                )
-                .map_err(RunError::internal)?,
-                None => input,
-            };
-            let (_, mut activation) =
-                ctx.runtime
-                    .prepare(&ctx.config, command.session_id.to_string(), input);
-            activation.run_id = command.run_id;
-            // Application requirements may only narrow the Session-owned tool
-            // authority; they cannot restore a capability removed by the
-            // frozen Session profile.
-            activation = activation
-                .narrow_tools(command.execution_requirements.tool_capability_narrowing)
-                .map_err(RunError::bad_request)?;
-            activation.model_ref_override = self
+            let model_ref_override = self
                 .capabilities
                 .agent
                 .inference_routing
-                .override_for(command.session_id.as_str())?;
-            activation.data_subject_id = command
-                .data_subject_id
-                .map(awaken_runtime_contract::DataSubjectId);
-            let mut request = self
-                .run_assembly
-                .prepare_dispatch(activation)
-                .with_traceparent(command.traceparent)
-                .map_err(|error| to_run_error(error.into()))?
-                .with_session_command_fingerprint(command_fingerprint)
-                .with_session_run_replacement(command.replacement);
-            if !command
-                .execution_requirements
-                .required_worker_capabilities
-                .is_empty()
-            {
-                // Protocol-specific capabilities are implemented only by a
-                // registered Worker; never fall back to a generic local runner.
-                let strict_remote =
-                    awaken_dispatch_contract::PlacementRequirements::remote_required();
-                request.placement.location = strict_remote.location;
-                if request.placement.contract_version == 0 {
-                    request.placement.contract_version = strict_remote.contract_version;
-                    request.placement.dispatch_contract_version =
-                        strict_remote.dispatch_contract_version;
-                    request.placement.runtime_protocol_version =
-                        strict_remote.runtime_protocol_version;
-                }
-                request
-                    .placement
-                    .required_capabilities
-                    .extend(command.execution_requirements.required_worker_capabilities);
-            }
-            match self
+                .override_for(session_id.as_str())?;
+            let dispatch = self
                 .session_runs
                 .coordinator_dispatch()
-                .map_err(to_run_error)?
-                .reserve_session_run(request, 30_000)
-                .await
-                .map_err(|error| RunError::unavailable(error.to_string()))?
-            {
-                awaken_dispatch_contract::SessionRunReservationOutcome::Reserved => {
-                    Ok(awaken_session_execution_contract::SessionRunReservation::Reserved)
-                }
-                awaken_dispatch_contract::SessionRunReservationOutcome::AlreadyReserved => {
-                    Ok(awaken_session_execution_contract::SessionRunReservation::AlreadyReserved)
-                }
-                awaken_dispatch_contract::SessionRunReservationOutcome::RecoveryClaimed => {
-                    Ok(awaken_session_execution_contract::SessionRunReservation::RecoveryClaimed)
-                }
-                awaken_dispatch_contract::SessionRunReservationOutcome::AlreadyActivated {
-                    session_activity_epoch,
-                } => Ok(
-                    awaken_session_execution_contract::SessionRunReservation::AlreadyActivated {
-                        session_activity_epoch,
-                    },
-                ),
-                awaken_dispatch_contract::SessionRunReservationOutcome::Completed => {
-                    Ok(awaken_session_execution_contract::SessionRunReservation::Completed)
-                }
-                awaken_dispatch_contract::SessionRunReservationOutcome::Conflict => Err(
-                    RunError::bad_request("Session Run id was reused with different input"),
-                ),
-            }
+                .map_err(to_run_error)?;
+            awaken_session_run_delivery::reserve_session_run(
+                command,
+                awaken_session_run_delivery::SessionRunInputs {
+                    snapshot: &ctx.config,
+                    skills: ctx.skill_registry.as_deref(),
+                    model_ref_override,
+                },
+                |activation| self.run_assembly.prepare_dispatch(activation),
+                dispatch.as_ref(),
+            )
+            .await
         }
         .await;
         if reservation_context_is_ephemeral {
@@ -171,7 +89,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
             .activate_and_observe_session_run(admission, input_message_ids, sink)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(receipt)
+        awaken_session_run_delivery::settled_step(receipt)
     }
 
     async fn admit_coordinated_run(
@@ -247,7 +165,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
             .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
             .map_err(to_run_error)?;
-        crate::step_projection::settled_step(receipt)
+        awaken_session_run_delivery::settled_step(receipt)
     }
 
     async fn archive_session_thread(

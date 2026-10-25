@@ -132,13 +132,13 @@ pub(super) async fn skills(
         env.clone(),
         authored_skills_subdir,
         skill_source_roots.as_deref(),
-        content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+        content_delivery == crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
         session_dispatch,
     )
     .await
     .map_err(SessionExecutionError::internal)?
     {
-        if content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem {
+        if content_delivery == crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem {
             let prompt = crate::skill_delivery::filesystem_skill_prompt(registry.as_ref())
                 .map_err(SessionExecutionError::internal)?;
             realizations.update_realization(thread, |r| r.project_skill_prompt(prompt))?;

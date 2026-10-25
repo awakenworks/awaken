@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use crate::resource_staging::ResourcePreparation;
 use awaken_dispatch_contract::RunClaim;
-use awaken_session_realization_contract::CanonicalSessionProjection;
+use awaken_session_realization_contract::{CanonicalSessionProjection, FrozenProjectionReceipt};
 use awaken_session_realization_contract::{
     FrozenSessionProjection, ObservedSessionRealizationLease,
 };
@@ -528,8 +528,8 @@ impl crate::RunAssembly {
         // preflight and the baseline/transition/lease update below.
         self.installed_sessions.install(thread)?;
         let resource_projection = sessions.lock_resource_projection(thread).await?;
-        let receipt =
-            crate::realization_state::FrozenProjectionReceipt::from_projection(&projection)?;
+        let receipt = FrozenProjectionReceipt::from_projection(&projection)
+            .map_err(crate::realization_error::RealizationError::from)?;
         sessions.update_realization(thread, |r| r.validate_projection_receipt(&receipt))??;
         let (publication, model_candidate) =
             exec.publication().resolve_canonical_session_projection(

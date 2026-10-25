@@ -28,7 +28,8 @@ async fn deliver(
 ) -> Result<(), awaken_session_types::RunError> {
     let before = observation(host);
     let receipt =
-        crate::realization_state::FrozenProjectionReceipt::from_projection(&projection).unwrap();
+        awaken_session_realization_contract::FrozenProjectionReceipt::from_projection(&projection)
+            .unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
         .run_assembly

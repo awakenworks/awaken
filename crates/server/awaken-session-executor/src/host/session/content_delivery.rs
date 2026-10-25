@@ -177,7 +177,7 @@ impl crate::RunAssembly {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         skill_evidence: SkillDeliveryEvidence<'_>,
-    ) -> Result<crate::frozen_inputs::ManagedContentDelivery, SessionExecutionError> {
+    ) -> Result<crate::sandbox_layout::ManagedContentDelivery, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
@@ -235,7 +235,7 @@ impl crate::RunAssembly {
             .flatten()
         {
             if managed_has_skill
-                && existing != crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
+                && existing != crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem
             {
                 return Err(SessionExecutionError::bad_request(
                     "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
@@ -250,11 +250,11 @@ impl crate::RunAssembly {
             ));
         }
         let delivery = if allows_filesystem {
-            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
+            crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem
         } else {
-            crate::frozen_inputs::ManagedContentDelivery::SemanticTools
+            crate::sandbox_layout::ManagedContentDelivery::SemanticTools
         };
-        if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
+        if delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools
             && realizations
                 .read_realization(thread, |r| {
                     r.staging().resources
@@ -268,7 +268,7 @@ impl crate::RunAssembly {
                 "MemoryStore instructions reference a filesystem path, but this Session disables filesystem delivery",
             ));
         }
-        if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
+        if delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools
             && !managed_session
         {
             let frozen_requires_filesystem =
@@ -408,8 +408,7 @@ impl crate::RunAssembly {
         // purpose, but needs no undeclared physical substrate.
         let inference_only_claim = claimed_attempt
             && !has_published_delegates
-            && published_snapshot
-                .is_some_and(crate::sandbox_projection::environment_free_inference)
+            && published_snapshot.is_some_and(crate::sandbox_layout::environment_free_inference)
             && self
                 .installed_sessions
                 .read(thread, |installed| {

@@ -626,7 +626,7 @@ mod startup_tests {
         );
         let host = (SessionExecutorBuilder::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
-            crate::UNCONFIGURED_MODEL_REF,
+            awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF,
             {
                 let memory = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
                     awaken_time::system_clock(),

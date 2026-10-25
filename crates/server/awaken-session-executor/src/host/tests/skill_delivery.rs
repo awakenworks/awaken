@@ -214,7 +214,9 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             .expect("installed Sessions")
             .expect("S1 sandbox")
             .skills()
-            .scan_skill_dir(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
+            .scan_skill_dir(
+                awaken_session_configuration_contract::skill_delivery::DELIVERED_SKILLS_SUBDIR
+            )
             .unwrap()
             .iter()
             .any(|file| file.id == selected),
@@ -747,7 +749,9 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .expect("L11/E3 materialized Environment");
     let files = environment
         .skills()
-        .scan_skill_dir(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
+        .scan_skill_dir(
+            awaken_session_configuration_contract::skill_delivery::DELIVERED_SKILLS_SUBDIR,
+        )
         .unwrap();
     let materialized = files
         .iter()
