@@ -32,6 +32,13 @@ from _k8s_container_gate_fitness import (
     self_test as k8s_container_gate_self_test,
 )
 
+# The live graph reads Rust tests, E2E runners, workflow/gate commands and
+# imported fitness policies. Keep their ownership on the same generated hook.
+INPUT_GLOBS: tuple[str, ...] = (
+    "crates/**", "e2e/**", "scripts/ci/**", ".github/workflows/*.yml",
+    ".config/**", "lefthook.yml", "pnpm-lock.yaml",
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "e2e/package.json"
 STAGE_GRAPH = ROOT / "e2e/stage_change_coverage_e2e.ts"
@@ -723,6 +730,10 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick") != 1:
         errors.append("Rust pre-commit must delegate to the canonical gate once")
+    orchestration = ("run: python3 scripts/ci/check_test_orchestration.py --self-test "
+                     "&& python3 scripts/ci/check_test_orchestration.py")
+    if [line.strip() for line in pre_commit.splitlines()].count(orchestration) != 1:
+        errors.append("test orchestration must run both its fixtures and the live repository scan once")
     errors.extend(sdk_admission_errors(owner_text, gate))
     if hooks.count("run: python3 scripts/ci/check_crate_boundaries.py") != 1:
         errors.append("crate boundaries must have one universal pre-commit owner")
@@ -1064,6 +1075,14 @@ def self_test() -> None:
     hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
     gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not rust_hook_errors(hooks, gate), "H1 single owner"
+    orchestration = ("python3 scripts/ci/check_test_orchestration.py --self-test "
+                     "&& python3 scripts/ci/check_test_orchestration.py")
+    for replacement in ("python3 scripts/ci/check_test_orchestration.py --self-test",
+                        "python3 scripts/ci/check_test_orchestration.py", "true"):
+        assert rust_hook_errors(hooks.replace(orchestration, replacement), gate), "O1 missing live scan or fixtures"
+    duplicate = hooks.replace("    affected-rust-plan:\n",
+                              "    duplicate:\n      run: " + orchestration + "\n\n    affected-rust-plan:\n")
+    assert rust_hook_errors(duplicate, gate), "O2 duplicate orchestration owner"
     # B1 hook and release static each own one invocation; B2 a missing or
     # duplicated invocation, or a Rust-gate copy, must reject the graph.
     boundary = "python3 scripts/ci/check_crate_boundaries.py"

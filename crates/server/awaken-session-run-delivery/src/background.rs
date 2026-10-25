@@ -366,7 +366,10 @@ mod tests {
             let c = counter.clone();
             let release = release.clone();
             bg.spawn(BackgroundWorkClass::EphemeralCache, async move {
-                let _permit = release.acquire().await.unwrap();
+                let _permit = tokio::time::timeout(Duration::from_secs(5), release.acquire())
+                    .await
+                    .expect("D1 release must arrive before the task deadline")
+                    .expect("D1 release semaphore must stay open");
                 c.fetch_add(1, Ordering::SeqCst);
             })
             .await;

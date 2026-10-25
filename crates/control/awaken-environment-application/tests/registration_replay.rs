@@ -20,6 +20,11 @@ use awaken_executable_environment_contract::{
 };
 use awaken_work_store::{InMemoryWorkQueue, PostgresWorkQueue, SqliteWorkQueue};
 
+#[path = "registration_replay/durable_pending.rs"]
+mod durable_pending;
+#[path = "registration_replay/history_visibility.rs"]
+mod history_visibility;
+
 fn registration(id: &str, revision: EnvironmentRevision) -> ExecutableEnvironmentRegistration {
     ExecutableEnvironmentRegistration::new(
         EnvItem {
@@ -99,7 +104,7 @@ impl PostgresFixture {
         let url = awaken_reliability_testkit::postgres_fixture_url()?;
         let options =
             sqlx::postgres::PgConnectOptions::from_str(&url).expect("valid explicit fixture URL");
-        let admin = sqlx::postgres::PgPoolOptions::new()
+        let admin = awaken_sql_storage::postgres_pool_options()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))
             .connect_with(options.clone())
@@ -130,7 +135,7 @@ impl PostgresFixture {
     }
 
     async fn connect(options: &sqlx::postgres::PgConnectOptions) -> sqlx::PgPool {
-        sqlx::postgres::PgPoolOptions::new()
+        awaken_sql_storage::postgres_pool_options()
             .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(5))
             .connect_with(options.clone())

@@ -54,5 +54,13 @@ required-features = ["test-support"]
 name = "env_registry_parity"
 required-features = ["test-support"]
 
+[[test]]
+name = "registration_outbox_backends"
+required-features = ["test-support"]
+
+[[test]]
+name = "create_rollback_faults"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

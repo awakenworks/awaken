@@ -183,9 +183,8 @@ pub async fn revision_decision_table<
                 ..Default::default()
             },
         )
-        .await
-        .unwrap_err(),
-        EnvironmentStoreError::RevisionConflict,
+        .await,
+        Err(EnvironmentStoreError::RevisionConflict),
         "V3"
     );
     assert_eq!(
@@ -1131,5 +1130,180 @@ pub async fn reopen_preserves_authority<
         reopened.get(&kept).await.expect("get"),
         Some(updated),
         "reopen head"
+    );
+}
+
+/// T20-C01 registration-outbox decision table (moved from the env-store unit
+/// suite so every backend row and every negative-control wrapper runs it).
+///
+/// Cause/effect graph: C1=create; C2=update; C3=archive; C4=acknowledged;
+/// C5=Pending filter; C6=All filter. Effects: E1 exact Register intent paired
+/// with its immutable revision; E2 exact Withdraw intent paired with the
+/// terminal revision; E3 acknowledged work absent from Pending; E4 all
+/// immutable intents remain recoverable; E5 an identical retry appends no
+/// fact; E6 immutable history never follows the current row.
+///
+/// | Rule | mutation    | ack | filter  | effect |
+/// | O1   | create      | no  | Pending | v1 Register (E1) |
+/// | O2   | update      | yes | Pending | v1 only (E1,E3) |
+/// | O2b  | same update | yes | All     | still v1,v2 (E5) |
+/// | O3   | archive x2  | no  | Pending | v1 + v3 Withdraw (E2,E3,E5) |
+/// | O4   | all         | any | All     | v1,v2,v3 retained (E4) |
+/// | O5   | history     | -   | -       | v1/v2 keep their authored facts (E6) |
+pub async fn registration_outbox_decision_table<R>(registry: &R)
+where
+    R: EnvironmentDefinitionQueries + EnvironmentDefinitionStore + EnvironmentRegistrationOutbox,
+{
+    use awaken_environment_contract::EnvironmentRegistrationOperation as Operation;
+    let created = registry
+        .create(
+            "outbox".into(),
+            String::new(),
+            Default::default(),
+            EnvironmentConfig::SelfHosted,
+        )
+        .await
+        .expect("O1 create");
+    let v1 = registry
+        .registration_intent(&created.id, EnvironmentRevision(1))
+        .await
+        .expect("O1 read intent")
+        .expect("O1 exact intent");
+    assert_eq!(v1.operation, Operation::Register, "O1");
+    assert_eq!(v1.revision, created.revision, "O1 paired with revision 1");
+    assert!(!v1.delivered, "O1");
+
+    let updated = registry
+        .update(
+            &created.id,
+            created.revision,
+            EnvUpdate {
+                name: Some("outbox-v2".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("O2 update store operation")
+        .expect("O2 update");
+    let v2 = registry
+        .registration_intent(&updated.id, updated.revision)
+        .await
+        .expect("O2 read intent")
+        .expect("O2 exact intent");
+    assert_eq!(v2.operation, Operation::Register, "O2");
+    assert!(
+        registry
+            .mark_registration_intent_delivered(&v2)
+            .await
+            .expect("O2 ack"),
+        "O2"
+    );
+    assert!(
+        registry
+            .mark_registration_intent_delivered(&v2)
+            .await
+            .expect("O2 ack replay"),
+        "O2 acknowledgement replay"
+    );
+    let replayed = registry
+        .update(
+            &created.id,
+            updated.revision,
+            EnvUpdate {
+                name: Some("outbox-v2".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("O2b update store operation")
+        .expect("O2b no-op update");
+    assert_eq!(replayed.revision, EnvironmentRevision(2), "O2b");
+    assert_eq!(
+        registry
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .expect("O2b intents")
+            .len(),
+        2,
+        "O2b"
+    );
+
+    let archived = registry
+        .archive(&created.id)
+        .await
+        .expect("O3 archive store operation")
+        .expect("O3 archive");
+    let archived_replay = registry
+        .archive(&created.id)
+        .await
+        .expect("O3 replay store operation")
+        .expect("O3 replay");
+    assert_eq!(archived_replay.revision, archived.revision, "O3 replay");
+    let pending = registry
+        .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+        .await
+        .expect("O3 pending");
+    assert_eq!(
+        pending
+            .iter()
+            .map(|intent| (intent.revision, intent.operation))
+            .collect::<Vec<_>>(),
+        [
+            (EnvironmentRevision(1), Operation::Register),
+            (archived.revision, Operation::Withdraw)
+        ],
+        "O3"
+    );
+
+    let all = registry
+        .registration_intents(EnvironmentRegistrationIntentFilter::All)
+        .await
+        .expect("O4 all");
+    assert_eq!(
+        all.iter()
+            .map(|intent| (intent.revision.0, intent.operation, intent.delivered))
+            .collect::<Vec<_>>(),
+        [
+            (1, Operation::Register, false),
+            (2, Operation::Register, true),
+            (3, Operation::Withdraw, false)
+        ],
+        "O4 every immutable intent with its exact operation"
+    );
+
+    // O5: every view sees one committed generation; history stays authored.
+    assert_eq!(
+        registry
+            .get(&created.id)
+            .await
+            .expect("O5 head")
+            .expect("O5 head exists")
+            .revision,
+        archived.revision
+    );
+    let original = registry
+        .get_revision(&created.id, created.revision)
+        .await
+        .expect("O5 read v1")
+        .expect("O5 v1");
+    assert_eq!(original.name, "outbox", "O5 v1 name");
+    assert_eq!(original.revision, EnvironmentRevision(1), "O5 v1 revision");
+    assert!(original.archived_at.is_none(), "O5 v1 not archived");
+    let second = registry
+        .get_revision(&updated.id, updated.revision)
+        .await
+        .expect("O5 read v2")
+        .expect("O5 v2");
+    assert_eq!(second.name, "outbox-v2", "O5 v2 name");
+    assert!(second.archived_at.is_none(), "O5 v2 not archived");
+    let terminal = registry
+        .get_revision(&created.id, archived.revision)
+        .await
+        .expect("O5 read v3")
+        .expect("O5 v3");
+    assert!(terminal.archived_at.is_some(), "O5 v3 is the terminal fact");
+    assert!(
+        registry.list_active().await.expect("O5 active").is_empty(),
+        "O5"
     );
 }
