@@ -14,6 +14,7 @@
 //! realizes nothing.
 
 mod inputs;
+mod outcomes;
 mod roles;
 mod thread_runs;
 
@@ -94,6 +95,8 @@ pub struct WorkerPlacedSessions {
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
     step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One Outcome command at a time per Session.
+    outcome_commands: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl WorkerPlacedSessions {
@@ -115,6 +118,7 @@ impl WorkerPlacedSessions {
             threads,
             budgets,
             step_projections: Mutex::default(),
+            outcome_commands: Mutex::default(),
         }
     }
 
@@ -124,10 +128,42 @@ impl WorkerPlacedSessions {
         &self.ports.projections
     }
 
+    /// The Session application's role set for the Sessions registered Workers
+    /// realize: every role is served here, over the committed reads.
+    #[must_use]
+    pub fn session_execution_roles(
+        self: &Arc<Self>,
+    ) -> awaken_session_execution_contract::SessionExecutionRoles {
+        awaken_session_execution_contract::SessionExecutionRoles {
+            core: self.clone(),
+            placement: awaken_session_execution_contract::SessionPlacementRoles::RegisteredWorkers(
+                self.clone(),
+            ),
+            coordination: self.clone(),
+            coordination_reads: self.clone(),
+            budget: self.clone(),
+            streaming_runs: self.clone(),
+            thread_reads: self.ports.reads.clone(),
+            outcomes: self.clone(),
+            live_inbox: self.clone(),
+            capability: self.clone(),
+        }
+    }
+
     /// The Agent coordination of the Sessions' Threads.
     #[must_use]
     pub fn threads(&self) -> &CoordinatedThreads {
         &self.threads
+    }
+
+    fn outcome_command(&self, session: &str) -> Result<Arc<tokio::sync::Mutex<()>>, RunError> {
+        Ok(self
+            .outcome_commands
+            .lock()
+            .map_err(|_| DeliveryLock::OutcomeCommands)?
+            .entry(session.to_owned())
+            .or_default()
+            .clone())
     }
 
     fn step_projection(&self, session: &str) -> Result<Arc<tokio::sync::Mutex<()>>, RunError> {
@@ -276,7 +312,9 @@ mod tests {
     use awaken_agent_contract::AgentSkillKind;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::Id as RunId;
-    use awaken_dispatch_contract::{SessionRunAdmissionObservation, SessionRunAdmissionReads as _};
+    use awaken_dispatch_contract::{
+        DispatchReads as _, SessionRunAdmissionObservation, SessionRunAdmissionReads as _,
+    };
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, ResourceRegistryError, RetentionPolicy,
         SkillBundleFile, SkillVersion, skill_bundle_sha256,
@@ -885,5 +923,59 @@ mod tests {
             .interrupt_thread("flat")
             .await
             .expect("idle interrupt");
+    }
+
+    #[tokio::test]
+    async fn coordinator_outcomes_drive_only_installed_sessions() {
+        use awaken_session_execution_contract::OutcomeRuntime as _;
+        let delivery = delivery(None);
+        // An Outcome needs the Session's installed projection.
+        let cold = delivery
+            .prepare_outcome("session", "outcome-1", "goal", "rubric", 2)
+            .await
+            .expect_err("cold");
+        assert_eq!(cold.code, "session_projection_not_installed");
+        install(&delivery, "session", Vec::new(), Vec::new());
+        // No active Outcome: continuing drives nothing and dispatches no Run.
+        assert!(
+            delivery
+                .continue_outcome("session")
+                .await
+                .expect("idle continuation")
+                .is_none()
+        );
+        // Preparation persists only the aggregate; no Worker Run is dispatched.
+        delivery
+            .prepare_outcome("session", "outcome-1", "goal", "rubric", 2)
+            .await
+            .expect("prepare");
+        assert!(
+            delivery
+                .ports
+                .owner
+                .list_dispatches()
+                .await
+                .expect("dispatch rows")
+                .is_empty(),
+            "no Run before Session activity"
+        );
+        // A grader Thread is bound to one Workspace.
+        let projections = delivery.projections();
+        projections
+            .register_thread_workspace("outcome/outcome-1/grader/1", "workspace")
+            .expect("bind");
+        assert!(
+            projections
+                .register_thread_workspace("outcome/outcome-1/grader/1", "other")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_worker_placement_role_set_realizes_no_session() {
+        let delivery = Arc::new(delivery(None));
+        let roles = delivery.session_execution_roles();
+        assert!(roles.placement.colocated().is_none());
+        assert!(roles.placement.require_colocated().is_err());
     }
 }
