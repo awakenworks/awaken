@@ -13,8 +13,8 @@ use std::sync::Arc;
 use crate::session_realizations::SessionRealizations;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, resolved::ResolvedModelCandidate};
 use awaken_session_configuration_contract::resource as session_resource;
+use awaken_session_realization_contract::CanonicalPublicationError;
 use awaken_session_realization_contract::CanonicalSessionProjection;
-use awaken_session_realization_contract::FrozenAgentPublicationDecision as PublicationDecision;
 
 pub struct SessionPublicationSelection {
     sessions: SessionRealizations,
@@ -70,83 +70,30 @@ impl SessionPublicationSelection {
         ),
         RealizationError,
     > {
-        let agent = coordinates.agent();
-        let frozen_revision = coordinates.agent_revision();
-        let installed = delivered.or_else(|| {
-            self.publications.as_ref().and_then(|source| {
-                let agent_id = awaken_runtime_contract::snapshot::AgentId(agent.to_string());
-                match frozen_revision {
-                    Some(revision) => source.at_revision(workspace, &agent_id, revision),
-                    None => source.current(workspace, &agent_id),
-                }
-            })
-        });
-        let model_override = coordinates.model_override();
-        if let Some(publication) =
-            model_override.and_then(|override_| override_.publication.as_ref())
-        {
-            publication
-                .validate_for_workspace(workspace)
-                .map_err(crate::realization_error::EvidenceFault::ModelOverridePublication)?;
-        }
-        match coordinates.publication_decision(installed.as_ref()) {
-            PublicationDecision::Unpinned
-            | PublicationDecision::OptionalMissing
-            | PublicationDecision::Exact => {}
-            PublicationDecision::MissingRequired => {
-                return Err(RealizationError::invariant(
-                    "frozen Session Agent publication is unavailable",
-                ));
+        awaken_session_realization_contract::resolve_canonical_session_projection(
+            self.publications.as_deref(),
+            workspace,
+            coordinates,
+            delivered,
+            skill_pins,
+        )
+        .map_err(|error| match error {
+            CanonicalPublicationError::ModelOverridePublication(error) => {
+                crate::realization_error::EvidenceFault::ModelOverridePublication(error).into()
             }
-            PublicationDecision::Mismatch => {
-                let actual = installed.as_ref().map(|publication| {
-                    format!(
-                        "agent={}, revision={}, backend={}",
-                        publication.root_agent_id.0,
-                        publication.metadata.source.revision,
-                        publication.resolved_spec.model_binding.identity().2,
-                    )
-                });
-                return Err(RealizationError::invariant(format!(
-                    "Session Agent/model publication does not match its frozen coordinates \
-                     (expected agent={}, revision={:?}; actual={})",
-                    coordinates.agent(),
-                    coordinates.agent_revision(),
-                    actual.as_deref().unwrap_or("missing"),
-                )));
+            CanonicalPublicationError::Projection(error) => RealizationError::from(error),
+            CanonicalPublicationError::MissingPublication => {
+                RealizationError::invariant("frozen Session Agent publication is unavailable")
             }
-        }
-        let installed = installed
-            .map(|snapshot| {
-                let (prompt, skill_pins) = match &coordinates {
-                    CanonicalSessionProjection::Baseline(baseline) => {
-                        (baseline.system_prompt.as_ref(), skill_pins)
-                    }
-                    CanonicalSessionProjection::Layout(_) => (
-                        &awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
-                        None,
-                    ),
-                    CanonicalSessionProjection::LegacyAgent(_) => return Ok(snapshot),
-                };
-                awaken_session_realization_contract::project_effective_agent_publication(
-                    model_override,
-                    prompt,
-                    skill_pins,
-                    workspace,
-                    snapshot,
-                )
-                .map_err(RealizationError::from)
-            })
-            .transpose()?;
-        let candidate = model_override
-            .and_then(|override_| override_.publication.as_ref())
-            .map(|publication| publication.primary.clone())
-            .or_else(|| {
-                installed
-                    .as_ref()
-                    .map(|snapshot| snapshot.resolved_spec.model_binding.clone())
-            });
-        Ok((installed, candidate))
+            CanonicalPublicationError::PublicationMismatch {
+                expected_agent,
+                expected_revision,
+                actual,
+            } => RealizationError::invariant(format!(
+                "Session Agent/model publication does not match its frozen coordinates \
+                 (expected agent={expected_agent}, revision={expected_revision:?}; actual={actual})"
+            )),
+        })
     }
 
     /// Resolve the one immutable publication selected for a Session and enforce

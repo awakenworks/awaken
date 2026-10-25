@@ -22,10 +22,14 @@ pub use execution_projection::{
     model_candidates_require_opaque_process, requires_local_environment,
 };
 mod agent_publication_projection;
+mod canonical_publication;
 pub use agent_publication_projection::{
     FrozenAgentPublicationDecision, frozen_agent_publication_decision,
     frozen_sandbox_layout_publication_decision, legacy_agent_publication_decision,
     project_effective_agent_publication,
+};
+pub use canonical_publication::{
+    CanonicalPublicationError, CanonicalSessionPublication, resolve_canonical_session_projection,
 };
 mod repository_publication_projection;
 pub use repository_publication_projection::SessionRepositoryPublicationProjection;
