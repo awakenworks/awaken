@@ -293,6 +293,32 @@ def validate_receipt(inventory: Path, results: Path, status: int, receipt: Path,
 
 
 class ExecutionTests(unittest.TestCase):
+    def rustup_cargo_proxy(self) -> Path:
+        rustup = shutil.which("rustup")
+        self.assertIsNotNone(rustup, "the gate installs rustup")
+        # PATH can expose a symlink beside an unrelated Cargo admission
+        # wrapper. The proxy belongs beside rustup's resolved executable.
+        proxy = Path(rustup).resolve().with_name("cargo.exe" if os.name == "nt" else "cargo")
+        self.assertTrue(proxy.is_file(), proxy)
+        return proxy
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlinked rustup discovery")
+    def test_rustup_proxy_discovery_ignores_an_adjacent_admission_wrapper(self) -> None:
+        # PROXY-PATH causes: direct or symlinked rustup on PATH; the symlink's
+        # directory also has a different Cargo. Both cases select the proxy
+        # beside the real rustup, without invoking the host build queue.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real, exposed = root/"real", root/"exposed"
+            real.mkdir(); exposed.mkdir()
+            (real/"rustup").write_text("rustup")
+            (real/"cargo").write_text("rustup proxy")
+            (exposed/"rustup").symlink_to(real/"rustup")
+            (exposed/"cargo").write_text("unrelated admission wrapper")
+            for selected in (real/"rustup", exposed/"rustup"):
+                with self.subTest(selected=selected), mock.patch.object(shutil, "which", return_value=str(selected)):
+                    self.assertEqual(self.rustup_cargo_proxy(), real/"cargo")
+
     @staticmethod
     def runner_fixture(fixture: Path, *entrypoint_inputs: str) -> Path:
         from formal_plan import script_closure
@@ -488,10 +514,7 @@ esac
         # host's real rustup Cargo proxy, which injects CARGO_HOME, RUSTUP_HOME
         # and RUSTUP_TOOLCHAIN; the final validator runs outside it. All tests
         # pass, so the shell must pass: the unchanged selection is one context.
-        rustup = shutil.which("rustup")
-        self.assertIsNotNone(rustup, "the Linux gate installs rustup")
-        proxy = Path(rustup).parent/"cargo"
-        self.assertTrue(proxy.is_file(), proxy)
+        proxy = self.rustup_cargo_proxy()
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Path(temporary); self.runner_fixture(fixture)
             environment = self.cargo_fixture(fixture, '''
@@ -526,8 +549,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         # P7 no rustup on PATH: no proxy, literal values compared       -> same/changed
         from _required_build_context import build_context
         rustup = shutil.which("rustup")
-        self.assertIsNotNone(rustup, "the gate installs rustup")
-        proxy = Path(rustup).parent/"cargo"
+        proxy = self.rustup_cargo_proxy()
         arguments = ["-p", "critical", "--lib"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)/"repo"; root.mkdir()

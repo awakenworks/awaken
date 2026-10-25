@@ -62,9 +62,9 @@ the effect under the original slot locks and captured authority. Its receipt ret
 through the same aggregate acknowledgement and retry path. The independent Session
 driver and the Session aggregate remain separate from Execution infrastructure.
 Internal callers use the selected component directly.
-Run execution/history/events/delegation have not yet been extracted into the
-proposed `RunExecution`, `RunHistory`, `RunEvents` and `RunDelegation` components;
-the existing `McpSessions` remains the MCP lifecycle owner. The public
+Run execution, committed reads and coordination are served by `SessionRuns`,
+`CommittedReads`, `CoordinatedThreads` and the Worker-placement delivery roles.
+`McpSessions` remains the MCP lifecycle owner. The public
 `EnvironmentRuntime` port and Anthropic Managed Agents wire behavior retain their
 existing request, receipt, error and event shapes.
 
@@ -142,12 +142,13 @@ Environment image provisioning from the package-image builders (done: removed
 the execution composition and the Sandbox adapters); the credential pieces the
 startup named outside execution (done, see the row above; the materializer
 still arrives through the executor and the AllInOne model plane); then the
-Coordinator-side crate `awaken-session-run-delivery` (the event hub and
-completion relay: done; commit ingest, committed reads, the projection
-registry: open), Run admission from the
-frozen projection and the placement-typed role sets in the Session
-application, which together remove the executor, the realization and the
-credential materializer and empty the baseline. The Session application and
+Coordinator-side crate `awaken-session-run-delivery` now holds the event hub,
+completion relay, committed reads, commit boundary, frozen projections and
+Worker-placement Run roles. Production composition still obtains its ports
+from the executor. Worker-dispatched Memory extraction, settlement and Worker
+ports, followed by moving co-located execution into the launcher, remain
+necessary to remove the executor, realization and credential materializer
+from the Coordinator binary closure. The Session application and
 the executor stop binding each other (`SessionApplicationBindings`) in that
 last step: the bindings exist because the executor serves the application's
 roles while the application supplies the executor's coordination and

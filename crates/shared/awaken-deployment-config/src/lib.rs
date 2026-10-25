@@ -18,8 +18,7 @@
 //! crate, because every composition root reads it: the Coordinator process, the Worker, the AllInOne launcher and the
 //! scenario hosts. The Session executor only projects it into the process it
 //! is constructed in (`SessionExecutionProcess::from_deployment`), so a
-//! Coordinator resolves the same file without linking the executor (plan v4
-//! section 3.3). Dispatch topology and storage selection live beside it
+//! Coordinator resolves the same file without linking the executor (ADR-0091 composition boundary). Dispatch topology and storage selection live beside it
 //! because they are read from the same file by the same roots.
 #![warn(unreachable_pub)]
 

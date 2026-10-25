@@ -1,4 +1,4 @@
-"""Protocol adapters translate; they never decide (plan v4 D7, principles P2/P4).
+"""Protocol adapters translate; they never decide (ADR-0091 protocol boundary).
 
 A protocol crate (Cargo metadata ``separation = "protocol"``) lowers wire
 requests into application commands and projects application results onto its
