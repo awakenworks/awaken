@@ -57,7 +57,7 @@ impl Grader for HostAgentGrader<'_> {
             .register_thread_workspace(&thread.0, &workspace)
             .map_err(|error| GraderError::Execution(error.to_string()))?;
         tracing::debug!(thread = %thread.0, "Outcome grader context opening");
-        let context = if crate::sandbox_projection::environment_free_inference(snapshot) {
+        let context = if crate::sandbox_layout::environment_free_inference(snapshot) {
             self.host
                 .run_assembly
                 .ctx_for_environment_free_snapshot(
@@ -219,7 +219,7 @@ mod tests {
         let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         assert!(
-            crate::sandbox_projection::environment_free_inference(&inference_only),
+            crate::sandbox_layout::environment_free_inference(&inference_only),
             "R1/E1"
         );
         // The same R1 surface must not acquire namespace requirements again
@@ -248,7 +248,7 @@ mod tests {
             ))
             .build();
         assert!(
-            !crate::sandbox_projection::environment_free_inference(&with_tool),
+            !crate::sandbox_layout::environment_free_inference(&with_tool),
             "R2/E2"
         );
 
@@ -260,7 +260,7 @@ mod tests {
             ))
             .build();
         assert!(
-            !crate::sandbox_projection::environment_free_inference(&acp),
+            !crate::sandbox_layout::environment_free_inference(&acp),
             "R3/E2"
         );
     }

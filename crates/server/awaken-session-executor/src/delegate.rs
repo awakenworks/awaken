@@ -1178,7 +1178,7 @@ mod durable_cancel_tests {
         let sandbox = Arc::new(
             awaken_session_environment::SandboxEnvironment::workdir(
                 provider
-                    .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("parent"))
+                    .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("parent"))
                     .await
                     .expect("parent sandbox"),
             )

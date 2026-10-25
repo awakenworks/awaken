@@ -1,24 +1,9 @@
-//! Frozen Session values every runtime projection reads: the content delivery
-//! mode and the process-local projections of the Session baseline and
-//! Environment snapshot. The installed Session holds them; provisioning, resource
+//! Frozen Session values every runtime projection reads: the process-local
+//! projections of the Session baseline and Environment snapshot. The installed Session holds them; provisioning, resource
 //! layout and prompt rendering read them without reaching into the installed Session.
 
-/// One Session-wide delivery decision for resources that can be represented
-/// either as files or as semantic tools. The frozen Resource/Skill identities
-/// remain authoritative; this value selects only their runtime projection.
 use crate::realization_error::RealizationError;
 use awaken_session_configuration_contract::environment_projection::FrozenEnvironmentInputs;
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ManagedContentDelivery {
-    /// Anthropic Managed Agents compatible filesystem projection. Memory stores
-    /// are mounted and Skills are discovered from their `SKILL.md` paths.
-    #[default]
-    ManagedFilesystem,
-    /// Filesystem-free projection for Native agents whose published tool policy
-    /// cannot invoke a filesystem tool. The same frozen bindings are exposed by
-    /// bounded semantic tools instead.
-    SemanticTools,
-}
 
 /// Process-local reference to the exact Control-frozen baseline. Keeping the
 /// domain value intact avoids a second partial publication/layout projection:

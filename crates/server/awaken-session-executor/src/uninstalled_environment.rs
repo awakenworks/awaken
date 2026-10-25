@@ -208,7 +208,7 @@ mod tests {
         // missing installation; U5 no capacity is reported.
         let provider =
             SessionEnvironmentProvider::new(Arc::new(UninstalledSessionEnvironmentProvider));
-        let spec = crate::sandbox_projection::agent_run_sandbox_spec("uninstalled");
+        let spec = crate::sandbox_layout::agent_run_sandbox_spec("uninstalled");
         let handle = pc::SandboxHandle::new("local", "none");
         let refused = |error: pc::SandboxError, row: &str| {
             assert!(

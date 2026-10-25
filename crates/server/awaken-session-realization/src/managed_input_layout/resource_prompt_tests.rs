@@ -42,7 +42,7 @@ fn resource_prompt_variable_decision_table_is_closed_and_provider_relative() {
     )))
     .expect("known template");
     let absolute = projection.render(
-        crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+        crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
         AgentPathView::sandbox_absolute(),
     );
     assert_eq!(
@@ -63,7 +63,7 @@ fn resource_prompt_variable_decision_table_is_closed_and_provider_relative() {
     assert!(!posix_path.starts_with('/'), "R2 E2");
     assert!(!windows_path.contains(":"), "R3 E2");
     let relative = projection.render(
-        crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+        crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
         AgentPathView::workdir_relative("/workspace"),
     );
     let parent = ["..", "mnt", "session", "uploads"].join(std::path::MAIN_SEPARATOR_STR);
@@ -100,7 +100,7 @@ fn resource_prompt_templates_preserve_literals_and_never_expand_resource_data() 
         let projection = ResourcePromptProjection::try_from_input(&file(authored)).unwrap();
         assert_eq!(
             projection.render(
-                crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+                crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
                 AgentPathView::sandbox_absolute(),
             ),
             expected_file_prompt("/mnt/session/uploads/brief.md"),
@@ -123,7 +123,7 @@ fn resource_prompt_templates_preserve_literals_and_never_expand_resource_data() 
         let rendered = ResourcePromptProjection::try_from_input(&input)
             .unwrap()
             .render(
-                crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+                crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
                 AgentPathView::sandbox_absolute(),
             );
         assert_eq!(rendered.split_once('\n').unwrap().1, expected, "L2-L4");
@@ -164,7 +164,7 @@ fn resource_directory_means_parent_and_unicode_paths_roundtrip() {
     let rendered = ResourcePromptProjection::try_from_input(&input)
         .unwrap()
         .render(
-            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+            crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
             AgentPathView::workdir_relative("/workspace/项目 repo/src"),
         );
     let expected = [
@@ -331,7 +331,7 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
     let file = ResourcePromptProjection::try_from_input(&file(None))
         .unwrap()
         .render(
-            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+            crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
             AgentPathView::workdir_relative("/workspace"),
         );
     let relative_file =
@@ -340,7 +340,7 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
     let memory_files = ResourcePromptProjection::try_from_input(&memory(ResourceAccess::ReadOnly))
         .unwrap()
         .render(
-            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+            crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
             AgentPathView::sandbox_absolute(),
         );
     assert!(memory_files.contains("/mnt/memory"), "E2");
@@ -348,7 +348,7 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
     let memory_tools = ResourcePromptProjection::try_from_input(&memory(ResourceAccess::ReadWrite))
         .unwrap()
         .render(
-            crate::frozen_inputs::ManagedContentDelivery::SemanticTools,
+            crate::sandbox_layout::ManagedContentDelivery::SemanticTools,
             AgentPathView::sandbox_absolute(),
         );
     assert!(!memory_tools.contains("/mnt/memory"), "E3");
@@ -357,7 +357,7 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
     let repository = ResourcePromptProjection::try_from_input(&repository)
         .unwrap()
         .render(
-            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+            crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
             AgentPathView::sandbox_absolute(),
         );
     assert!(repository.contains("/workspace/repo"), "E1 repository");
@@ -409,7 +409,7 @@ fn selected_file_identity_and_environment_path_are_one_runtime_reference() {
             ),
         ] {
             let rendered = projection.render(
-                crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+                crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
                 view,
             );
             assert_eq!(

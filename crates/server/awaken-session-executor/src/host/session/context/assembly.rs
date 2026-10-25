@@ -108,7 +108,7 @@ pub(super) async fn assemble(
     let is_acp = resources.plan.execution_backend.is_acp();
     let mut memory_descriptors = Vec::new();
     let mut semantic_memory_tools = None;
-    if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
+    if content_delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools {
         let bindings = realizations
             .read_realization(thread, |r| r.staging().memory_bindings.clone())?
             .unwrap_or_default();
@@ -377,7 +377,7 @@ pub(super) async fn assemble(
     };
     let tool_executor = if a2a_only {
         None
-    } else if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
+    } else if content_delivery == crate::sandbox_layout::ManagedContentDelivery::SemanticTools {
         let mut tools = Vec::new();
         if let Some((_, skill_tools)) = semantic_skill_tools.as_ref() {
             tools.extend(skill_tools.iter().cloned());

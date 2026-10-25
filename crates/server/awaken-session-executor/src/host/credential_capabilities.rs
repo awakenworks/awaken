@@ -269,9 +269,7 @@ mod tests {
         use awaken_sandbox_local::LocalProvider;
         let temporary = tempfile::tempdir().unwrap();
         let sandbox = LocalProvider::new(temporary.path().join("child"))
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
-                "profiles",
-            ))
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("profiles"))
             .await
             .unwrap();
         let environment = Arc::new(

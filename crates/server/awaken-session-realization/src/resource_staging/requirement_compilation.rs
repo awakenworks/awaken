@@ -12,9 +12,9 @@ use awaken_session_realization_contract::ResourceOperationFence;
 
 use awaken_session_types::RunError;
 
-use crate::managed_input_layout::{
-    ManagedLayoutProjection, ResourcePromptProjection, managed_mount_access,
-    resolved_input_layout_projection,
+use crate::managed_input_layout::ResourcePromptProjection;
+use crate::managed_layout::{
+    ManagedLayoutProjection, managed_mount_access, resolved_input_layout_projection,
 };
 use crate::skill_delivery::skill_store_run_error;
 use crate::staged_resources::CompiledEffectiveInputs;

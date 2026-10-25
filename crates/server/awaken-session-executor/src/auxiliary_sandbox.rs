@@ -61,7 +61,7 @@ mod tests {
     async fn an_uninstalled_factory_refuses_every_auxiliary_sandbox() {
         // Decision table: U1 any purpose from the uninstalled factory =>
         // refused as not ready, naming that purpose; no sandbox is realized.
-        let spec = crate::sandbox_projection::agent_run_sandbox_spec("aux-thread");
+        let spec = crate::sandbox_layout::agent_run_sandbox_spec("aux-thread");
         for purpose in ["compact", "mem", "mem-select"] {
             let error = match UninstalledAuxiliarySandboxes
                 .provider(purpose)

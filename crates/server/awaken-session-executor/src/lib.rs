@@ -30,6 +30,7 @@
 //! use awaken_session_executor::RuntimeAuthorityError;
 //! ```
 
+use awaken_session_configuration_contract::sandbox_layout;
 mod acp_backend;
 mod acp_capability_probe;
 mod acp_tool_export;
@@ -169,9 +170,8 @@ use awaken_session_realization::environment_owner;
 use awaken_session_realization::{
     artifact_harvest, cache_volume, environment_holding, environment_providers,
     execution_authority, frozen_inputs, managed_input_layout, memory_binding, realization_error,
-    realization_executor, realization_state, resource_staging, sandbox_projection,
-    session_environment, session_publication, session_realizations, skill_delivery,
-    staged_resources, terminal_effects,
+    realization_executor, realization_state, resource_staging, session_environment,
+    session_publication, session_realizations, skill_delivery, staged_resources, terminal_effects,
 };
 #[cfg(test)]
 #[path = "realization_composed_tests/mod.rs"]

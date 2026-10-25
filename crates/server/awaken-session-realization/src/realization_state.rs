@@ -446,7 +446,7 @@ impl SessionRealization {
     /// Record the one content delivery path the Session context selected.
     pub fn select_content_delivery(
         &mut self,
-        delivery: crate::frozen_inputs::ManagedContentDelivery,
+        delivery: crate::sandbox_layout::ManagedContentDelivery,
     ) {
         self.staging.content_delivery = Some(delivery);
     }
@@ -588,7 +588,7 @@ pub struct ResourceStagingState {
     /// Derived once while the Session context is built. Prompt projection,
     /// mount realization, Native tools, and ACP export all consume this value;
     /// none may independently choose another delivery path.
-    pub content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
+    pub content_delivery: Option<crate::sandbox_layout::ManagedContentDelivery>,
     /// Every standard MemoryStore resource frozen for this Session, keyed by
     /// binding id. These exist independently of the optional Awaken automatic
     /// memory extension selected into `memory` below.

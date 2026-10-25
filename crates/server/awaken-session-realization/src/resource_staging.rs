@@ -7,7 +7,7 @@
 
 use crate::memory_binding::MemoryBinding;
 use crate::realization_error::RealizationError;
-use crate::sandbox_projection::{
+use crate::sandbox_layout::{
     ProjectedSandboxLayout, create_time_resource_mounts, project_sandbox_spec,
     resource_mount_is_create_time,
 };
@@ -170,7 +170,7 @@ impl ResourceStaging {
         Ok(self
             .sessions
             .modify_session(thread, |installed| {
-                crate::sandbox_projection::project_session_mounts(
+                crate::sandbox_layout::project_session_mounts(
                     installed.realization.staging().resources.mounts.clone(),
                     installed
                         .inputs

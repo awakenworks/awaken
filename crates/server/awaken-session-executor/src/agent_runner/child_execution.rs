@@ -277,7 +277,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
             provider
-                .create_rooted_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(&thread))
+                .create_rooted_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec(&thread))
                 .await
                 .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
         ),
@@ -819,7 +819,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let parent = LocalProvider::new(tmp.path().join("parent"))
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec(
                 "policy-owner",
             ))
             .await
@@ -857,9 +857,7 @@ mod tests {
         };
 
         let shared_sandbox = LocalProvider::new(tmp.path().join("shared"))
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
-                "current",
-            ))
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("current"))
             .await
             .unwrap();
         let shared_path = shared_sandbox.workspace_path().to_path_buf();
@@ -896,9 +894,7 @@ mod tests {
         assert_eq!(shared_inferences.load(Ordering::SeqCst), 2, "R1/E1");
 
         let shared_local = LocalProvider::new(tmp.path().join("shared-local"))
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
-                "current",
-            ))
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("current"))
             .await
             .unwrap();
         let shared_local_path = shared_local.workspace_path().to_path_buf();
@@ -1087,9 +1083,7 @@ mod tests {
         );
 
         let malformed_sandbox = LocalProvider::new(tmp.path().join("malformed"))
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
-                "current",
-            ))
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("current"))
             .await
             .unwrap();
         let malformed_path = malformed_sandbox.workspace_path().to_path_buf();
@@ -1177,7 +1171,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let provider = LocalProvider::new(tmp.path());
             let sandbox = provider
-                .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec(
+                .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec(
                     "cancel-parent",
                 ))
                 .await
@@ -1304,7 +1298,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = LocalProvider::new(tmp.path());
         let sandbox = provider
-            .create_sandbox(&crate::sandbox_projection::agent_run_sandbox_spec("parent"))
+            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("parent"))
             .await
             .unwrap();
         let clock = awaken_time::system_clock();

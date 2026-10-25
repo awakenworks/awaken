@@ -600,8 +600,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // | M6 | yes | bound | yes | deferred binding | E1 metadata-only reservation |
     // | M7 | yes | other | any | deferred binding | E3 mismatched pin rejected |
     // | M8 | yes | no | no | Memory path variable | E3 physical path rejected |
-    use crate::frozen_inputs::ManagedContentDelivery;
     use crate::host::session::SkillDeliveryEvidence;
+    use crate::sandbox_layout::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
     };
@@ -890,7 +890,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     // Constraint K1 Agent tool capability still gates what that Agent may call;
     // reusing delivery neither widens tools nor creates a child-owned mount
     // authority. Rules CD1=C1=>E1; CD2=C2=>E2; CD3=C3=>E2.
-    use crate::frozen_inputs::ManagedContentDelivery;
+    use crate::sandbox_layout::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -2003,7 +2003,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .with_cache_volume_initializer(initializer.clone()))
     .build()
     .expect("validated Host dependencies");
-    let mut spec = crate::sandbox_projection::agent_run_sandbox_spec("cache-wiring");
+    let mut spec = crate::sandbox_layout::agent_run_sandbox_spec("cache-wiring");
     spec.mounts
         .push(awaken_provisioning_contract::MountRequirement {
             mount_id: "build-cache".into(),

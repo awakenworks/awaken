@@ -51,7 +51,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         let prompt = ResourcePromptProjection::try_from_input(&input)
             .unwrap()
             .render(
-                crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+                crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
                 view.prompt_paths,
             );
         let relative = prompt.split_once('\n').unwrap().1;

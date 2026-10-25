@@ -484,7 +484,7 @@ impl crate::terminal_effects::TerminalEffects {
                         &operation_reference,
                         intent.materialization(),
                         &files,
-                        crate::managed_input_layout::managed_mount_access(intent.access()),
+                        crate::managed_layout::managed_mount_access(intent.access()),
                     )
                     .await
                     .map_err(RealizationError::terminal_effect_pending)?;

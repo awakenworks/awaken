@@ -9,7 +9,7 @@
 //! Durable authority remains the frozen `ResolvedInput`; this module owns only
 //! validated prompt-template rendering for the selected Session Environment.
 
-use super::managed_file_mount_path;
+use crate::managed_layout::managed_file_mount_path;
 use awaken_session_configuration_contract::resource as session_resource;
 
 const RESOURCE_PROMPT_VARIABLE_PREFIX: &str = "{{awaken.";
@@ -94,7 +94,7 @@ impl ResourcePromptProjection {
 
     pub fn render(
         &self,
-        delivery: crate::frozen_inputs::ManagedContentDelivery,
+        delivery: crate::sandbox_layout::ManagedContentDelivery,
         path_view: AgentPathView,
     ) -> String {
         use awaken_resource_contract::ResourceAccess;
@@ -123,7 +123,7 @@ impl ResourcePromptProjection {
             ),
             (
                 ResourcePromptKind::MemoryStore,
-                crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
+                crate::sandbox_layout::ManagedContentDelivery::ManagedFilesystem,
             ) => {
                 let usage = match self.access {
                     ResourceAccess::ReadOnly => "Use standard file tools to read it.",
@@ -136,7 +136,7 @@ impl ResourcePromptProjection {
             }
             (
                 ResourcePromptKind::MemoryStore,
-                crate::frozen_inputs::ManagedContentDelivery::SemanticTools,
+                crate::sandbox_layout::ManagedContentDelivery::SemanticTools,
             ) => {
                 let usage = match self.access {
                     ResourceAccess::ReadOnly => {
