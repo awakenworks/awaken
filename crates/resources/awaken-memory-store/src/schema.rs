@@ -248,6 +248,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn expanded_sqlite_history_adds_actor_columns_and_reopens() {
         use awaken_scoped_migration::MigrationBundle;
