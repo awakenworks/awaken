@@ -31,7 +31,7 @@ impl crate::RunAssembly {
         claimed_model_gate: Option<awaken_dispatch_execution::ClaimedModelRequestGateFactory>,
         runtime: Arc<Runtime>,
         attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
-        commit: Arc<HostCommit>,
+        commit: Arc<SessionCommit>,
         stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
         run_context: awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<

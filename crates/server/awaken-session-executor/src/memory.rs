@@ -39,7 +39,7 @@ use awaken_sandbox_local::LocalProvider;
 use crate::agent_catalog::AgentCatalog;
 use crate::agent_runner::{AgentRunError, run_configured_agent_with_id};
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 mod selector;
 mod terminal_observer;
@@ -290,7 +290,10 @@ impl BoundMemory {
         &self.binding
     }
 
-    async fn bind_recovery(&self, commit: Arc<HostCommit>) -> Result<bool, MemoryExtractionError> {
+    async fn bind_recovery(
+        &self,
+        commit: Arc<SessionCommit>,
+    ) -> Result<bool, MemoryExtractionError> {
         self.binding
             .attach_extraction_commit(commit)
             .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
@@ -552,7 +555,7 @@ impl crate::RunAssembly {
     pub(crate) fn bind_thread_memory_recovery<'a>(
         &'a self,
         session_thread: &'a str,
-        commit: Arc<HostCommit>,
+        commit: Arc<SessionCommit>,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = Result<usize, crate::SessionExecutionError>>

@@ -47,7 +47,7 @@ impl ChildRunLauncher {
         &self,
         thread: &str,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
-        commit: Arc<crate::store::HostCommit>,
+        commit: Arc<awaken_session_run_delivery::SessionCommit>,
         parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         publication_source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
         tool_configuration: crate::delegate::CallerToolConfiguration,

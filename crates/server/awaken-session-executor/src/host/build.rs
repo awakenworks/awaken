@@ -163,11 +163,8 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
             execution_authority,
         ),
     ));
-    let thread_reads = Arc::new(crate::ThreadReads::new(
-        authority.clone(),
-        installed_sessions.clone(),
-        realization_executor.clone(),
-    ));
+    let (commit_source, thread_reads) =
+        committed_reads(&authority, &installed_sessions, &realization_executor);
     let resources = Arc::new(capability::ResourcePorts::new(
         resources,
         memory,
@@ -225,6 +222,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         execution: execution.clone(),
         realization_executor: realization_executor.clone(),
         thread_reads: thread_reads.clone(),
+        commit_source,
         resources: resources.clone(),
         mcp: mcp.clone(),
         capture: capture.clone(),
@@ -363,6 +361,30 @@ fn dispatch_execution(
     authority
         .dispatch_binding()
         .map(|binding| binding.queue() as Arc<dyn awaken_dispatch_contract::DispatchExecution>)
+}
+
+/// Committed Thread reads over this executor's resident-context-aware commit
+/// source, labelling advisor links from the publications it resolves.
+fn committed_reads(
+    authority: &Arc<dyn crate::SessionAuthority>,
+    installed_sessions: &Arc<crate::InstalledSessions>,
+    realization_executor: &Arc<crate::realization_executor::RealizationExecutor>,
+) -> (
+    Arc<crate::thread_reads::InstalledCommitSource>,
+    Arc<crate::CommittedReads>,
+) {
+    let commit_source = Arc::new(crate::thread_reads::InstalledCommitSource::new(
+        authority.clone(),
+        installed_sessions,
+    ));
+    let reads = Arc::new(crate::CommittedReads::new(
+        commit_source.clone(),
+        Arc::new(crate::thread_reads::ResolvedAdvisorModels::new(
+            installed_sessions,
+            realization_executor,
+        )),
+    ));
+    (commit_source, reads)
 }
 
 /// The process dispatch and the Session Run component that submits, cancels
@@ -563,7 +585,7 @@ impl ExecutorComponents {
 
     /// Committed Thread readback over this process's selected authority.
     #[must_use]
-    pub fn thread_reads(&self) -> &Arc<crate::ThreadReads> {
+    pub fn thread_reads(&self) -> &Arc<crate::CommittedReads> {
         &self.thread_reads
     }
 
@@ -727,7 +749,7 @@ mod startup_tests {
         assert!(
             matches!(
                 worker.run_assembly.authority.open_commit("role").await,
-                Ok(crate::store::HostCommit::Remote(_))
+                Ok(awaken_session_run_delivery::SessionCommit::Remote(_))
             ),
             "R1 remote commit boundary"
         );

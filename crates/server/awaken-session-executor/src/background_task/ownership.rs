@@ -11,9 +11,9 @@ use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, R
 use awaken_time::WallClockExt;
 
 use super::BackgroundTaskTerminalObserver;
-use crate::store::CommittedAuthority;
+use awaken_session_run_delivery::CommittedAuthority;
 #[cfg(test)]
-use crate::store::HostCommit;
+use awaken_session_run_delivery::SessionCommit;
 
 struct BackgroundTaskOwnership {
     expected: BackgroundTask,
@@ -247,7 +247,7 @@ mod tests {
         task
     }
 
-    async fn persist(commit: &HostCommit, task: &BackgroundTask, run: &str) {
+    async fn persist(commit: &SessionCommit, task: &BackgroundTask, run: &str) {
         commit
             .commit(ThreadCommit::assemble(
                 task.origin.thread_id.clone(),
@@ -264,8 +264,8 @@ mod tests {
             .unwrap();
     }
 
-    fn local_commit() -> Arc<HostCommit> {
-        Arc::new(HostCommit::Local(Arc::new(
+    fn local_commit() -> Arc<SessionCommit> {
+        Arc::new(SessionCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
                 awaken_time::system_clock(),
             )),
@@ -719,10 +719,11 @@ mod tests {
             authority.verify_current().await,
             Err(AttemptOwnershipError::Unavailable(_))
         ));
-        let projected: HostCommit = HostCommit::Remote(crate::store::RemoteHostCommit::new());
+        let projected: SessionCommit =
+            SessionCommit::Remote(awaken_session_run_delivery::WorkerRecoveryCommit::new());
         assert!(projected.committed_authority().is_none(), "R3");
-        let unavailable_commit: HostCommit =
-            HostCommit::Local(Arc::new(crate::LocalCommitAdapter::with_queries(
+        let unavailable_commit: SessionCommit =
+            SessionCommit::Local(Arc::new(crate::LocalCommitAdapter::with_queries(
                 Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
                     awaken_time::system_clock(),
                 )),

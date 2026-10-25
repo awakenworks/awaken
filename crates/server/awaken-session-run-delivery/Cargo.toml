@@ -9,9 +9,9 @@ license.workspace = true
 context = "shared"
 product = "platform"
 bounded_context = "execution"
-layer = "application"
+layer = "infrastructure"
 authority = "session-run-delivery"
-separation = "sole-in-layer"
+separation = "coordinator-side"
 
 # The Coordinator half of Run delivery that needs no execution machinery. It
 # links no Session realization, Sandbox or credential realization, so the
@@ -19,7 +19,17 @@ separation = "sole-in-layer"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
+awaken-dispatch-erasure.workspace = true
+awaken-dispatch-execution.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-event-contract.workspace = true
 awaken-session-execution-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-ext-goal.workspace = true
+awaken-ext-builtin-tools.workspace = true
+awaken-tool-contract.workspace = true
+serde_json.workspace = true
 awaken-session-types.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
@@ -28,6 +38,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-store-inmem.workspace = true
+awaken-time.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 
 [lints]

@@ -3,11 +3,8 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_agent_contract::thread::read::recovery::{
-    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
-};
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_dispatch_contract::CompletionSink;
 use awaken_dispatch_contract::RunClaim;
 use awaken_dispatch_contract::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
@@ -19,31 +16,8 @@ use crate::{ExecutorComponents, FileContentSource};
 /// this adapter Memory-only prevents the two processes from delivering the
 /// same coordinated child effect twice.
 struct MemoryDispatchSettlementObserver {
-    reads: Arc<crate::ThreadReads>,
+    reads: Arc<crate::CommittedReads>,
     terminal_observers: Arc<crate::memory::MemoryTerminalObservers>,
-}
-
-#[async_trait::async_trait]
-impl RunRecoverySource for crate::ThreadReads {
-    async fn recovery_snapshot(
-        &self,
-        thread_id: &awaken_agent_contract::agent::thread::Id,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        self.recovery_snapshot_in_session(thread_id, thread_id, claimed_run_id)
-            .await
-    }
-
-    async fn recovery_snapshot_in_session(
-        &self,
-        session_thread_id: &awaken_agent_contract::agent::thread::Id,
-        thread_id: &awaken_agent_contract::agent::thread::Id,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        self.session_thread_run_recovery_snapshot(&session_thread_id.0, thread_id, claimed_run_id)
-            .await
-            .map_err(|error| RecoveryError::Rejected(error.to_string()))
-    }
 }
 
 impl ExecutorComponents {

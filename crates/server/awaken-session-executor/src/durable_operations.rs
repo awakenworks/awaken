@@ -46,7 +46,7 @@ impl DurableRunOperations for crate::SessionRuns {
         self.thread_reads
             .committed_messages(thread)
             .await
-            .map_err(to_durable_error)
+            .map_err(awaken_session_run_delivery::application_error)
     }
 
     async fn superseded(&self, thread: &str) -> Result<Vec<String>, ApplicationError> {

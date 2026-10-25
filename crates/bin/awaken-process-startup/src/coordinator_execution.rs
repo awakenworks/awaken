@@ -127,10 +127,10 @@ fn bind_committed_progress_wakeup(
         }))
 }
 
-/// Binds [`ClaimedOperationCoordinatorResolver`] to
-/// [`awaken_session_executor::session_commit_owner`]. The executor only
-/// resolves the existing owner; `ClaimedCommitService` remains the sole
-/// caller of its write method.
+/// Binds [`ClaimedOperationCoordinatorResolver`] to the Session commit owner
+/// of the executor's committed reads (`CommittedReads::commit_owner`). It only
+/// resolves the existing owner; `ClaimedCommitService` remains the sole caller
+/// of its write method.
 struct SessionCommitOwner(Arc<ExecutorComponents>);
 
 #[async_trait::async_trait]
@@ -139,7 +139,7 @@ impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
         &self,
         session_thread_id: &ThreadId,
     ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
-        awaken_session_executor::session_commit_owner(&self.0, session_thread_id).await
+        self.0.thread_reads().commit_owner(session_thread_id).await
     }
 }
 
@@ -243,7 +243,8 @@ mod tests {
                 .expect("healthy registry")
                 .is_none()
         );
-        awaken_session_executor::session_commit_owner(&host, &thread)
+        host.thread_reads()
+            .commit_owner(&thread)
             .await
             .expect("configured Host commit boundary");
         binding

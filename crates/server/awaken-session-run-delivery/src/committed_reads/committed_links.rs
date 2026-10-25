@@ -2,14 +2,16 @@
 //! Committed parent ToolUse/ToolResult pairs and the unpublished ToolBatch gap
 //! derive coordination links from one Thread-owned source.
 
-use super::*;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::delegation::DelegationId;
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{StateKey as _, Store};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
+use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
 #[derive(Clone)]
@@ -20,13 +22,13 @@ struct PendingCoordinationCall {
     args: SendMessageArgs,
 }
 
-pub(crate) struct CommittedCoordinationProjection {
-    pub(crate) links: Vec<CoordinatedThreadLink>,
-    pub(crate) cleanup_thread_ids: Vec<ThreadId>,
+pub struct CommittedCoordinationProjection {
+    pub links: Vec<CoordinatedThreadLink>,
+    pub cleanup_thread_ids: Vec<ThreadId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CoordinationReadPurpose {
+pub enum CoordinationReadPurpose {
     Relationships,
     TerminalScope,
 }
@@ -36,9 +38,9 @@ fn coordination_call(
     operation_id: String,
     call_id: &str,
     input: &serde_json::Value,
-) -> Result<PendingCoordinationCall, SessionExecutionError> {
+) -> Result<PendingCoordinationCall, RunError> {
     let args = serde_json::from_value::<SendMessageArgs>(input.clone()).map_err(|error| {
-        SessionExecutionError::internal(format!(
+        RunError::internal(format!(
             "committed send_message arguments are invalid: {error}"
         ))
     })?;
@@ -72,12 +74,12 @@ fn include_spawn_cleanup_target(
     }
 }
 
-pub(crate) fn project_committed_coordination(
+pub fn project_committed_coordination(
     session_id: &awaken_session_types::SessionId,
     advisor_model: Option<&str>,
     committed: &RunRecoverySnapshot,
     purpose: CoordinationReadPurpose,
-) -> Result<CommittedCoordinationProjection, SessionExecutionError> {
+) -> Result<CommittedCoordinationProjection, RunError> {
     let mut active = Vec::<PendingCoordinationCall>::new();
     let mut links = Vec::<CoordinatedThreadLink>::new();
     let mut cleanup = std::collections::BTreeSet::new();
@@ -88,9 +90,7 @@ pub(crate) fn project_committed_coordination(
                 continue;
             };
             let Some(run) = committed.run_record(&RunId(owner.into())).map_err(|_| {
-                SessionExecutionError::internal(
-                    "committed assistant message has ambiguous Run coordinates",
-                )
+                RunError::internal("committed assistant message has ambiguous Run coordinates")
             })?
             else {
                 continue;
@@ -110,9 +110,9 @@ pub(crate) fn project_committed_coordination(
                 let operation = awaken_tool_contract::ActiveToolBatch::operation_for_message(
                     committed, message, id,
                 )
-                .map_err(|error| SessionExecutionError::internal(error.to_string()))?
+                .map_err(|error| RunError::internal(error.to_string()))?
                 .ok_or_else(|| {
-                    SessionExecutionError::internal(format!(
+                    RunError::internal(format!(
                         "committed {call_kind} call has no operation identity"
                     ))
                 })?;
@@ -162,7 +162,7 @@ pub(crate) fn project_committed_coordination(
     // that publication gap; no relationship row or second read is introduced.
     let state = Store::rebuild(&committed.state);
     let active_batch = awaken_tool_contract::ActiveToolBatch::load(&state)
-        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+        .map_err(|error| RunError::internal(error.to_string()))?;
     apply_active_batch_coordination_results(
         session_id,
         &active,
@@ -179,15 +179,14 @@ pub(crate) fn project_committed_coordination(
         .filter(|_| purpose == CoordinationReadPurpose::TerminalScope)
     {
         if committed.run_record(&run.id).is_err() {
-            return Err(SessionExecutionError::internal(
+            return Err(RunError::internal(
                 "coordination source has ambiguous Run identity",
             ));
         }
         for recorded in
             awaken_tool_contract::ActiveToolBatch::recorded_batches(&committed.state, &run.id)
         {
-            let (_, batch) =
-                recorded.map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+            let (_, batch) = recorded.map_err(|error| RunError::internal(error.to_string()))?;
             let Some(batch) = batch else {
                 continue;
             };
@@ -243,14 +242,14 @@ pub(super) fn apply_advisor_call(
     call_id: &str,
     model: &str,
     links: &mut Vec<CoordinatedThreadLink>,
-) -> Result<(), SessionExecutionError> {
+) -> Result<(), RunError> {
     let child_run_id = DelegationId::for_parent_call(run_id, call_id).child_run_id();
     let thread_id = ThreadId(child_run_id.0.clone());
     if let Some(existing) = links.iter().find(|link| link.thread_id == thread_id) {
         if existing.target.advisor_model() != Some(model)
             || existing.created_by_operation_id != operation_id
         {
-            return Err(SessionExecutionError::internal(
+            return Err(RunError::internal(
                 "one advisor Thread is attributed to conflicting committed calls",
             ));
         }
@@ -274,18 +273,18 @@ fn apply_coordination_result(
     content: &[ContentBlock],
     is_error: bool,
     links: &mut Vec<CoordinatedThreadLink>,
-) -> Result<(), SessionExecutionError> {
+) -> Result<(), RunError> {
     if is_error {
         return Ok(());
     }
     let receipt: AgentMessageReceipt =
         serde_json::from_str(&extract_text(content)).map_err(|e| {
-            SessionExecutionError::internal(format!(
+            RunError::internal(format!(
                 "committed send_message result has an invalid receipt: {e}"
             ))
         })?;
     if !receipt.accepted || receipt.session_thread_id.trim().is_empty() {
-        return Err(SessionExecutionError::internal(
+        return Err(RunError::internal(
             "committed send_message result is not an accepted Thread receipt",
         ));
     }
@@ -299,13 +298,13 @@ fn apply_coordination_result(
                 &operation_id,
             );
             if thread_id != expected {
-                return Err(SessionExecutionError::internal(
+                return Err(RunError::internal(
                     "committed coordination receipt does not match its deterministic Thread",
                 ));
             }
             if let Some(existing) = links.iter().find(|link| link.thread_id == thread_id) {
                 if existing.target.agent_id() != Some(agent_id.as_str()) {
-                    return Err(SessionExecutionError::internal(
+                    return Err(RunError::internal(
                         "one coordinated Thread is attributed to multiple Agents",
                     ));
                 }
@@ -323,13 +322,13 @@ fn apply_coordination_result(
             session_thread_id: target,
         }) => {
             if thread_id.0 != target || !links.iter().any(|link| link.thread_id == thread_id) {
-                return Err(SessionExecutionError::internal(
+                return Err(RunError::internal(
                     "committed follow-up receipt names an unknown coordinated Thread",
                 ));
             }
         }
         _ => {
-            return Err(SessionExecutionError::internal(
+            return Err(RunError::internal(
                 "committed send_message arguments have an invalid target",
             ));
         }
@@ -342,7 +341,7 @@ fn apply_active_batch_coordination_results(
     active: &[PendingCoordinationCall],
     batch: Option<&ToolBatch>,
     links: &mut Vec<CoordinatedThreadLink>,
-) -> Result<(), SessionExecutionError> {
+) -> Result<(), RunError> {
     let Some(batch) = batch else {
         return Ok(());
     };
@@ -358,7 +357,7 @@ fn apply_active_batch_coordination_results(
         };
         let result_id = batch
             .result_message_id(&call.call_id)
-            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+            .map_err(|error| RunError::internal(error.to_string()))?;
         let legacy_result_id = MessageId::tool_result(&call.call_id);
         for message in &entry.result_messages {
             if message.role != Role::Tool

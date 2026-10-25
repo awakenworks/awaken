@@ -29,7 +29,7 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
         "crates/stores/awaken-store-fs/src/",
         "crates/stores/awaken-store-sqlite/src/",
         "crates/stores/awaken-store-postgres/src/",
-        "crates/server/awaken-session-executor/src/store.rs",
+        "crates/server/awaken-session-run-delivery/src/commit_boundary.rs",
         LOCAL_COMMIT_ADAPTER_SOURCE,
     ),
     "SessionRepository": ("crates/stores/awaken-session-store/src/",),
@@ -256,13 +256,13 @@ def selftest() -> None:
         "crates/shared/awaken-dispatch-erasure/src/other_commit.rs", "OperationCoordinator"
     )
     assert implementation_violation(
-        "crates/server/awaken-session-executor/src/other_commit.rs", "OperationCoordinator"
+        "crates/server/awaken-session-run-delivery/src/other_commit.rs", "OperationCoordinator"
     )
     # File/directory owner table: a file allows only equality (F1), never a
     # legal same-prefix sibling (F2); directory entries ending in '/' allow
     # descendants (D1), never a similarly spelled sibling directory (D2).
     for path, permitted in (
-        ("crates/server/awaken-session-executor/src/store.rs", True),
+        ("crates/server/awaken-session-run-delivery/src/commit_boundary.rs", True),
         (LOCAL_COMMIT_ADAPTER_SOURCE + "_shadow.rs", False),
         ("crates/stores/awaken-store-sqlite/src/adapter.rs", True),
         ("crates/stores/awaken-store-sqlite/src_shadow/adapter.rs", False),

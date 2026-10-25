@@ -196,9 +196,11 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
                 effect,
                 authorization,
                 |thread, lifecycle| {
-                    let delegated = self
-                        .thread_reads
-                        .delegated_runs_for_cleanup(thread, lifecycle);
+                    let delegated = self.commit_source.delegated_runs_for_cleanup(
+                        &self.thread_reads,
+                        thread,
+                        lifecycle,
+                    );
                     async move {
                         delegated
                             .await

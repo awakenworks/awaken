@@ -3,16 +3,12 @@
 // @formal reason: Pure field-preserving projections of the extension-owned Outcome controller results and
 // @formal reason: errors onto the Host and Session outcome vocabularies; they choose no Outcome transition.
 //! Projections of Outcome controller results: the controller report onto the
-//! Host report, the Host report onto the Session outcome vocabulary, a
-//! committed terminal Outcome onto its Session projection, and the controller
-//! error onto the Host error. Pure functions; the Outcome transitions stay in
+//! Host report, the Host report onto the Session outcome vocabulary, and the
+//! controller error onto the executor error. Pure functions; the Outcome transitions stay in
 //! `awaken-ext-goal`.
 
-use awaken_ext_goal::controller::{CommittedOutcome, Error as ControllerError};
-use awaken_session_event_contract::OUTCOME_BUSY_CODE;
-use awaken_session_execution_contract::{
-    CommittedOutcomeProjection, OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport,
-};
+use awaken_ext_goal::controller::Error as ControllerError;
+use awaken_session_execution_contract::{OutcomeDrive, OutcomeIteration, OutcomeReport};
 
 use crate::{HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, SessionExecutionError};
 
@@ -34,18 +30,12 @@ pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> Hos
     }
 }
 
+/// The controller error as this executor's error, classified once by
+/// `awaken_session_run_delivery::outcome_controller_error`.
 pub(crate) fn controller_error(error: ControllerError) -> SessionExecutionError {
-    match error {
-        ControllerError::Busy { .. } | ControllerError::WorkerRunning { .. } => {
-            SessionExecutionError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
-        }
-        ControllerError::ActiveDefinitionConflict { .. }
-        | ControllerError::WorkerAwaiting { .. }
-        | ControllerError::Domain(_) => SessionExecutionError::bad_request(error.to_string()),
-        ControllerError::Persistence(_)
-        | ControllerError::Execution(_)
-        | ControllerError::Serialization(_) => SessionExecutionError::internal(error.to_string()),
-    }
+    crate::session_execution_error::from_run_error(
+        awaken_session_run_delivery::outcome_controller_error(error),
+    )
 }
 
 pub(crate) fn report(report: HostOutcomeReport) -> OutcomeReport {
@@ -70,22 +60,5 @@ pub(crate) fn progress(progress: HostOutcomeDrive) -> OutcomeDrive {
     match progress {
         HostOutcomeDrive::Awaiting => OutcomeDrive::Awaiting,
         HostOutcomeDrive::Completed(completed) => OutcomeDrive::Completed(report(completed)),
-    }
-}
-
-/// The Session projection of one committed terminal Outcome.
-pub(crate) fn committed_projection(terminal: CommittedOutcome) -> CommittedOutcomeProjection {
-    match terminal {
-        CommittedOutcome::Completed(completed) => {
-            CommittedOutcomeProjection::Completed(report(project_report(completed)))
-        }
-        CommittedOutcome::Errored {
-            failure,
-            source_run_id,
-        } => CommittedOutcomeProjection::Errored(OutcomeFailure {
-            code: failure.code().to_string(),
-            message: failure.message().to_string(),
-            source_run_id,
-        }),
     }
 }

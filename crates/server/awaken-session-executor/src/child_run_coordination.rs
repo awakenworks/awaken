@@ -9,7 +9,7 @@
 //! ticket, interrupts and archives coordinated Threads, and answers the
 //! coordination reads the Session application validates against. Runs are
 //! delivered through [`crate::SessionRuns`]; committed truth is read through
-//! [`crate::ThreadReads`].
+//! [`CommittedReads`](crate::CommittedReads).
 
 mod roles;
 
@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub struct ChildRunCoordination {
     pub(crate) session_runs: Arc<crate::SessionRuns>,
     pub(crate) run_assembly: Arc<crate::RunAssembly>,
-    pub(crate) thread_reads: Arc<crate::ThreadReads>,
+    pub(crate) thread_reads: Arc<crate::CommittedReads>,
     pub(crate) capabilities: Arc<crate::RunCapabilities>,
     pub(crate) installed_sessions: Arc<crate::InstalledSessions>,
     pub(crate) realization_executor: Arc<crate::realization_executor::RealizationExecutor>,

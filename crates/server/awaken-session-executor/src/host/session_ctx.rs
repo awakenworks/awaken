@@ -221,7 +221,7 @@ pub(crate) struct ClaimedRuntimeInput {
 /// child. It intentionally contains no parent Runtime or Agent plugins.
 pub(crate) struct ChildExecutionSubstrate {
     pub(crate) environment: Arc<crate::session_environment::SessionEnvironment>,
-    pub(crate) commit: Arc<HostCommit>,
+    pub(crate) commit: Arc<SessionCommit>,
     pub(crate) attempt_context: awaken_runtime_contract::RuntimeRunContext,
 }
 
@@ -265,7 +265,7 @@ pub(crate) struct SessionCtx {
     pub(crate) runtime_publication_identity: Option<RuntimePublicationIdentity>,
     pub(crate) purpose: RuntimeContextPurpose,
     pub(crate) config: ExecutableAgentSnapshot,
-    pub(crate) commit: Arc<HostCommit>,
+    pub(crate) commit: Arc<SessionCommit>,
     /// Canonical topology-independent attempt capabilities. Direct execution
     /// clones this value; durable ingress receives the same clone and replaces
     /// only its claimed commit/read/cancellation authorities.

@@ -19,13 +19,13 @@ use awaken_session_types::RunError;
 
 use crate::SessionExecutionError;
 use crate::session_execution_error::to_run_error;
-use crate::thread_reads::recovery_ticket;
+use awaken_session_run_delivery::recovery_ticket;
 
 /// Budget accounting for one process. Consumer: the Session application's
 /// `BudgetRuntime` role.
 pub struct BudgetAccounting {
     session_runs: Arc<crate::SessionRuns>,
-    thread_reads: Arc<crate::ThreadReads>,
+    thread_reads: Arc<crate::CommittedReads>,
 }
 
 impl BudgetAccounting {
@@ -256,7 +256,6 @@ impl awaken_session_execution_contract::BudgetRuntime for BudgetAccounting {
                 &awaken_agent_contract::agent::thread::Id(thread.to_string()),
             )
             .await
-            .map_err(to_run_error)
     }
 
     async fn session_thread_usage(
@@ -270,6 +269,5 @@ impl awaken_session_execution_contract::BudgetRuntime for BudgetAccounting {
                 &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             )
             .await
-            .map_err(to_run_error)
     }
 }
