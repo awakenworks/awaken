@@ -8,7 +8,6 @@
 //! components act on and depends on none of them.
 
 pub mod projection_receipt;
-pub use projection_receipt::FrozenProjectionReceipt;
 
 use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, SessionEnvironmentOwner,
@@ -403,7 +402,7 @@ impl SessionRealization {
         owner: SessionEnvironmentOwner,
         state: &awaken_session_state_contract::SessionEnvironmentState,
         holds_context: bool,
-        receipt: projection_receipt::FrozenProjectionReceipt,
+        receipt: awaken_session_realization_contract::FrozenProjectionReceipt,
         has_mcp_attachment: bool,
         transition: awaken_session_configuration_contract::resource::SessionResourceTransition,
     ) {
@@ -694,7 +693,7 @@ pub struct ExecutionAuthorityState {
     /// from `lifecycle`, which is re-entered by Environment materialization.
     pub phase: Arc<tokio::sync::Mutex<()>>,
     /// Last accepted aggregate version and equality digest; rebuildable, never authority.
-    pub frozen_receipt: Option<projection_receipt::FrozenProjectionReceipt>,
+    pub frozen_receipt: Option<awaken_session_realization_contract::FrozenProjectionReceipt>,
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
     pub authority: SessionRealizationAuthority,
