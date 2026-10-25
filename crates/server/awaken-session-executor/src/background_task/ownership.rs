@@ -89,7 +89,7 @@ mod tests {
     use awaken_tool_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
 
     use super::super::tests::{RecordingAfterToolPlugin, RemoteTaskTool, remote_snapshot};
-    use crate::background::BackgroundRuns;
+    use awaken_session_run_delivery::BackgroundRuns;
 
     #[test]
     fn separately_owned_background_attempts_do_not_inherit_foreground_uncertainty() {

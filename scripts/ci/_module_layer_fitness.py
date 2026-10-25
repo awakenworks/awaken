@@ -88,7 +88,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     )),
     (HOST, "run execution, agent runs and auxiliary runs consume the whole host", (
         "agent_runner",
-        "background",
         "background_task",
         "compact",
         "delegate",

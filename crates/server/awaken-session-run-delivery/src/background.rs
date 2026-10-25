@@ -1,6 +1,6 @@
 // @formal surface obligation=service_lifecycle.concurrent_shutdown_waits_for_active_drain
 // @formal surface obligation=service_lifecycle.shutdown_fences_task_registration
-// @formal reason: Registers host background work with the lifecycle fence.
+// @formal reason: Registers process background work with the existing lifecycle fence.
 //! Fire-and-forget auxiliary runs with a bounded drain.
 //!
 //! Out-of-band aux agents (memory extraction, dream) run *after* a main Run
@@ -75,7 +75,7 @@ impl awaken_tool_contract::ToolExecutionAdmission for SharedToolExecutionAdmissi
                 // the ones already running, so it refuses the call.
                 let Ok(mut state) = self.state.lock() else {
                     return Err(awaken_tool_contract::tool::ToolError::DefinitiveFailure(
-                        crate::session_execution_error::ExecutorLock::ToolAdmission.to_string(),
+                        crate::DeliveryLock::ToolAdmission.to_string(),
                     ));
                 };
                 if state
@@ -177,19 +177,16 @@ impl BackgroundRuns {
     ///
     /// A poisoned registry is refused: a fresh, unregistered admission would
     /// let two calls on the same generation run without seeing each other.
-    pub(crate) fn tool_execution_admission(
+    pub fn tool_execution_admission(
         &self,
         session_id: &str,
         generation_id: &str,
-    ) -> Result<
-        Arc<dyn awaken_tool_contract::ToolExecutionAdmission>,
-        crate::session_execution_error::ExecutorLock,
-    > {
+    ) -> Result<Arc<dyn awaken_tool_contract::ToolExecutionAdmission>, crate::DeliveryLock> {
         let key = (session_id.to_string(), generation_id.to_string());
         let mut admissions = self
             .admissions
             .lock()
-            .map_err(|_| crate::session_execution_error::ExecutorLock::ToolAdmission)?;
+            .map_err(|_| crate::DeliveryLock::ToolAdmission)?;
         if let Some(existing) = admissions.get(&key).and_then(std::sync::Weak::upgrade) {
             return Ok(existing);
         }
@@ -308,7 +305,7 @@ mod tests {
         .await;
         assert!(bg.has_shared_environment_work("s", "g1"), "B1");
         assert!(!bg.has_shared_environment_work("s", "g2"), "B2");
-        crate::session_execution_error::poison_for_test(&bg.activity.shared);
+        crate::poison_for_test(&bg.activity.shared);
         assert!(
             bg.has_shared_environment_work("s", "g2"),
             "B3 idleness unprovable"
@@ -330,17 +327,17 @@ mod tests {
         let admission = bg
             .tool_execution_admission("s", "g")
             .expect("healthy registry");
-        crate::session_execution_error::poison_for_test(&bg.admissions);
+        crate::poison_for_test(&bg.admissions);
         assert!(
             matches!(
                 bg.tool_execution_admission("s", "g"),
-                Err(crate::session_execution_error::ExecutorLock::ToolAdmission)
+                Err(crate::DeliveryLock::ToolAdmission)
             ),
             "registry refused"
         );
         use awaken_tool_contract::ToolExecutionAdmission as _;
         let shared = Arc::new(SharedToolExecutionAdmission::default());
-        crate::session_execution_error::poison_for_test(&shared.state);
+        crate::poison_for_test(&shared.state);
         assert!(
             shared
                 .acquire(awaken_tool_contract::ToolConcurrency::Serial)
@@ -360,15 +357,21 @@ mod tests {
     #[tokio::test]
     async fn drain_awaits_all_spawned_tasks() {
         let bg = BackgroundRuns::new();
+        // D1 five registered tasks + an explicit release => drain joins all
+        // five effects. The counter is this process-local registry's effect,
+        // not a substitute for business persistence; no elapsed sleep is an oracle.
         let counter = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
         for _ in 0..5 {
             let c = counter.clone();
+            let release = release.clone();
             bg.spawn(BackgroundWorkClass::EphemeralCache, async move {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                let _permit = release.acquire().await.unwrap();
                 c.fetch_add(1, Ordering::SeqCst);
             })
             .await;
         }
+        release.add_permits(5);
         let finished = bg.drain(Duration::from_secs(5)).await;
         assert!(finished, "drain should complete within the timeout");
         assert_eq!(counter.load(Ordering::SeqCst), 5);
@@ -377,10 +380,10 @@ mod tests {
     #[tokio::test]
     async fn drain_returns_false_when_a_task_outlives_the_timeout() {
         let bg = BackgroundRuns::new();
-        bg.spawn(BackgroundWorkClass::EphemeralCache, async {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-        })
-        .await;
+        // D2 a registered task remains pending past the policy deadline =>
+        // drain returns false; pending is explicit, with no arbitrary work sleep.
+        bg.spawn(BackgroundWorkClass::EphemeralCache, std::future::pending())
+            .await;
         let finished = bg.drain(Duration::from_millis(20)).await;
         assert!(
             !finished,

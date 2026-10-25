@@ -34,8 +34,8 @@ use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::agent_runner::{AgentRunError, run_configured_agent_with_id};
-use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use awaken_session_run_delivery::SessionCommit;
+use awaken_session_run_delivery::{BackgroundRuns, BackgroundWorkClass};
 
 mod selector;
 mod terminal_observer;
