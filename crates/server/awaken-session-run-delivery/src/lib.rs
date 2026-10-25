@@ -21,6 +21,7 @@
 #![warn(unreachable_pub)]
 
 mod authority_commits;
+mod auxiliary_snapshot;
 mod background;
 mod child_dispatch;
 mod commit_boundary;
@@ -31,6 +32,7 @@ mod delivery;
 mod hub;
 mod lock;
 mod memory_content;
+mod memory_extractions;
 mod memory_proposals;
 mod outcome_projection;
 mod run_publications;
@@ -49,6 +51,7 @@ mod thread_coordination;
 mod thread_resume;
 
 pub use authority_commits::{AuthorityCommits, runtime_authority_error};
+pub use auxiliary_snapshot::resolve_auxiliary_snapshot;
 pub use background::{BackgroundRuns, BackgroundWorkClass};
 pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
 pub use commit_boundary::{
@@ -73,6 +76,7 @@ pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlaceme
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use memory_content::PlatformMemoryHandle;
+pub use memory_extractions::MemoryExtractions;
 pub use memory_proposals::{
     MemoryProposalError, MemoryWriteProposals, committed_memory_writes, memory_extraction_input,
 };

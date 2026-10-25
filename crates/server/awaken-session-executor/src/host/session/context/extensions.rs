@@ -294,7 +294,7 @@ pub(super) async fn memory(
                          Memory selector is not an executable binding: {error}"
                     ))
                 })?;
-                let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
+                let snapshot = awaken_session_run_delivery::resolve_auxiliary_snapshot(
                     Some(publication_source.as_ref()),
                     workspace,
                     agent_id,
@@ -428,7 +428,7 @@ fn compact(
                      compactor is not an executable binding: {error}"
                 ))
             })?;
-            let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
+            let snapshot = awaken_session_run_delivery::resolve_auxiliary_snapshot(
                 Some(publication_source.as_ref()),
                 workspace,
                 &compact_config.agent_id,
