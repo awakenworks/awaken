@@ -451,7 +451,11 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.boundary_worker(claimed, false)
             .await?
-            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
+            .fail_claimed_before_execution(
+                claimed,
+                error.resolution_failure_code(),
+                error.to_string(),
+            )
             .await
     }
 

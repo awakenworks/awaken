@@ -24,7 +24,10 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
-use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
+use awaken_agent_contract::thread::read::recovery::{
+    AnswerableTicketError, CurrentRunError, RunRecordSelectionError, RunRecoverySnapshot,
+    RunResumeTicket,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryProjectionError {
@@ -34,6 +37,12 @@ pub enum RecoveryProjectionError {
     WrongRun { expected: String, actual: String },
     #[error("recovery snapshot thread {actual} does not match claimed thread {expected}")]
     WrongThread { expected: String, actual: String },
+    #[error("invalid recovery Run record: {0}")]
+    InvalidRun(#[from] RunRecordSelectionError),
+    #[error("invalid recovery Thread head: {0}")]
+    InvalidHead(#[from] CurrentRunError),
+    #[error("invalid recovery ticket: {0}")]
+    InvalidTicket(#[from] AnswerableTicketError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +169,13 @@ impl RecoveryProjection {
                 actual: snapshot.thread_id.0,
             }),
             RecoverySnapshotAdmission::Exact => {
+                // Preserve errors before exposing the Option-valued read port:
+                // damaged claim/head truth must not look like unstarted work.
+                snapshot.run_record(claimed_run_id)?;
+                snapshot.answerable_ticket(claimed_run_id)?;
+                if let Some(head) = snapshot.current_run()? {
+                    snapshot.answerable_ticket(&head.id)?;
+                }
                 *self
                     .snapshot
                     .write()
@@ -389,74 +405,37 @@ impl CommittedThreadView for RecoveryProjection {
             .and_then(|snapshot| {
                 snapshot
                     .as_ref()
-                    .filter(|snapshot| &snapshot.thread_id == thread_id)
-                    .map(|snapshot| snapshot.messages.clone())
+                    .map(|prefix| prefix.committed_messages(thread_id))
             })
             .unwrap_or_default()
     }
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
-        self.snapshot.read().ok().and_then(|snapshot| {
-            snapshot
-                .as_ref()?
-                .resume_tickets
-                .iter()
-                .find(|entry| &entry.run_id == run_id)
-                .map(|entry| entry.ticket.clone())
-        })
+        self.snapshot
+            .read()
+            .ok()
+            .and_then(|snapshot| snapshot.as_ref()?.resume_ticket(run_id))
     }
 
     fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-        self.snapshot.read().ok().and_then(|snapshot| {
-            let snapshot = snapshot
-                .as_ref()
-                .filter(|snapshot| &snapshot.thread_id == thread_id)?;
-            let latest_run_id = snapshot.latest_run_id.as_ref()?;
-            let latest = snapshot.runs.iter().find(|run| &run.id == latest_run_id)?;
-            let ticket = snapshot
-                .resume_tickets
-                .iter()
-                .find(|entry| &entry.run_id == latest_run_id)
-                .map(|entry| &entry.ticket);
-            awaken_agent_contract::thread::read::committed_thread_view::select_open_wait(
-                thread_id,
-                Some(latest),
-                ticket,
-            )
-        })
+        self.snapshot
+            .read()
+            .ok()
+            .and_then(|snapshot| snapshot.as_ref()?.open_wait_for_thread(thread_id))
     }
 
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
-        self.snapshot.read().ok().and_then(|snapshot| {
-            snapshot
-                .as_ref()?
-                .runs
-                .iter()
-                .find(|run| &run.id == run_id)
-                .cloned()
-        })
+        self.snapshot
+            .read()
+            .ok()
+            .and_then(|snapshot| snapshot.as_ref()?.run(run_id))
     }
 
     fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.snapshot.read().ok().and_then(|snapshot| {
-            let snapshot = snapshot.as_ref()?;
-            if &snapshot.thread_id != thread_id {
-                return None;
-            }
-            let run_id = snapshot.latest_run_id.as_ref()?;
-            snapshot.runs.iter().find(|run| &run.id == run_id).cloned()
-        })
-    }
-
-    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
-        self.snapshot.read().ok().and_then(|snapshot| {
-            snapshot
-                .as_ref()?
-                .runs
-                .iter()
-                .find(|run| &run.id == run_id)
-                .map(|run| run.state.clone())
-        })
+        self.snapshot
+            .read()
+            .ok()
+            .and_then(|snapshot| snapshot.as_ref()?.latest_run(thread_id))
     }
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
@@ -466,8 +445,7 @@ impl CommittedThreadView for RecoveryProjection {
             .and_then(|snapshot| {
                 snapshot
                     .as_ref()
-                    .filter(|snapshot| &snapshot.thread_id == thread_id)
-                    .map(|snapshot| snapshot.state.clone())
+                    .map(|prefix| prefix.committed_state(thread_id))
             })
             .unwrap_or_default()
     }
@@ -476,6 +454,30 @@ impl CommittedThreadView for RecoveryProjection {
 #[cfg(test)]
 mod install_tests {
     use super::*;
+
+    fn awaiting_snapshot(run: &RunId, thread: &ThreadId) -> RunRecoverySnapshot {
+        let mut prefix = snapshot(run.clone(), thread.clone(), 1);
+        prefix.runs.push(RunRecord {
+            id: run.clone(),
+            thread_id: thread.clone(),
+            state: RunState::Awaiting,
+        });
+        prefix.latest_run_id = Some(run.clone());
+        prefix.resume_tickets.push(RunResumeTicket {
+            run_id: run.clone(),
+            ticket: ResumeTicket::new(
+                "correlation",
+                run.clone(),
+                thread.clone(),
+                "snapshot",
+                "catalog",
+                awaken_agent_contract::agent::awaiting::AwaitTarget::Pause(
+                    awaken_agent_contract::agent::awaiting::PauseReason::Manual,
+                ),
+            ),
+        });
+        prefix
+    }
 
     fn snapshot(run_id: RunId, thread_id: ThreadId, thread_version: u64) -> RunRecoverySnapshot {
         RunRecoverySnapshot {
@@ -548,5 +550,65 @@ mod install_tests {
             .install(&claimed_run, &claimed_thread, replacement.clone())
             .expect("R3 exact replacement");
         assert_eq!(projection.current(), Some(replacement), "R3 new prefix");
+    }
+
+    #[test]
+    fn recovery_projection_rejects_ambiguous_and_foreign_run_records() {
+        // C1 the response's claim/Thread metadata is exact; C2 the selected
+        // Run is unique and belongs to that Thread; C3 a prior good prefix is
+        // installed. R1 C1+C2 => read the exact Awaiting head. R2 C1+!C2
+        // (equal duplicate, foreign owner or missing head) => installation
+        // refuses before replacement and preserves C3. Corruption must never
+        // become an absent Run that could authorize execution again.
+        let run = RunId("run".into());
+        let thread = ThreadId("thread".into());
+        let projection = RecoveryProjection::new();
+        let valid = awaiting_snapshot(&run, &thread);
+        projection.install(&run, &thread, valid.clone()).unwrap();
+        assert_eq!(projection.run_state(&run), Some(RunState::Awaiting), "R1");
+        assert!(projection.open_wait_for_thread(&thread).is_some(), "R1");
+        for cause in ["duplicate", "foreign-owner", "missing-head"] {
+            let mut corrupt = valid.clone();
+            match cause {
+                "duplicate" => corrupt.runs.push(corrupt.runs[0].clone()),
+                "foreign-owner" => corrupt.runs[0].thread_id = ThreadId("foreign".into()),
+                _ => corrupt.latest_run_id = Some(RunId("missing".into())),
+            }
+            assert!(
+                projection.install(&run, &thread, corrupt).is_err(),
+                "R2 {cause}"
+            );
+            assert_eq!(projection.current(), Some(valid.clone()), "R2 {cause}");
+        }
+    }
+
+    #[test]
+    fn recovery_projection_rejects_ambiguous_and_foreign_ticket_rows() {
+        // T1 exact claim, unique ticket and exact inner owner => admitted.
+        // T2 equal duplicate rows, an inner foreign Run or a foreign Thread
+        // => reject at installation, retaining the prior good prefix. The
+        // existing answerable_ticket selector owns this distinction; the
+        // cache must not invent a first-row recovery rule.
+        let run = RunId("run".into());
+        let thread = ThreadId("thread".into());
+        let projection = RecoveryProjection::new();
+        let valid = awaiting_snapshot(&run, &thread);
+        projection.install(&run, &thread, valid.clone()).unwrap();
+        assert!(projection.resume_ticket(&run).is_some(), "T1");
+        for cause in ["duplicate", "foreign-run", "foreign-thread"] {
+            let mut corrupt = valid.clone();
+            match cause {
+                "duplicate" => corrupt
+                    .resume_tickets
+                    .push(corrupt.resume_tickets[0].clone()),
+                "foreign-run" => corrupt.resume_tickets[0].ticket.run_id = RunId("foreign".into()),
+                _ => corrupt.resume_tickets[0].ticket.thread_id = ThreadId("foreign".into()),
+            }
+            assert!(
+                projection.install(&run, &thread, corrupt).is_err(),
+                "T2 {cause}"
+            );
+            assert_eq!(projection.current(), Some(valid.clone()), "T2 {cause}");
+        }
     }
 }

@@ -54,7 +54,7 @@ impl ManagedState {
                 StateError::Run(error)
             }
             awaken_session_application::SessionPreparationError::Unavailable(message) => {
-                StateError::Run(RunError::internal(message))
+                StateError::Run(RunError::unavailable(message))
             }
         }
     }
@@ -323,5 +323,82 @@ fn input_details(
         access: input.access,
         configuration_version,
         instructions: input.instructions.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_session_application::SessionPreparationError;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn preparation_causes_retain_their_http_classification() {
+        // Cause/effect graph: the application owns C1 missing, C2 root CAS
+        // conflict, C3 recoverable dependency/cleanup pending, C4 explicit Run
+        // rejection. The sole Managed conversion and existing HTTP projector
+        // must preserve those causes: E1 404, E2 409, E3 503, E4 the original
+        // rejection class. No error yields a successful cleanup receipt.
+        // | Rule | cause | effect |
+        // | P1 | NotFound | 404/not_found_error |
+        // | P2 | Conflict | 409/invalid_request_error |
+        // | P3 | Unavailable (cleanup or dependency) | 503/api_error |
+        // | P4 | Rejected bad request | 400/invalid_request_error |
+        // | P5 | Rejected internal | 500/api_error |
+        // | P6 | Rejected unavailable | 503/api_error |
+        // HTTP classification grants no retry/replay or physical-stop proof;
+        // the same Session operation must still supply verified completion.
+        for (rule, cause, expected_status, expected_type) in [
+            (
+                "P1",
+                SessionPreparationError::NotFound,
+                StatusCode::NOT_FOUND,
+                "not_found_error",
+            ),
+            (
+                "P2",
+                SessionPreparationError::Conflict,
+                StatusCode::CONFLICT,
+                "invalid_request_error",
+            ),
+            (
+                "P3-cleanup",
+                SessionPreparationError::Unavailable(
+                    "Session archive cleanup remains pending".into(),
+                ),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+            ),
+            (
+                "P3-dependency",
+                SessionPreparationError::Unavailable("dependency unavailable".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+            ),
+            (
+                "P4",
+                SessionPreparationError::Rejected(RunError::bad_request("invalid input")),
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+            ),
+            (
+                "P5",
+                SessionPreparationError::Rejected(RunError::internal("internal failure")),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+            ),
+            (
+                "P6",
+                SessionPreparationError::Rejected(RunError::unavailable("temporarily unavailable")),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+            ),
+        ] {
+            let (status, body) =
+                crate::routes::sessions::error_response(ManagedState::map_preparation_error(cause));
+            assert_eq!(status, expected_status, "{rule}");
+            let wire = serde_json::to_value(body.0).expect("canonical error envelope");
+            assert_eq!(wire["error"]["type"], expected_type, "{rule}");
+        }
     }
 }

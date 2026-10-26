@@ -65,7 +65,7 @@ impl Error {
     }
 
     /// A stable code does not imply that an invocation is safe to retry.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> &str {
         match self {
             Self::Diagnostic(error) => error.code(),
             Self::Resolution(_) => "resolution_failed",

@@ -4688,7 +4688,7 @@ async fn repository_rotation_slot_case(slot: &str) {
     // | Rule | Frozen pin | Vault | Incoming material | Session CAS | Result |
     // | B1 | absent | absent | absent | available | public Repository |
     // | B2 | absent | absent | supplied | available | seal and pin revision 1 |
-    // | B3 | revision 1 | revision 1 | replacement | unavailable | Vault 2, Session 1 |
+    // | B3 | revision 1 | revision 1 | replacement | unavailable | 503, Vault 2, Session 1 |
     // | B4 | revision 1 | revision 2 | different | available | reject, Session unchanged |
     // | B5 | revision 1 | revision 2 | byte-identical | available | recover pin revision 2 |
     let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -4969,7 +4969,7 @@ async fn repository_rotation_slot_case(slot: &str) {
         Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow(secret):
     )
     .await
-    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "B3");
+    .expect_for(StatusCode::SERVICE_UNAVAILABLE, "B3");
     assert!(!crash.to_string().contains("rotated-secret"), "B3 no echo");
     assert_eq!(
         applied.lock().unwrap().len(),
