@@ -260,45 +260,6 @@ impl SessionCoordinationReads for WorkerPlacedSessions {
     }
 }
 
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for WorkerPlacedSessions {
-    async fn resume_budget_reached(
-        &self,
-        delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
-    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, RunError> {
-        self.budgets.resume_budget_reached(delivery).await
-    }
-
-    async fn session_budget_resume_tickets(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, RunError> {
-        self.budgets
-            .session_budget_resume_tickets(session_id.as_str())
-            .await
-    }
-
-    async fn session_usage(
-        &self,
-        thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
-        awaken_session_execution_contract::BudgetRuntime::session_usage(&self.budgets, thread).await
-    }
-
-    async fn session_thread_usage(
-        &self,
-        session_id: &SessionId,
-        thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
-        awaken_session_execution_contract::BudgetRuntime::session_thread_usage(
-            &self.budgets,
-            session_id,
-            thread_id,
-        )
-        .await
-    }
-}
-
 /// The Coordinator owns no Run attempt, so no live inbox is ever active here:
 /// a message for a running Run is delivered as an ordinary Session event.
 #[async_trait::async_trait]

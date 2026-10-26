@@ -98,7 +98,7 @@ pub struct WorkerPlacement {
 pub struct WorkerPlacedSessions {
     ports: WorkerPlacement,
     threads: Arc<CoordinatedThreads>,
-    budgets: SessionBudgets,
+    budgets: Arc<SessionBudgets>,
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
     step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -118,8 +118,11 @@ impl WorkerPlacedSessions {
             wake: ports.wake.clone(),
             clock: ports.clock.clone(),
         }));
-        let budgets =
-            SessionBudgets::new(threads.clone(), ports.dispatch.clone(), ports.reads.clone());
+        let budgets = Arc::new(SessionBudgets::new(
+            threads.clone(),
+            ports.dispatch.clone(),
+            ports.reads.clone(),
+        ));
         Self {
             ports,
             threads,
@@ -161,7 +164,18 @@ impl WorkerPlacedSessions {
     }
 
     /// The Session application's role set for the Sessions registered Workers
-    /// realize: every role is served here, over the committed reads.
+    /// realize. Committed reads and budgets select their existing components.
+    ///
+    /// Budget ownership is selected through this role set, rather than a second
+    /// implementation on the placement aggregate.
+    /// ```compile_fail,E0277
+    /// use std::sync::Arc;
+    /// use awaken_session_execution_contract::BudgetRuntime;
+    /// use awaken_session_run_delivery::WorkerPlacedSessions;
+    /// fn duplicate_budget_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn BudgetRuntime> {
+    ///     sessions
+    /// }
+    /// ```
     #[must_use]
     pub fn session_execution_roles(
         self: &Arc<Self>,
@@ -173,7 +187,7 @@ impl WorkerPlacedSessions {
             ),
             coordination: self.clone(),
             coordination_reads: self.clone(),
-            budget: self.clone(),
+            budget: self.budgets.clone(),
             streaming_runs: self.clone(),
             thread_reads: self.ports.reads.clone(),
             outcomes: self.clone(),
@@ -1126,6 +1140,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn budget_role_retains_only_its_own_delivery_collaborators() {
+        // Cause/effect graph: C1 retain only the published BudgetRuntime;
+        // C2 drop the placement aggregate and every other selected role;
+        // C3 drop the budget role itself. E1 C1+C2 releases the aggregate and
+        // unrelated Memory recovery while retaining the original committed
+        // reads; E2 a budget query still uses those live collaborators;
+        // E3 C3 releases those reads. This detects a forwarding facade that
+        // accidentally gives a narrow caller the entire placement lifetime.
+        // | Rule | placement | budget role | Effect |
+        // | B1 | dropped | retained | E1+E2 |
+        // | B2 | dropped | dropped | E3 |
+        let sessions = Arc::new(delivery(None).await);
+        let parent = Arc::downgrade(&sessions);
+        let extractions = Arc::downgrade(&sessions.ports.memory_extractions);
+        let reads = Arc::downgrade(&sessions.ports.reads);
+        let roles = sessions.session_execution_roles();
+        let budget = roles.budget.clone();
+        drop(roles);
+        drop(sessions);
+        assert!(parent.upgrade().is_none(), "B1/E1 aggregate released");
+        assert!(
+            extractions.upgrade().is_none(),
+            "B1/E1 Memory recovery released"
+        );
+        assert!(reads.upgrade().is_some(), "B1/E1 required reads retained");
+        budget
+            .session_usage("budget-role-thread")
+            .await
+            .expect("B1/E2");
+        drop(budget);
+        assert!(reads.upgrade().is_none(), "B2/E3 reads released");
     }
 
     #[tokio::test]
