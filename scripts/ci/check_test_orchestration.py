@@ -710,6 +710,33 @@ def push_gate_commands(gate: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(derived)) + PUSH_ONLY_COMMANDS
 
 
+def execution_framework_hook_errors(hooks: str) -> list[str]:
+    """Keep impact planning and expensive runner fixtures independently triggered."""
+    lines, spans=generate_hooks._spans(hooks)
+    blocks={name:"".join(lines[start:end]) for name,start,end in spans}
+    framework=blocks.get("rust-execution-framework", "")
+    planner=blocks.get("affected-rust-plan", "")
+    expected={"affected-rust-plan":"python3 scripts/ci/rust_test_plan.py --self-test",
+              "rust-execution-framework":"python3 scripts/ci/benchmark_rust_build.py --self-test "
+                  "&& python3 scripts/ci/check_rust_test_execution.py --self-test"}
+    errors=[]
+    for name,command in expected.items():
+        actual=re.findall(r"(?m)^      run: (.*)$",blocks.get(name,""))
+        if actual!=[command] or sum(block.count(command) for block in blocks.values())!=1:
+            errors.append("test framework must keep one canonical fixture owner: "+name)
+    for block,paths in ((framework,("scripts/ci/check_rust_test_execution.py", "scripts/ci/crate_test.py",
+                            "rust-toolchain.toml", "Cargo.toml", "Cargo.lock", "lefthook.yml",
+                            ".cargo/config.toml", ".config/rust-tests.toml")),
+                       (planner,("crates/example/src/lib.rs", "crates/example/Cargo.toml"))):
+        pattern=re.search(r'(?m)^      glob: "([^"\n]+)"$',block)
+        if pattern is None or any(not generate_hooks.glob_matches(pattern.group(1),path) for path in paths):
+            errors.append("test framework trigger omits a required input")
+    pattern=re.search(r'(?m)^      glob: "([^"\n]+)"$',framework)
+    if pattern and generate_hooks.glob_matches(pattern.group(1),"crates/example/src/lib.rs"):
+        errors.append("ordinary Rust edits must keep the independent fixture fast path")
+    return errors
+
+
 def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     """Rust hook composition delegates each scan to its existing gate.
 
@@ -734,6 +761,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
                      "&& python3 scripts/ci/check_test_orchestration.py")
     if [line.strip() for line in pre_commit.splitlines()].count(orchestration) != 1:
         errors.append("test orchestration must run both its fixtures and the live repository scan once")
+    errors.extend(execution_framework_hook_errors(hooks))
     errors.extend(sdk_admission_errors(owner_text, gate))
     if hooks.count("run: python3 scripts/ci/check_crate_boundaries.py") != 1:
         errors.append("crate boundaries must have one universal pre-commit owner")
@@ -1083,6 +1111,17 @@ def self_test() -> None:
     duplicate = hooks.replace("    affected-rust-plan:\n",
                               "    duplicate:\n      run: " + orchestration + "\n\n    affected-rust-plan:\n")
     assert rust_hook_errors(duplicate, gate), "O2 duplicate orchestration owner"
+    assert not execution_framework_hook_errors(hooks), "F1 independently triggered fixtures"
+    fixture_command="python3 scripts/ci/check_rust_test_execution.py --self-test"
+    assert rust_hook_errors(hooks.replace(fixture_command,"true"),gate), "F2 missing runner fixtures"
+    assert rust_hook_errors(hooks.replace("    rust-execution-framework:","    removed-framework:"),gate), "F3 missing owner"
+    lines,spans=generate_hooks._spans(hooks)
+    start,end=next((start,end) for name,start,end in spans if name=="rust-execution-framework")
+    block="".join(lines[start:end])
+    for pattern in ("docs/**", "**"):
+        broken=re.sub(r'(?m)^      glob: .*$',f'      glob: "{pattern}"',block)
+        changed="".join(lines[:start])+broken+"".join(lines[end:])
+        assert rust_hook_errors(changed,gate), "F4 under-trigger or lost fast path"
     # B1 hook and release static each own one invocation; B2 a missing or
     # duplicated invocation, or a Rust-gate copy, must reject the graph.
     boundary = "python3 scripts/ci/check_crate_boundaries.py"

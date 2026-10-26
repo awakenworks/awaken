@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INPUT_GLOBS: tuple[str, ...] = (
     "Cargo.toml", "Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml",
     "docs/design/session-execution-test-acceptance/**", "scripts/ci/*.py", "scripts/ci/*.json",
+    "examples/**", "e2e/**", "rust-toolchain.toml",
 )
 SHARED_CONTRACT = "crates/contract/awaken-provisioning-contract/src/lib.rs"
 OWNED_STATE_FILE = "crates/server/awaken-protocol-managed/src/lib.rs"

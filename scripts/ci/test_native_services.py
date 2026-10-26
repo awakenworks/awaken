@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 import check_native_services as gate
+from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 import native_services as services
 import _native_postgres as pg
 import _native_s3 as s3
@@ -120,6 +121,98 @@ class NativeInstallTests(unittest.TestCase):
         self.assertIn("python scripts/ci/check_native_services.py --service s3",workflow)
         self.assertIn("target/windows-s3/installation.json",workflow)
 
+class NativeReceiptIdentityTests(unittest.TestCase):
+    def verify(self, base, paths, scope="core"):
+        import check_rust_test_execution as execution
+        log="".join("execution evidence: "+str(path)+"\n" for path in paths)
+        with mock.patch.object(execution,"verify_preparation"),mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
+            return gate.reconcile_postgres(log,"source",scope,fixture_owner=FIXTURE_OWNER)
+
+    def test_same_source_receipt_requires_this_service_and_this_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);paths=postgres_receipts(base,"core")
+            self.assertEqual(len(self.verify(base,paths)),17)
+            path=paths[0]/"results.json";original=json.loads(path.read_text())
+            for fixture in (None,{"kind":"postgres","owner":"older-fixture"},
+                            {"kind":"nats","owner":FIXTURE_OWNER}):
+                changed=dict(original,execution_inputs={"fixture":fixture,"crash_backend":None})
+                path.write_text(json.dumps(changed),encoding="utf-8")
+                with self.subTest(fixture=fixture),self.assertRaisesRegex(ValueError,"current owned fixture"):
+                    self.verify(base,paths)
+            path.write_text(json.dumps(original),encoding="utf-8")
+
+    def test_same_package_phase_cannot_be_duplicated_by_path_or_copied_to_another_directory(self):
+        from _native_postgres_scopes import postgres_phases
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);paths=postgres_receipts(base,"core")
+            work=[index for index,phase in enumerate(postgres_phases("core")) if phase.package=="awaken-work-store"]
+            self.assertEqual(len(work),2)
+            source,destination=work
+            duplicated=list(paths);duplicated[destination]=paths[source]
+            with self.assertRaisesRegex(ValueError,"duplicated a phase receipt directory"):
+                self.verify(base,duplicated)
+            # Distinct directories with valid same-package evidence still cannot
+            # stand in for the other phase. The old package Counter admitted it.
+            for name in ("results.json","list.log","results.log"):
+                (paths[destination]/name).write_bytes((paths[source]/name).read_bytes())
+            with self.assertRaisesRegex(ValueError,"canonical backend phase"):
+                self.verify(base,paths)
+
+    def test_phase_features_targets_ignored_selection_and_floors_are_not_interchangeable(self):
+        from _native_postgres_scopes import postgres_phases
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);paths=postgres_receipts(base,"core")
+            index=next(index for index,phase in enumerate(postgres_phases("core"))
+                       if phase.selector=="work_store_evidence")
+            path=paths[index]/"results.json";original=json.loads(path.read_text())
+            arguments=original["arguments"]
+            variants=[]
+            features=list(arguments);features[features.index("--features")+1]="sqlite";variants.append(features)
+            variants.append([argument for argument in arguments if argument!="--include-ignored"])
+            variants.append(arguments[:arguments.index("--")]+["--test","other_target"]+arguments[arguments.index("--"):])
+            first_floor=next(argument for argument in arguments if argument.startswith("--require-case="))
+            variants.append([argument for argument in arguments if argument!=first_floor])
+            for variant in variants:
+                path.write_text(json.dumps(dict(original,arguments=variant)),encoding="utf-8")
+                with self.subTest(arguments=variant),self.assertRaisesRegex(ValueError,"canonical backend phase"):
+                    self.verify(base,paths)
+
+    def test_receipt_cannot_drop_floors_while_retaining_canonical_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);paths=postgres_receipts(base,"storage")
+            self.verify(base,paths,scope="storage")
+            path=paths[0]/"results.json";document=json.loads(path.read_text())
+            document["required_cases"]=[]
+            path.write_text(json.dumps(document),encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,"canonical required case floors"):
+                self.verify(base,paths,scope="storage")
+
+    def test_configured_postgres_does_not_qualify_a_sqlite_or_missing_crash_backend(self):
+        from _native_postgres_scopes import postgres_phases
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);paths=postgres_receipts(base,"core")
+            index=next(index for index,phase in enumerate(postgres_phases("core")) if phase.environment)
+            path=paths[index]/"results.json";original=json.loads(path.read_text())
+            for backend in (None,"sqlite"):
+                runtime=dict(original["execution_inputs"],crash_backend=backend)
+                path.write_text(json.dumps(dict(original,execution_inputs=runtime)),encoding="utf-8")
+                with self.subTest(backend=backend),self.assertRaisesRegex(ValueError,"wrong runtime backend"):
+                    self.verify(base,paths)
+
+    def test_receipt_hash_cannot_describe_different_bytes_than_were_verified(self):
+        import check_rust_test_execution as execution
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);paths=postgres_receipts(base,"core")
+            path=paths[0]/"results.json"
+            def mutate(*_args):
+                document=json.loads(path.read_text());document["later_writer"]=True
+                path.write_text(json.dumps(document),encoding="utf-8")
+            log="".join("execution evidence: "+str(path)+"\n" for path in paths)
+            with mock.patch.object(execution,"verify_preparation",side_effect=mutate),mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
+                with self.assertRaisesRegex(ValueError,"changed during verification"):
+                    gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)
+
+
 class ExecutionReceiptTests(unittest.TestCase):
     def make_receipts(self,base):
         receipts=[]
@@ -127,7 +220,8 @@ class ExecutionReceiptTests(unittest.TestCase):
                            ("two",["hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable","hand::tests::nats_fixture_absence_and_configured_failure_are_distinct"])]:
             directory=base/"test-timings"/name;directory.mkdir(parents=True)
             doc={"status":"passed","exit_code":0,"source_unchanged":True,"source_digest":"source",
-                "selected_cases":sorted(cases),"required_cases":cases,"executed_cases":[[x,"ok"] for x in cases],"arguments":[]}
+                "selected_cases":sorted(cases),"required_cases":cases,"executed_cases":[[x,"ok"] for x in cases],"arguments":[],
+                "execution_inputs":{"fixture":{"kind":"nats","owner":FIXTURE_OWNER},"crash_backend":None}}
             (directory/"results.json").write_text(json.dumps(doc),encoding="utf-8")
             (directory/"list.log").write_text("".join(x+": test\n" for x in cases),encoding="utf-8")
             (directory/"results.log").write_text("".join("test "+x+" ... ok\n" for x in cases)+"test result: ok. 2 passed; 0 failed; 0 ignored;\nVERIFIED live NATS fixture\n",encoding="utf-8")
@@ -136,34 +230,21 @@ class ExecutionReceiptTests(unittest.TestCase):
 
     def test_postgres_requires_all_domains_and_boolean_live_fixture_flags(self):
         import check_rust_test_execution as q
-        packages=["awaken-reliability-testkit","awaken-model-catalog-store","awaken-credential-store",
-            "awaken-data-subject-store","awaken-captured-content-store","awaken-work-store",
-            "awaken-session-store","awaken-memory-store","awaken-skill-store","awaken-work-store","awaken-dispatch-http",
-            "awaken-config-store","awaken-session-store","awaken-credential-store","awaken-cli","awaken-cli","awaken-coordinator"]
         with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
-            base=Path(directory);receipts=[]
-            for index,package in enumerate(packages):
-                path=base/"test-timings"/str(index);path.mkdir(parents=True);case="law_"+str(index)
-                doc={"status":"passed","exit_code":0,"source_unchanged":True,"source_digest":"source",
-                    "selected_cases":[case],"executed_cases":[[case,"ok"]],"required_cases":[case],
-                    "arguments":["-p",package],"postgres_fixture_required":True,"postgres_fixture_configured":True}
-                (path/"results.json").write_text(json.dumps(doc),encoding="utf-8")
-                (path/"list.log").write_text(case+": test\n",encoding="utf-8")
-                (path/"results.log").write_text("test "+case+" ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n",encoding="utf-8")
-                receipts.append(path)
+            base=Path(directory);receipts=postgres_receipts(base,"core")
             log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log,"source")),17)
-                with self.assertRaisesRegex(ValueError,"all 17"):gate.reconcile_postgres("","source")
+                self.assertEqual(len(gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)),17)
+                with self.assertRaisesRegex(ValueError,"all 17"):gate.reconcile_postgres("","source",fixture_owner=FIXTURE_OWNER)
                 path=receipts[0]/"results.json";original=json.loads(path.read_text())
                 for key in ("postgres_fixture_required","postgres_fixture_configured"):
                     for invalid in (False,"1"):
                         doc=dict(original);doc[key]=invalid;path.write_text(json.dumps(doc),encoding="utf-8")
-                        with self.assertRaisesRegex(ValueError,"owned live fixture"):gate.reconcile_postgres(log,"source")
+                        with self.assertRaisesRegex(ValueError,"owned live fixture"):gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)
                 path.write_text(json.dumps(original),encoding="utf-8")
                 path=receipts[-2]/"results.json";doc=json.loads(path.read_text());doc["arguments"]=["-p","awaken-memory-store"]
                 path.write_text(json.dumps(doc),encoding="utf-8")
-                with self.assertRaisesRegex(ValueError,"omitted or duplicated"):gate.reconcile_postgres(log,"source")
+                with self.assertRaisesRegex(ValueError,"omitted or duplicated"):gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)
 
     def test_actual_names_source_and_live_marker_are_all_required(self):
         import check_rust_test_execution as q
@@ -172,20 +253,20 @@ class ExecutionReceiptTests(unittest.TestCase):
             receipts=self.make_receipts(base)
             log="".join("execution evidence: "+str(p)+"\n" for p in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_nats(log,"source")),2)
-                with self.assertRaisesRegex(ValueError,"both complete"):gate.reconcile_nats("","source")
-                with self.assertRaisesRegex(ValueError,"qualify this source"):gate.reconcile_nats(log,"other-source")
+                self.assertEqual(len(gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)),2)
+                with self.assertRaisesRegex(ValueError,"both complete"):gate.reconcile_nats("","source",fixture_owner=FIXTURE_OWNER)
+                with self.assertRaisesRegex(ValueError,"qualify this source"):gate.reconcile_nats(log,"other-source",fixture_owner=FIXTURE_OWNER)
                 path=receipts[0]/"results.log";original=path.read_text(encoding="utf-8")
                 for changed in (original.replace("VERIFIED live NATS fixture",""),
                                 original.replace(" ... ok"," ... ignored",1),
                                 original.replace(" ... ok"," ... FAILED",1),
                                 original+"SKIPPED NATS fixture\n"):
                     path.write_text(changed,encoding="utf-8")
-                    with self.subTest(output=changed),self.assertRaises(ValueError):gate.reconcile_nats(log,"source")
+                    with self.subTest(output=changed),self.assertRaises(ValueError):gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)
                 path.write_text(original,encoding="utf-8")
                 doc_path=receipts[0]/"results.json";doc=json.loads(doc_path.read_text())
                 doc["executed_cases"]=[];doc_path.write_text(json.dumps(doc),encoding="utf-8")
-                with self.assertRaisesRegex(ValueError,"identities differ"):gate.reconcile_nats(log,"source")
+                with self.assertRaisesRegex(ValueError,"identities differ"):gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)
 
 
 class WorkerResultTests(unittest.TestCase):
@@ -472,7 +553,8 @@ class S3ExecutionReceiptTests(unittest.TestCase):
             path=base/'test-timings'/str(index);path.mkdir(parents=True)
             doc={'status':'passed','exit_code':0,'source_unchanged':True,'source_digest':'source',
                  'selected_cases':sorted(cases),'required_cases':cases,'executed_cases':[[case,'ok'] for case in cases],
-                 'arguments':['-p','awaken-file-store'],'s3_fixture_required':True,'s3_fixture_configured':True}
+                 'arguments':['-p','awaken-file-store'],'s3_fixture_required':True,'s3_fixture_configured':True,
+                 'execution_inputs':{'fixture':{'kind':'s3','owner':FIXTURE_OWNER},'crash_backend':None}}
             (path/'results.json').write_text(json.dumps(doc),encoding='utf-8')
             (path/'list.log').write_text(''.join(case+': test\n' for case in cases),encoding='utf-8')
             (path/'results.log').write_text(''.join('test '+case+' ... ok\n' for case in cases)+'test result: ok. '+str(len(cases))+' passed; 0 failed; 0 ignored;\n'+('VERIFIED live S3 fixture\n' if index else ''),encoding='utf-8')
@@ -486,16 +568,16 @@ class S3ExecutionReceiptTests(unittest.TestCase):
             def references(rows):return ''.join('execution evidence: '+str(path)+'\n' for path in rows)
             log=references(receipts)
             with mock.patch.dict(os.environ,{'CARGO_TARGET_DIR':str(base)}):
-                self.assertEqual(sum(len(row['selected_cases']) for row in gate.reconcile_s3(log,'source')),6)
+                self.assertEqual(sum(len(row['selected_cases']) for row in gate.reconcile_s3(log,'source',fixture_owner=FIXTURE_OWNER)),6)
                 for rows in (receipts[:-1],[*receipts[:-1],receipts[-2]]):
-                    with self.assertRaises(ValueError):gate.reconcile_s3(references(rows),'source')
-                with self.assertRaises(ValueError):gate.reconcile_s3(log,'other-source')
+                    with self.assertRaises(ValueError):gate.reconcile_s3(references(rows),'source',fixture_owner=FIXTURE_OWNER)
+                with self.assertRaises(ValueError):gate.reconcile_s3(log,'other-source',fixture_owner=FIXTURE_OWNER)
                 path=receipts[0]/'results.json';original=json.loads(path.read_text())
                 for key in ('s3_fixture_required','s3_fixture_configured'):
                     for invalid in (False,'1',None):
                         doc=dict(original);doc[key]=invalid;path.write_text(json.dumps(doc),encoding='utf-8')
                         with self.subTest(key=key,invalid=invalid),self.assertRaisesRegex(ValueError,'require the owned'):
-                            gate.reconcile_s3(log,'source')
+                            gate.reconcile_s3(log,'source',fixture_owner=FIXTURE_OWNER)
                 path.write_text(json.dumps(original),encoding='utf-8')
                 for index in (1,2,3):
                     path=receipts[index]/'results.log';original_output=path.read_text()
@@ -503,7 +585,7 @@ class S3ExecutionReceiptTests(unittest.TestCase):
                                     original_output.replace(' ... ok',' ... ignored',1),
                                     original_output+'SKIPPED S3 fixture\n'):
                         path.write_text(changed,encoding='utf-8')
-                        with self.subTest(phase=index),self.assertRaises(ValueError):gate.reconcile_s3(log,'source')
+                        with self.subTest(phase=index),self.assertRaises(ValueError):gate.reconcile_s3(log,'source',fixture_owner=FIXTURE_OWNER)
                     path.write_text(original_output,encoding='utf-8')
 
 class S3InstallTests(unittest.TestCase):
@@ -535,6 +617,42 @@ class S3InstallTests(unittest.TestCase):
         import install_windows_services as installer
         with self.assertRaisesRegex(ValueError,'unsupported'):
             installer.extract_runtime(Path('not-opened.zip'),Path('not-written'),'s3')
+
+
+class IndependentPostgresDomainTests(unittest.TestCase):
+    def test_selector_cannot_drop_or_replace_a_required_domain_with_a_duplicate(self):
+        import re
+        import shlex
+        from _postgres_phase_plan import selector_phases
+        from _native_postgres_scopes import postgres_phases
+        source=(gate.ROOT/"scripts/ci/pg_tests.sh").read_text(encoding="utf-8")
+        parity=selector_phases(source,"backend_parity")
+        memory=next(phase for phase in parity if phase.package=="awaken-memory-store")
+        replacements=(tuple(phase for phase in parity if phase.package!="awaken-session-store"),
+                      tuple(memory if phase.package=="awaken-session-store" else phase for phase in parity))
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);path=root/"scripts/ci/pg_tests.sh";path.parent.mkdir(parents=True)
+            path.write_text(source,encoding="utf-8")
+            self.assertEqual(len(postgres_phases("core",root)),17)
+            for phases in replacements:
+                replacement="backend_parity() {\n"+"\n".join(
+                    "  pg_required_test "+shlex.join(phase.arguments)+' || record_failure "$?"'
+                    for phase in phases)+"\n}"
+                changed=re.sub(r"(?ms)^backend_parity\(\) \{\n.*?^\}",lambda match:replacement,source,count=1)
+                path.write_text(changed,encoding="utf-8")
+                with self.subTest(phases=len(phases)),self.assertRaisesRegex(ValueError,"independent required domain"):
+                    postgres_phases("core",root)
+
+    def test_script_cannot_silently_reclassify_a_required_postgres_crash_as_sqlite(self):
+        from _native_postgres_scopes import postgres_phases
+        source=(gate.ROOT/"scripts/ci/pg_tests.sh").read_text(encoding="utf-8")
+        marker="AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store"
+        self.assertIn(marker,source)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);path=root/"scripts/ci/pg_tests.sh";path.parent.mkdir(parents=True)
+            path.write_text(source.replace(marker,"pg_required_test -p awaken-session-store",1),encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,"independent crash backend policy"):
+                postgres_phases("core",root)
 
 
 if __name__=="__main__":

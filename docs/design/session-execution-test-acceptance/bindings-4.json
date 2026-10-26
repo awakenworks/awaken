@@ -4,22 +4,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 74,
+        "line": 75,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 76
+        "line": 77
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 83
+        "line": 84
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 87
+        "line": 88
       }
     ],
     "execution_witnesses": [
@@ -75,18 +75,18 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 101,
+        "line": 102,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 119
+        "line": 120
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 122
+        "line": 123
       }
     ],
     "execution_witnesses": [
@@ -142,18 +142,18 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 124,
+        "line": 125,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 129
+        "line": 130
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 136
+        "line": 137
       }
     ],
     "execution_witnesses": [
@@ -209,18 +209,18 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 138,
+        "line": 139,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 140
+        "line": 141
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 147
+        "line": 148
       }
     ],
     "execution_witnesses": [
@@ -276,22 +276,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 153,
+        "line": 154,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 157
-      },
-      {
-        "path": "scripts/ci/test_session_acceptance.py",
         "line": 158
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 161
+        "line": 159
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 162
       }
     ],
     "execution_witnesses": [
@@ -353,15 +353,11 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 163,
+        "line": 164,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
-      {
-        "path": "scripts/ci/test_session_acceptance.py",
-        "line": 171
-      },
       {
         "path": "scripts/ci/test_session_acceptance.py",
         "line": 172
@@ -369,6 +365,10 @@
       {
         "path": "scripts/ci/test_session_acceptance.py",
         "line": 173
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 174
       }
     ],
     "execution_witnesses": [
@@ -424,22 +424,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 175,
+        "line": 176,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 183
-      },
-      {
-        "path": "scripts/ci/test_session_acceptance.py",
         "line": 184
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 188
+        "line": 185
+      },
+      {
+        "path": "scripts/ci/test_session_acceptance.py",
+        "line": 189
       }
     ],
     "execution_witnesses": [
@@ -502,18 +502,18 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 207,
+        "line": 208,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 209
+        "line": 210
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 221
+        "line": 222
       }
     ],
     "execution_witnesses": [
@@ -571,22 +571,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 223,
+        "line": 224,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 225
+        "line": 226
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 227
+        "line": 228
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 229
+        "line": 230
       }
     ],
     "execution_witnesses": [
@@ -648,14 +648,14 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 248,
+        "line": 249,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 245
+        "line": 246
       }
     ],
     "execution_witnesses": [
@@ -712,14 +712,14 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 265,
+        "line": 266,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 245
+        "line": 246
       }
     ],
     "execution_witnesses": [
@@ -781,14 +781,14 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 286,
+        "line": 287,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 245
+        "line": 246
       }
     ],
     "execution_witnesses": [
@@ -845,18 +845,18 @@
     "source_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 307,
+        "line": 308,
         "file_sha256": "33ae09cbb214f5edf3b947fc98cb0bf55ee11909d926c2c742bba55f83e52585"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 310
+        "line": 311
       },
       {
         "path": "scripts/ci/test_session_acceptance.py",
-        "line": 311
+        "line": 312
       }
     ],
     "execution_witnesses": [
@@ -912,22 +912,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1054,
+        "line": 1146,
         "file_sha256": "3152420a7f06986a8a78cef43c42c3e40a0ab20fd9cd079cc7e42fdb7ffcd282"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1084
+        "line": 1176
       },
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1085
+        "line": 1177
       },
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1086
+        "line": 1178
       }
     ],
     "execution_witnesses": [

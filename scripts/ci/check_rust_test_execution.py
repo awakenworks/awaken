@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # source/deadline owners and production entrypoints, rather than a fixed list.
 # Variables a rustup Cargo proxy injects into every child it starts.
 PROXY_INJECTED = ("CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RUSTUP_TOOLCHAIN_SOURCE", "RUST_RECURSION_COUNT")
-INPUT_GLOBS = ("scripts/ci/**", "scripts/e2e/sandbox_capability_suite.sh")
+INPUT_GLOBS = ("scripts/ci/**", "scripts/e2e/sandbox_capability_suite.sh",
+               "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "lefthook.yml", ".cargo/**", ".config/**")
 
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
 EXECUTED = re.compile(r"^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
@@ -74,6 +75,11 @@ def required_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]
     """The existing focused libtest argv, with frontend-only floors removed."""
     if os.environ.get("RUST_TEST_NOCAPTURE") not in (None, "0"):
         raise ValueError("required test execution owns captured output; unset RUST_TEST_NOCAPTURE")
+    return selection_commands(arguments)
+
+
+def selection_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]:
+    """Pure canonical argv/floor projection, independent of the caller's environment."""
     required, cargo_arguments = [], []
     frontend = True
     for argument in arguments:
@@ -96,6 +102,22 @@ def required_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]
     if boundary == len(cargo_arguments):
         base.append("--")
     return [[*base, "--list"], [*base, "--show-output"]], required
+
+
+def execution_inputs() -> dict:
+    """Safe runtime identity, separate from the graph prepared before services start."""
+    kind = os.environ.get("AWAKEN_TEST_FIXTURE_KIND")
+    owner = os.environ.get("AWAKEN_TEST_FIXTURE_OWNER")
+    if (kind is None) != (owner is None):
+        raise ValueError("native fixture kind and owner must be supplied together")
+    if kind is not None and (kind not in ("postgres", "nats", "s3")
+                             or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", owner or "")):
+        raise ValueError("native fixture subject is malformed")
+    backend = os.environ.get("AWAKEN_CRASH_BACKEND") or None
+    if backend not in (None, "postgres", "sqlite"):
+        raise ValueError("unsupported crash-test backend selector")
+    return {"fixture": {"kind": kind, "owner": owner} if kind is not None else None,
+            "crash_backend": backend}
 
 
 def _write_receipt(path: Path, document: dict) -> None:
@@ -206,13 +228,14 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
     if source_snapshot()[0] != digest:
         raise ValueError("Source changed while binding required execution facts")
     preparation = verify_preparation(prepared, arguments, digest) if prepared is not None else None
+    runtime = execution_inputs()
     (receipt.parent / "working-tree.patch").write_bytes(facts["patch"])
     document = {"schema_version": 1, "kind": "required-libtest", "full_gate": False,
                 "source_kind": "working-tree", "revision": facts["revision"].decode().strip(),
                 "source_digest": digest, "index_tree": index,
                 "arguments": arguments, "required_cases": required, "commands": commands,
                 "list_command": commands[0], "test_command": commands[1],
-                "selected_cases": [], "executed_cases": [],
+                "selected_cases": [], "executed_cases": [], "execution_inputs": runtime,
                 "postgres_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_POSTGRES") == "1",
                 "postgres_fixture_configured": "AWAKEN_TEST_DATABASE_URL" in os.environ,
                 "s3_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_S3") == "1",
@@ -223,6 +246,8 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
         document["preparation"] = preparation
     _write_receipt(receipt, document)
     def verify():
+        if execution_inputs() != runtime:
+            raise ValueError("Execution fixture or backend changed during required execution")
         if source_snapshot()[0] != digest:
             raise ValueError("Source changed before or during required execution")
         if preparation is not None and verify_preparation(prepared, arguments, digest) != preparation:
@@ -293,6 +318,73 @@ def validate_receipt(inventory: Path, results: Path, status: int, receipt: Path,
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_execution_subject_is_runtime_input_and_contains_no_fixture_secrets(self):
+        with mock.patch.dict(os.environ,{},clear=True):
+            self.assertEqual(execution_inputs(),{"fixture":None,"crash_backend":None})
+            os.environ.update(AWAKEN_TEST_FIXTURE_KIND="postgres",AWAKEN_TEST_FIXTURE_OWNER="owned-pg",
+                              AWAKEN_TEST_DATABASE_URL="postgresql://secret-user:secret-password@localhost/db",
+                              AWAKEN_CRASH_BACKEND="postgres")
+            subject=execution_inputs()
+            self.assertEqual(subject,{"fixture":{"kind":"postgres","owner":"owned-pg"},"crash_backend":"postgres"})
+            self.assertNotIn("secret",json.dumps(subject))
+            os.environ["AWAKEN_TEST_FIXTURE_OWNER"]="another-pg"
+            self.assertNotEqual(execution_inputs(),subject)
+            os.environ["AWAKEN_CRASH_BACKEND"]="sqlite"
+            self.assertNotEqual(execution_inputs(),subject)
+
+    def test_execution_subject_drift_stops_the_real_command_sequence(self):
+        # The actual sequence must fence the boundary after inventory and before
+        # execution. Only Cargo transport/source acquisition are controlled.
+        for variable, replacement in (("AWAKEN_TEST_FIXTURE_OWNER", "another-owner"),
+                                      ("AWAKEN_CRASH_BACKEND", "sqlite"), (None, None)):
+            with self.subTest(variable=variable), tempfile.TemporaryDirectory() as temporary:
+                directory=Path(temporary)
+                facts={"index_tree":b"index", "revision":b"revision", "patch":b""}
+                calls=[]
+                def cargo(command, **kwargs):
+                    calls.append(command)
+                    if "--list" in command:
+                        kwargs["stdout"].write("critical: test\n")
+                        if variable: os.environ[variable]=replacement
+                    else:
+                        kwargs["stdout"].write("test critical ... ok\n"
+                            "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
+                    return subprocess.CompletedProcess(command,0)
+                environment={"AWAKEN_TEST_FIXTURE_KIND":"postgres",
+                    "AWAKEN_TEST_FIXTURE_OWNER":"owned-fixture", "AWAKEN_CRASH_BACKEND":"postgres"}
+                with mock.patch.dict(os.environ,environment,clear=True), \
+                     mock.patch("rust_test_plan.working_subject",return_value=("digest",facts)), \
+                     mock.patch("rust_test_plan.source_snapshot",return_value=("digest",{})), \
+                     mock.patch("crate_test.native_command",side_effect=lambda command,env:command), \
+                     mock.patch.object(subprocess,"run",side_effect=cargo), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    status=run_required(["-p","critical","--lib"],directory/"list.log",
+                                        directory/"results.log",directory/"results.json")
+                receipt=json.loads((directory/"results.json").read_text(encoding="utf-8"))
+                self.assertEqual(status,1 if variable else 0)
+                self.assertEqual(len(calls),1 if variable else 2)
+                if variable:
+                    self.assertIn("Execution fixture or backend changed",receipt["rows"][0]["subject_error"])
+                else:
+                    self.assertEqual(receipt["selected_cases"],["critical"])
+                    self.assertEqual(receipt["executed_cases"],[["critical","ok"]])
+
+    def test_execution_subject_refuses_partial_unknown_or_malformed_identity(self):
+        for environment in ({"AWAKEN_TEST_FIXTURE_KIND":"postgres"},
+                            {"AWAKEN_TEST_FIXTURE_OWNER":"owned-pg"},
+                            {"AWAKEN_TEST_FIXTURE_KIND":"unknown","AWAKEN_TEST_FIXTURE_OWNER":"owned"},
+                            {"AWAKEN_TEST_FIXTURE_KIND":"postgres","AWAKEN_TEST_FIXTURE_OWNER":"secret\nline"},
+                            {"AWAKEN_CRASH_BACKEND":"unknown"}):
+            with self.subTest(environment=environment),mock.patch.dict(os.environ,environment,clear=True):
+                with self.assertRaises(ValueError):execution_inputs()
+
+    def test_selection_projection_is_pure_but_execution_still_owns_capture(self):
+        arguments=["-p","package","--require-case=case","--","--test-threads=1"]
+        with mock.patch.dict(os.environ,{"RUST_TEST_NOCAPTURE":"1"}):
+            self.assertEqual(selection_commands(arguments)[1],["case"])
+            with self.assertRaisesRegex(ValueError,"owns captured output"):
+                required_commands(arguments)
+
     @staticmethod
     def runner_fixture(fixture: Path, *entrypoint_inputs: str) -> Path:
         from formal_plan import script_closure
