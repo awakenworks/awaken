@@ -422,9 +422,22 @@ impl MemoryExtractionIntent {
     /// be CAS-prepared without racing its first claim. Progressed work refuses
     /// relocation; ordinary lifecycle commands retain the frozen choice.
     pub fn with_execution(
-        mut self,
+        self,
         execution: MemoryExtractionExecution,
     ) -> Result<Self, MemoryExtractionError> {
+        self.selected_execution(execution)?.ok_or_else(|| {
+            MemoryExtractionError::Invalid(
+                "execution facts can only be selected before the first extraction admission".into(),
+            )
+        })
+    }
+
+    /// The same aggregate selection law serves construction and the
+    /// controller's CAS preparation. Started work keeps its existing choice.
+    fn selected_execution(
+        mut self,
+        execution: MemoryExtractionExecution,
+    ) -> Result<Option<Self>, MemoryExtractionError> {
         self.validate()?;
         if self.status != MemoryExtractionStatus::Pending
             || self.revision != 0
@@ -434,15 +447,13 @@ impl MemoryExtractionIntent {
             || self.lease_expires_at_unix_ms.is_some()
             || self.last_error.is_some()
         {
-            return Err(MemoryExtractionError::Invalid(
-                "execution facts can only be selected before the first extraction admission".into(),
-            ));
+            return Ok(None);
         }
         if self.execution != execution {
             self.execution = execution;
             self.bump_revision()?;
         }
-        Ok(self)
+        Ok(Some(self))
     }
 
     /// Acquire or recover the lease for a non-terminal intent.
@@ -1422,11 +1433,18 @@ mod tests {
         assert_eq!(value["memory_config_version"], 2);
     }
 
+    enum CasInterference {
+        FirstClaim,
+        Refuse(MemoryExtractionError),
+    }
+
     #[derive(Default)]
     struct TestRepository {
         stored: Mutex<Vec<MemoryExtractionIntent>>,
         recoverable_failures_remaining: AtomicUsize,
         recoverable_reads: AtomicUsize,
+        cas_calls: AtomicUsize,
+        next_cas_interference: Mutex<Option<CasInterference>>,
     }
 
     #[async_trait]
@@ -1510,6 +1528,7 @@ mod tests {
             expected_revision: u64,
             intent: MemoryExtractionIntent,
         ) -> Result<(), MemoryExtractionError> {
+            self.cas_calls.fetch_add(1, Ordering::SeqCst);
             let mut stored = self.stored.lock().unwrap();
             let Some(position) = stored
                 .iter()
@@ -1517,11 +1536,245 @@ mod tests {
             else {
                 return Err(MemoryExtractionError::NotFound(intent.intent_id));
             };
+            match self.next_cas_interference.lock().unwrap().take() {
+                Some(CasInterference::FirstClaim) => {
+                    stored[position]
+                        .claim("racing-owner", 1_000, 3_000)
+                        .unwrap();
+                }
+                Some(CasInterference::Refuse(error)) => return Err(error),
+                None => {}
+            }
             if stored[position].revision != expected_revision {
                 return Err(MemoryExtractionError::RevisionConflict(intent.intent_id));
             }
             stored[position] = intent;
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_execution_preparation_retains_every_progressed_intent() {
+        // Cause/effect matrix: C1 pristine / already selected / diagnostic /
+        // claimed / retried / extracted / stored / completed / indeterminate /
+        // failed; C2 default or explicit execution facts. P1 only changed facts
+        // on a pristine intent use one CAS and advance its same revision. P2 an
+        // unchanged choice uses no CAS. P3 every progressed/diagnostic intent
+        // stays byte-exact, including its original attribution and partition.
+        // No claim, auxiliary identity, mutation, receipt or extractor is reset.
+        for stage in [
+            "pristine",
+            "selected",
+            "diagnostic",
+            "claimed",
+            "retried",
+            "extracted",
+            "stored",
+            "completed",
+            "indeterminate",
+            "failed",
+        ] {
+            for explicit in [false, true] {
+                let repository = Arc::new(TestRepository::default());
+                let controller = MemoryExtractionController::new(
+                    repository.clone(),
+                    "preparer",
+                    awaken_time::system_clock(),
+                );
+                let mut original = intent();
+                if stage == "selected" {
+                    original = original
+                        .with_execution(MemoryExtractionExecution {
+                            commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                            data_subject_id: Some(awaken_runtime_contract::DataSubjectId(
+                                "original-subject".into(),
+                            )),
+                        })
+                        .unwrap();
+                } else if stage == "diagnostic" {
+                    original.last_error = Some("historical outcome requires observation".into());
+                } else if stage != "pristine" {
+                    let generation = original.claim("previous-owner", 1_000, 3_000).unwrap();
+                    match stage {
+                        "claimed" => {}
+                        "retried" => original
+                            .retry("previous-owner", generation, 1_000, "retry")
+                            .unwrap(),
+                        "indeterminate" => original
+                            .mark_execution_indeterminate(
+                                "previous-owner",
+                                generation,
+                                1_000,
+                                "unknown",
+                            )
+                            .unwrap(),
+                        "failed" => original
+                            .terminal_fail("previous-owner", generation, 1_000, "refused")
+                            .unwrap(),
+                        _ => {
+                            original
+                                .mark_extracted("previous-owner", generation, 1_000, Vec::new())
+                                .unwrap();
+                            if stage != "extracted" {
+                                original
+                                    .mark_stored(
+                                        "previous-owner",
+                                        generation,
+                                        1_000,
+                                        MemoryExtractionReceipt {
+                                            stored_at_unix_ms: 1_000,
+                                            mutations: Vec::new(),
+                                        },
+                                    )
+                                    .unwrap();
+                            }
+                            if stage == "completed" {
+                                original
+                                    .complete("previous-owner", generation, 1_000)
+                                    .unwrap();
+                            }
+                        }
+                    }
+                }
+                original.validate().unwrap();
+                controller.enqueue(original.clone()).await.unwrap();
+                let requested = if explicit {
+                    MemoryExtractionExecution {
+                        commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                        data_subject_id: Some(awaken_runtime_contract::DataSubjectId(
+                            "next-subject".into(),
+                        )),
+                    }
+                } else {
+                    MemoryExtractionExecution::default()
+                };
+                let prepared = controller
+                    .prepare_execution(&original.intent_id, requested.clone())
+                    .await
+                    .unwrap();
+                let changes = stage == "pristine" && explicit;
+                assert_eq!(
+                    repository.cas_calls.load(Ordering::SeqCst),
+                    usize::from(changes),
+                    "{stage}/{explicit}"
+                );
+                if changes {
+                    assert_eq!(prepared.execution(), &requested, "P1");
+                    assert_eq!(prepared.revision, original.revision + 1, "P1");
+                    let mut frame = prepared.clone();
+                    frame.execution = original.execution.clone();
+                    frame.revision = original.revision;
+                    assert_eq!(frame, original, "P1 complete unchanged frame");
+                } else {
+                    assert_eq!(prepared, original, "P2/P3 {stage}/{explicit}");
+                }
+                assert_eq!(
+                    repository
+                        .get_extraction(&original.intent_id)
+                        .await
+                        .unwrap(),
+                    Some(prepared)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_execution_preparation_observes_the_cas_winner_and_preserves_refusals() {
+        // R1 first claim wins the CAS => return that exact claimed row, never
+        // rewrite execution facts or retry relocation. R2 storage refuses CAS
+        // => retain its original typed error and original row. R3 missing /
+        // invalid stored intent => reject before CAS. The existing SQLite
+        // independent-client race covers the actual shared storage fence;
+        // these rows cover this controller's interpretation of each receipt.
+        for cause in ["claim-wins", "storage-refuses", "missing", "invalid"] {
+            let repository = Arc::new(TestRepository::default());
+            let controller = MemoryExtractionController::new(
+                repository.clone(),
+                "preparer",
+                awaken_time::system_clock(),
+            );
+            let mut original = intent();
+            if cause == "invalid" {
+                original.workspace_id.clear();
+            }
+            if cause != "missing" {
+                repository
+                    .put_extraction_if_absent(original.clone())
+                    .await
+                    .unwrap();
+            }
+            *repository.next_cas_interference.lock().unwrap() = match cause {
+                "claim-wins" => Some(CasInterference::FirstClaim),
+                "storage-refuses" => Some(CasInterference::Refuse(MemoryExtractionError::Storage(
+                    "exact storage refusal".into(),
+                ))),
+                _ => None,
+            };
+            let result = controller
+                .prepare_execution(
+                    &original.intent_id,
+                    MemoryExtractionExecution {
+                        commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                        data_subject_id: None,
+                    },
+                )
+                .await;
+            match cause {
+                "claim-wins" => {
+                    let winner = result.unwrap();
+                    assert_eq!(winner.status, MemoryExtractionStatus::Claimed, "R1");
+                    assert_eq!(winner.claim_owner.as_deref(), Some("racing-owner"), "R1");
+                    assert_eq!(
+                        winner.execution(),
+                        original.execution(),
+                        "R1 original partition"
+                    );
+                    assert_eq!(
+                        (winner.revision, winner.attempts, winner.claim_generation),
+                        (1, 1, 1),
+                        "R1"
+                    );
+                    assert_eq!(
+                        repository
+                            .get_extraction(&original.intent_id)
+                            .await
+                            .unwrap(),
+                        Some(winner)
+                    );
+                }
+                "storage-refuses" => assert_eq!(
+                    result,
+                    Err(MemoryExtractionError::Storage(
+                        "exact storage refusal".into()
+                    )),
+                    "R2"
+                ),
+                "missing" => assert_eq!(
+                    result,
+                    Err(MemoryExtractionError::NotFound(original.intent_id.clone())),
+                    "R3"
+                ),
+                _ => assert!(
+                    matches!(result, Err(MemoryExtractionError::Invalid(_))),
+                    "R3"
+                ),
+            }
+            let writes = usize::from(matches!(cause, "claim-wins" | "storage-refuses"));
+            assert_eq!(
+                repository.cas_calls.load(Ordering::SeqCst),
+                writes,
+                "one receipt, no relocation retry"
+            );
+            if cause == "storage-refuses" || cause == "invalid" {
+                assert_eq!(
+                    repository
+                        .get_extraction(&original.intent_id)
+                        .await
+                        .unwrap(),
+                    Some(original)
+                );
+            }
         }
     }
 

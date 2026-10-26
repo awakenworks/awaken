@@ -57,6 +57,41 @@ impl MemoryExtractionController {
         self.repository.put_extraction_if_absent(intent).await
     }
 
+    /// Freeze execution facts on an existing, still-pristine intent through its
+    /// original revision fence. This selects no claim and performs no external
+    /// effect. Already selected or progressed work retains its exact choice;
+    /// a competing first claim/selection wins once, without relocation retries.
+    pub async fn prepare_execution(
+        &self,
+        intent_id: &str,
+        execution: MemoryExtractionExecution,
+    ) -> Result<MemoryExtractionIntent, MemoryExtractionError> {
+        let current = self
+            .repository
+            .get_extraction(intent_id)
+            .await?
+            .ok_or_else(|| MemoryExtractionError::NotFound(intent_id.into()))?;
+        let Some(selected) = current.clone().selected_execution(execution)? else {
+            return Ok(current);
+        };
+        if selected == current {
+            return Ok(current);
+        }
+        match self
+            .repository
+            .compare_and_swap_extraction(current.revision, selected.clone())
+            .await
+        {
+            Ok(()) => Ok(selected),
+            Err(MemoryExtractionError::RevisionConflict(_)) => self
+                .repository
+                .get_extraction(intent_id)
+                .await?
+                .ok_or_else(|| MemoryExtractionError::NotFound(intent_id.into())),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Create the stable terminal-Run intent over only the transcript suffix not
     /// already owned by an earlier durable intent.
     pub async fn enqueue_terminal(
