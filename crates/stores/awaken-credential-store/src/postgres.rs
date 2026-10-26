@@ -45,9 +45,8 @@ use awaken_credential_vault::catalog::{
 use awaken_credential_vault::repo::{
     CredentialMaterialMutationPhase, CredentialMutationCommitMode, CredentialMutationIntent,
     CredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
-    ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
-    PendingManagedCredentialMutation, managed_credential_commit_plan,
-    managed_credential_rollout_identity_decision, managed_retirement_parent_admitted,
+    ManagedCredentialRollout, PendingManagedCredentialMutation, managed_credential_commit_plan,
+    managed_retirement_parent_admitted,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
@@ -161,6 +160,8 @@ fn invalid_managed_pending(error: ManagedCredentialMutationError) -> CredentialE
 pub struct PostgresCredentialRepo {
     pool: PgPool,
 }
+
+mod rollout_delivery;
 
 #[async_trait::async_trait]
 impl ManagedVaultRepo for PostgresCredentialRepo {
@@ -756,31 +757,8 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        if let Some(rollout) = plan.rollout {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_managed_credential_rollout (event_id, data) VALUES ($1, $2) \
-                 ON CONFLICT (event_id) DO NOTHING"
-            ))
-            .bind(&rollout.id)
-            .bind(Json(&rollout))
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-            let durable = sqlx::query(&format!(
-                "SELECT data FROM {p}_managed_credential_rollout WHERE event_id = $1 FOR UPDATE"
-            ))
-            .bind(&rollout.id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(storage)?
-            .try_get::<Json<ManagedCredentialRollout>, _>("data")
-            .map(|Json(value)| value)
-            .map_err(storage)?;
-            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
-                == ManagedCredentialRolloutIdentityDecision::Collision
-            {
-                return Err(ManagedCredentialMutationError::RevisionConflict);
-            }
+        if let Some(rollout) = plan.rollout.as_ref() {
+            rollout_delivery::publish_rollout(&mut tx, rollout).await?;
         }
         tx.commit().await.map_err(storage)?;
         Ok(plan.reclaiming_mutation)
@@ -1059,7 +1037,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
         let rows = sqlx::query(&format!(
-            "SELECT event_id, data::text AS data FROM {NS}_managed_credential_rollout \
+            "SELECT event_id, data::text AS data FROM {NS}_managed_credential_rollout WHERE delivered=FALSE \
              ORDER BY created_at, event_id"
         ))
         .fetch_all(&self.pool)
@@ -1086,39 +1064,14 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         &self,
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_rollout WHERE event_id = $1 FOR UPDATE"
-        ))
-        .bind(&rollout.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<ManagedCredentialRollout>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(storage)
-        })
-        .transpose()?;
-        let Some(durable) = durable else {
-            tx.commit().await.map_err(storage)?;
-            return Ok(());
-        };
-        if managed_credential_rollout_identity_decision(Some(&durable), rollout)
-            == ManagedCredentialRolloutIdentityDecision::Collision
-        {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential rollout acknowledgement is stale".into(),
-            ));
-        }
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_managed_credential_rollout WHERE event_id = $1"
-        ))
-        .bind(&rollout.id)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)
+        self.record_rollout_delivery(rollout, true).await
+    }
+
+    async fn rearm_managed_rollout(
+        &self,
+        rollout: &ManagedCredentialRollout,
+    ) -> Result<(), CredentialError> {
+        self.record_rollout_delivery(rollout, false).await
     }
 
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {

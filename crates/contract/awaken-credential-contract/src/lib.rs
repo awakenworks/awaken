@@ -57,7 +57,8 @@ pub use attempt::{
     candidate_credential_material_binding, candidate_fingerprint, candidate_provider_expectation,
     compile_candidate_credential_bindings, credential_access_has_same_authority,
     credential_access_without_delivery, credential_realization_persistence_decision,
-    verify_attempt_credential_delivery, verify_credential_realization_receipt,
+    provider_expectation_from_pins, verify_attempt_credential_delivery,
+    verify_credential_realization_receipt,
 };
 mod http_effect;
 pub use http_effect::{
@@ -84,6 +85,7 @@ pub use managed_rollout::{
     ManagedCredentialAdoptionUnavailable, ManagedCredentialOperation, ManagedCredentialRollout,
     ManagedCredentialRolloutIdentityDecision, ManagedCredentialRolloutTarget,
     managed_credential_rollout_adoption_revision, managed_credential_rollout_identity_decision,
+    managed_rollout_acknowledgement_superseded_by,
 };
 mod mcp_requirement;
 pub use mcp_requirement::{

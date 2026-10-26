@@ -133,7 +133,7 @@ impl SessionAggregate {
         mcp_changed: bool,
     ) -> SessionUpdateChanges {
         let changes = SessionUpdateChanges::between(before, &self.state);
-        debug_assert_eq!(changes.mcp, mcp_changed);
+        debug_assert_eq!(before.mcp != self.state.mcp, mcp_changed);
         changes
     }
 }

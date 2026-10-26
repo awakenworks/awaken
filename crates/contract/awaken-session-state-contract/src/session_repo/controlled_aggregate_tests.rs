@@ -37,6 +37,173 @@ fn root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
 }
 
 #[test]
+fn credential_adoption_requires_idle_or_a_proven_unattempted_preparation() {
+    // C1 nonterminal Idle; C2 frozen Preparing; C3 explicit empty physical
+    // history; C4 no realization owner/attempt; C5 MCP only Requested, unclaimed,
+    // unattempted and unacknowledged; C6 a reserved Run/interval already exists.
+    // R1=C1 -> allow. R2=C2+C3+C4+C5 with either C6 -> allow. R3 each physical
+    // precondition independently false -> deny. R4 terminal/retired -> deny.
+    // Archive still additionally requires no active activity or interval: its
+    // old admission law is not widened by sharing the physical predicates.
+    let mut initial = fresh_root(SessionExecutionState::Preparing, 0).into_snapshot();
+    if let crate::SessionBaselineState::Frozen(baseline) = &mut initial.baseline {
+        baseline.mutation_policy = crate::SessionMutationPolicy::Frozen;
+    }
+    initial.created_at_unix_ms = Some(1);
+    let mcp = crate::SessionMcpAttachmentSet::from_initial(
+        vec![
+            awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                name: "application".into(),
+                target: awaken_agent_contract::McpTarget::parse_http("https://example.test")
+                    .unwrap(),
+                prompts_as_skills: false,
+                credential: None,
+                origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+            },
+        ],
+        None,
+    )
+    .unwrap();
+    initial.mcp = mcp;
+    let lease = crate::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 500,
+    };
+    for reserved in [false, true] {
+        let mut aggregate = SessionAggregate::try_from(initial.clone()).unwrap();
+        if reserved {
+            assert_eq!(
+                aggregate.activity().open(
+                    None,
+                    true,
+                    false,
+                    1,
+                    0,
+                    Some((
+                        "operation",
+                        &awaken_agent_contract::ThreadId("controlled".into()),
+                        &awaken_agent_contract::RunId("reserved".into())
+                    ))
+                ),
+                SessionActivityAdmissionPlan::Open(1)
+            );
+        }
+        let candidate = aggregate.into_snapshot();
+        assert!(
+            crate::session_can_adopt_mcp_credential_lifecycle(&candidate),
+            "R2 reserved={reserved}"
+        );
+        assert_eq!(
+            crate::session_is_unattempted_profiled_preparation(&candidate),
+            !reserved
+        );
+        let mut replaced = candidate.clone();
+        replaced.mcp.request_full_replacement(vec![
+            awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                name: "application".into(),
+                target: awaken_agent_contract::McpTarget::parse_http("https://current.example.test").unwrap(),
+                prompts_as_skills:false, credential:None,
+                origin:awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+            }
+        ], None).unwrap();
+        assert!(
+            crate::session_can_adopt_mcp_credential_lifecycle(&replaced),
+            "R2 never-started retired history cannot block another credential refresh"
+        );
+        assert!(
+            !crate::session_is_unattempted_profiled_preparation(&replaced),
+            "archive retains its original all-Requested rule"
+        );
+        for cause in [
+            "unknown",
+            "owner",
+            "attempt",
+            "mcp_attempt",
+            "mcp_active",
+            "ack",
+            "running",
+            "terminal",
+            "archived",
+            "not_frozen",
+            "no_creation",
+        ] {
+            let mut changed = candidate.clone();
+            match cause {
+                "unknown" => changed.environment_materialization = None,
+                "owner" => changed.realization = Some(lease.clone()),
+                "attempt" => changed.realization_progress.attempts = 1,
+                "mcp_attempt" => changed.mcp.attachments[0].attempts = 1,
+                "mcp_active" => {
+                    changed.mcp.attachments[0].state =
+                        awaken_session_configuration_contract::mcp::McpAttachmentState::Active
+                }
+                "ack" => changed.mcp.attachments[0].publication_acknowledged = true,
+                "running" => changed.execution = SessionExecutionState::Running,
+                "terminal" => changed.execution = SessionExecutionState::Terminated,
+                "archived" => {
+                    changed.disposition = crate::SessionDisposition::Archived {
+                        archived_at: "1970-01-01T00:00:00Z".into(),
+                        archived_at_unix_ms: Some(0),
+                    };
+                }
+                "not_frozen" => {
+                    let crate::SessionBaselineState::Frozen(baseline) = &mut changed.baseline
+                    else {
+                        unreachable!()
+                    };
+                    baseline.mutation_policy = crate::SessionMutationPolicy::Managed;
+                }
+                "no_creation" => changed.created_at_unix_ms = None,
+                _ => unreachable!(),
+            }
+            let before = changed.clone();
+            assert!(
+                !crate::session_can_adopt_mcp_credential_lifecycle(&changed),
+                "R3/R4 {cause}"
+            );
+            assert_eq!(changed, before, "read-only query");
+        }
+    }
+    let mut materializing = SessionAggregate::try_from(initial.clone()).unwrap();
+    materializing
+        .assignment()
+        .claim(lease.clone(), false)
+        .unwrap();
+    let intent = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Create,
+        Some(lease),
+    )
+    .for_environment(
+        materializing
+            .frozen_baseline()
+            .unwrap()
+            .environment
+            .config_fingerprint
+            .0
+            .clone(),
+    );
+    materializing
+        .environment()
+        .admit_environment_effect("workspace", &intent, 1)
+        .unwrap();
+    let mut materialized = materializing.into_snapshot();
+    materialized.realization = None;
+    materialized.realization_progress = Default::default();
+    assert!(
+        !crate::session_can_adopt_mcp_credential_lifecycle(&materialized),
+        "R3 admitted effect survives pristine counters"
+    );
+    initial.execution = SessionExecutionState::Idle;
+    assert!(
+        crate::session_can_adopt_mcp_credential_lifecycle(&initial),
+        "R1 existing Idle rule"
+    );
+}
+
+#[test]
 fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_domain() {
     // Causes: N1 fresh, before first Create; N2 named operation/raw Thread/Run;
     // N3 same Run with a new operation/epoch; N4 anonymous low admission;

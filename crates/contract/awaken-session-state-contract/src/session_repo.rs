@@ -48,7 +48,8 @@ pub use mutation::{
     session_tombstone_is_admitted,
 };
 pub use persisted_session::{
-    PersistedSession, SessionEventDispatchSettlementEffect, session_is_terminal,
+    PersistedSession, SessionEventDispatchSettlementEffect,
+    session_can_adopt_mcp_credential_lifecycle, session_is_terminal,
     session_is_unattempted_profiled_preparation,
 };
 pub use placement::{SessionPlacementClass, SessionPublicStatus, session_is_budget_paused};

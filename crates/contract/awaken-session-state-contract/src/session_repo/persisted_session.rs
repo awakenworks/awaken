@@ -23,6 +23,18 @@ use crate::{
 /// join verified cleanup before returning a successful profiled release.
 #[must_use]
 pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -> bool {
+    session_has_unattempted_profiled_environment(session)
+        && !session.has_active_activities()
+        && session.running_interval.is_none()
+        && session.mcp.attachments.iter().all(|attachment| {
+            attachment.state
+                == awaken_session_configuration_contract::mcp::McpAttachmentState::Requested
+        })
+}
+
+/// Physical preparation facts shared by archive admission and credential
+/// adoption. A reserved Run is logical activity, not a realization effect.
+fn session_has_unattempted_profiled_environment(session: &PersistedSession) -> bool {
     !session
         .environment_materialization
         .as_deref()
@@ -33,8 +45,6 @@ pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -
         })
         && session.created_at_unix_ms.is_some()
         && session.execution == SessionExecutionState::Preparing
-        && !session.has_active_activities()
-        && session.running_interval.is_none()
         && matches!(
             session.environment,
             crate::SessionEnvironmentState::Unmaterialized
@@ -51,12 +61,27 @@ pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -
                 && activation.lease_expires_at_unix_ms.is_none()
         })
         && session.mcp.attachments.iter().all(|attachment| {
-            attachment.state
-                == awaken_session_configuration_contract::mcp::McpAttachmentState::Requested
-                && attachment.attempts == 0
+            matches!(
+                attachment.state,
+                awaken_session_configuration_contract::mcp::McpAttachmentState::Requested
+                    | awaken_session_configuration_contract::mcp::McpAttachmentState::Removed
+            ) && attachment.attempts == 0
                 && attachment.realization.is_none()
                 && !attachment.publication_acknowledged
         })
+}
+
+/// Credential-only adoption may advance an unattempted frozen preparation even
+/// after Run reservation. Missing materialization history is unknown. Callers
+/// still validate same-source/topology monotonicity and recheck under root CAS.
+#[must_use]
+pub fn session_can_adopt_mcp_credential_lifecycle(session: &PersistedSession) -> bool {
+    !session.is_terminal()
+        && (session.execution == SessionExecutionState::Idle
+            || (session_has_unattempted_profiled_environment(session)
+                && session
+                    .environment_materialization()
+                    .is_some_and(crate::SessionEnvironmentMaterialization::is_empty)))
 }
 
 /// The aggregate's one terminality law: execution and retention are distinct

@@ -216,11 +216,20 @@ impl awaken_credential_contract::ManagedCredentialRolloutTarget
     }
 }
 
-pub(super) fn conjunctive_credential_rollout_target(
-    local: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
-    external: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
-) -> Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget> {
-    Arc::new(ConjunctiveCredentialRolloutTarget { local, external })
+/// A product target extends canonical Session adoption in every process role.
+/// Keep this selection here so split Control cannot replace its remote
+/// Coordinator target while AllInOne conjoins its local target correctly.
+pub(super) fn credential_rollout_target(
+    local: Option<Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>>,
+    external: Option<Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>>,
+) -> Option<Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>> {
+    match (local, external) {
+        (Some(local), Some(external)) => Some(Arc::new(ConjunctiveCredentialRolloutTarget {
+            local,
+            external,
+        })),
+        (local, external) => local.or(external),
+    }
 }
 
 /// Infrastructure adapters for the one canonical Coordinator composition.
@@ -387,6 +396,7 @@ mod tests {
     struct ProgressTarget {
         progress: ManagedCredentialAdoptionProgress,
         calls: Arc<AtomicUsize>,
+        unavailable: bool,
     }
 
     struct CountingBackgroundService {
@@ -470,6 +480,11 @@ mod tests {
             _event: &ManagedCredentialRollout,
         ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            if self.unavailable {
+                return Err(ManagedCredentialAdoptionError::Unavailable(
+                    awaken_credential_contract::ManagedCredentialAdoptionUnavailable::Transport,
+                ));
+            }
             Ok(self.progress)
         }
     }
@@ -509,19 +524,210 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rollout_target_selection_preserves_single_consumers_and_absence() {
+        // Composition presence decision table: T0 neither target -> absent;
+        // T1 canonical only -> the identical canonical Arc; T2 hosted only
+        // (router-only embedding) -> the identical hosted Arc. T3 both is
+        // covered through real split-Control HTTP and the conjunction below.
+        assert!(credential_rollout_target(None, None).is_none(), "T0");
+        let target: Arc<dyn ManagedCredentialRolloutTarget> = Arc::new(ProgressTarget {
+            progress: ManagedCredentialAdoptionProgress::Converged,
+            calls: Arc::new(AtomicUsize::new(0)),
+            unavailable: false,
+        });
+        assert!(
+            Arc::ptr_eq(
+                &credential_rollout_target(Some(target.clone()), None).unwrap(),
+                &target,
+            ),
+            "T1"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &credential_rollout_target(None, Some(target.clone())).unwrap(),
+                &target,
+            ),
+            "T2"
+        );
+    }
+
+    #[tokio::test]
+    async fn split_control_never_substitutes_hosted_rollout_for_session_adoption() {
+        use ManagedCredentialAdoptionProgress::{Converged, Pending};
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        // Cause/effect graph: C1 the split Coordinator target is Pending or
+        // Converged; C2 an injected hosted target is Pending or Converged;
+        // C3 an application bearer rotates; C4 the exact command is replayed;
+        // C5 either consumer is unavailable.
+        // E1 both consumers receive the same outbox fact; E2 acknowledge only
+        // C1+C2=Converged; E3 otherwise retain that fact; E4 replay preserves
+        // source/revision and retries that fact without another rotation.
+        // Decision table (complete C1 x C2): S1 P/C -> E1+E3; S2 C/P ->
+        // E1+E3; S3 P/P -> E1+E3; S4 C/C -> E1+E2. S5 unavailable canonical
+        // -> Pending+E3 without calling hosted; S6 unavailable hosted -> Pending+E3.
+        // All rows include C3+C4; neither error can acknowledge the event.
+        // The committed command returns 200 with explicit pending adoption;
+        // the Flow caller's convergence gate blocks new Runs on this receipt.
+        // S1 models an empty Kubernetes target snapshot with a live Session
+        // still pinning the predecessor. Exercise the actual Control startup
+        // and HTTP route: the conjunction unit test cannot detect `.or(...)`
+        // accidentally replacing the Coordinator adapter during composition.
+        for (
+            rule,
+            canonical_progress,
+            hosted_progress,
+            canonical_unavailable,
+            hosted_unavailable,
+        ) in [
+            ("S1", Pending, Converged, false, false),
+            ("S2", Converged, Pending, false, false),
+            ("S3", Pending, Pending, false, false),
+            ("S4", Converged, Converged, false, false),
+            ("S5", Converged, Converged, true, false),
+            ("S6", Converged, Converged, false, true),
+        ] {
+            let stores = crate::local_process_stores::in_memory_control_stores().await;
+            let credentials = stores.control.as_ref().unwrap().credentials.clone();
+            let canonical_calls = Arc::new(AtomicUsize::new(0));
+            let hosted_calls = Arc::new(AtomicUsize::new(0));
+            let mut wiring = crate::executable_agent_registration::ExecutableAgentWiring::local();
+            wiring.credential_rollout_target = Some(Arc::new(ProgressTarget {
+                progress: canonical_progress,
+                calls: canonical_calls.clone(),
+                unavailable: canonical_unavailable,
+            }));
+            let process = crate::control_component::prepare_control_routers(
+                stores,
+                None,
+                None,
+                None,
+                crate::PublicationModelSupply::PublishedProviders,
+                crate::ProcessStartup {
+                    role: crate::config::Role::Control,
+                    executable_agent_wiring: Some(wiring),
+                    executable_environment_wiring: Some(
+                        crate::executable_environment_registration::local_test_wiring(),
+                    ),
+                    worker_observations: Some(
+                        crate::worker_observation_wiring::WorkerObservationWiring::local(
+                            awaken_coordinator::test_worker_directory(),
+                        ),
+                    ),
+                    managed_services: ManagedServiceAdapters::default()
+                        .with_credential_rollout_target(Arc::new(ProgressTarget {
+                            progress: hosted_progress,
+                            calls: hosted_calls.clone(),
+                            unavailable: hosted_unavailable,
+                        })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            // This test drives exact deliveries through HTTP. Stop the normal
+            // background owner before creating events so its periodic retry
+            // cannot race the request-count and retained-event assertions.
+            process
+                .service_lifecycle
+                .shutdown(std::time::Duration::from_secs(5))
+                .await
+                .unwrap();
+            let app = process.public_router;
+            let mut receipts = Vec::new();
+            for generation in [1, 2, 2] {
+                let mut request = Request::post("/v1/config/application-mcp-credentials")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", format!("bearer-{generation}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "application_authority_id": "retained-session",
+                            "mcp_server_url": "https://flow.example.test/mcp",
+                            "credential_generation": generation,
+                            "token": format!("synthetic-bearer-{generation}") // awaken-allow(secret):
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(awaken_tenancy::WorkspaceScope("workspace-rollout".into()));
+                let response = app.clone().oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), 32 * 1024).await.unwrap();
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "{rule}: {}",
+                    String::from_utf8_lossy(&body)
+                );
+                receipts.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+            }
+            let unavailable = canonical_unavailable || hosted_unavailable;
+            let converged =
+                !unavailable && canonical_progress == Converged && hosted_progress == Converged;
+            assert_eq!(
+                receipts[1]["adoption"],
+                if converged { "converged" } else { "pending" },
+                "{rule}/E2-E3"
+            );
+            assert_eq!(receipts[1]["revision"], 2, "{rule}/E4");
+            assert_eq!(
+                receipts[1]["credential_source_id"], receipts[0]["credential_source_id"],
+                "{rule}/E4"
+            );
+            let source_id = awaken_credential_contract::CredentialSourceId(
+                receipts[0]["credential_source_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+            assert_eq!(
+                credentials.get(&source_id).await.unwrap().version,
+                2,
+                "{rule}/E4 no second rotation after an unavailable response"
+            );
+            assert_eq!(receipts[2], receipts[1], "{rule}/E4");
+            // Exact replay rechecks current adoption even after a prior ACK;
+            // it still performs no second credential rotation.
+            let deliveries = 2;
+            assert_eq!(
+                canonical_calls.load(Ordering::Relaxed),
+                deliveries,
+                "{rule}/E1"
+            );
+            assert_eq!(
+                hosted_calls.load(Ordering::Relaxed),
+                if canonical_unavailable { 0 } else { deliveries },
+                "{rule}/E1"
+            );
+            assert_eq!(
+                credentials.pending_managed_rollouts().await.unwrap().len(),
+                usize::from(!converged),
+                "{rule}/E2-E3"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn rollout_conjunction_delivers_to_both_targets_before_acknowledging() {
         let local_calls = Arc::new(AtomicUsize::new(0));
         let external_calls = Arc::new(AtomicUsize::new(0));
-        let target = conjunctive_credential_rollout_target(
-            Arc::new(ProgressTarget {
+        let target = credential_rollout_target(
+            Some(Arc::new(ProgressTarget {
                 progress: ManagedCredentialAdoptionProgress::Converged,
                 calls: Arc::clone(&local_calls),
-            }),
-            Arc::new(ProgressTarget {
+                unavailable: false,
+            })),
+            Some(Arc::new(ProgressTarget {
                 progress: ManagedCredentialAdoptionProgress::Pending,
                 calls: Arc::clone(&external_calls),
-            }),
-        );
+                unavailable: false,
+            })),
+        )
+        .unwrap();
         let event = ManagedCredentialRollout {
             id: "rollout-1".into(),
             workspace_id: "workspace-1".into(),

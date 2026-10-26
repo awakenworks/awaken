@@ -4,6 +4,8 @@
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod rollout_receipts;
 mod schema;
 #[cfg(feature = "sealed-aead")]
 pub mod sealed;

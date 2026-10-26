@@ -18,7 +18,7 @@ use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication, SessionMcpUpdate,
     SessionRootReads, SessionUpdateCommand, SessionUpdateError, SessionUpdates,
 };
-use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_state_contract::PersistedSession;
 
 /// The disposable protocol projection a committed Session root is published
 /// into (the Managed wire cache). Durable truth is already committed when it
@@ -42,6 +42,101 @@ fn sessions_unreadable(
     tracing::warn!(rollout_id = %event.id, %error,
         "Managed credential rollout cannot read the Sessions it names");
     ManagedCredentialAdoptionError::Unavailable(ManagedCredentialAdoptionUnavailable::SessionRead)
+}
+
+/// Current active publication is adoption evidence even during another Run.
+/// A pending/failed generation or any older pin still needs the idle update.
+fn source_already_adopted(session: &PersistedSession, event: &ManagedCredentialRollout) -> bool {
+    if event.operation != ManagedCredentialOperation::Update {
+        return false;
+    }
+    let mut matched = false;
+    for attachment in session.mcp.desired_attachments() {
+        if let Some(access) = attachment.credential.as_ref()
+            && access.credential.id == event.source_id.0
+        {
+            matched = true;
+            if access.credential.revision < event.source_version
+                || attachment.state
+                    != awaken_session_configuration_contract::mcp::McpAttachmentState::Active
+                || !attachment.publication_acknowledged
+            {
+                return false;
+            }
+        }
+    }
+    matched
+}
+
+// Candidate construction is the existing frozen MCP transformation. Session
+// mutation, idempotency and publication stay in the adoption use case below.
+fn rollout_candidates(
+    session: &PersistedSession,
+    event: &ManagedCredentialRollout,
+) -> Vec<McpAttachmentCandidate> {
+    let desired = session.mcp.desired_attachments();
+    let mut candidates = Vec::with_capacity(desired.len());
+    for attachment in desired {
+        let uses_changed_source = attachment
+            .credential
+            .as_ref()
+            .is_some_and(|access| access.credential.id == event.source_id.0);
+        if uses_changed_source
+            && matches!(
+                event.operation,
+                ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete
+            )
+        {
+            // Revocation is fail-closed: drain the authenticated MCP
+            // generation instead of silently publishing it anonymous.
+            continue;
+        }
+        let published_credential = if uses_changed_source {
+            match event.operation {
+                ManagedCredentialOperation::Update => {
+                    let access = attachment
+                        .credential
+                        .as_ref()
+                        .expect("a matching credential source has an access descriptor");
+                    let target_revision =
+                        awaken_credential_contract::managed_credential_rollout_adoption_revision(
+                            access.credential.revision,
+                            event.source_version,
+                        );
+                    if target_revision == access.credential.revision {
+                        // Duplicate or stale delivery cannot roll a Session
+                        // back from a newer credential revision.
+                        Some((access.credential.id.clone(), access.credential.revision))
+                    } else {
+                        // Resolve the exact durable revision named by this
+                        // event. A revoked revision fails closed instead of
+                        // silently publishing an anonymous attachment.
+                        Some((event.source_id.0.clone(), target_revision))
+                    }
+                }
+                ManagedCredentialOperation::Create => attachment
+                    .credential
+                    .as_ref()
+                    .map(|access| (access.credential.id.clone(), access.credential.revision)),
+                ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete => {
+                    unreachable!("revoked attachments are removed before candidate construction")
+                }
+            }
+        } else {
+            attachment
+                .credential
+                .as_ref()
+                .map(|access| (access.credential.id.clone(), access.credential.revision))
+        };
+        candidates.push(McpAttachmentCandidate {
+            name: attachment.name.clone(),
+            target: McpAttachmentCandidateTarget::Normalized(attachment.target.clone()),
+            prompts_as_skills: attachment.prompts_as_skills,
+            published_credential,
+            origin: attachment.origin,
+        });
+    }
+    candidates
 }
 
 /// Session adoption of credential rollouts over the Session application and
@@ -86,76 +181,21 @@ impl SessionCredentialRolloutAdoption {
             .map_err(|error| sessions_unreadable(event, &error))?;
         let mut pending = false;
         for session in sessions {
-            if session.execution != SessionExecutionState::Idle {
+            if source_already_adopted(&session, event) {
+                if !self.publication.publish_committed_session(&session) {
+                    pending = true;
+                }
+                continue;
+            }
+            if !awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(&session)
+            {
                 tracing::info!(rollout_id = %event.id, session_id = %session.session_id,
                     phase = "session_adoption", failure = "not_idle",
                     "Managed credential rollout remains pending");
                 pending = true;
                 continue;
             }
-            let desired = session.mcp.desired_attachments();
-            let mut candidates = Vec::with_capacity(desired.len());
-            for attachment in desired {
-                let uses_changed_source = attachment
-                    .credential
-                    .as_ref()
-                    .is_some_and(|access| access.credential.id == event.source_id.0);
-                if uses_changed_source
-                    && matches!(
-                        event.operation,
-                        ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete
-                    )
-                {
-                    // Revocation is fail-closed: drain the authenticated MCP
-                    // generation instead of silently publishing it anonymous.
-                    continue;
-                }
-                let published_credential = if uses_changed_source {
-                    match event.operation {
-                        ManagedCredentialOperation::Update => {
-                            let access = attachment
-                                .credential
-                                .as_ref()
-                                .expect("a matching credential source has an access descriptor");
-                            let target_revision = awaken_credential_contract::managed_credential_rollout_adoption_revision(
-                                    access.credential.revision,
-                                    event.source_version,
-                                );
-                            if target_revision == access.credential.revision {
-                                // Duplicate or stale delivery cannot roll a Session
-                                // back from a newer credential revision.
-                                Some((access.credential.id.clone(), access.credential.revision))
-                            } else {
-                                // Resolve the exact durable revision named by this
-                                // event. A revoked revision fails closed instead of
-                                // silently publishing an anonymous attachment.
-                                Some((event.source_id.0.clone(), target_revision))
-                            }
-                        }
-                        ManagedCredentialOperation::Create => {
-                            attachment.credential.as_ref().map(|access| {
-                                (access.credential.id.clone(), access.credential.revision)
-                            })
-                        }
-                        ManagedCredentialOperation::Archive
-                        | ManagedCredentialOperation::Delete => unreachable!(
-                            "revoked attachments are removed before candidate construction"
-                        ),
-                    }
-                } else {
-                    attachment
-                        .credential
-                        .as_ref()
-                        .map(|access| (access.credential.id.clone(), access.credential.revision))
-                };
-                candidates.push(McpAttachmentCandidate {
-                    name: attachment.name.clone(),
-                    target: McpAttachmentCandidateTarget::Normalized(attachment.target.clone()),
-                    prompts_as_skills: attachment.prompts_as_skills,
-                    published_credential,
-                    origin: attachment.origin,
-                });
-            }
+            let candidates = rollout_candidates(&session, event);
             let request_fingerprint = stable_fingerprint(&(
                 "managed-credential-rollout-v1",
                 &event.id,
