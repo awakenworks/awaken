@@ -583,15 +583,12 @@ impl ResourceStaging {
         id: &str,
         version: awaken_resource_contract::ConfigVersion,
     ) -> Result<(), awaken_session_types::RunError> {
-        self.resource_validator
-            .as_ref()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::bad_request(
-                    "memory resources require a configured resource binding validator",
-                )
-            })?
-            .verify_memory_binding(workspace, id, version)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
+        awaken_session_configuration_contract::resource::binding_checks::verify_memory_binding(
+            self.resource_validator.as_deref(),
+            workspace,
+            id,
+            version,
+        )
+        .await
     }
 }

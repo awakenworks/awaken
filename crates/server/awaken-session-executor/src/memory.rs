@@ -474,11 +474,11 @@ impl MemoryExtractionDriver for BoundMemory {
                 == awaken_ext_memory::MemoryExtractionCommitScope::Session
     }
 
-    async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
-        self.binding
-            .validate_live_resource()
-            .await
-            .map_err(|_| "MemoryStore is missing, suspended, archived, or deleted".to_string())
+    async fn validate_binding(
+        &self,
+        _intent: &MemoryExtractionIntent,
+    ) -> Result<(), MemoryExtractionError> {
+        self.binding.validate_extraction_binding().await
     }
 
     async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {

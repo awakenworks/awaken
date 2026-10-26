@@ -91,18 +91,36 @@ impl MemoryBinding {
             && intent.memory_config_version == self.memory_config_version
     }
 
-    pub async fn validate_live_resource(&self) -> Result<(), String> {
+    pub async fn validate_live_resource(&self) -> Result<(), RunError> {
         let Some(validator) = self.resource_validator.as_ref() else {
             return Ok(());
         };
-        validator
-            .verify_memory_binding(
-                &self.workspace_id,
-                &self.memory_store_id,
-                awaken_resource_contract::ConfigVersion(self.memory_config_version),
-            )
-            .await
-            .map_err(|error| error.to_string())
+        awaken_session_configuration_contract::resource::binding_checks::verify_memory_binding(
+            Some(validator.as_ref()),
+            &self.workspace_id,
+            &self.memory_store_id,
+            awaken_resource_contract::ConfigVersion(self.memory_config_version),
+        )
+        .await
+    }
+
+    /// Project the same live observation into the SDK's extraction boundary.
+    /// Both embedded and dispatched extraction consume this classification.
+    pub async fn validate_extraction_binding(
+        &self,
+    ) -> Result<(), awaken_ext_memory::MemoryExtractionError> {
+        self.validate_live_resource().await.map_err(|error| {
+            use awaken_ext_memory::MemoryExtractionError;
+            use awaken_session_types::RunErrorKind;
+            match error.kind {
+                RunErrorKind::Unavailable | RunErrorKind::Conflict => {
+                    MemoryExtractionError::Unavailable(error.message)
+                }
+                RunErrorKind::BadRequest | RunErrorKind::Internal => {
+                    MemoryExtractionError::Invalid(error.message)
+                }
+            }
+        })
     }
 
     pub fn platform(&self) -> &PlatformMemoryHandle {
@@ -115,12 +133,16 @@ impl MemoryBinding {
 #[async_trait]
 impl MemoryStoreHandle for MemoryBinding {
     async fn write(&self, name: &str, content: &str) -> Result<String, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform.write(name, content).await
     }
 
     async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform.entries().await
     }
 }
@@ -128,6 +150,124 @@ impl MemoryStoreHandle for MemoryBinding {
 #[cfg(test)]
 mod tests {
     use super::{Arc, MemoryBinding, PlatformMemoryHandle, SessionCommit};
+
+    struct FaultyRegistry(awaken_resource_contract::ResourceRegistryError);
+
+    #[async_trait::async_trait]
+    impl awaken_resource_contract::LiveResourceBindingVerifier for FaultyRegistry {
+        async fn verify_memory_binding(
+            &self,
+            workspace: &str,
+            store: &str,
+            version: awaken_resource_contract::ConfigVersion,
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+            assert_eq!((workspace, store, version.0), ("workspace", "memory", 4));
+            Err(self.0.clone())
+        }
+
+        async fn verify_repository_binding(
+            &self,
+            _workspace: &str,
+            _store: &str,
+            _version: awaken_resource_contract::ConfigVersion,
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+            unreachable!("a Memory binding never queries Repository authority")
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_binding_preserves_observation_failure_through_the_extraction_boundary() {
+        // Cause/effect matrix: unavailable/indeterminate/concurrent => typed
+        // retryable SDK observation; definitive missing/inactive or corrupt
+        // authority => permanent refusal. The live Run boundary keeps its own
+        // exact kind, while legacy MemoryStoreHandle strings retain the original
+        // diagnostic. Every refusal precedes content reads/writes; no second
+        // registry or error-text classifier is introduced for extraction.
+        use awaken_ext_memory::{MemoryExtractionError, MemoryStoreHandle as _};
+        use awaken_resource_contract::{ResourceRegistryError, ResourceState};
+        use awaken_session_types::RunErrorKind;
+        for (fault, kind) in [
+            (
+                ResourceRegistryError::AuthorityUnavailable {
+                    detail: "same".into(),
+                },
+                RunErrorKind::Unavailable,
+            ),
+            (
+                ResourceRegistryError::Indeterminate {
+                    detail: "same".into(),
+                },
+                RunErrorKind::Unavailable,
+            ),
+            (
+                ResourceRegistryError::ConcurrentModification("same".into()),
+                RunErrorKind::Conflict,
+            ),
+            (
+                ResourceRegistryError::NotFound("same".into()),
+                RunErrorKind::BadRequest,
+            ),
+            (
+                ResourceRegistryError::NotActive {
+                    id: "same".into(),
+                    state: ResourceState::Suspended,
+                },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                ResourceRegistryError::CorruptData("same".into()),
+                RunErrorKind::Internal,
+            ),
+        ] {
+            let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                awaken_time::system_clock(),
+            ));
+            let binding = MemoryBinding::new(
+                "session",
+                "workspace",
+                Arc::new(PlatformMemoryHandle::from_roles(
+                    awaken_resource_contract::MemoryExecutionContent::new(repository.clone()),
+                    "memory".into(),
+                    true,
+                )),
+                Some(Arc::new(FaultyRegistry(fault.clone()))),
+                &awaken_resource_contract::MemoryStoreConfigVersion {
+                    memory_store_id: "memory".into(),
+                    version: awaken_resource_contract::ConfigVersion(4),
+                    retention_policy: Default::default(),
+                },
+                true,
+            );
+            let observed = binding.validate_live_resource().await.unwrap_err();
+            assert_eq!(observed.kind, kind);
+            assert_eq!(observed.message, fault.to_string());
+            let extraction = binding.validate_extraction_binding().await.unwrap_err();
+            assert_eq!(
+                matches!(extraction, MemoryExtractionError::Unavailable(_)),
+                matches!(kind, RunErrorKind::Unavailable | RunErrorKind::Conflict)
+            );
+            if !matches!(kind, RunErrorKind::Unavailable | RunErrorKind::Conflict) {
+                assert!(matches!(extraction, MemoryExtractionError::Invalid(_)));
+            }
+            assert_eq!(
+                binding.write("pref", "prefers tea").await.unwrap_err(),
+                fault.to_string()
+            );
+            let Err(read_error) = binding.entries().await else {
+                panic!("a refused binding must not read Memory entries");
+            };
+            assert_eq!(read_error, fault.to_string());
+            assert!(
+                awaken_resource_contract::MemoryVersionQueries::list_versions(
+                    repository.as_ref(),
+                    "memory"
+                )
+                .await
+                .unwrap()
+                .is_empty()
+            );
+        }
+    }
 
     #[test]
     fn memory_commit_binding_preserves_identity_and_refuses_poisoned_reads_and_writes() {

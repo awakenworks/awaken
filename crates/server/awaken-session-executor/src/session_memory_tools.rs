@@ -48,12 +48,16 @@ impl SessionMemoryBinding for awaken_session_run_delivery::MemoryBinding {
         &self,
         prefix: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform().list(prefix).await
     }
 
     async fn read(&self, path: &str) -> Result<Option<awaken_resource_contract::Memory>, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform().read(path).await
     }
 
@@ -63,7 +67,9 @@ impl SessionMemoryBinding for awaken_session_run_delivery::MemoryBinding {
         content: &str,
         expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform()
             .write_exact(path, content, expected_generation)
             .await
@@ -74,7 +80,9 @@ impl SessionMemoryBinding for awaken_session_run_delivery::MemoryBinding {
         path: &str,
         expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform()
             .delete_exact(path, expected_generation)
             .await

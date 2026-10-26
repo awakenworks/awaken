@@ -747,8 +747,12 @@ pub trait MemoryExtractionDriver: Send + Sync {
     /// Whether this driver owns the frozen binding carried by `intent`.
     fn accepts(&self, intent: &MemoryExtractionIntent) -> bool;
 
-    /// Revalidate the resource binding immediately before external IO.
-    async fn validate_binding(&self, intent: &MemoryExtractionIntent) -> Result<(), String>;
+    /// Revalidate immediately before external IO. A failed dependency observation
+    /// remains retryable; it is not proof that the frozen binding was revoked.
+    async fn validate_binding(
+        &self,
+        intent: &MemoryExtractionIntent,
+    ) -> Result<(), MemoryExtractionError>;
 
     /// Execute the pinned Extractor Agent and return deterministic proposed writes.
     async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome;
@@ -1525,6 +1529,8 @@ mod tests {
         extraction_calls: AtomicUsize,
         first_outcome: Option<MemoryExtractionOutcome>,
         binding_valid: bool,
+        validation_errors: Mutex<std::collections::VecDeque<Option<MemoryExtractionError>>>,
+        application_calls: AtomicUsize,
     }
 
     #[async_trait]
@@ -1533,10 +1539,16 @@ mod tests {
             intent.session_id == "session-1"
         }
 
-        async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
+        async fn validate_binding(
+            &self,
+            _intent: &MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            if let Some(error) = self.validation_errors.lock().unwrap().pop_front().flatten() {
+                return Err(error);
+            }
             self.binding_valid
                 .then_some(())
-                .ok_or_else(|| "binding revoked".to_string())
+                .ok_or_else(|| MemoryExtractionError::Invalid("binding revoked".into()))
         }
 
         async fn extract(&self, _intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
@@ -1559,6 +1571,7 @@ mod tests {
             _intent: &MemoryExtractionIntent,
             mutation: &MemoryExtractionMutation,
         ) -> Result<MemoryMutationReceipt, String> {
+            self.application_calls.fetch_add(1, Ordering::SeqCst);
             Ok(MemoryMutationReceipt {
                 path: mutation.path.clone(),
                 target_sha256: mutation.target_sha256.clone(),
@@ -1595,6 +1608,8 @@ mod tests {
                 reason: "temporary model failure".into(),
             }),
             binding_valid: true,
+            validation_errors: Default::default(),
+            application_calls: AtomicUsize::new(0),
         };
 
         controller.drive_recoverable(&driver).await;
@@ -1625,6 +1640,8 @@ mod tests {
             extraction_calls: AtomicUsize::new(0),
             first_outcome: None,
             binding_valid: true,
+            validation_errors: Default::default(),
+            application_calls: AtomicUsize::new(0),
         };
 
         controller.drive_recoverable(&driver).await;
@@ -1689,6 +1706,8 @@ mod tests {
             extraction_calls: AtomicUsize::new(0),
             first_outcome: None,
             binding_valid: true,
+            validation_errors: Default::default(),
+            application_calls: AtomicUsize::new(0),
         };
 
         controller.drive_recoverable(&driver).await;
@@ -1808,6 +1827,8 @@ mod tests {
             extraction_calls: AtomicUsize::new(0),
             first_outcome: None,
             binding_valid: false,
+            validation_errors: Default::default(),
+            application_calls: AtomicUsize::new(0),
         };
 
         controller.drive_recoverable(&driver).await;
@@ -1820,6 +1841,137 @@ mod tests {
         assert_eq!(failed.status, MemoryExtractionStatus::TerminalFailed);
         assert_eq!(failed.last_error.as_deref(), Some("binding revoked"));
         assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn binding_dependency_failures_retry_the_same_extraction_stage() {
+        // Cause/effect graph: C1 validation before model / after committed
+        // proposals / recovered proposals / stored receipt; C2 unavailable/storage/invalid;
+        // C3 one or three remaining attempts. D1 transient+budget => complete
+        // the same intent and auxiliary Run; D2 invalid or exhausted => terminal
+        // without content IO. D3 after-extract/recovery retains proposals and
+        // never runs the extractor again; D4 a stored receipt is completed
+        // without reapplying content. No stage is reset to obtain a retry.
+        for stage in [
+            "before-model",
+            "after-proposals",
+            "recovered-proposals",
+            "stored-receipt",
+        ] {
+            for class in ["unavailable", "storage", "invalid"] {
+                for budget in [1, 3] {
+                    let repository = Arc::new(TestRepository::default());
+                    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+                    let mut initial = intent();
+                    if matches!(stage, "recovered-proposals" | "stored-receipt") {
+                        let generation = initial.claim("previous", 1_000, 3_000).unwrap();
+                        initial
+                            .mark_extracted(
+                                "previous",
+                                generation,
+                                1_000,
+                                vec![MemoryExtractionMutation {
+                                    path: "/customer.md".into(),
+                                    content: "remember".into(),
+                                    observed_generation: None,
+                                    target_sha256: "target".into(),
+                                }],
+                            )
+                            .unwrap();
+                        if stage == "stored-receipt" {
+                            initial
+                                .mark_stored(
+                                    "previous",
+                                    generation,
+                                    1_000,
+                                    MemoryExtractionReceipt {
+                                        stored_at_unix_ms: 1_000,
+                                        mutations: vec![MemoryMutationReceipt {
+                                            path: "/customer.md".into(),
+                                            target_sha256: "target".into(),
+                                            already_applied: false,
+                                        }],
+                                    },
+                                )
+                                .unwrap();
+                        }
+                        initial
+                            .retry("previous", generation, 1_000, "restart")
+                            .unwrap();
+                    }
+                    let previous_attempts = initial.attempts;
+                    let run = initial.auxiliary_run_id();
+                    let controller =
+                        MemoryExtractionController::new(repository.clone(), "worker", clock)
+                            .with_policy(MemoryExtractionPolicy {
+                                lease_ms: 3_000,
+                                heartbeat_ms: 1_000,
+                                max_attempts: previous_attempts + budget,
+                                retry_base_ms: 0,
+                            });
+                    controller.enqueue(initial).await.unwrap();
+                    let error = match class {
+                        "unavailable" => {
+                            MemoryExtractionError::Unavailable("observation failed".into())
+                        }
+                        "storage" => MemoryExtractionError::Storage("observation failed".into()),
+                        _ => MemoryExtractionError::Invalid("binding revoked".into()),
+                    };
+                    let mut validation_errors = std::collections::VecDeque::new();
+                    if stage == "after-proposals" {
+                        validation_errors.push_back(None);
+                    }
+                    validation_errors.push_back(Some(error));
+                    let driver = TestDriver {
+                        extraction_calls: AtomicUsize::new(0),
+                        first_outcome: None,
+                        binding_valid: true,
+                        validation_errors: Mutex::new(validation_errors),
+                        application_calls: AtomicUsize::new(0),
+                    };
+                    controller.drive_recoverable(&driver).await;
+                    let stored = repository
+                        .get_extraction("extract-1")
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    let completes = class != "invalid" && budget > 1;
+                    assert_eq!(
+                        stored.status,
+                        if completes {
+                            MemoryExtractionStatus::Completed
+                        } else {
+                            MemoryExtractionStatus::TerminalFailed
+                        },
+                        "{stage}/{class}/{budget}"
+                    );
+                    assert_eq!(stored.auxiliary_run_id(), run, "D1 same Run");
+                    assert_eq!(
+                        stored.attempts,
+                        previous_attempts + if completes { 2 } else { 1 },
+                        "D1/D2 bounded retry"
+                    );
+                    assert_eq!(
+                        driver.application_calls.load(Ordering::SeqCst),
+                        usize::from(completes && stage != "stored-receipt"),
+                        "D2 content effects"
+                    );
+                    let extracts =
+                        stage == "after-proposals" || (stage == "before-model" && completes);
+                    assert_eq!(
+                        driver.extraction_calls.load(Ordering::SeqCst),
+                        usize::from(extracts),
+                        "D3 no proposal re-execution"
+                    );
+                    if stage != "before-model" {
+                        assert_eq!(stored.mutations.len(), 1, "D3 retained proposals");
+                    }
+                    if stage == "stored-receipt" {
+                        assert!(stored.receipt.is_some(), "D4 receipt retained");
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -1881,6 +2033,8 @@ mod tests {
                 extraction_calls: AtomicUsize::new(0),
                 first_outcome: Some(outcome),
                 binding_valid: true,
+                validation_errors: Default::default(),
+                application_calls: AtomicUsize::new(0),
             };
 
             controller.drive_recoverable(&driver).await;

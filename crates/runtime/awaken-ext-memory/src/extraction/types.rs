@@ -255,6 +255,8 @@ impl MemoryExtractionStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryExtractionError {
     Invalid(String),
+    /// A dependency could not establish the binding's current validity.
+    Unavailable(String),
     NotFound(String),
     IdempotencyConflict(String),
     RevisionConflict(String),
@@ -274,6 +276,12 @@ impl std::fmt::Display for MemoryExtractionError {
         match self {
             Self::Invalid(message) => {
                 write!(formatter, "invalid Memory extraction intent: {message}")
+            }
+            Self::Unavailable(message) => {
+                write!(
+                    formatter,
+                    "Memory extraction dependency unavailable: {message}"
+                )
             }
             Self::NotFound(id) => {
                 write!(formatter, "Memory extraction intent `{id}` was not found")
