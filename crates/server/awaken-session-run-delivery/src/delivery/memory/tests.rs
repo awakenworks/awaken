@@ -18,7 +18,7 @@ async fn fixture(
     Arc<awaken_memory_store::VolatileMemoryRepository>,
     MemoryExtractionIntent,
 ) {
-    let sessions = delivery(None);
+    let mut sessions = delivery(None).await;
     let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
         awaken_time::system_clock(),
     ));
@@ -26,6 +26,7 @@ async fn fixture(
         awaken_resource_contract::MemoryExecutionContent::new(repository.clone()),
         Some(Arc::new(Memory)),
     );
+    sessions.ports.memory_bindings = compiler.clone();
     let mut input = memory_input(4);
     input.access = awaken_resource_contract::ResourceAccess::ReadWrite;
     let (_, binding) = compiler
@@ -434,4 +435,342 @@ fn worker_memory_original_request_requires_exact_activation_scope_and_partition(
             "M2 {cause}"
         );
     }
+}
+
+fn parent_request(
+    enabled: bool,
+    writable: bool,
+) -> (RunDispatch, awaken_dispatch_contract::RunClaim) {
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+        .model(
+            awaken_runtime_contract::resolved::ModelBinding::parse("provider", "model", "native")
+                .unwrap(),
+        )
+        .plugins([awaken_ext_memory::MEMORY_PLUGIN_ID.to_owned()])
+        .plugin_config([(
+            awaken_ext_memory::MEMORY_PLUGIN_ID.to_owned(),
+            serde_json::json!({
+                "binding_id":"memory", "recall_enabled":false, "extraction_enabled":enabled
+            }),
+        )])
+        .build();
+    let mut activation = RunActivation::new(
+        RunId("parent-run".into()),
+        ThreadId("logical-child".into()),
+        snapshot,
+        Vec::new(),
+    );
+    activation.data_subject_id = Some(awaken_runtime_contract::DataSubjectId("subject".into()));
+    let mut input = memory_input(4);
+    input.access = if writable {
+        awaken_resource_contract::ResourceAccess::ReadWrite
+    } else {
+        awaken_resource_contract::ResourceAccess::ReadOnly
+    };
+    let manifest = awaken_session_configuration_contract::resource::SessionResourceManifest::new(
+        "workspace",
+        awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+            vec![input],
+            Vec::new(),
+        )
+        .unwrap(),
+    );
+    let request = RunDispatch::new(activation)
+        .for_session(ThreadId("session".into()))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef("workspace".into()))
+        .with_session_resources(
+            awaken_dispatch_execution::session_envelope::resource_envelope(&manifest).unwrap(),
+        );
+    let claim = awaken_dispatch_contract::RunClaim {
+        run_id: request.run_id().clone(),
+        owner: "worker".into(),
+        epoch: 1,
+    };
+    (request, claim)
+}
+
+async fn commit_parent(sessions: &WorkerPlacedSessions, request: &RunDispatch, state: RunState) {
+    let commit = sessions
+        .ports
+        .reads
+        .commit_for_read(&request.session_thread_id().0)
+        .await
+        .unwrap();
+    let disposition = match state {
+        RunState::Ended(cause) => RunDisposition::ended(request.run_id().clone(), cause),
+        RunState::Running => RunDisposition::running(request.run_id().clone()),
+        RunState::Awaiting => unreachable!("this fixture tests Running or Ended authority"),
+    };
+    commit
+        .commit(awaken_agent_contract::ThreadCommit::assemble(
+            request.thread_id().clone(),
+            disposition,
+            true,
+            vec![Message::text(
+                MessageId("parent-input".into()),
+                Role::User,
+                "remember the preference",
+            )],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn worker_memory_terminal_persists_intent_before_waiting_and_replays_one_content_effect() {
+    // C1 a child Run ended in its original parent partition; C2 no Worker is
+    // available for its extractor. T1 before_settle returns after durable
+    // enqueue/registration, retaining physical Session, logical transcript,
+    // frozen attribution and AuxiliaryThread scope. It cannot wait for C2.
+    // T2 commit the exact extractor proposals through the real authority,
+    // relay completion and drain => one receipt/version. T3 terminal
+    // redelivery => same intent/context and no second content effect.
+    use awaken_resource_contract::MemoryVersionQueries as _;
+    let (sessions, _, repository, _) = fixture(MemoryExtractionCommitScope::AuxiliaryThread).await;
+    let (request, claim) = parent_request(true, true);
+    let state = RunState::Ended(EndCause::NaturalEnd);
+    commit_parent(&sessions, &request, state.clone()).await;
+    let observer = sessions.worker_memory_settlement_observer();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        observer.before_settle(&request, &claim, &state, false),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = format!(
+        "memory-extraction:{}:{}",
+        request.thread_id().0,
+        request.run_id().0
+    );
+    let outbox = sessions.ports.memory_extractions.repository();
+    let intent = outbox.get_extraction(&id).await.unwrap().unwrap();
+    assert_eq!(intent.session_id, "session", "T1 physical partition");
+    assert_eq!(intent.logical_thread_id(), "logical-child", "T1 transcript");
+    assert_eq!(
+        intent.execution().commit_scope,
+        MemoryExtractionCommitScope::AuxiliaryThread,
+        "T1"
+    );
+    assert_eq!(
+        intent.execution().data_subject_id,
+        request.activation.data_subject_id,
+        "T1"
+    );
+    assert_eq!(
+        intent.transcript[0].id.0, "parent-input",
+        "T1 committed prefix"
+    );
+    let background = sessions.ports.memory_extractions.background();
+    assert!(
+        !background.drain(std::time::Duration::ZERO).await,
+        "T1 auxiliary work is still pending"
+    );
+    assert!(
+        repository
+            .list_versions("memory-1")
+            .await
+            .unwrap()
+            .is_empty(),
+        "T1 no speculative content"
+    );
+    commit_result(
+        &sessions,
+        &intent,
+        RunDisposition::ended(RunId(intent.auxiliary_run_id()), EndCause::NaturalEnd),
+        proposal_messages(&intent),
+    )
+    .await;
+    sessions
+        .ports
+        .completion
+        .settled(&RunId(intent.auxiliary_run_id()), &state);
+    assert!(
+        background.drain(std::time::Duration::from_secs(3)).await,
+        "T2"
+    );
+    assert_eq!(
+        outbox.get_extraction(&id).await.unwrap().unwrap().status,
+        awaken_ext_memory::MemoryExtractionStatus::Completed,
+        "T2"
+    );
+    assert_eq!(
+        repository.list_versions("memory-1").await.unwrap().len(),
+        1,
+        "T2"
+    );
+    observer
+        .before_settle(&request, &claim, &state, false)
+        .await
+        .unwrap();
+    assert!(
+        background.drain(std::time::Duration::from_secs(1)).await,
+        "T3"
+    );
+    let replay = outbox.get_extraction(&id).await.unwrap().unwrap();
+    assert_eq!(replay.execution(), intent.execution(), "T3 first choice");
+    assert_eq!(
+        replay.auxiliary_run_id(),
+        intent.auxiliary_run_id(),
+        "T3 stable Run"
+    );
+    assert_eq!(
+        repository.list_versions("memory-1").await.unwrap().len(),
+        1,
+        "T3"
+    );
+}
+
+#[tokio::test]
+async fn worker_memory_terminal_selection_skips_disabled_or_proposal_work_and_refuses_unproven_truth()
+ {
+    // Ordered cause/effect rules: N1 disabled parent, readonly binding or an
+    // existing proposal descriptor => no observer/effect, even without a
+    // terminal prefix. N2 enabled+writable but absent manifest/record or
+    // conflicting committed state => refuse, no intent, background task or
+    // content effect. N1's descriptor rule prevents recursive extraction.
+    use awaken_resource_contract::MemoryVersionQueries as _;
+    for cause in [
+        "disabled",
+        "readonly",
+        "proposal",
+        "missing-manifest",
+        "missing-record",
+        "running-record",
+    ] {
+        let (sessions, _, repository, _) =
+            fixture(MemoryExtractionCommitScope::AuxiliaryThread).await;
+        let (mut request, claim) = parent_request(cause != "disabled", cause != "readonly");
+        if cause == "proposal" {
+            request
+                .activation
+                .snapshot
+                .resolved_spec
+                .tool_descriptors
+                .push(awaken_ext_memory::write_memory_descriptor());
+            request.activation.snapshot.recompute_fingerprint().unwrap();
+            request.session_resources = None;
+        } else if cause == "missing-manifest" {
+            request.session_resources = None;
+        } else if cause == "running-record" {
+            commit_parent(&sessions, &request, RunState::Running).await;
+        }
+        let result = sessions
+            .worker_memory_settlement_observer()
+            .before_settle(
+                &request,
+                &claim,
+                &RunState::Ended(EndCause::NaturalEnd),
+                false,
+            )
+            .await;
+        assert_eq!(
+            result.is_ok(),
+            matches!(cause, "disabled" | "readonly" | "proposal"),
+            "N1/N2 {cause}"
+        );
+        assert!(
+            sessions
+                .ports
+                .memory_extractions
+                .repository()
+                .recoverable_extractions(usize::MAX)
+                .await
+                .unwrap()
+                .is_empty(),
+            "N1/N2 {cause}"
+        );
+        assert!(
+            sessions
+                .ports
+                .memory_extractions
+                .background()
+                .drain(std::time::Duration::ZERO)
+                .await,
+            "N1/N2 {cause}"
+        );
+        assert!(
+            repository
+                .list_versions("memory-1")
+                .await
+                .unwrap()
+                .is_empty(),
+            "N1/N2 {cause}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn worker_memory_projection_install_recovers_old_intents_without_an_enabled_parent_plugin() {
+    // P1 a writable frozen binding has a durable intent and exact committed
+    // extractor output; P2 the current parent's Memory extraction is disabled.
+    // Installing its projection still drives P1 through the same controller:
+    // one receipt/content version, with no new intent or replacement Run.
+    use awaken_resource_contract::MemoryVersionQueries as _;
+    use awaken_session_execution_contract::SessionInputAdmission as _;
+    let (sessions, _, repository, intent) =
+        fixture(MemoryExtractionCommitScope::AuxiliaryThread).await;
+    sessions
+        .ports
+        .memory_extractions
+        .controller()
+        .enqueue(intent.clone())
+        .await
+        .unwrap();
+    commit_result(
+        &sessions,
+        &intent,
+        RunDisposition::ended(RunId(intent.auxiliary_run_id()), EndCause::NaturalEnd),
+        proposal_messages(&intent),
+    )
+    .await;
+    let (request, _) = parent_request(false, true);
+    let mut projection =
+        crate::test_support::projection(1, "provider/model", Some(request.activation.snapshot));
+    let mut input = memory_input(4);
+    input.access = awaken_resource_contract::ResourceAccess::ReadWrite;
+    projection.resources =
+        awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+            vec![input],
+            Vec::new(),
+        )
+        .unwrap();
+    sessions
+        .install_dispatch_projection("session", projection)
+        .await
+        .unwrap();
+    assert!(
+        sessions
+            .ports
+            .memory_extractions
+            .background()
+            .drain(std::time::Duration::from_secs(3))
+            .await,
+        "P1/P2"
+    );
+    let stored = sessions
+        .ports
+        .memory_extractions
+        .repository()
+        .get_extraction(&intent.intent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.status,
+        awaken_ext_memory::MemoryExtractionStatus::Completed,
+        "P1/P2"
+    );
+    assert_eq!(
+        stored.auxiliary_run_id(),
+        intent.auxiliary_run_id(),
+        "P1/P2"
+    );
+    assert_eq!(
+        repository.list_versions("memory-1").await.unwrap().len(),
+        1,
+        "P1/P2"
+    );
 }

@@ -18,8 +18,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_memory::{
-    DEFAULT_MEMORY_INSTRUCTIONS, MEMORY_AGENT_ID, MemoryExtractorSnapshot,
-    MemoryTerminalExtraction, MemoryTerminalObserver, default_memory_agent,
+    MemoryExtractorSnapshot, MemoryTerminalExtraction, MemoryTerminalObserver,
 };
 
 use super::BoundMemory;
@@ -231,22 +230,14 @@ impl MemoryTerminalObservers {
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<SessionCommit>,
     ) -> Result<Option<Arc<dyn RunTerminalObserver>>, crate::SessionExecutionError> {
-        let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
-        let agent = awaken_session_run_delivery::resolve_auxiliary_snapshot(
-            Some(frozen_publications),
+        let extractor = awaken_session_run_delivery::memory_extractor_snapshot(
             &memory.binding().workspace_id,
-            agent_id,
-            default_memory_agent(model, DEFAULT_MEMORY_INSTRUCTIONS),
-            config.instructions.as_deref(),
+            config,
+            model,
+            frozen_publications,
         )
         .map_err(crate::SessionExecutionError::internal)?;
-        let extraction = Arc::new(BoundMemoryTerminalExtraction {
-            memory,
-            extractor: MemoryExtractorSnapshot {
-                agent,
-                extraction_prompt: config.extraction_prompt,
-            },
-        });
+        let extraction = Arc::new(BoundMemoryTerminalExtraction { memory, extractor });
         let reader: Arc<dyn CommittedThreadView> = commit;
         Ok(Some(Arc::new(MemoryTerminalObserver::new(
             reader, extraction,

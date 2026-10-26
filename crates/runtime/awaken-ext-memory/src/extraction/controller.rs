@@ -210,7 +210,20 @@ impl MemoryExtractionController {
     /// Drive every recoverable intent accepted by one frozen binding.
     pub async fn drive_recoverable(&self, driver: &dyn MemoryExtractionDriver) {
         loop {
-            let mut intent = match self.next_recoverable(driver).await {
+            let candidate = async {
+                let Some(intent) = self.next_recoverable(driver).await? else {
+                    return Ok(None);
+                };
+                let execution = MemoryExtractionExecution {
+                    commit_scope: driver.extraction_commit_scope(),
+                    data_subject_id: intent.execution().data_subject_id.clone(),
+                };
+                self.prepare_execution(&intent.intent_id, execution)
+                    .await
+                    .map(Some)
+            }
+            .await;
+            let mut intent = match candidate {
                 Ok(Some(intent)) => intent,
                 Ok(None) => return,
                 Err(_) => {
@@ -225,6 +238,12 @@ impl MemoryExtractionController {
                     continue;
                 }
             };
+            // A competing owner can finish or rebind the exact row between
+            // selection and preparation. Observe its winner without claiming
+            // terminal work or turning another binding into this driver's work.
+            if intent.status.is_terminal() || !driver.accepts(&intent) {
+                continue;
+            }
             let now = self.clock.now_ms();
             let expected_revision = intent.revision;
             let generation = match intent.claim(&self.owner, now, self.policy.lease_ms) {

@@ -54,7 +54,7 @@ mod thread_coordination;
 mod thread_resume;
 
 pub use authority_commits::{AuthorityCommits, runtime_authority_error};
-pub use auxiliary_snapshot::resolve_auxiliary_snapshot;
+pub use auxiliary_snapshot::{memory_extractor_snapshot, resolve_auxiliary_snapshot};
 pub use background::{BackgroundRuns, BackgroundWorkClass};
 pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
 pub use commit_boundary::{

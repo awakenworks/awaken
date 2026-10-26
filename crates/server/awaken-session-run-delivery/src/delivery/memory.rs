@@ -4,6 +4,7 @@
 // @formal reason: legacy/unknown work cannot relocate or create a replacement Run.
 //! Memory extraction as ordinary Worker Runs, over the existing delivery owners.
 
+mod settlement;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +28,44 @@ use super::dispatched_runs::DispatchedRuns;
 use crate::{
     CommittedReads, CompletionRegistry, MemoryBinding, MemoryProposalError, SessionProjections,
 };
+
+pub(super) fn settlement_observer(
+    ports: &super::WorkerPlacement,
+) -> Arc<dyn awaken_dispatch_contract::DispatchSettlementObserver> {
+    Arc::new(settlement::DispatchedMemorySettlement::new(ports))
+}
+
+pub(super) async fn recover_bindings(
+    ports: &super::WorkerPlacement,
+    session: &str,
+    manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
+) -> Result<(), RunError> {
+    for input in manifest.resources.inputs() {
+        let Some((_, binding)) = ports
+            .memory_bindings
+            .compile(session, &manifest.workspace_id, input, None)
+            .await?
+        else {
+            continue;
+        };
+        if !binding.extraction_enabled {
+            continue;
+        }
+        let driver = Arc::new(DispatchedMemory::new(
+            binding,
+            ports.reads.clone(),
+            ports.projections.clone(),
+            ports.owner.clone(),
+            ports.completion.clone(),
+        ));
+        ports
+            .memory_extractions
+            .recover(session, driver)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
+    }
+    Ok(())
+}
 
 pub(super) struct DispatchedMemory {
     binding: Arc<MemoryBinding>,
@@ -261,6 +300,10 @@ impl DispatchedMemory {
 impl MemoryExtractionDriver for DispatchedMemory {
     fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
         self.binding.matches_intent(intent)
+    }
+
+    fn extraction_commit_scope(&self) -> MemoryExtractionCommitScope {
+        MemoryExtractionCommitScope::AuxiliaryThread
     }
 
     async fn validate_binding(
