@@ -261,7 +261,7 @@
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 223,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 581,
     "awaken-dispatch-execution::worker/physical_attempt.rs::run_physical_attempt": 197,
-    "awaken-dispatch-http::worker_dispatch.rs::settle": 277,
+    "awaken-dispatch-http::worker_dispatch.rs::settle": 274,
     "awaken-dispatch-http::worker_dispatch/session_realization.rs::session_resume": 182,
     "awaken-dispatch::memory.rs::claim_exact_with_mode": 177,
     "awaken-dispatch::postgres/claim.rs::claim_exact_transaction_with_mode": 264,

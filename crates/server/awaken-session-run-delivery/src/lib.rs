@@ -45,6 +45,7 @@ mod run_publications;
 mod session_activation;
 mod session_budgets;
 mod session_capabilities;
+mod session_dispatch_observer;
 mod session_inputs;
 mod session_projections;
 mod session_run_activation;
@@ -137,3 +138,5 @@ pub(crate) fn poison_for_test<T>(lock: &std::sync::Mutex<T>) {
     }));
     assert!(lock.is_poisoned());
 }
+
+pub use session_dispatch_observer::SessionDispatchObserver;

@@ -515,6 +515,46 @@ pub struct SessionAgentBoundaryCommand {
     pub cancellation_requested: bool,
 }
 
+impl SessionAgentBoundaryCommand {
+    /// Lower a committed boundary using the caller's original trusted Session
+    /// affinity. A Worker supplies its explicit dispatch affinity; authenticated
+    /// transport may supply its guarded primary fallback. Neither source is
+    /// recovered from a mutable Thread projection here.
+    pub fn from_claimed_boundary(
+        activity_epoch: Option<u64>,
+        session_thread: Option<&ThreadId>,
+        source: (&ThreadId, &RunId, &str),
+        claimed_run: &RunId,
+        committed_state: &RunState,
+        cancellation_requested: bool,
+    ) -> Result<Option<Self>, crate::RunError> {
+        let Some(session_activity_epoch) = activity_epoch else {
+            return Ok(None);
+        };
+        let session_thread = session_thread.ok_or_else(|| {
+            crate::RunError::bad_request(
+                "coordinated child settlement has no parent Session affinity",
+            )
+        })?;
+        if session_activity_epoch == 0
+            || source.1 != claimed_run
+            || !matches!(committed_state, RunState::Awaiting | RunState::Ended(_))
+        {
+            return Err(crate::RunError::bad_request(
+                "coordinated child settlement coordinates are inconsistent",
+            ));
+        }
+        Ok(Some(Self {
+            session_id: SessionId::from(&session_thread.0),
+            source_thread_id: source.0.clone(),
+            source_run_id: source.1.clone(),
+            source_agent_id: source.2.to_owned(),
+            session_activity_epoch,
+            cancellation_requested,
+        }))
+    }
+}
+
 /// Session-approved report handed to the Runtime owner. The message id is the
 /// agent-contract provenance minted from `source_run_id`; the Host freezes it
 /// directly into the deterministic root Run activation. Thread commits remain
@@ -1368,3 +1408,6 @@ pub trait SessionAgentCoordination: Send + Sync {
         command: SessionThreadToolReplyCommand,
     ) -> Result<(), crate::RunError>;
 }
+
+#[cfg(test)]
+mod boundary_command_tests;

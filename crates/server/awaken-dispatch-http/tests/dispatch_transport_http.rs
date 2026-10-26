@@ -472,12 +472,20 @@ fn terminal_snapshot(thread_id: &ThreadId, run_id: &RunId, state: RunState) -> R
     }
 }
 
+#[derive(Clone, Copy)]
+enum TerminalThread {
+    Child,
+    Primary,
+    ImplicitPrimary,
+}
+
 async fn claimed_terminal_dispatch(
     tag: &str,
-    child: bool,
+    placement: TerminalThread,
 ) -> (Arc<MemoryDispatchStore>, RunClaim, ThreadId, ThreadId) {
     let run_id = RunId(format!("terminal-run-{tag}"));
     let thread_id = ThreadId(format!("terminal-child-{tag}"));
+    let child = matches!(placement, TerminalThread::Child);
     let session_thread_id = if child {
         ThreadId(format!("terminal-parent-{tag}"))
     } else {
@@ -486,8 +494,10 @@ async fn claimed_terminal_dispatch(
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let mut request = RunDispatch::new(activation(&run_id.0, &thread_id.0))
-        .for_session(session_thread_id.clone())
         .with_traceparent(Some(TERMINAL_TRACEPARENT.to_string()));
+    if !matches!(placement, TerminalThread::ImplicitPrimary) {
+        request = request.for_session(session_thread_id.clone());
+    }
     if !child {
         // Settlement starts after the root's activity receipt. Unreceipted
         // Session admission belongs to the reservation conformance suite.
@@ -545,48 +555,53 @@ async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
     // settled=false and no second callback. Invalid claim/state combinations
     // are covered by the surrounding transport table; the contract Kani proof
     // exhausts Event receipt/activity combinations.
-    let (store, claim, session_id, thread_id) =
-        claimed_terminal_dispatch("post-dispatch-session", false).await;
-    let recovery = terminal_recovery(
-        &session_id,
-        &thread_id,
-        &claim.run_id,
-        Ok(terminal_snapshot(
+    // R3: the transport's established primary fallback omits the optional
+    // affinity field; its guarded root still selects the exact Session. Cross
+    // explicit/implicit primary with R1 Applied and R2 retired-claim replay.
+    for placement in [TerminalThread::Primary, TerminalThread::ImplicitPrimary] {
+        let (store, claim, session_id, thread_id) =
+            claimed_terminal_dispatch("post-dispatch-session", placement).await;
+        let recovery = terminal_recovery(
+            &session_id,
             &thread_id,
             &claim.run_id,
-            RunState::Ended(EndCause::NaturalEnd),
-        )),
-    );
-    let coordination = Arc::new(RecordingSessionCoordination::default());
-    let router = dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            store,
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_recovery_source(recovery)
-        .with_session_coordination(coordination.clone()),
-    ));
+            Ok(terminal_snapshot(
+                &thread_id,
+                &claim.run_id,
+                RunState::Ended(EndCause::NaturalEnd),
+            )),
+        );
+        let coordination = Arc::new(RecordingSessionCoordination::default());
+        let router = dispatch_transport_router_with_service(Arc::new(
+            WorkerDispatchService::new(
+                store,
+                Arc::new(HeaderWorkerAuthenticator),
+                Arc::new(ManualClock::new(0)),
+                Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            )
+            .with_recovery_source(recovery)
+            .with_session_coordination(coordination.clone()),
+        ));
 
-    let (status, applied) = settle_terminal(&router, &claim).await;
-    assert_eq!(status, StatusCode::OK, "R1: {applied}");
-    assert_eq!(applied["settled"], true, "R1");
-    {
-        // Inspect R1 under a lexical lock scope; replay must never carry a
-        // synchronous fixture guard into the next awaited transport operation.
-        let finalized = coordination.finalized.lock().unwrap();
-        assert_eq!(finalized.len(), 1, "R1");
-        assert_eq!(finalized[0].session_id, session_id.0, "R1 exact Session");
-        assert_eq!(finalized[0].source_thread_id, thread_id, "R1 exact Thread");
-        assert_eq!(finalized[0].source_run_id, claim.run_id, "R1 exact Run");
-        assert_eq!(finalized[0].session_activity_epoch, 1, "R1 exact epoch");
+        let (status, applied) = settle_terminal(&router, &claim).await;
+        assert_eq!(status, StatusCode::OK, "R1: {applied}");
+        assert_eq!(applied["settled"], true, "R1");
+        {
+            // Inspect R1 under a lexical lock scope; replay must never carry a
+            // synchronous fixture guard into the next awaited transport operation.
+            let finalized = coordination.finalized.lock().unwrap();
+            assert_eq!(finalized.len(), 1, "R1");
+            assert_eq!(finalized[0].session_id, session_id.0, "R1 exact Session");
+            assert_eq!(finalized[0].source_thread_id, thread_id, "R1 exact Thread");
+            assert_eq!(finalized[0].source_run_id, claim.run_id, "R1 exact Run");
+            assert_eq!(finalized[0].session_activity_epoch, 1, "R1 exact epoch");
+        }
+
+        let (status, replay) = settle_terminal(&router, &claim).await;
+        assert_eq!(status, StatusCode::OK, "R2: {replay}");
+        assert_eq!(replay["settled"], false, "R2");
+        assert_eq!(coordination.finalized.lock().unwrap().len(), 1, "R2");
     }
-
-    let (status, replay) = settle_terminal(&router, &claim).await;
-    assert_eq!(status, StatusCode::OK, "R2: {replay}");
-    assert_eq!(replay["settled"], false, "R2");
-    assert_eq!(coordination.finalized.lock().unwrap().len(), 1, "R2");
 }
 
 #[tokio::test]
@@ -919,7 +934,15 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
     // Root/child both use the same HTTP authority; a child's logical outcome
     // must not unlock parent activity before the physical execution quiesces.
     for child in [false, true] {
-        let (store, claim, session, thread) = claimed_terminal_dispatch("occupied", child).await;
+        let (store, claim, session, thread) = claimed_terminal_dispatch(
+            "occupied",
+            if child {
+                TerminalThread::Child
+            } else {
+                TerminalThread::Primary
+            },
+        )
+        .await;
         store.begin_attempt(&claim, None).await.unwrap();
         let observer = Arc::new(FailFirstTerminalSettlement::default());
         let work = Arc::new(RecordingSessionWork::default());
@@ -993,7 +1016,7 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
     // R2=(C1,C3,C4)=>200+Done+0 releases+1 success+E3+E4.
     awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
     let (store, claim, session_thread_id, thread_id) =
-        claimed_terminal_dispatch("observer-retry", true).await;
+        claimed_terminal_dispatch("observer-retry", TerminalThread::Child).await;
     let run_id = claim.run_id.clone();
     let observer = Arc::new(FailFirstTerminalSettlement::default());
     let work = Arc::new(RecordingSessionWork::default());
@@ -1129,7 +1152,7 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
 
     for (tag, rule, expected_status) in rules {
         let (store, claim, session_thread_id, thread_id) =
-            claimed_terminal_dispatch(tag, true).await;
+            claimed_terminal_dispatch(tag, TerminalThread::Child).await;
         let run_id = claim.run_id.clone();
         let observer = Arc::new(FailFirstTerminalSettlement::default());
         let work = Arc::new(RecordingSessionWork::default());
@@ -1300,7 +1323,8 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
         ),
     ];
     for (tag, state, outcome, mode, observe, accepted, releases) in rows {
-        let (store, claim, session_id, thread_id) = claimed_terminal_dispatch(tag, false).await;
+        let (store, claim, session_id, thread_id) =
+            claimed_terminal_dispatch(tag, TerminalThread::Primary).await;
         let recovery = terminal_recovery(
             &session_id,
             &thread_id,
@@ -1390,7 +1414,7 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
     // re-observe the same committed Run, settle Done, no second Work release.
     // No new execution, Work revival, or fabricated Runtime terminal is allowed.
     let (store, claim, session_id, thread_id) =
-        claimed_terminal_dispatch("release-loss", false).await;
+        claimed_terminal_dispatch("release-loss", TerminalThread::Primary).await;
     let recovery = terminal_recovery(
         &session_id,
         &thread_id,
