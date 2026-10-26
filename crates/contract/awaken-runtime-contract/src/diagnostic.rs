@@ -142,7 +142,55 @@ impl RuntimeDiagnostic {
         self.kind
     }
 
+    /// Borrows this diagnostic's code. Use `to_owned()` when retaining it
+    /// beyond the error's lifetime; providers may supply an owned stable code.
     pub fn code(&self) -> &str {
         &self.code
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution::Error;
+
+    #[test]
+    fn owned_code_and_typed_source_survive_execution_error_projection() {
+        let error: Error = {
+            let code = String::from("provider_admission_unavailable");
+            RuntimeDiagnostic::new(
+                RuntimeErrorKind::Unavailable,
+                code,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "conflict: display text does not classify this failure",
+                ),
+            )
+            .into()
+        };
+        assert_eq!(error.kind(), RuntimeErrorKind::Unavailable);
+        assert_eq!(error.code(), "provider_admission_unavailable");
+        let retained = error.code().to_owned();
+        let source = std::error::Error::source(&error)
+            .expect("the provider cause is preserved")
+            .downcast_ref::<std::io::Error>()
+            .expect("the original concrete source is preserved");
+        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+        drop(error);
+        assert_eq!(retained, "provider_admission_unavailable");
+    }
+
+    #[test]
+    fn static_literal_callers_keep_their_code_and_classification() {
+        let diagnostic = RuntimeDiagnostic::new(
+            RuntimeErrorKind::Conflict,
+            "provider_version_conflict",
+            std::io::Error::other("unavailable: the original cause remains display only"),
+        );
+        assert_eq!(diagnostic.kind(), RuntimeErrorKind::Conflict);
+        assert_eq!(diagnostic.code(), "provider_version_conflict");
+        let error: Error = diagnostic.into();
+        assert_eq!(error.kind(), RuntimeErrorKind::Conflict);
+        assert_eq!(error.code(), "provider_version_conflict");
     }
 }
