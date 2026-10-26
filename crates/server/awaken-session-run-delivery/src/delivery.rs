@@ -16,6 +16,7 @@
 mod dispatched_runs;
 mod durable_operations;
 mod inputs;
+mod memory;
 mod outcomes;
 mod roles;
 mod thread_runs;
@@ -128,6 +129,22 @@ impl WorkerPlacedSessions {
     #[must_use]
     pub fn projections(&self) -> &Arc<SessionProjections> {
         &self.ports.projections
+    }
+
+    /// The existing Memory controller's Worker-placement driver. The driver
+    /// borrows these same delivery owners and executes no local model.
+    #[must_use]
+    pub fn memory_extraction_driver(
+        &self,
+        binding: Arc<crate::MemoryBinding>,
+    ) -> Arc<dyn awaken_ext_memory::MemoryExtractionDriver> {
+        Arc::new(memory::DispatchedMemory::new(
+            binding,
+            self.ports.reads.clone(),
+            self.ports.projections.clone(),
+            self.ports.owner.clone(),
+            self.ports.completion.clone(),
+        ))
     }
 
     /// The Session application's role set for the Sessions registered Workers
@@ -373,7 +390,7 @@ mod tests {
     }
 
     /// A live MemoryStore binding at version 4.
-    struct Memory;
+    pub(super) struct Memory;
 
     #[async_trait::async_trait]
     impl LiveResourceBindingVerifier for Memory {
@@ -398,7 +415,7 @@ mod tests {
         }
     }
 
-    fn memory_input(version: u64) -> ResolvedInput {
+    pub(super) fn memory_input(version: u64) -> ResolvedInput {
         ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
@@ -450,7 +467,7 @@ mod tests {
         }
     }
 
-    fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
+    pub(super) fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
         let clock = awaken_time::system_clock();
         let projections = Arc::new(SessionProjections::new("local", None));
         let hub = Arc::new(ThreadEventHub::new());
