@@ -24,7 +24,9 @@
 //! | T3 | the process begins draining ([`ProcessDispatch::begin_drain`]) | the loop ends at its next await and frees its resolver; this dispatch stays usable |
 //! | T4 | start after T3 | refused: a stopped loop is never restarted |
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+
+use once_cell::sync::OnceCell;
 
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore, DispatchBinding};
 use awaken_time::WallClock;
@@ -46,11 +48,11 @@ pub struct ProcessDispatch {
     clock: Arc<dyn WallClock>,
     completion: Arc<dyn CompletionSink>,
     hint: DispatchHint,
-    pool: OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
+    pool: OnceCell<Arc<DispatchPool<AnyDispatchStore>>>,
     /// The scan state the claimed-Run resolver shares.
     terminal_reconciliation: Arc<TerminalReconciliationState>,
     /// The coordinator-side maintenance loop (rules T1-T4 above).
-    terminal_reconciler: OnceLock<DispatchReconciler>,
+    terminal_reconciler: OnceCell<DispatchReconciler>,
 }
 
 /// What starting the local pool does for one topology and pool state.
@@ -126,9 +128,9 @@ impl ProcessDispatch {
             clock,
             completion,
             hint,
-            pool: OnceLock::new(),
+            pool: OnceCell::new(),
             terminal_reconciliation: Arc::default(),
-            terminal_reconciler: OnceLock::new(),
+            terminal_reconciler: OnceCell::new(),
         }
     }
 
@@ -152,7 +154,9 @@ impl ProcessDispatch {
 
     /// Spawn the one process-level pool, once, when this process executes Runs
     /// and its dispatch authority is bound. `resolver` is built only when the
-    /// pool is actually spawned. Idempotent.
+    /// pool is actually spawned. Concurrent callers share one fallible
+    /// initializer; a failed factory leaves the slot empty for a later retry.
+    /// Idempotent.
     pub fn ensure_pool(
         &self,
         binding: Option<DispatchBinding>,
@@ -165,24 +169,28 @@ impl ProcessDispatch {
             return Ok(());
         };
         let binding = binding.expect("a spawn decision requires the bound authority");
-        let pool = DispatchPool::spawn_bound(
-            binding,
-            self.clock.clone(),
-            self.topology.lease_owner.as_str().to_owned(),
-            DEFAULT_LEASE_MS,
-            crate::DispatchServiceConfig::for_topology(&self.topology),
-            resolver()?,
-            sizing.slots().get(),
-            self.hint.wake(),
-            Some(self.completion.clone()),
-        )?;
-        let _ = self.pool.set(Arc::new(pool));
-        Ok(())
+        self.pool
+            .get_or_try_init(|| {
+                let pool = DispatchPool::spawn_bound(
+                    binding,
+                    self.clock.clone(),
+                    self.topology.lease_owner.as_str().to_owned(),
+                    DEFAULT_LEASE_MS,
+                    crate::DispatchServiceConfig::for_topology(&self.topology),
+                    resolver()?,
+                    sizing.slots().get(),
+                    self.hint.wake(),
+                    Some(self.completion.clone()),
+                )?;
+                Ok(Arc::new(pool))
+            })
+            .map(|_| ())
     }
 
     /// Start the coordinator-side terminal reconciliation loop when this
     /// process owns durable dispatch and committed truth but runs no pool.
-    /// Returns whether this call started it.
+    /// Returns whether this call started it. Only the winning initializer
+    /// constructs a resolver; an absent owner or resolver leaves it retryable.
     pub fn ensure_terminal_reconciliation(
         &self,
         scans_committed_terminals: bool,
@@ -197,18 +205,24 @@ impl ProcessDispatch {
         ) {
             return false;
         }
-        let (Some(owner), Some(resolver)) = (owner, resolver()) else {
-            return false;
-        };
-        let reconciler = DispatchReconciler::spawn(
-            owner,
-            self.clock.clone(),
-            self.hint.wake(),
-            crate::DispatchServiceConfig::for_topology(&self.topology),
-            resolver,
-            Some(self.completion.clone()),
-        );
-        self.terminal_reconciler.set(reconciler).is_ok()
+        let mut started = false;
+        self.terminal_reconciler
+            .get_or_try_init(|| {
+                let owner = owner.ok_or(())?;
+                let resolver = resolver().ok_or(())?;
+                let reconciler = DispatchReconciler::spawn(
+                    owner,
+                    self.clock.clone(),
+                    self.hint.wake(),
+                    crate::DispatchServiceConfig::for_topology(&self.topology),
+                    resolver,
+                    Some(self.completion.clone()),
+                );
+                started = true;
+                Ok::<_, ()>(reconciler)
+            })
+            .is_ok()
+            && started
     }
 
     /// Stop the coordinator-side terminal reconciliation loop, when it runs

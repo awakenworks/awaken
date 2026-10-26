@@ -32,6 +32,8 @@ awaken-runtime.workspace = true
 awaken-observability.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true
+# Atomic fallible initialization of the process's one pool and maintenance loop.
+once_cell = "1.21"
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

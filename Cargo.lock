@@ -1152,6 +1152,7 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
+ "once_cell",
  "serde_json",
  "thiserror",
  "tokio",
