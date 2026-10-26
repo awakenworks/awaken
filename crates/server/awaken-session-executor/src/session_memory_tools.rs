@@ -43,7 +43,7 @@ pub(crate) trait SessionMemoryBinding: Send + Sync {
 }
 
 #[async_trait]
-impl SessionMemoryBinding for crate::memory_binding::MemoryBinding {
+impl SessionMemoryBinding for awaken_session_run_delivery::MemoryBinding {
     async fn list(
         &self,
         prefix: &str,
@@ -269,7 +269,7 @@ pub(crate) struct SessionMemoryTools {
 
 impl SessionMemoryTools {
     pub(crate) fn new(
-        bindings: HashMap<String, Arc<crate::memory_binding::MemoryBinding>>,
+        bindings: HashMap<String, Arc<awaken_session_run_delivery::MemoryBinding>>,
         snapshot: Option<&ExecutableAgentSnapshot>,
     ) -> Option<Self> {
         let bindings: HashMap<String, Arc<dyn SessionMemoryBinding>> = bindings

@@ -204,7 +204,7 @@ impl From<ExecutorLock> for RunError {
 /// refusal as a poisoned executor lock.
 impl From<awaken_session_run_delivery::DeliveryLock> for SessionExecutionError {
     fn from(error: awaken_session_run_delivery::DeliveryLock) -> Self {
-        Self::unavailable_classified(EXECUTOR_LOCK_POISONED_CODE, error.to_string())
+        from_run_error(RunError::from(error))
     }
 }
 
@@ -239,6 +239,9 @@ mod tests {
         // Cause: any executor-owned lock is poisoned. Effect: one Unavailable
         // refusal with one stable code, identical in the Host and Run
         // vocabularies, so no caller re-classifies it from text.
+        // D2 a delivery lock crosses this boundary: ordinary delivery retains
+        // its executor code; the moved Memory context retains its original
+        // realization code. Both stay Unavailable through Host -> Run.
         let lock = ExecutorLock::SkillCatalogCache;
         let host = SessionExecutionError::from(lock);
         assert_eq!(host.kind, SessionExecutionErrorKind::Unavailable, "{lock}");
@@ -250,6 +253,27 @@ mod tests {
             "{lock}"
         );
         assert_eq!(run.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
+        for (lock, expected) in [
+            (
+                awaken_session_run_delivery::DeliveryLock::ToolAdmission,
+                "session_executor_lock_poisoned",
+            ),
+            (
+                awaken_session_run_delivery::DeliveryLock::MemoryExecutionContext,
+                "session_realization_lock_poisoned",
+            ),
+        ] {
+            let host = SessionExecutionError::from(lock);
+            assert_eq!(host.kind, SessionExecutionErrorKind::Unavailable, "D2");
+            assert_eq!(host.code, expected, "D2");
+            let run = to_run_error(host);
+            assert_eq!(
+                run.kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "D2"
+            );
+            assert_eq!(run.code, expected, "D2");
+        }
     }
 
     #[test]

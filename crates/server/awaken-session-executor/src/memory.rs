@@ -36,7 +36,7 @@ use awaken_session_run_delivery::{BackgroundRuns, MemoryExtractions, SessionComm
 
 mod selector;
 mod terminal_observer;
-pub(crate) use crate::memory_binding::MemoryBinding;
+use awaken_session_run_delivery::MemoryBinding;
 pub(crate) use selector::AgentSelector;
 pub(crate) use terminal_observer::MemoryTerminalObservers;
 

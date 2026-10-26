@@ -5,7 +5,6 @@
 //! spec, registers the staged Resources and the active manifest, and validates
 //! the managed mount layout against a provider.
 
-use crate::memory_binding::MemoryBinding;
 use crate::realization_error::RealizationError;
 use crate::sandbox_layout::{
     ProjectedSandboxLayout, create_time_resource_mounts, project_sandbox_spec,
@@ -16,6 +15,7 @@ use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::SkillBundleSource;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_run_delivery::MemoryBinding;
 use std::sync::Arc;
 
 mod layout_validation;
@@ -44,7 +44,7 @@ pub struct ResourceSources {
     pub credential_materializer:
         Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     pub memory_reference_encoder:
-        Option<Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>>,
+        Option<Arc<dyn crate::memory_references::SessionMemoryReferenceEncoder>>,
 }
 
 /// Stages one installed Session's Resources into its Environment spec; its only
@@ -62,7 +62,8 @@ pub struct ResourceStaging {
     >,
     fetches_resources_upstream: bool,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    memory_reference_encoder: Option<Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>>,
+    memory_reference_encoder:
+        Option<Arc<dyn crate::memory_references::SessionMemoryReferenceEncoder>>,
 }
 
 impl ResourceStaging {
@@ -103,8 +104,8 @@ impl ResourceStaging {
     ///     staging.compile_frozen_memory_binding("session", manifest, "memory").await;
     /// }
     /// ```
-    pub fn memory_binding_compiler(&self) -> crate::memory_binding_compiler::MemoryBindingCompiler {
-        crate::memory_binding_compiler::MemoryBindingCompiler::new(
+    pub fn memory_binding_compiler(&self) -> awaken_session_run_delivery::MemoryBindingCompiler {
+        awaken_session_run_delivery::MemoryBindingCompiler::new(
             self.memory.clone(),
             self.resource_validator.clone(),
         )
@@ -159,7 +160,7 @@ impl ResourceStaging {
     /// The Memory reference encoder Memory effects publish through.
     pub fn memory_reference_encoder(
         &self,
-    ) -> Option<&Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>> {
+    ) -> Option<&Arc<dyn crate::memory_references::SessionMemoryReferenceEncoder>> {
         self.memory_reference_encoder.as_ref()
     }
 

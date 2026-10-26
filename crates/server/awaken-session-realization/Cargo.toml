@@ -20,7 +20,6 @@ awaken-agent-contract.workspace = true
 awaken-authority-clock.workspace = true
 awaken-credential-contract.workspace = true
 awaken-credential-materializer.workspace = true
-awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true

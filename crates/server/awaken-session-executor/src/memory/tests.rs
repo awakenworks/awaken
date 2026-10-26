@@ -249,7 +249,7 @@ async fn bound_test_memory(
         "test-store".into(),
         true,
     ));
-    let bound = runtime.bound(Arc::new(crate::memory_binding::MemoryBinding::new(
+    let bound = runtime.bound(Arc::new(awaken_session_run_delivery::MemoryBinding::new(
         session_id,
         "ws-test",
         platform,
@@ -939,14 +939,15 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         awaken_time::system_clock(),
         None,
     ));
-    let child_binding = first_runtime.bound(Arc::new(crate::memory_binding::MemoryBinding::new(
-        parent,
-        "ws-test",
-        platform.clone(),
-        Some(crate::host::test_resource_validator()),
-        &config,
-        true,
-    )));
+    let child_binding =
+        first_runtime.bound(Arc::new(awaken_session_run_delivery::MemoryBinding::new(
+            parent,
+            "ws-test",
+            platform.clone(),
+            Some(crate::host::test_resource_validator()),
+            &config,
+            true,
+        )));
     child_binding
         .trigger(
             terminal,
@@ -986,7 +987,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
             awaken_time::system_clock(),
         )),
     )));
-    let parent_binding = Arc::new(crate::memory_binding::MemoryBinding::new(
+    let parent_binding = Arc::new(awaken_session_run_delivery::MemoryBinding::new(
         parent,
         "ws-test",
         platform.clone(),
@@ -994,7 +995,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         &config,
         true,
     ));
-    let read_only_binding = Arc::new(crate::memory_binding::MemoryBinding::new(
+    let read_only_binding = Arc::new(awaken_session_run_delivery::MemoryBinding::new(
         parent,
         "ws-test",
         platform.clone(),
@@ -1007,7 +1008,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let direct_binding = Arc::new(crate::memory_binding::MemoryBinding::new(
+    let direct_binding = Arc::new(awaken_session_run_delivery::MemoryBinding::new(
         parent,
         "ws-test",
         Arc::new(PlatformMemoryHandle::from_roles(
@@ -1173,7 +1174,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let binding = Arc::new(crate::memory_binding::MemoryBinding::new(
+    let binding = Arc::new(awaken_session_run_delivery::MemoryBinding::new(
         session,
         "worker-memory-workspace",
         Arc::new(PlatformMemoryHandle::from_roles(

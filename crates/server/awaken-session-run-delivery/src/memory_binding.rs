@@ -5,21 +5,22 @@
 // @formal reason: physical Session commit an extraction writes through; absence makes extraction wait
 // @formal reason: (Retryable) and never chooses another commit. Runtime tests drive both rows.
 //! One Session-scoped MemoryStore binding, projected from the frozen Session
-//! manifest during realization.
+//! manifest, shared by Worker realization and Coordinator extraction.
 //!
-//! The binding is realization's value: the exact store, pinned config version,
+//! The binding retains the exact store, pinned config version,
 //! granted access and live-resource validator, plus the data-plane operations
 //! the Session's tools and recall use through it. The extraction behaviour that
 //! runs an auxiliary agent over a binding stays in the host (`memory`), which
 //! wraps a binding with its process-wide `MemoryRuntime`.
 
-use crate::realization_error::{RealizationError, RealizationLock};
+use crate::DeliveryLock;
+use awaken_session_types::RunError;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use awaken_ext_memory::{MemoryExtractionIntent, MemoryStoreHandle};
 
-use awaken_session_run_delivery::{PlatformMemoryHandle, SessionCommit};
+use crate::{PlatformMemoryHandle, SessionCommit};
 
 /// One Session-scoped MemoryStore binding shared by recall, the Session's
 /// Memory tools and extraction.
@@ -65,24 +66,21 @@ impl MemoryBinding {
     }
 
     /// Attach the Session's extraction commit. A poisoned context denies.
-    pub fn attach_extraction_commit(
-        &self,
-        commit: Arc<SessionCommit>,
-    ) -> Result<(), RealizationError> {
+    pub fn attach_extraction_commit(&self, commit: Arc<SessionCommit>) -> Result<(), RunError> {
         *self
             .extraction_commit
             .write()
-            .map_err(|_| RealizationLock::MemoryExecutionContext)? = Some(commit);
+            .map_err(|_| DeliveryLock::MemoryExecutionContext)? = Some(commit);
         Ok(())
     }
 
     /// The attached extraction commit; a poisoned context denies the read
     /// instead of reporting that no commit is attached.
-    pub fn extraction_commit(&self) -> Result<Option<Arc<SessionCommit>>, RealizationError> {
+    pub fn extraction_commit(&self) -> Result<Option<Arc<SessionCommit>>, RunError> {
         Ok(self
             .extraction_commit
             .read()
-            .map_err(|_| RealizationLock::MemoryExecutionContext)?
+            .map_err(|_| DeliveryLock::MemoryExecutionContext)?
             .clone())
     }
 
@@ -127,28 +125,68 @@ impl MemoryStoreHandle for MemoryBinding {
     }
 }
 
-/// One injected transport adapter encodes both ordinary Run-scoped and
-/// terminal Session-scoped Memory operations. The generic Resource ports stay
-/// authoritative; this private intersection trait only permits one trait
-/// object to carry both implementations through Runtime composition.
-pub trait SessionMemoryReferenceEncoder:
-    awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_dispatch_contract::RunClaim,
-    > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_realization_contract::SessionResourceMaterializationIntent,
-    > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_state_contract::SessionTerminalMemoryIntent,
-    >
-{
-}
+#[cfg(test)]
+mod tests {
+    use super::{Arc, MemoryBinding, PlatformMemoryHandle, SessionCommit};
 
-impl<T> SessionMemoryReferenceEncoder for T where
-    T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_dispatch_contract::RunClaim,
-        > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_session_realization_contract::SessionResourceMaterializationIntent,
-        > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_session_state_contract::SessionTerminalMemoryIntent,
-        >
-{
+    #[test]
+    fn memory_commit_binding_preserves_identity_and_refuses_poisoned_reads_and_writes() {
+        // C1 no context / exact context attached; C2 the original context lock
+        // is poisoned by a panicking holder. B1 !C1 => None, B2 C1 => the same
+        // Arc, B3 C2 => both read and replacement refuse with the original
+        // realization poison code and retryable class. No empty fallback or
+        // replacement commit is permitted after the holder panics.
+        let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+            awaken_time::system_clock(),
+        ));
+        let binding = MemoryBinding::new(
+            "session",
+            "workspace",
+            Arc::new(PlatformMemoryHandle::from_roles(
+                awaken_resource_contract::MemoryExecutionContent::new(repository),
+                "memory".into(),
+                true,
+            )),
+            None,
+            &awaken_resource_contract::MemoryStoreConfigVersion {
+                memory_store_id: "memory".into(),
+                version: awaken_resource_contract::ConfigVersion(4),
+                retention_policy: Default::default(),
+            },
+            true,
+        );
+        assert!(binding.extraction_commit().unwrap().is_none(), "B1");
+        let commit: Arc<SessionCommit> = Arc::new(crate::SessionCommit::Local(Arc::new(
+            awaken_dispatch_erasure::LocalCommitAdapter::projected(
+                awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock()),
+            ),
+        )));
+        binding.attach_extraction_commit(commit.clone()).unwrap();
+        assert!(
+            Arc::ptr_eq(&binding.extraction_commit().unwrap().unwrap(), &commit),
+            "B2"
+        );
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = binding.extraction_commit.write().unwrap();
+            panic!("poison the original extraction commit lock");
+        }));
+        assert!(binding.extraction_commit.is_poisoned());
+        let read_error = match binding.extraction_commit() {
+            Err(error) => error,
+            Ok(_) => panic!("B3 poisoned read cannot become missing context"),
+        };
+        let write_error = binding.attach_extraction_commit(commit).unwrap_err();
+        for error in [read_error, write_error] {
+            assert_eq!(
+                error.kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "B3"
+            );
+            assert_eq!(error.code, "session_realization_lock_poisoned", "B3");
+            assert_eq!(
+                error.message, "Memory execution context lock poisoned",
+                "B3"
+            );
+        }
+    }
 }

@@ -104,7 +104,7 @@ pub trait StagingPeer: Send + Sync {
     fn fetches_resources_upstream(&self) -> bool;
     fn memory_reference_encoder(
         &self,
-    ) -> Option<&Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>>;
+    ) -> Option<&Arc<dyn crate::memory_references::SessionMemoryReferenceEncoder>>;
     fn sandbox_spec_for_provider(
         &self,
         thread: &str,

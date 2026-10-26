@@ -3433,7 +3433,6 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-dispatch-contract",
- "awaken-ext-memory",
  "awaken-ext-skills",
  "awaken-lease-contract",
  "awaken-provisioning-contract",

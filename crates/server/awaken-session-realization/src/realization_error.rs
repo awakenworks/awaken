@@ -228,8 +228,6 @@ pub enum RealizationLock {
     InstalledSessions,
     #[error("Environment binding sink lock poisoned")]
     EnvironmentBindingSink,
-    #[error("Memory execution context lock poisoned")]
-    MemoryExecutionContext,
 }
 
 /// Stable code of every [`RealizationError::Poisoned`].
