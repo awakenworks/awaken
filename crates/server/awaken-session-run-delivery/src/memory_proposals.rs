@@ -10,9 +10,8 @@ use std::collections::{BTreeMap, HashSet};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_memory::{
     EXTRACT_PROMPT, MemoryExtractionIntent, MemoryExtractionOutcome, MemoryStoreHandle,
     WriteMemoryTool, accepts_memory_content, sanitize_stem,
@@ -116,16 +115,16 @@ impl MemoryProposalError {
 }
 
 /// Decode only the outputs of this exact, successfully settled extractor Run.
-/// The complete batch is verified before it reaches mutation planning.
+/// The caller supplies the record and messages from one committed recovery
+/// prefix; the complete batch is verified before it reaches mutation planning.
 pub fn committed_memory_writes(
     intent: &MemoryExtractionIntent,
-    reader: &dyn CommittedThreadView,
+    record: Option<&RunRecord>,
+    messages: &[Message],
 ) -> Result<BTreeMap<String, String>, MemoryProposalError> {
     let run = RunId(intent.auxiliary_run_id());
     let thread = ThreadId(intent.auxiliary_thread_id());
-    let record = reader
-        .run(&run)
-        .ok_or(MemoryProposalError::ExecutionIndeterminate)?;
+    let record = record.ok_or(MemoryProposalError::ExecutionIndeterminate)?;
     if record.id != run || record.thread_id != thread {
         return Err(MemoryProposalError::RunIdentityMismatch);
     }
@@ -136,7 +135,6 @@ pub fn committed_memory_writes(
         }
         _ => return Err(MemoryProposalError::UnsuccessfulRun),
     }
-    let messages = reader.committed_messages(&thread);
     let input = memory_extraction_input(intent);
     let outputs = messages
         .strip_prefix(input.as_slice())

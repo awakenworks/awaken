@@ -1125,3 +1125,265 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         "R4/E4 the Worker does not bind Coordinator extraction execution"
     );
 }
+
+struct UnavailableExtractorMaterializer(Arc<std::sync::atomic::AtomicUsize>);
+
+impl awaken_credential_materializer::InferenceExecutorMaterializer
+    for UnavailableExtractorMaterializer
+{
+    fn materialize_pinned(
+        &self,
+        _candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        _context: &RuntimeRunContext,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        None
+    }
+}
+
+fn unavailable_extractor(
+    bound: &BoundMemory,
+    materializations: Arc<std::sync::atomic::AtomicUsize>,
+) -> BoundMemory {
+    Arc::new(MemoryRuntime::new(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        bound.runtime.provider.clone(),
+        bound.runtime.background(),
+        bound.runtime.extraction_repository(),
+        bound.runtime.clock.clone(),
+        Some(Arc::new(UnavailableExtractorMaterializer(materializations))),
+    ))
+    .bound(bound.binding.clone())
+}
+
+fn recovery_intent(session: &str) -> MemoryExtractionIntent {
+    use awaken_time::WallClockExt as _;
+    let mut intent = MemoryExtractionIntent::new_range(
+        format!("recovery-{session}"),
+        format!("{session}:terminal"),
+        "ws-test",
+        session,
+        "terminal",
+        "test-store",
+        1,
+        0,
+        1,
+        vec![user("I like rust")],
+        extractor(None, None),
+    )
+    .unwrap();
+    intent
+        .claim("owner", awaken_time::system_clock().now_ms(), 60_000)
+        .unwrap();
+    intent
+}
+
+#[tokio::test]
+async fn committed_extraction_recovery_does_not_materialize_an_unavailable_model() {
+    // Cause/effect table: R1 the real extractor committed a valid proposal;
+    // R2 it committed a malformed batch. C1 the governed content was not yet
+    // applied; C2 recovery has neither a working materializer nor a default
+    // model. Both rows must return the original exact outcome with zero new
+    // materialization requests. R1 retains its planned CAS token; R2 retains
+    // the permanent refusal. Neither row mutates the claim or content itself.
+    for malformed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let model: Arc<dyn LlmExecutor> = if malformed {
+            Arc::new(MalformedExtractorModel)
+        } else {
+            Arc::new(ExtractorModel)
+        };
+        let (_runtime, bound, content, intents) =
+            bound_test_memory(model, "committed-recovery", root.path(), root.path()).await;
+        let intent = recovery_intent("committed-recovery");
+        intents
+            .put_extraction_if_absent(intent.clone())
+            .await
+            .unwrap();
+        // Leave the durable controller at Claimed, as after a crash between
+        // the extractor's committed terminal and mark_extracted.
+        let original = bound.extract_mutations(&intent).await;
+        assert_eq!(
+            matches!(original, MemoryExtractionOutcome::PermanentFailure { .. }),
+            malformed
+        );
+        if !malformed {
+            assert!(
+                matches!(&original, MemoryExtractionOutcome::Mutations(writes) if writes.len() == 1)
+            );
+        }
+        let materializations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recovered = unavailable_extractor(&bound, materializations.clone())
+            .extract_mutations(&intent)
+            .await;
+        assert_eq!(recovered, original);
+        assert_eq!(materializations.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            intents.get_extraction(&intent.intent_id).await.unwrap(),
+            Some(intent)
+        );
+        assert!(
+            content
+                .list_versions("test-store")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+struct PausedExtractorModel {
+    entered: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmExecutor for PausedExtractorModel {
+    async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.entered.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+        }
+        ExtractorModel.infer(request).await
+    }
+}
+
+#[tokio::test]
+async fn running_extractor_recovery_preserves_uncertainty_without_reentry() {
+    // C1 a real extractor has durably begun and entered its first model call;
+    // C2 that call is held at an explicit semaphore; C3 a second observer has
+    // an unavailable materializer. U1 C1+C2+C3 => the same auxiliary Run is
+    // ExecutionIndeterminate, zero new materialization and no second model
+    // request. U2 release C2 => the original Run alone completes its proposal.
+    // JoinSet owns cancellation on assertion failure; no detached test work or
+    // timing-based sleep creates the Running state.
+    let root = tempfile::tempdir().unwrap();
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_runtime, bound, _content, intents) = bound_test_memory(
+        Arc::new(PausedExtractorModel {
+            entered: entered.clone(),
+            release: release.clone(),
+            calls: calls.clone(),
+        }),
+        "running-recovery",
+        root.path(),
+        root.path(),
+    )
+    .await;
+    let intent = recovery_intent("running-recovery");
+    intents
+        .put_extraction_if_absent(intent.clone())
+        .await
+        .unwrap();
+    let original = bound.clone();
+    let admitted = intent.clone();
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(async move { original.extract_mutations(&admitted).await });
+    tokio::time::timeout(Duration::from_secs(10), entered.acquire())
+        .await
+        .expect("the first model call was entered")
+        .unwrap()
+        .forget();
+    let materializations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recovered = unavailable_extractor(&bound, materializations.clone())
+        .extract_mutations(&intent)
+        .await;
+    assert!(
+        matches!(recovered, MemoryExtractionOutcome::ExecutionIndeterminate { auxiliary_run_id, .. } if auxiliary_run_id == intent.auxiliary_run_id())
+    );
+    assert_eq!(materializations.load(Ordering::SeqCst), 0, "U1");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "U1");
+    release.add_permits(1);
+    let completed = tasks.join_next().await.unwrap().unwrap();
+    assert!(
+        matches!(completed, MemoryExtractionOutcome::Mutations(writes) if writes.len() == 1),
+        "U2"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "U2");
+}
+
+#[tokio::test]
+async fn extraction_recovery_refuses_a_worker_projection_as_committed_authority() {
+    // A1 the binding has a Remote Worker projection instead of the original
+    // committed authority => permanent refusal before materialization or model
+    // IO. The existing Worker-placement test covers ordinary no-binding entry;
+    // this row closes explicit misuse of the public binding attachment API.
+    let root = tempfile::tempdir().unwrap();
+    let (_runtime, bound, _content, _intents) = bound_test_memory(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "remote-recovery",
+        root.path(),
+        root.path(),
+    )
+    .await;
+    bound
+        .binding
+        .attach_extraction_commit(Arc::new(SessionCommit::Remote(
+            awaken_session_run_delivery::WorkerRecoveryCommit::new(),
+        )))
+        .unwrap();
+    let materializations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let outcome = unavailable_extractor(&bound, materializations.clone())
+        .extract_mutations(&recovery_intent("remote-recovery"))
+        .await;
+    assert!(matches!(
+        outcome,
+        MemoryExtractionOutcome::PermanentFailure { .. }
+    ));
+    assert_eq!(materializations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unreadable_committed_extraction_source_never_materializes_a_model() {
+    // F1 the real SQLite recovery source is attached but its pool is closed;
+    // F2 the extraction intent and governed Memory store remain healthy.
+    // Effect: return the existing Retryable storage outcome before any provider
+    // materialization or model request; retain the exact claim/content. Closing
+    // this test-owned in-memory pool exercises the real read failure, without
+    // another read facade or a fabricated empty committed prefix.
+    let root = tempfile::tempdir().unwrap();
+    let (_runtime, bound, content, intents) = bound_test_memory(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "unreadable-recovery",
+        root.path(),
+        root.path(),
+    )
+    .await;
+    let store = Arc::new(
+        awaken_store_sqlite::SqliteCommitCoordinator::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    bound
+        .binding
+        .attach_extraction_commit(Arc::new(SessionCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected_shared(store.clone()),
+        ))))
+        .unwrap();
+    store.close().await;
+    let intent = recovery_intent("unreadable-recovery");
+    intents
+        .put_extraction_if_absent(intent.clone())
+        .await
+        .unwrap();
+    let materializations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let outcome = unavailable_extractor(&bound, materializations.clone())
+        .extract_mutations(&intent)
+        .await;
+    assert!(matches!(outcome, MemoryExtractionOutcome::Retryable { .. }));
+    assert_eq!(materializations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        intents.get_extraction(&intent.intent_id).await.unwrap(),
+        Some(intent)
+    );
+    assert!(
+        content
+            .list_versions("test-store")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -1,5 +1,4 @@
 use super::*;
-use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::run::Record;
 use awaken_ext_memory::MemoryExtractorSnapshot;
 
@@ -9,22 +8,11 @@ struct Committed {
     messages: Vec<Message>,
 }
 
-impl CommittedThreadView for Committed {
-    fn committed_messages(&self, _thread: &ThreadId) -> Vec<Message> {
-        self.messages.clone()
-    }
-    fn run(&self, _run: &RunId) -> Option<Record> {
-        self.record.clone()
-    }
-    fn latest_run(&self, _thread: &ThreadId) -> Option<Record> {
-        self.record.clone()
-    }
-    fn resume_ticket(&self, _run: &RunId) -> Option<ResumeTicket> {
-        None
-    }
-    fn open_wait_for_thread(&self, _thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-        None
-    }
+fn decode(
+    intent: &MemoryExtractionIntent,
+    committed: &Committed,
+) -> Result<BTreeMap<String, String>, MemoryProposalError> {
+    committed_memory_writes(intent, committed.record.as_ref(), &committed.messages)
 }
 
 fn intent() -> MemoryExtractionIntent {
@@ -128,7 +116,7 @@ fn committed_agent_tool_calls_rebuild_only_policy_accepted_mutations() {
         )],
     ));
     assert_eq!(
-        committed_memory_writes(&i, &committed(&i, outputs)).unwrap(),
+        decode(&i, &committed(&i, outputs)).unwrap(),
         BTreeMap::from([(
             "/User-Pref.md".to_string(),
             "The user prefers concise reviews.".to_string()
@@ -155,12 +143,12 @@ fn extraction_proposals_require_exact_completed_run_and_input() {
     ] {
         let mut c = valid.clone();
         c.record.as_mut().unwrap().state = state;
-        assert!(committed_memory_writes(&i, &c).unwrap().is_empty(), "R5");
+        assert!(decode(&i, &c).unwrap().is_empty(), "R5");
     }
     let mut absent = valid.clone();
     absent.record = None;
     assert_eq!(
-        committed_memory_writes(&i, &absent),
+        decode(&i, &absent),
         Err(MemoryProposalError::ExecutionIndeterminate),
         "R1"
     );
@@ -177,7 +165,7 @@ fn extraction_proposals_require_exact_completed_run_and_input() {
         );
         let mut c = valid.clone();
         c.record.as_mut().unwrap().state = state;
-        let error = committed_memory_writes(&i, &c).unwrap_err();
+        let error = decode(&i, &c).unwrap_err();
         assert_eq!(
             error,
             if unknown {
@@ -206,7 +194,7 @@ fn extraction_proposals_require_exact_completed_run_and_input() {
             record.thread_id = ThreadId("foreign".into());
         }
         assert_eq!(
-            committed_memory_writes(&i, &c),
+            decode(&i, &c),
             Err(MemoryProposalError::RunIdentityMismatch),
             "R2"
         );
@@ -219,20 +207,20 @@ fn extraction_proposals_require_exact_completed_run_and_input() {
             c.messages[0].content = vec![ContentBlock::text("changed input")];
         }
         assert_eq!(
-            committed_memory_writes(&i, &c),
+            decode(&i, &c),
             Err(MemoryProposalError::InputMismatch),
             "R4"
         );
     }
     assert_eq!(
-        committed_memory_writes(&i, &committed(&i, Vec::new())),
+        decode(&i, &committed(&i, Vec::new())),
         Err(MemoryProposalError::MissingOutput),
         "R4"
     );
     let mut foreign = valid;
     foreign.messages.last_mut().unwrap().id = MessageId("foreign-assistant-0".into());
     assert_eq!(
-        committed_memory_writes(&i, &foreign),
+        decode(&i, &foreign),
         Err(MemoryProposalError::MissingOutput),
         "R4"
     );
@@ -257,7 +245,7 @@ fn a_corrupt_write_never_returns_an_earlier_valid_partial_batch() {
             vec![ContentBlock::tool_use("bad", "write_memory", bad)],
         ));
         assert_eq!(
-            committed_memory_writes(&i, &committed(&i, outputs)),
+            decode(&i, &committed(&i, outputs)),
             Err(MemoryProposalError::InvalidWrite)
         );
     }
@@ -265,7 +253,7 @@ fn a_corrupt_write_never_returns_an_earlier_valid_partial_batch() {
     let repeated = outputs[0].content[0].clone();
     outputs[0].content.push(repeated);
     assert_eq!(
-        committed_memory_writes(&i, &committed(&i, outputs)),
+        decode(&i, &committed(&i, outputs)),
         Err(MemoryProposalError::InvalidWrite)
     );
 }
@@ -316,7 +304,7 @@ fn extraction_requires_one_successful_result_of_each_exact_tool_occurrence() {
             _ => unreachable!(),
         }
         assert_eq!(
-            committed_memory_writes(&i, &committed(&i, outputs)),
+            decode(&i, &committed(&i, outputs)),
             Err(MemoryProposalError::UncommittedWrite),
             "{rule}"
         );
@@ -324,14 +312,14 @@ fn extraction_requires_one_successful_result_of_each_exact_tool_occurrence() {
     let mut outputs = write(&i, 0, "call", "pref", "likes tea");
     outputs.extend(write(&i, 1, "call", "pref", "likes coffee"));
     assert_eq!(
-        committed_memory_writes(&i, &committed(&i, outputs)).unwrap()["/pref.md"],
+        decode(&i, &committed(&i, outputs)).unwrap()["/pref.md"],
         "likes coffee",
         "T2"
     );
     let mut legacy = write(&i, 0, "call", "pref", "likes tea");
     legacy[1].id = MessageId::tool_result("call");
     assert_eq!(
-        committed_memory_writes(&i, &committed(&i, legacy)).unwrap()["/pref.md"],
+        decode(&i, &committed(&i, legacy)).unwrap()["/pref.md"],
         "likes tea",
         "T3"
     );
@@ -361,7 +349,7 @@ fn copied_seed_messages_cannot_become_extractor_outputs() {
     i.transcript_end = i.transcript.len();
     let mut outputs = write(&i, 1, "actual", "pref", "likes tea");
     outputs.push(assistant(&i, 2, vec![ContentBlock::text("done")]));
-    let writes = committed_memory_writes(&i, &committed(&i, outputs)).unwrap();
+    let writes = decode(&i, &committed(&i, outputs)).unwrap();
     assert_eq!(
         writes,
         BTreeMap::from([("/pref.md".into(), "likes tea".into())])
@@ -440,7 +428,7 @@ fn committed_memory_proposals_reject_other_execution_owners() {
         i.extractor.agent.recompute_fingerprint().unwrap();
         let outputs = write(&i, 0, "call", "pref", "prefers tea");
         assert_eq!(
-            committed_memory_writes(&i, &committed(&i, outputs)),
+            decode(&i, &committed(&i, outputs)),
             Err(MemoryProposalError::InvalidWrite)
         );
     }
@@ -448,7 +436,7 @@ fn committed_memory_proposals_reject_other_execution_owners() {
     i.extractor.agent.resolved_spec.tool_descriptors[0].description = "custom display text".into();
     i.extractor.agent.recompute_fingerprint().unwrap();
     assert!(
-        committed_memory_writes(
+        decode(
             &i,
             &committed(&i, write(&i, 0, "call", "pref", "prefers tea"))
         )

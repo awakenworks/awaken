@@ -17,17 +17,9 @@ use crate::realization_error::{RealizationError, RealizationLock};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use awaken_agent_contract::CommitCoordinator;
-use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_memory::{MemoryExtractionIntent, MemoryStoreHandle};
 
-use awaken_session_run_delivery::PlatformMemoryHandle;
-
-/// The physical Session commit authority an extraction over this binding
-/// writes through and reads its committed transcript back from.
-pub trait MemoryExtractionCommit: CommitCoordinator + CommittedThreadView {}
-
-impl<T: CommitCoordinator + CommittedThreadView + ?Sized> MemoryExtractionCommit for T {}
+use awaken_session_run_delivery::{PlatformMemoryHandle, SessionCommit};
 
 /// One Session-scoped MemoryStore binding shared by recall, the Session's
 /// Memory tools and extraction.
@@ -44,7 +36,7 @@ pub struct MemoryBinding {
     pub extraction_enabled: bool,
     /// Attached once the physical Session's commit authority is known; an
     /// extraction waits until then. Shared by every holder of this binding.
-    extraction_commit: RwLock<Option<Arc<dyn MemoryExtractionCommit>>>,
+    extraction_commit: RwLock<Option<Arc<SessionCommit>>>,
 }
 
 impl MemoryBinding {
@@ -75,7 +67,7 @@ impl MemoryBinding {
     /// Attach the Session's extraction commit. A poisoned context denies.
     pub fn attach_extraction_commit(
         &self,
-        commit: Arc<dyn MemoryExtractionCommit>,
+        commit: Arc<SessionCommit>,
     ) -> Result<(), RealizationError> {
         *self
             .extraction_commit
@@ -86,9 +78,7 @@ impl MemoryBinding {
 
     /// The attached extraction commit; a poisoned context denies the read
     /// instead of reporting that no commit is attached.
-    pub fn extraction_commit(
-        &self,
-    ) -> Result<Option<Arc<dyn MemoryExtractionCommit>>, RealizationError> {
+    pub fn extraction_commit(&self) -> Result<Option<Arc<SessionCommit>>, RealizationError> {
         Ok(self
             .extraction_commit
             .read()

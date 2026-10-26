@@ -318,12 +318,6 @@ impl BoundMemory {
     }
 
     async fn extract_mutations(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
-        let seed = awaken_session_run_delivery::memory_extraction_input(intent);
-        let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
-        let (executor, context) = match self.runtime.materialize_extractor(intent) {
-            Ok(materialized) => materialized,
-            Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
-        };
         let commit = match self.binding.extraction_commit() {
             Ok(Some(commit)) => commit,
             Err(error) => {
@@ -337,6 +331,21 @@ impl BoundMemory {
                         .to_string(),
                 };
             }
+        };
+        let Some(authority) = commit.committed_authority() else {
+            return MemoryExtractionOutcome::PermanentFailure {
+                reason: "Memory extraction requires the original committed Session authority"
+                    .into(),
+            };
+        };
+        if let Some(outcome) = self.committed_mutations(intent, &authority).await {
+            return outcome;
+        }
+        let seed = awaken_session_run_delivery::memory_extraction_input(intent);
+        let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
+        let (executor, context) = match self.runtime.materialize_extractor(intent) {
+            Ok(materialized) => materialized,
+            Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
         };
         let context = context
             .with_commit(commit.clone() as Arc<dyn awaken_agent_contract::CommitCoordinator>)
@@ -357,21 +366,70 @@ impl BoundMemory {
         )
         .await
         {
-            return classify_extraction_run_error(
-                intent,
-                commit.run_state(&RunId(intent.auxiliary_run_id())),
-                error,
-            );
-        }
-        let writes =
-            match awaken_session_run_delivery::committed_memory_writes(intent, commit.as_ref()) {
-                Ok(writes) => writes,
-                Err(error) => return error.into_extraction_outcome(intent),
+            let observed_state = match authority.run(&RunId(intent.auxiliary_run_id())).await {
+                Ok(record) => record.map(|record| record.state),
+                Err(read_error) => {
+                    return MemoryExtractionOutcome::ExecutionIndeterminate {
+                        auxiliary_run_id: intent.auxiliary_run_id(),
+                        reason: format!(
+                            "{error}; committed extractor state is unavailable: {read_error}"
+                        ),
+                    };
+                }
             };
-        match self.binding.platform().plan_mutations(writes).await {
+            return classify_extraction_run_error(intent, observed_state, error);
+        }
+        self.committed_mutations(intent, &authority)
+            .await
+            .unwrap_or_else(|| {
+                awaken_session_run_delivery::MemoryProposalError::ExecutionIndeterminate
+                    .into_extraction_outcome(intent)
+            })
+    }
+
+    /// One transaction supplies the record and transcript. Shared stores do not
+    /// have to refresh a synchronous compatibility projection for this read.
+    async fn committed_mutations(
+        &self,
+        intent: &MemoryExtractionIntent,
+        authority: &awaken_session_run_delivery::CommittedAuthority<
+            Arc<dyn awaken_dispatch_erasure::LocalCommit>,
+        >,
+    ) -> Option<MemoryExtractionOutcome> {
+        use awaken_session_run_delivery::MemoryProposalError;
+        let run = RunId(intent.auxiliary_run_id());
+        let thread = awaken_agent_contract::agent::thread::Id(intent.auxiliary_thread_id());
+        let snapshot = match authority.recovery_snapshot(&thread, &run).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Some(MemoryExtractionOutcome::Retryable {
+                    reason: error.to_string(),
+                });
+            }
+        };
+        if snapshot.thread_id != thread || snapshot.claimed_run_id != run {
+            return Some(MemoryProposalError::RunIdentityMismatch.into_extraction_outcome(intent));
+        }
+        let record = match snapshot.run_record(&run) {
+            Ok(record) => record?,
+            Err(_) => {
+                return Some(
+                    MemoryProposalError::RunIdentityMismatch.into_extraction_outcome(intent),
+                );
+            }
+        };
+        let writes = match awaken_session_run_delivery::committed_memory_writes(
+            intent,
+            Some(record),
+            &snapshot.messages,
+        ) {
+            Ok(writes) => writes,
+            Err(error) => return Some(error.into_extraction_outcome(intent)),
+        };
+        Some(match self.binding.platform().plan_mutations(writes).await {
             Ok(mutations) => MemoryExtractionOutcome::Mutations(mutations),
             Err(reason) => MemoryExtractionOutcome::Retryable { reason },
-        }
+        })
     }
 
     /// A live-validating Memory handle shared with the recall plugin. Returning
