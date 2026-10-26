@@ -28,6 +28,20 @@ impl CommitBoundaryAssembly {
             thread_reads: assembly.thread_reads.clone(),
         }
     }
+
+    pub(super) async fn open_session_commit(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Arc<awaken_session_run_delivery::SessionCommit>, awaken_dispatch_execution::Error>
+    {
+        self.authority
+            .open_commit(&thread.0)
+            .await
+            .map(Arc::new)
+            .map_err(|error| {
+                awaken_dispatch_execution::session_execution::execution_error(error.to_string())
+            })
+    }
 }
 
 #[async_trait::async_trait]
@@ -36,16 +50,10 @@ impl CommitBoundaryWorkers for CommitBoundaryAssembly {
         &self,
         thread: &ThreadId,
     ) -> Result<Box<dyn ThreadCommitBoundary>, awaken_dispatch_execution::Error> {
-        let commit = self
-            .authority
-            .open_commit(&thread.0)
-            .await
-            .map_err(|error| {
-                awaken_dispatch_execution::session_execution::execution_error(error.to_string())
-            })?;
+        let commit = self.open_session_commit(thread).await?;
         Ok(Box::new(OpenedThreadCommit {
             boundaries: self.clone(),
-            commit: Arc::new(commit),
+            commit,
         }))
     }
 
@@ -77,7 +85,6 @@ impl ThreadCommitBoundary for OpenedThreadCommit {
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
         context: Option<awaken_runtime_contract::RuntimeRunContext>,
-        install_cancellation_executor: bool,
     ) -> Result<
         awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>,
         awaken_dispatch_execution::Error,
@@ -87,7 +94,7 @@ impl ThreadCommitBoundary for OpenedThreadCommit {
             claimed,
             self.commit.clone(),
             context,
-            install_cancellation_executor,
+            false,
         )
         .await
     }

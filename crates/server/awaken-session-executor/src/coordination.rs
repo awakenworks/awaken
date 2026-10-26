@@ -862,7 +862,7 @@ mod tests {
                 .unwrap()
                 .expect("exact exhausted claim");
             let worker = opened
-                .boundary_worker(&claimed, None, false)
+                .boundary_worker(&claimed, None)
                 .await
                 .expect("environment-free boundary");
             drop(port);

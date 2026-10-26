@@ -356,6 +356,19 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
             .local_credential_realization_capabilities()
     }
 
+    async fn cancellation_worker(
+        &self,
+        claimed: &Claimed,
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
+        let boundaries = super::boundary_run::CommitBoundaryAssembly::new(&self.assembly);
+        let commit = boundaries
+            .open_session_commit(claimed.request.session_thread_id())
+            .await?;
+        super::boundary_run::construct_boundary_worker(&boundaries, claimed, commit, None, true)
+            .await
+            .map(Arc::new)
+    }
+
     async fn root_worker(
         &self,
         thread: &ThreadId,

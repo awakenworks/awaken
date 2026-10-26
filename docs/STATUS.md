@@ -39,7 +39,7 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed 2026-10-26 against `f13b63d1a0` and construction-time completion notification. This is the single progress record for
+Reviewed 2026-10-26 against `523b587034` and Worker-owned cancellation construction. This is the single progress record for
 the crate-boundary program (plan v4); design decisions stay in their ADRs and
 code. Line, dependency and method counts are diagnostics, not completion quotas.
 `main` moves only from the integration worktree (`git config awaken.mainWriter`),
@@ -56,7 +56,7 @@ enforced by the standalone `reference-transaction` guard
 | P7 Application and protocol | Protocol crates only translate (`_protocol_translation_fitness.py`, 0 violations). Every Session use case is a component that owns its collaborators (creation, update, termination, Resource reconciliation and manifests, Run admission, coordination, continuations, activities, realizations, terminal cleanups, observations, event batches, Outcome reconciliation, recovery, Worker occupancy) over the `SessionMutations` CAS kernel; `SessionApplication` is a thin composition product that implements no role ([Session capabilities](design/session-aggregate-and-dispatch-capabilities.md)) | W15 renames: run-ingress → dispatch, executor `slot` identifiers; a few long use-case functions still to split |
 | Contract convergence | Distinct Dream, provider SPI and Container transport owners retained ([ADR-0091](adr/0091-architecture-rules.md)) | Package the Core Session state/event/budget/repository sources once their callers settle (32 contract crates) |
 | Formal | Kani profiles bind loops by Rust symbol per harness artifact, so pins survive dependency changes | Kubernetes Pod values do not finish in CBMC; such properties use exhaustive native tables |
-| Downstream | Earlier executor/provider import migrations are present in awaken-cloud | Cloud still pins Native `1051acb50d`; migrate the removed materializer endpoint-factory forwarding call and the final composition interfaces, then qualify and upgrade one exact source cohort |
+| Downstream | Earlier executor/provider import migrations are present in awaken-cloud; its local `main` now pins Native `5f6efa6613` | Migrate the removed materializer endpoint-factory forwarding call and the final composition interfaces, then qualify and upgrade one exact source cohort including the later Native changes |
 
 ## Document Readiness
 

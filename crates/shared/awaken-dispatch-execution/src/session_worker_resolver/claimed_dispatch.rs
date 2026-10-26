@@ -280,12 +280,11 @@ impl SessionWorkerResolver {
     async fn boundary_worker(
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
-        install_cancellation_executor: bool,
     ) -> Result<DispatchWorker<AnyDispatchStore>, Error> {
         self.commits
             .open_commit(claimed.request.session_thread_id())
             .await?
-            .boundary_worker(claimed, None, install_cancellation_executor)
+            .boundary_worker(claimed, None)
             .await
     }
 }
@@ -332,10 +331,10 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
         // resolving publications, credentials, Sandbox, MCP, or Environment
         // here can both block repair and create effects before admission.
         if claimed.session_activity_admission_required {
-            return Ok(Arc::new(self.boundary_worker(claimed, false).await?));
+            return Ok(Arc::new(self.boundary_worker(claimed).await?));
         }
         if claimed.cancellation_requested {
-            return Ok(Arc::new(self.boundary_worker(claimed, true).await?));
+            return execution.runs.cancellation_worker(claimed).await;
         }
         let installation = execution.installation.as_ref();
         let thread_id = claimed.request.session_thread_id();
@@ -449,7 +448,7 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
         claimed: &awaken_dispatch_contract::Claimed,
         error: Error,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        self.boundary_worker(claimed, false)
+        self.boundary_worker(claimed)
             .await?
             .fail_claimed_before_execution(
                 claimed,
@@ -463,7 +462,7 @@ impl WorkerResolver<AnyDispatchStore> for SessionWorkerResolver {
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
-        Ok(Arc::new(self.boundary_worker(claimed, false).await?))
+        Ok(Arc::new(self.boundary_worker(claimed).await?))
     }
 
     async fn reconcile_committed_terminals(

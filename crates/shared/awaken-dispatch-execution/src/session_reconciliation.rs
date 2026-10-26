@@ -112,7 +112,7 @@ impl SessionWorkerResolver {
                         return Ok(None);
                     };
 
-                    let worker = match commit.boundary_worker(&claimed, None, false).await {
+                    let worker = match commit.boundary_worker(&claimed, None).await {
                         Ok(worker) => worker,
                         Err(error) => {
                             let _ = store
