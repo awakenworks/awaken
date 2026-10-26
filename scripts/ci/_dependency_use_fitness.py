@@ -61,7 +61,7 @@ def dependency_use_errors(uses: Iterable[DependencyUse], enables: dict[str, froz
 
 
 def _names(sources: Iterable[str], dependency: str) -> bool:
-    pattern = re.compile(rf"\b{dependency.replace('-', '_')}\b")
+    pattern = re.compile(rf"\b{re.escape(dependency.replace('-', '_'))}\b")
     return any(pattern.search(source) for source in sources)
 
 
@@ -75,10 +75,10 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
     manifest = _crate_boundary_workspace.load_manifest(manifest_path)
     crate = _crate_boundary_workspace.package_name(manifest)
     root = manifest_path.parent
-    sections = [manifest.get("dependencies", {})] + [
-        target.get("dependencies", {}) for target in manifest.get("target", {}).values()
-    ]
-    declared = {name: spec for section in sections for name, spec in section.items() if name in members}
+    declared: dict[str, list[_crate_boundary_workspace.DeclaredDependency]] = {}
+    for dependency in _crate_boundary_workspace.dependency_declarations(manifest, include_build=False):
+        if dependency.package in members:
+            declared.setdefault(dependency.package, []).append(dependency)
     rust = sorted(root.rglob("*.rs"))
     in_source = [path for path in rust if path.relative_to(root).parts[0] in {"src", "build.rs"}]
     in_tests = [path for path in rust if path.relative_to(root).parts[0] in {"tests", "benches", "examples"}]
@@ -93,11 +93,12 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
         DependencyUse(
             crate,
             name,
-            production=_names(production, name),
-            tests=_names(whole, name),
-            turns_on_features=bool(isinstance(spec, dict) and spec.get("features")) or name in feature_refs,
+            production=any(_names(production, dependency.alias) for dependency in declarations),
+            tests=any(_names(whole, dependency.alias) for dependency in declarations),
+            turns_on_features=any(dependency.specification.get("features")
+                                  or dependency.alias in feature_refs for dependency in declarations),
         )
-        for name, spec in declared.items()
+        for name, declarations in declared.items()
     ]
     metadata = manifest.get("package", {}).get("metadata", {}).get("awaken", {})
     return uses, frozenset(metadata.get("enables", ()))
@@ -145,4 +146,29 @@ def selftest() -> None:
     source = "#[cfg(test)]\nmod tests { use awaken_t::X; }\n#[cfg(kani)]\nmod proofs { use awaken_k::Y; }\n"
     projected = _production_source(source)
     assert not _names([projected], "awaken-t") and _names([projected], "awaken-k"), "D6"
+    # D7 actual Cargo aliases, including target-only aliases, are the Rust
+    # namespaces to scan. Multiple declarations of one package produce one
+    # owner row and union feature activation; dev/build-only entries remain
+    # outside this normal-dependency usage policy. The graph owner still sees
+    # build declarations through its default declaration selection.
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "src").mkdir()
+        manifest = root / "Cargo.toml"
+        manifest.write_text('[package]\nname="fixture"\n'
+                            '[dependencies]\nrenamed={package="awaken-t"}\n'
+                            '[target.\'cfg(windows)\'.dependencies]\nother={package="awaken-t",features=["extra"]}\n'
+                            '[build-dependencies]\nbuild_only={package="awaken-k"}\n'
+                            '[dev-dependencies]\ndev_only={package="awaken-k"}\n')
+        for text, production, tests in [
+            ("use renamed::Thing;", True, True),
+            ("use other::Thing;", True, True),
+            ("#[cfg(test)]\nmod tests { use renamed::Thing; }", False, True),
+            ("", False, False),
+        ]:
+            (root / "src/lib.rs").write_text(text)
+            observed, listed = crate_uses(manifest, frozenset({"awaken-t", "awaken-k"}))
+            assert not listed
+            assert observed == [DependencyUse("fixture", "awaken-t", production, tests, True)], "D7"
     print("_dependency_use_fitness selftest: the decision table holds")

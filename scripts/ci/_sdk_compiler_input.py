@@ -9,7 +9,7 @@ import tomllib
 
 import formal_sources
 from public_api_selection import selected_crates
-from _crate_boundary_workspace import normal_dependency_names
+from _crate_boundary_workspace import dependency_declarations
 
 ENVIRONMENT_KEY = "K8S_OPENAPI_ENABLED_VERSION"
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,26 +63,18 @@ def observe_source(root: Path, revision: str, members: dict, sdk: list[str]) -> 
         seen.add((kind, identity))
         if kind == "manifest":
             document = manifests[identity]
-            for sections in [document, *document.get("target", {}).values()]:
-                for alias in normal_dependency_names(sections):
-                    for section in ("dependencies", "build-dependencies"):
-                        if alias not in sections.get(section, {}):
-                            continue
-                        authored = sections[section][alias]
-                        authored = {"version": authored} if isinstance(authored, str) else authored
-                        inherited = workspace.get("dependencies", {}).get(alias) if authored.get("workspace") else {}
-                        if inherited is None:
-                            raise ValueError("SDK compiler source has an unresolved workspace dependency")
-                        inherited = {"version": inherited} if isinstance(inherited, str) else inherited
-                        dependency = {**inherited, **authored}
-                        if "path" in dependency:
-                            base = PurePosixPath() if authored.get("workspace") else PurePosixPath(identity).parent
-                            path = posixpath.normpath(str(base / dependency["path"] / "Cargo.toml"))
-                            if path not in manifests:
-                                manifests[path] = read(path)
-                            pending.append(("manifest", path))
-                        else:
-                            pending.append(("external", dependency.get("package", alias)))
+            for declaration in dependency_declarations(
+                document, workspace_dependencies=workspace.get("dependencies", {}),
+            ):
+                dependency = declaration.specification
+                if "path" in dependency:
+                    base = PurePosixPath() if dependency.get("workspace") else PurePosixPath(identity).parent
+                    path = posixpath.normpath(str(base / dependency["path"] / "Cargo.toml"))
+                    if path not in manifests:
+                        manifests[path] = read(path)
+                    pending.append(("manifest", path))
+                else:
+                    pending.append(("external", declaration.package))
         else:
             if identity not in locks or any(package.get("source") is None for package in locks[identity]):
                 raise ValueError("SDK compiler source has an unresolved normal/build dependency: " + identity)
