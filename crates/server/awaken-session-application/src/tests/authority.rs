@@ -3152,11 +3152,13 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 operation receipt absent/present; C2 its epoch is
-    // active/already settled; C3 concurrent exact retry; C4 distinct operation.
+    // active/already settled; C3 concurrent exact retry; C4 distinct operation;
+    // C5 the caller's recovered projection revision is stale.
     // Effects: E1 first admission uses its target root revision as epoch; E2 an
     // exact retry returns that receipt revision without another mutation; E3 a
     // retry after settlement never reopens activity; E4 a distinct operation
-    // gets a later monotonic epoch. The repository receipt is the only
+    // gets a later monotonic epoch; E5 C5 rejects fresh work without changing
+    // its root or opening an epoch, while an exact receipt outranks C5. The repository receipt is the only
     // operation→epoch mapping—there is no companion map to reconcile.
     //
     // | Rule | Receipt | Activity | Request | Effect |
@@ -3164,6 +3166,10 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     // | O2 | races absent/present | active | concurrent op-a | E2 |
     // | O3 | present | settled | retry op-a | E3 |
     // | O4 | absent | idle | op-b | E4 |
+    // | O5 | absent | idle | stale projected revision | E5 reject, root unchanged |
+    // | O6 | present | settled | stale projected revision | E3+E5 exact replay |
+    // The hibernated public-admission table owns the other revision partition:
+    // the original continuation may advance its root before fresh activity CAS.
     let repo = authority_repository("session repository").await;
     create(
         repo.as_ref(),
@@ -3176,6 +3182,30 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     );
 
     let joined_session = SessionId::from("activity-operation");
+    let before = repo.get(&joined_session).await.expect("O5 original root");
+    let stale_projection = awaken_session_types::SessionRevision(before.revision.0 + 1);
+    assert_eq!(
+        app.activities
+            .begin_activity_for_operation_with_policy(
+                &joined_session,
+                "op-stale-projection",
+                false,
+                None,
+                Some(stale_projection),
+                None,
+            )
+            .await
+            .err(),
+        Some(SessionActivityError::Conflict),
+        "O5/E5 stale projection refuses fresh work"
+    );
+    let unchanged = repo.get(&joined_session).await.expect("O5 refused root");
+    assert_eq!(unchanged.revision, before.revision, "O5 no root mutation");
+    assert_eq!(
+        unchanged.environment, before.environment,
+        "O5 Environment unchanged"
+    );
+    assert!(unchanged.active_activity_epochs.is_empty(), "O5 no epoch");
     let (left, right) = tokio::join!(
         app.activities
             .begin_activity_for_operation(&joined_session, "op-a"),
@@ -3217,6 +3247,21 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
     assert_eq!(replayed_epoch, left_epoch, "O3/E3");
     assert_eq!(replayed.revision, settled_revision, "O3/E3 no mutation");
     assert!(replayed.active_activity_epochs.is_empty(), "O3/E3");
+    let (replayed, replayed_epoch) = app
+        .activities
+        .begin_activity_for_operation_with_policy(
+            &joined_session,
+            "op-a",
+            false,
+            None,
+            Some(stale_projection),
+            None,
+        )
+        .await
+        .expect("O6 receipt outranks a stale projection");
+    assert_eq!(replayed_epoch, left_epoch, "O6/E5 original epoch");
+    assert_eq!(replayed.revision, settled_revision, "O6/E3 no mutation");
+    assert!(replayed.active_activity_epochs.is_empty(), "O6/E3");
 
     let (next, next_epoch) = app
         .activities
