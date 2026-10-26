@@ -2085,6 +2085,9 @@ mod tests {
         // Rule: known loss + unknown accepted source witness => retryable exact
         // pending error, zero target Create/publication, original intent/binding
         // retained. No ignore/skip or fake grant substitutes for this boundary.
+        // The claim boundary preserves the owner's diagnostic: assert its
+        // Unavailable kind, exact stable code and unchanged original message,
+        // rather than accepting a string-only error that loses retry semantics.
         let before_rebuild = rebuild_roots
             .read_projection(rebuild_thread, &rebuild_control.current_projection())
             .await
@@ -2110,12 +2113,24 @@ mod tests {
         .expect_err("R5 canonical Managed Rebuild needs accepted Source closure/access");
         match error {
             awaken_dispatch_execution::Error::Execution(
-                awaken_runtime_contract::execution::Error::Execution(message),
-            ) => assert_eq!(
-                message,
-                "run failed: Session materialization remains pending its exact original effect and source closure",
-                "R5 exact retryable MaterializationPending receiver",
-            ),
+                awaken_runtime_contract::execution::Error::Diagnostic(diagnostic),
+            ) => {
+                assert_eq!(
+                    diagnostic.kind(),
+                    awaken_runtime_contract::diagnostic::RuntimeErrorKind::Unavailable,
+                    "R5 retryable MaterializationPending receiver",
+                );
+                assert_eq!(
+                    diagnostic.code(),
+                    "session_environment_materialization_pending",
+                    "R5 original owner code",
+                );
+                assert_eq!(
+                    diagnostic.to_string(),
+                    "run failed: Session materialization remains pending its exact original effect and source closure",
+                    "R5 original MaterializationPending message",
+                );
+            }
             other => {
                 panic!("R5 expected retryable original materialization refusal: {other:?}")
             }
