@@ -36,6 +36,7 @@ mod memory_binding_compiler;
 mod memory_content;
 mod memory_extractions;
 mod memory_proposals;
+mod memory_settlement;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
@@ -84,6 +85,7 @@ pub use memory_extractions::MemoryExtractions;
 pub use memory_proposals::{
     MemoryProposalError, MemoryWriteProposals, committed_memory_writes, memory_extraction_input,
 };
+pub use memory_settlement::observe_dispatched_memory_terminal;
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
 };
