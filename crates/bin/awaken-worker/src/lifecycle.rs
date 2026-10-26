@@ -881,7 +881,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
     })
 }
 
-/// The complete Session root is the only queue for initial preparation. The
+/// The complete Session root is the only queue for Run-free preparation. The
 /// Worker claims one obligation at a time over its registered Control channel
 /// and drives the existing phase protocol without manufacturing a model Run.
 pub(crate) fn spawn_session_preparation_reconciliation(

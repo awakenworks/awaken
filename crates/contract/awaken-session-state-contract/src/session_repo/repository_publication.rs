@@ -89,23 +89,28 @@ impl PersistedSession {
         Ok(self.realization.is_some() && !cleanup.is_completed())
     }
 
-    /// An explicitly requested, still-unbound Worker preparation needs one
-    /// resident Worker even though it has no Run or Dispatch claim to observe.
+    /// Initial opt-in or an Idle MCP update is preparation work on this root,
+    /// without a model Run. Self-hosted initial placement stays WorkQueue-owned;
+    /// only its already-bound Runtime owner may enter the MCP-update lane.
     /// Exact placement and root-CAS admission remain with SessionApplication.
     #[must_use]
-    pub fn is_run_free_initial_preparation_candidate(&self) -> bool {
-        self.realization_progress.run_free_initial_preparation
+    pub fn is_run_free_preparation_candidate(&self) -> bool {
+        let Some(baseline) = self.frozen_baseline() else {
+            return false;
+        };
+        let initial = self.realization_progress.run_free_initial_preparation
             && self.needs_initial_realization_recovery()
-            && !self.is_terminal()
-            && self.requires_external_environment_owner()
-            && self
-                .frozen_baseline()
-                .is_some_and(|baseline| !baseline.environment.self_hosted)
+            && !baseline.environment.self_hosted;
+        let mcp_update = self.execution == crate::SessionExecutionState::Idle
+            && !self.has_active_activities()
+            && self.mcp.needs_realization()
+            && (!baseline.environment.self_hosted || self.realization.is_some());
+        !self.is_terminal() && self.requires_external_environment_owner() && (initial || mcp_update)
     }
 
     #[must_use]
-    pub fn needs_run_free_initial_preparation_worker(&self) -> bool {
-        self.realization.is_none() && self.is_run_free_initial_preparation_candidate()
+    pub fn needs_run_free_preparation_worker(&self) -> bool {
+        self.realization.is_none() && self.is_run_free_preparation_candidate()
     }
 
     /// Classify the one Worker capacity cause retained by this root. A bound
@@ -126,7 +131,7 @@ impl PersistedSession {
             }
             return Ok(SessionWorkerObligation::RetainedOwner(owner));
         }
-        if self.needs_run_free_initial_preparation_worker() {
+        if self.needs_run_free_preparation_worker() {
             return Ok(SessionWorkerObligation::UnboundInitialPreparation);
         }
         if self.needs_terminal_cleanup_worker()? {

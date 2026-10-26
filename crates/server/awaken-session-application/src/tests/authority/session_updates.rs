@@ -34,6 +34,91 @@ impl McpAttachmentRealizer for FailOnceMcpRealizer {
 }
 
 #[tokio::test]
+async fn external_mcp_update_preserves_the_worker_lease_and_queues_the_same_root() {
+    // Cause/effect graph: C1 an Idle, externally placed Session retains a live
+    // registered Worker lease; C2 this Coordinator also has co-located roles;
+    // C3 one MCP replacement commits; C4 its exact command is replayed.
+    // E1 C1+C2+C3 persists the new desired generation without trying a local
+    // realization or replacing the Worker's lease; E2 the SAME Session root
+    // becomes Worker preparation work without creating a Run; E3 C4 retains
+    // the command revision, generation and lease without another local effect.
+    // Rules U1=C1+C2+C3=>E1+E2; U2=U1+C4=>E3. The existing mixed-update test
+    // covers the co-located success/failure/replay rows over the same command.
+    let id = SessionId::from("external-mcp-update");
+    let repo = authority_repository("external MCP update repository").await;
+    let mut root = persisted(id.as_str(), false, "idle");
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut root.baseline
+    else {
+        panic!("frozen fixture");
+    };
+    baseline.runtime_placement = SessionRuntimePlacement::Worker;
+    let lease = crate::session_resource::SessionRealizationLease {
+        owner: "registered-worker".into(),
+        runtime_incarnation: "registered-worker:1:boot".into(),
+        epoch: 3,
+        expires_at_unix_ms: u64::MAX,
+    };
+    root.realization = Some(lease.clone());
+    create(repo.as_ref(), root).await;
+    let local_effects = Arc::new(FailOnceMcpRealizer::default());
+    let app = SessionApplicationBuilder::fixture(
+        Arc::new(NoopRuntime),
+        local_effects.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    )
+    .build()
+    .expect("valid co-located process fixture");
+    let command = SessionUpdateCommand {
+        title: None,
+        metadata: None,
+        budget: None,
+        tools: None,
+        mcp_update: Some(SessionMcpUpdate::PublicReplacement(vec![
+            McpAttachmentCandidate {
+                name: "docs".into(),
+                target: McpAttachmentCandidateTarget::HttpUrl(
+                    "https://docs.example.test/mcp".into(),
+                ),
+                prompts_as_skills: false,
+                published_credential: None,
+                origin: crate::session_mcp::McpAttachmentOrigin::Session,
+            },
+        ])),
+        idempotency_key: Some("external-update-key".into()),
+        request_fingerprint: awaken_agent_contract::stable_fingerprint(&(
+            "external-mcp-update-v1",
+            id.as_str(),
+        )),
+        if_match: None,
+    };
+    let first = app
+        .update_commands
+        .update_session(&id, command.clone())
+        .await
+        .expect("U1 external desired state awaits its registered Worker");
+    assert!(first.command_applied, "U1/E1");
+    assert_eq!(first.session.realization.as_ref(), Some(&lease), "U1/E1");
+    assert_eq!(local_effects.stage_calls.load(Ordering::SeqCst), 0, "U1/E1");
+    assert!(
+        first.session.is_run_free_preparation_candidate(),
+        "U1/E2 pending MCP is root-owned Worker preparation"
+    );
+    let replay = app
+        .update_commands
+        .update_session(&id, command)
+        .await
+        .expect("U2 exact replay retains pending preparation");
+    assert!(!replay.command_applied, "U2/E3");
+    assert_eq!(replay.command_revision, first.command_revision, "U2/E3");
+    assert_eq!(replay.session.mcp, first.session.mcp, "U2/E3");
+    assert_eq!(replay.session.realization.as_ref(), Some(&lease), "U2/E3");
+    assert_eq!(local_effects.stage_calls.load(Ordering::SeqCst), 0, "U2/E3");
+}
+
+#[tokio::test]
 async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_the_effect() {
     // Cause/effect graph: C1 one command mixes title, metadata, budget, and MCP
     // Agent desired state; C2 its root CAS and durable command receipt commit;
@@ -46,6 +131,9 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     // without re-authoring any public field.
     // Constraint: normalization is pure before C2; no title/metadata/budget or
     // MCP intent may commit through an independent command mutation.
+    // Refactoring coverage: preparing the MCP replacement borrows this same
+    // aggregate; M1's single revision/receipt assertions prove preparation adds
+    // no commit, and M2 proves it is not repeated after a committed command.
     //
     // | Rule | C1 | C2 | C3 | C4 | Effect |
     // |---|---|---|---|---|---|

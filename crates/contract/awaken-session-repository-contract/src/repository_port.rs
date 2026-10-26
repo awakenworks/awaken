@@ -174,7 +174,8 @@ pub trait SessionRepository: SessionRepositoryReads {
         session_worker_demand_from_scan(self).await
     }
 
-    /// One keyset page of explicitly requested Run-free preparation roots.
+    /// One keyset page of Run-free preparation roots: explicit initial demand
+    /// or an Idle MCP update retained in the same authoritative Session.
     /// Adapters may use their root-derived index; the application always
     /// reloads and validates the current root before its existing CAS claim.
     /// The default keeps test doubles correct without another task registry.
@@ -184,7 +185,7 @@ pub trait SessionRepository: SessionRepositoryReads {
     ) -> Result<SessionScan, SessionRepositoryError> {
         let mut page = self.reconciliation_scan(after).await?;
         page.sessions
-            .retain(|scoped| scoped.session.is_run_free_initial_preparation_candidate());
+            .retain(|scoped| scoped.session.is_run_free_preparation_candidate());
         Ok(page)
     }
 

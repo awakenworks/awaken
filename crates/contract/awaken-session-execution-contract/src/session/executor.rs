@@ -26,10 +26,10 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0277
 /// use std::sync::Arc;
-/// use awaken_session_execution_contract::{SessionExecutor, SessionRuntime};
+/// use awaken_session_execution_contract::{NeutralRuntime, SessionExecutor, SessionRuntime};
 ///
 /// fn cannot_bind_partial<T: SessionRuntime + 'static>(runtime: Arc<T>) {
-///     let _: SessionExecutor = runtime.into();
+///     let _ = SessionExecutor::colocated(runtime, Arc::new(NeutralRuntime));
 /// }
 /// ```
 ///
@@ -135,16 +135,6 @@ impl SessionExecutor {
     }
 }
 
-impl<T> From<Arc<T>> for SessionExecutor
-where
-    T: CompleteSessionRuntime + 'static,
-{
-    fn from(runtime: Arc<T>) -> Self {
-        let runtime: Arc<dyn CompleteSessionRuntime> = runtime;
-        Self::from(runtime)
-    }
-}
-
 impl From<SessionExecutionRoles> for SessionExecutor {
     fn from(roles: SessionExecutionRoles) -> Self {
         let projection = Arc::new(CommittedSessionProjection::new(
@@ -155,11 +145,18 @@ impl From<SessionExecutionRoles> for SessionExecutor {
     }
 }
 
-impl From<Arc<dyn CompleteSessionRuntime>> for SessionExecutor {
-    fn from(runtime: Arc<dyn CompleteSessionRuntime>) -> Self {
+impl SessionExecutor {
+    /// Bind a complete co-located runtime and its exact MCP effect owner once.
+    /// Worker-only compositions supply `SessionExecutionRoles` directly and
+    /// cannot acquire this local effect capability through a placeholder.
+    pub fn colocated(
+        runtime: Arc<dyn CompleteSessionRuntime>,
+        mcp: Arc<dyn crate::McpAttachmentRealizer>,
+    ) -> Self {
         Self::from(SessionExecutionRoles {
             core: runtime.clone(),
             placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
+                mcp,
                 realization: runtime.clone(),
                 realization_effects: runtime.clone(),
                 environment: runtime.clone(),
@@ -188,12 +185,18 @@ mod tests {
         // projection cursors and execution fences despite valid individual ports.
         let runtime = Arc::new(crate::NeutralRuntime);
         let owner = Arc::as_ptr(&runtime).cast::<()>();
-        let selected = SessionExecutor::from(runtime);
+        // C1 the caller selects an independent MCP effect owner; C2 the
+        // executor is cloned. Both views retain C1 exactly, while all runtime
+        // roles retain their original owner. No optional-role discovery or
+        // implicit MCP fallback may replace either selected collaborator.
+        let mcp: Arc<dyn crate::McpAttachmentRealizer> = Arc::new(crate::NeutralRuntime);
+        let selected = SessionExecutor::colocated(runtime, mcp.clone());
         for executor in [&selected, &selected.clone()] {
             let colocated = executor
                 .placement
                 .colocated()
                 .expect("a complete runtime realizes its Sessions");
+            assert!(Arc::ptr_eq(&colocated.mcp, &mcp));
             for role in [
                 Arc::as_ptr(&executor.core).cast::<()>(),
                 Arc::as_ptr(&colocated.realization).cast::<()>(),
@@ -286,6 +289,7 @@ mod tests {
         let selected = SessionExecutor::from(SessionExecutionRoles {
             core: neutral.clone(),
             placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
+                mcp: neutral.clone(),
                 realization: neutral.clone(),
                 realization_effects: neutral.clone(),
                 environment: neutral.clone(),

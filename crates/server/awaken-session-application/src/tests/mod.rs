@@ -4832,7 +4832,7 @@ async fn complete_runtime_composition_does_not_require_optional_role_discovery()
     // R2 repeated sink reads => pointer identity, no new writer or clock choice.
     // Missing C1 is excluded by CompleteSessionRuntime at compile time.
     let runtime = Arc::new(NoopRuntime);
-    let bindings = crate::SessionExecutor::from(runtime.clone());
+    let bindings = crate::SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
     assert_eq!(bindings.core().model(), runtime.model());
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()

@@ -5,7 +5,7 @@
 //! Where the Sessions of one process are realized.
 //!
 //! A process with a co-located Worker realizes its Sessions itself: it holds
-//! the realization, realization-effect, Environment and terminal-cleanup roles
+//! the realization, MCP-effect, Environment and terminal-cleanup roles
 //! ([`ColocatedRealizationRoles`]). A process whose Sessions only registered
 //! Workers realize (a split Coordinator) holds none of them; it only admits
 //! each Session's frozen inputs ([`SessionInputAdmission`]): the dispatch
@@ -56,6 +56,7 @@ pub trait SessionInputAdmission: Send + Sync {
 /// The roles of a co-located Worker that realizes this process's Sessions.
 #[derive(Clone)]
 pub struct ColocatedRealizationRoles {
+    pub mcp: Arc<dyn crate::McpAttachmentRealizer>,
     pub realization: Arc<dyn RealizationRuntime>,
     pub realization_effects: Arc<dyn RealizationEffects>,
     pub environment: Arc<dyn EnvironmentRuntime>,
@@ -254,6 +255,7 @@ mod tests {
     fn colocated() -> SessionPlacementRoles {
         let neutral = Arc::new(crate::NeutralRuntime);
         SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
+            mcp: Arc::new(crate::NeutralRuntime),
             realization: neutral.clone(),
             realization_effects: neutral.clone(),
             environment: neutral.clone(),

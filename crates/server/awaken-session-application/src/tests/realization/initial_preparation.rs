@@ -57,6 +57,191 @@ fn externally_placed(id: &str, state: &str, run_free: bool) -> PersistedSession 
     session
 }
 
+fn idle_mcp_update(id: &str, self_hosted: bool, bound: bool) -> PersistedSession {
+    let mut root = externally_placed(id, "idle", false);
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut root.baseline
+    else {
+        panic!("frozen fixture");
+    };
+    baseline.environment.self_hosted = self_hosted;
+    root.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+        vec![crate::session_mcp::McpAttachmentDraft {
+            name: "docs".into(),
+            target: awaken_agent_contract::McpTarget::parse_http("https://docs.example.test")
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            origin: crate::session_mcp::McpAttachmentOrigin::Session,
+        }],
+        None,
+    )
+    .unwrap();
+    if bound {
+        root.realization = Some(crate::session_resource::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            epoch: 3,
+            expires_at_unix_ms: u64::MAX,
+        });
+    }
+    root
+}
+
+#[test]
+fn idle_mcp_preparation_uses_current_root_facts_without_a_second_request_flag() {
+    // Cause/effect graph: C1 external Runtime placement; C2 Idle with no
+    // activity; C3 unfinished MCP; C4 self-hosted Environment; C5 bound
+    // realization owner; C6 terminal disposition. Effects: E1 candidate hint,
+    // E2 excluded. Initial explicit opt-in rows remain in the existing tests.
+    // R1 C1+C2+C3+!C4 -> E1 with or without C5; R2 same+C4+C5 -> E1;
+    // R3 C4+!C5 -> E2; R4 !C1, R5 !Idle, R6 active activity, R7 C6,
+    // R8 completed MCP -> E2. Every row keeps the initial request flag false.
+    for (rule, self_hosted, bound, expected) in [
+        ("R1 bound", false, true, true),
+        ("R1 unbound", false, false, true),
+        ("R2", true, true, true),
+        ("R3", true, false, false),
+        ("R4", false, true, false),
+        ("R5", false, true, false),
+        ("R6", false, true, false),
+        ("R7", false, true, false),
+        ("R8", false, true, false),
+    ] {
+        let mut root = idle_mcp_update(rule, self_hosted, bound);
+        match rule {
+            "R4" => {
+                let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+                    &mut root.baseline
+                else {
+                    unreachable!();
+                };
+                baseline.runtime_placement = SessionRuntimePlacement::Local;
+            }
+            "R5" => root.execution = SessionExecutionState::Running,
+            "R6" => {
+                root.activity_epoch = 1;
+                root.active_activity_epochs.insert(1);
+            }
+            "R7" => root.disposition = awaken_session_state_contract::SessionDisposition::Deleting,
+            "R8" => {
+                root.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Active;
+                root.mcp.attachments[0].publication_acknowledged = true;
+            }
+            _ => {}
+        }
+        assert_eq!(root.is_run_free_preparation_candidate(), expected, "{rule}");
+        assert!(
+            !root.realization_progress().run_free_initial_preparation(),
+            "{rule}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owner() {
+    // Causes: C1 Idle MCP update, C2 cloud or already-bound self-hosted
+    // Environment, C3 live Ready compatible Worker, C4 same or foreign owner.
+    // R1=C1+C2+C3+same -> Stage the exact generation under the SAME lease;
+    // R2=C1+C2+C3+foreign -> no assignment and byte-identical root. Neither
+    // row creates a model Run, changes execution, or opts into initial work.
+    for self_hosted in [false, true] {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let id = SessionId::from("idle-mcp-preparation");
+        create(
+            repo.as_ref(),
+            idle_mcp_update(id.as_str(), self_hosted, true),
+        )
+        .await;
+        let before = repo.get(&id).await.unwrap();
+        let application = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            reassign_existing_lease: false,
+        };
+        let foreign = awaken_session_realization_contract::SessionRealizationTarget {
+            owner: "foreign".into(),
+            runtime_incarnation: "foreign:1:boot".into(),
+            ..target.clone()
+        };
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        application
+            .execution_admission()
+            .set_worker_observation_source(observations.clone())
+            .unwrap();
+        application
+            .execution_admission()
+            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
+            .unwrap();
+        observations.replace(vec![terminal_cleanup_worker(
+            &foreign,
+            terminal_cleanup_manifest(),
+        )]);
+        assert!(
+            application
+                .realizations
+                .claim_next_session_preparation(foreign)
+                .await
+                .unwrap()
+                .is_none(),
+            "R2"
+        );
+        assert_eq!(repo.get(&id).await.unwrap(), before, "R2 root unchanged");
+        observations.replace(vec![terminal_cleanup_worker(
+            &target,
+            terminal_cleanup_manifest(),
+        )]);
+        let assignment = application
+            .realizations
+            .claim_next_session_preparation(target)
+            .await
+            .unwrap()
+            .expect("R1");
+        assert_eq!(assignment.session_id, id, "R1 same Session");
+        assert_eq!(
+            Some(&assignment.directive.authority.lease),
+            before.realization.as_ref(),
+            "R1 same owner/epoch"
+        );
+        let awaken_session_realization_contract::SessionRealizationAction::Stage {
+            mcp_stages, ..
+        } = assignment.directive.action
+        else {
+            panic!("R1 exact pending Stage");
+        };
+        assert_eq!(mcp_stages.len(), 1, "R1");
+        assert_eq!(
+            mcp_stages[0].generation.generation(),
+            &before.mcp.attachments[0].generation,
+            "R1 exact generation"
+        );
+        let after = repo.get(&id).await.unwrap();
+        assert_eq!(after.execution, before.execution, "R1 no model activity");
+        assert_eq!(
+            after.active_activity_epochs, before.active_activity_epochs,
+            "R1"
+        );
+        assert!(
+            !after.realization_progress().run_free_initial_preparation(),
+            "R1 no new flag"
+        );
+        assert_eq!(
+            repo.worker_demand().await.unwrap(),
+            1,
+            "R1 no extra replica"
+        );
+    }
+}
+
 #[tokio::test]
 async fn run_free_preparation_is_worker_demand_before_any_run_or_owner() {
     // Causes: C1 an external Preparing root explicitly requested Run-free
@@ -90,7 +275,7 @@ async fn run_free_preparation_is_worker_demand_before_any_run_or_owner() {
         repo.get(&SessionId::from("pending"))
             .await
             .unwrap()
-            .needs_run_free_initial_preparation_worker(),
+            .needs_run_free_preparation_worker(),
         "R1 retained root classified before Worker registration",
     );
     assert!(
@@ -98,7 +283,7 @@ async fn run_free_preparation_is_worker_demand_before_any_run_or_owner() {
             .get(&SessionId::from("ordinary"))
             .await
             .unwrap()
-            .needs_run_free_initial_preparation_worker(),
+            .needs_run_free_preparation_worker(),
         "R2 ordinary Preparing root has no Run-free capacity request",
     );
     assert!(
@@ -106,7 +291,7 @@ async fn run_free_preparation_is_worker_demand_before_any_run_or_owner() {
             .get(&SessionId::from("finished"))
             .await
             .unwrap()
-            .needs_run_free_initial_preparation_worker(),
+            .needs_run_free_preparation_worker(),
         "R2 completed preparation has no capacity request",
     );
 }
