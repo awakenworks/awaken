@@ -39,9 +39,7 @@ pub(crate) fn session_worker_resolver(
             )
         })?;
     let clock = run_assembly.realization_executor.clock().clone();
-    let commits = Arc::new(super::boundary_run::CommitBoundaryAssembly::new(
-        run_assembly,
-    ));
+    let commits = Arc::new(super::boundary_run::commit_boundary_workers(run_assembly));
     let terminal_state = dispatch.terminal_reconciliation().clone();
     let topology = dispatch.topology();
     // Only a Coordinator-owned durable authority holds committed truth; it
@@ -354,6 +352,15 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
         self.assembly
             .capabilities
             .local_credential_realization_capabilities()
+    }
+
+    async fn cancellation_worker(
+        &self,
+        claimed: &Claimed,
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
+        super::boundary_run::cancellation_worker(&self.assembly, claimed)
+            .await
+            .map(Arc::new)
     }
 
     async fn root_worker(

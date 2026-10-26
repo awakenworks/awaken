@@ -20,18 +20,18 @@ pub enum SessionApplicationBindingError {
 }
 
 /// Shared single-assignment storage, private to Host composition.
-pub(crate) struct ApplicationPortBinding<T> {
+struct ApplicationPortBinding<T> {
     slot: Arc<OnceLock<T>>,
 }
 
 impl<T> ApplicationPortBinding<T> {
-    pub(crate) fn bind(&self, value: T) -> Result<(), SessionApplicationBindingError> {
+    fn bind(&self, value: T) -> Result<(), SessionApplicationBindingError> {
         self.slot
             .set(value)
             .map_err(|_| SessionApplicationBindingError::AlreadyBound)
     }
 
-    pub(crate) fn get(&self) -> Option<&T> {
+    fn get(&self) -> Option<&T> {
         self.slot.get()
     }
 }
@@ -59,7 +59,6 @@ impl<T> Default for ApplicationPortBinding<T> {
 pub struct SessionApplicationBindings {
     agent_coordination: ApplicationPortBinding<Weak<dyn SessionAgentCoordination>>,
     background_run_submission: ApplicationPortBinding<Weak<dyn SessionRunBackgroundApplication>>,
-    lifecycle_reconciliation_wakeup: ApplicationPortBinding<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SessionApplicationBindings {
@@ -80,14 +79,6 @@ impl SessionApplicationBindings {
     ) -> Result<(), SessionApplicationBindingError> {
         self.background_run_submission
             .bind(Arc::downgrade(&application))
-    }
-
-    /// Connect the composition's weak, notification-only reconciliation hint.
-    pub fn bind_lifecycle_reconciliation_wakeup(
-        &self,
-        wakeup: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<(), SessionApplicationBindingError> {
-        self.lifecycle_reconciliation_wakeup.bind(wakeup)
     }
 
     /// Validate the local coordination service selected by this composition.
@@ -123,11 +114,5 @@ impl SessionApplicationBindings {
         &self,
     ) -> Option<&Weak<dyn SessionRunBackgroundApplication>> {
         self.background_run_submission.get()
-    }
-
-    pub(crate) fn lifecycle_wakeup_binding(
-        &self,
-    ) -> ApplicationPortBinding<Arc<dyn Fn() + Send + Sync>> {
-        self.lifecycle_reconciliation_wakeup.clone()
     }
 }

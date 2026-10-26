@@ -124,9 +124,12 @@ async fn live_memory_extraction_writes_a_memory_file() {
     );
 
     assert!(
-        awaken_session_executor::CoordinatorRoles::of(&host)
-            .drain(Duration::from_secs(90))
-            .await,
+        awaken_session_executor::session_dispatch_lifecycle(
+            host.as_ref(),
+            host.worker_completion_sink()
+        )
+        .drain(Duration::from_secs(90))
+        .await,
         "memory extraction should finish"
     );
 
@@ -188,9 +191,12 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
     .await
     .expect("conversation 1 Run");
     assert!(
-        awaken_session_executor::CoordinatorRoles::of(&host)
-            .drain(Duration::from_secs(90))
-            .await,
+        awaken_session_executor::session_dispatch_lifecycle(
+            host.as_ref(),
+            host.worker_completion_sink()
+        )
+        .drain(Duration::from_secs(90))
+        .await,
         "memory extraction should finish"
     );
     let files = awaken_session_executor::test_memory_content(&host)

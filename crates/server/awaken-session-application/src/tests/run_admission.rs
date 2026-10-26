@@ -1020,6 +1020,10 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     // | H1 | Hibernated | Dispatch only | succeeds | E1-E5 |
     // | H2 | Unmaterialized/Resident | canonical realization | n/a | adjacent realization tests |
     // | H3 | terminal/invalid | none | none | reject through existing gates |
+    // This also covers activity's post-continuation revision selection: the
+    // Hibernated projection's revision predates the Resident CAS, so fresh
+    // activity must use the original continuation's returned revision. The
+    // operation-receipt table owns stale fresh/replayed projection partitions.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await

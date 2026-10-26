@@ -19,11 +19,14 @@ use awaken_runtime_contract::llm::{
     Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
 use awaken_session_execution_contract::{
-    ClaimedSessionCoordinationControl, SessionAgentBoundaryCommand, SessionAgentCoordination,
-    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentRosterEntry,
-    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    ClaimedSessionCoordinationControl, SessionAgentCoordination, SessionAgentMessageCommand,
+    SessionAgentMessageReceipt, SessionAgentRosterEntry, SessionAgentTarget,
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 use awaken_tool_contract::tool::ToolError;
+
+#[cfg(test)]
+use awaken_session_execution_contract::SessionAgentBoundaryCommand;
 
 pub(crate) type ClaimedCoordination = dyn ClaimedSessionCoordinationControl<RunClaim>;
 
@@ -184,32 +187,6 @@ impl CoordinationEndpoint {
         }
     }
 
-    async fn admit_run_activity(
-        &self,
-        claim: &RunClaim,
-        session_id: &awaken_session_types::SessionId,
-        agent_id: &str,
-        run_id: &awaken_agent_contract::agent::run::Id,
-        mode: SessionRunActivityAdmissionMode,
-    ) -> Result<SessionRunActivityAdmission, DispatchSettlementError> {
-        match self {
-            Self::Local(application) => application
-                .upgrade()
-                .ok_or_else(|| {
-                    DispatchSettlementError(
-                        "Session coordination application is unavailable".into(),
-                    )
-                })?
-                .admit_session_run_activity(session_id, agent_id, run_id, mode)
-                .await
-                .map_err(|error| DispatchSettlementError(error.to_string())),
-            Self::Remote { control, .. } => control
-                .admit_session_run_activity(claim, session_id.as_str(), agent_id, run_id, mode)
-                .await
-                .map_err(|error| DispatchSettlementError(error.to_string())),
-        }
-    }
-
     async fn send(
         &self,
         source_run_id: &str,
@@ -249,51 +226,6 @@ impl CoordinationEndpoint {
                     .await
                     .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))
             }
-        }
-    }
-
-    async fn settle(
-        &self,
-        claim: &RunClaim,
-        command: SessionAgentBoundaryCommand,
-    ) -> Result<(), DispatchSettlementError> {
-        match self {
-            Self::Local(application) => application
-                .upgrade()
-                .ok_or_else(|| {
-                    DispatchSettlementError(
-                        "Session coordination application is unavailable".into(),
-                    )
-                })?
-                .settle_session_agent_boundary(command)
-                .await
-                .map_err(|error| DispatchSettlementError(error.to_string())),
-            Self::Remote { control, .. } => control
-                .settle_session_agent_boundary(claim, command)
-                .await
-                .map_err(|error| DispatchSettlementError(error.to_string())),
-        }
-    }
-
-    async fn finalize(
-        &self,
-        command: SessionAgentBoundaryCommand,
-    ) -> Result<(), DispatchSettlementError> {
-        match self {
-            Self::Local(application) => application
-                .upgrade()
-                .ok_or_else(|| {
-                    DispatchSettlementError(
-                        "Session coordination application is unavailable".into(),
-                    )
-                })?
-                .finalize_session_agent_boundary(command)
-                .await
-                .map_err(|error| DispatchSettlementError(error.to_string())),
-            // The authoritative Coordinator `/dispatch/settle` handler invokes
-            // finalization after its local Dispatch CAS. A remote Worker cannot
-            // re-authorize the retired claim through a second HTTP request.
-            Self::Remote { .. } => Ok(()),
         }
     }
 }
@@ -473,40 +405,15 @@ impl HostDispatchSettlementObserver {
         Self { endpoint }
     }
 
-    fn boundary_command(
-        dispatch: &RunDispatch,
-        claim: &RunClaim,
-        committed_state: &awaken_agent_contract::agent::run::RunState,
-        cancellation_requested: bool,
-    ) -> Result<Option<SessionAgentBoundaryCommand>, DispatchSettlementError> {
-        let Some(activity_epoch) = dispatch.session_activity_epoch else {
-            return Ok(None);
-        };
-        let session_id = dispatch.session_thread_id.as_ref().ok_or_else(|| {
-            DispatchSettlementError(
-                "coordinated child settlement has no parent Session affinity".into(),
-            )
-        })?;
-        if activity_epoch == 0
-            || dispatch.run_id() != &claim.run_id
-            || !matches!(
-                committed_state,
-                awaken_agent_contract::agent::run::RunState::Awaiting
-                    | awaken_agent_contract::agent::run::RunState::Ended(_)
-            )
-        {
-            return Err(DispatchSettlementError(
-                "coordinated child settlement coordinates are inconsistent".into(),
-            ));
-        }
-        Ok(Some(SessionAgentBoundaryCommand {
-            session_id: awaken_session_types::SessionId::from(&session_id.0),
-            source_thread_id: dispatch.thread_id().clone(),
-            source_run_id: dispatch.run_id().clone(),
-            source_agent_id: dispatch.activation.snapshot.root_agent_id.0.clone(),
-            session_activity_epoch: activity_epoch,
-            cancellation_requested,
-        }))
+    fn local_observer(
+        application: &Weak<dyn SessionAgentCoordination>,
+    ) -> Result<awaken_session_run_delivery::SessionDispatchObserver, DispatchSettlementError> {
+        application
+            .upgrade()
+            .map(awaken_session_run_delivery::SessionDispatchObserver::new)
+            .ok_or_else(|| {
+                DispatchSettlementError("Session coordination application is unavailable".into())
+            })
     }
 }
 
@@ -518,24 +425,33 @@ impl awaken_dispatch_execution::SessionRunAdmissionObserver for HostDispatchSett
         claim: &RunClaim,
         mode: SessionRunActivityAdmissionMode,
     ) -> Result<SessionRunActivityAdmission, DispatchSettlementError> {
-        let Some(session_id) = dispatch.session_thread_id.as_ref() else {
+        let Some(session) =
+            awaken_session_run_delivery::SessionDispatchObserver::activity_session(dispatch, claim)
+        else {
             return Ok(SessionRunActivityAdmission::Rejected);
         };
-        if dispatch.run_id() != &claim.run_id
-            || dispatch.thread_id() != session_id
-            || dispatch.session_activity_epoch.is_some()
-        {
-            return Ok(SessionRunActivityAdmission::Rejected);
+        match &self.endpoint {
+            CoordinationEndpoint::Local(application) => {
+                Self::local_observer(application)?
+                    .admit_activity(
+                        &awaken_session_types::SessionId::from(&session.0),
+                        &dispatch.activation.snapshot.root_agent_id.0,
+                        dispatch.run_id(),
+                        mode,
+                    )
+                    .await
+            }
+            CoordinationEndpoint::Remote { control, .. } => control
+                .admit_session_run_activity(
+                    claim,
+                    &session.0,
+                    &dispatch.activation.snapshot.root_agent_id.0,
+                    dispatch.run_id(),
+                    mode,
+                )
+                .await
+                .map_err(|error| DispatchSettlementError(error.to_string())),
         }
-        self.endpoint
-            .admit_run_activity(
-                claim,
-                &awaken_session_types::SessionId::from(&session_id.0),
-                &dispatch.activation.snapshot.root_agent_id.0,
-                dispatch.run_id(),
-                mode,
-            )
-            .await
     }
 }
 
@@ -549,35 +465,57 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
         &self,
         dispatch: &RunDispatch,
         claim: &RunClaim,
-        committed_state: &awaken_agent_contract::agent::run::RunState,
+        state: &awaken_agent_contract::agent::run::RunState,
         cancellation_requested: bool,
     ) -> Result<(), DispatchSettlementError> {
-        // `session_thread_id` is shared routing vocabulary: Session roots,
-        // synchronous delegation, and Advisor invocations may all carry it.
-        // The admitted activity epoch classifies either an asynchronous child
-        // or its deterministic self-affine primary report continuation; Runs
-        // without that epoch remain outside this observer.
-        let Some(command) =
-            Self::boundary_command(dispatch, claim, committed_state, cancellation_requested)?
+        let Some(command) = awaken_session_run_delivery::SessionDispatchObserver::boundary_command(
+            dispatch,
+            claim,
+            state,
+            cancellation_requested,
+        )?
         else {
             return Ok(());
         };
-        self.endpoint.settle(claim, command).await
+        match &self.endpoint {
+            CoordinationEndpoint::Local(application) => {
+                Self::local_observer(application)?
+                    .settle_boundary(command)
+                    .await
+            }
+            CoordinationEndpoint::Remote { control, .. } => control
+                .settle_session_agent_boundary(claim, command)
+                .await
+                .map_err(|error| DispatchSettlementError(error.to_string())),
+        }
     }
 
     async fn after_settle(
         &self,
         dispatch: &RunDispatch,
         claim: &RunClaim,
-        committed_state: &awaken_agent_contract::agent::run::RunState,
+        state: &awaken_agent_contract::agent::run::RunState,
         cancellation_requested: bool,
     ) -> Result<(), DispatchSettlementError> {
-        let Some(command) =
-            Self::boundary_command(dispatch, claim, committed_state, cancellation_requested)?
+        let Some(command) = awaken_session_run_delivery::SessionDispatchObserver::boundary_command(
+            dispatch,
+            claim,
+            state,
+            cancellation_requested,
+        )?
         else {
             return Ok(());
         };
-        self.endpoint.finalize(command).await
+        match &self.endpoint {
+            CoordinationEndpoint::Local(application) => {
+                Self::local_observer(application)?
+                    .finalize_boundary(command)
+                    .await
+            }
+            // Only the Coordinator's successful /dispatch/settle CAS can
+            // finalize remotely. Never re-authorize a retired claim over HTTP.
+            CoordinationEndpoint::Remote { .. } => Ok(()),
+        }
     }
 }
 
@@ -814,8 +752,7 @@ mod tests {
             let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
                 .expect("original Coordinator resolver");
             let assembly = Arc::downgrade(&host.run_assembly);
-            let boundaries =
-                crate::host::boundary_run::CommitBoundaryAssembly::new(&host.run_assembly);
+            let boundaries = crate::host::boundary_run::commit_boundary_workers(&host.run_assembly);
             let parent = ThreadId("boundary-parent".into());
             let child = ThreadId("boundary-child".into());
             let run = RunId("boundary-child-run".into());
@@ -862,7 +799,7 @@ mod tests {
                 .unwrap()
                 .expect("exact exhausted claim");
             let worker = opened
-                .boundary_worker(&claimed, None, false)
+                .boundary_worker(&claimed, None)
                 .await
                 .expect("environment-free boundary");
             drop(port);

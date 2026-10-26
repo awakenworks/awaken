@@ -125,6 +125,9 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     // to the Flow consumer and must wait for that Done fact.
     // R1=C1+C2+C3+limit1 => E1/E2/E3/E6; R2=R1+next => E4;
     // R3=R1+limit0 => E5/E6; R4=exact replay => byte-identical page.
+    // C6 a report contains MaxTokens partials before its complete step; R5
+    // C6+C3 -> the canonical full report, excluding earlier steps, foreign
+    // partials and a later incomplete next step, on every page and exact replay.
     use awaken_dispatch_contract::{
         DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome, RunClaim,
     };
@@ -164,7 +167,32 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
                 Message::text(
                     MessageId::assistant(&run, 0),
                     Role::Assistant,
+                    "earlier reasoning",
+                ),
+                Message::text(
+                    MessageId::assistant_truncated(&run, 1, 0),
+                    Role::Assistant,
+                    "report first",
+                ),
+                Message::text(
+                    MessageId::assistant_truncated(&other, 1, 0),
+                    Role::Assistant,
+                    "foreign partial",
+                ),
+                Message::text(
+                    MessageId::assistant_truncated(&run, 1, 1),
+                    Role::Assistant,
+                    "report second",
+                ),
+                Message::text(
+                    MessageId::assistant(&run, 1),
+                    Role::Assistant,
                     "exact native output",
+                ),
+                Message::text(
+                    MessageId::assistant_truncated(&run, 2, 0),
+                    Role::Assistant,
+                    "unfinished next step",
                 ),
                 Message::text(
                     MessageId::assistant(&other, 0),
@@ -250,7 +278,10 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
         .await
         .unwrap();
     assert_eq!(page.state, Some(ended), "E1/C5");
-    assert_eq!(page.response, "exact native output", "E2");
+    assert_eq!(
+        page.response, "report first\nreport second\nexact native output",
+        "E2/R5"
+    );
     assert_eq!(page.dispatch.events.len(), 1, "E2");
     assert_eq!(page.dispatch.events[0].cursor.0, 7);
     assert_eq!(page.dispatch.next_cursor.0, 7, "E3");

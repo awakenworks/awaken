@@ -84,7 +84,7 @@ pub use child_run_coordination::ChildRunCoordination;
 mod outcomes;
 pub use outcomes::Outcomes;
 mod process_roles;
-pub use process_roles::{CoordinatorRoles, WorkerRoles};
+pub use process_roles::{WorkerRoles, session_dispatch_lifecycle};
 mod session_runs;
 pub use session_runs::SessionRuns;
 mod run_exec;
@@ -122,7 +122,6 @@ pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
 pub use crate::config::{advertised_tools, authorable_tools, block_text};
-pub(crate) use crate::host::ApplicationPortBinding;
 pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};

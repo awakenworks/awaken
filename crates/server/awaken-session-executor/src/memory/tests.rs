@@ -12,6 +12,7 @@ use awaken_runtime_contract::llm::{
 use awaken_session_run_delivery::PlatformMemoryHandle;
 use awaken_tool_contract::tool::ToolCall;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 #[test]
 fn extractor_run_error_classification_never_replays_unknown_execution() {
@@ -683,7 +684,7 @@ async fn extraction_writes_a_memory_then_recall_reads_it_back() {
         )
         .await
         .unwrap();
-    assert!(runtime.drain(Duration::from_secs(10)).await);
+    assert!(runtime.background().drain(Duration::from_secs(10)).await);
 
     assert_eq!(
         awaken_resource_contract::MemoryQueries::get_by_path(
@@ -760,7 +761,7 @@ async fn a_malformed_extractor_batch_commits_failure_without_partial_memory() {
         )
         .await
         .unwrap();
-    assert!(runtime.drain(Duration::from_secs(10)).await);
+    assert!(runtime.background().drain(Duration::from_secs(10)).await);
     let intent = intents
         .get_extraction("memory-extraction:malformed-thread:terminal")
         .await
@@ -854,7 +855,7 @@ async fn extraction_seed_excludes_recalled_memory_messages() {
         )
         .await
         .unwrap();
-    assert!(runtime.drain(Duration::from_secs(10)).await);
+    assert!(runtime.background().drain(Duration::from_secs(10)).await);
 
     let seen = awaken_resource_contract::MemoryQueries::get_by_path(
         repository.as_ref(),
@@ -897,7 +898,7 @@ async fn extraction_uses_the_per_agent_memory_prompts() {
         )
         .await
         .unwrap();
-    assert!(runtime.drain(Duration::from_secs(10)).await);
+    assert!(runtime.background().drain(Duration::from_secs(10)).await);
 
     let seen = awaken_resource_contract::MemoryQueries::get_by_path(
         repository.as_ref(),
@@ -950,7 +951,7 @@ async fn terminal_redelivery_creates_one_logical_extraction_and_one_memory_versi
             .await
             .unwrap();
     }
-    assert!(runtime.drain(Duration::from_secs(10)).await);
+    assert!(runtime.background().drain(Duration::from_secs(10)).await);
 
     let intent = extractions
         .get_extraction("memory-extraction:thread-redelivery:terminal-7")
@@ -1020,7 +1021,7 @@ async fn recovery_after_store_before_receipt_does_not_duplicate_a_memory_version
         .unwrap();
 
     extraction.reconcile().await.unwrap();
-    assert!(runtime.drain(Duration::from_secs(10)).await);
+    assert!(runtime.background().drain(Duration::from_secs(10)).await);
     let recovered = extractions
         .get_extraction("memory-extraction:thread-crash:terminal-8")
         .await
@@ -1120,7 +1121,13 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
     assert_eq!(pending.session_id, parent, "R1/E1 physical Session");
     assert_eq!(pending.logical_thread_id(), child, "R1/E1 logical child");
     assert_eq!(pending.status, MemoryExtractionStatus::Pending, "R1/E2");
-    assert!(first_runtime.drain(Duration::from_secs(1)).await, "R1/E2");
+    assert!(
+        first_runtime
+            .background()
+            .drain(Duration::from_secs(1))
+            .await,
+        "R1/E2"
+    );
     drop(child_binding);
     drop(first_runtime);
     drop(first_repository);
@@ -1213,9 +1220,12 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         "R2/R3/R4 E3,E6,E7 next wake schedules one matching writable binding"
     );
     assert!(
-        crate::CoordinatorRoles::of(&recovered_host)
-            .drain(Duration::from_secs(10))
-            .await,
+        crate::session_dispatch_lifecycle(
+            recovered_host.as_ref(),
+            recovered_host.worker_completion_sink()
+        )
+        .drain(Duration::from_secs(10))
+        .await,
         "R2/E3 recovery drained"
     );
     assert!(
@@ -1353,13 +1363,12 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             .is_none(),
         "R4/C5 no automatic Memory binding is selected"
     );
-    let commit = Arc::new(
-        host.run_assembly
-            .authority
-            .open_commit(session)
-            .await
-            .expect("R4 Worker commit"),
-    );
+    let commit = host
+        .run_assembly
+        .authority
+        .open_for_read(session)
+        .await
+        .expect("R4 Worker commit");
 
     assert_eq!(
         host.run_assembly

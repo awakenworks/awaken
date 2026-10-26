@@ -79,7 +79,7 @@ impl SessionRuns {
         let threads = Arc::new(awaken_session_run_delivery::CoordinatedThreads::new(
             awaken_session_run_delivery::CoordinationAuthorities {
                 owner: capability::local_dispatch_owner(run_assembly.authority.as_ref()),
-                dispatch: dispatch.clone(),
+                publication: dispatch.publication(),
                 reads: run_assembly.thread_reads.clone(),
                 lowering: Arc::new(session_lowering::InstalledSessionLowering {
                     run_assembly: run_assembly.clone(),

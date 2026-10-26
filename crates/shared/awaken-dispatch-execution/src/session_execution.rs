@@ -162,6 +162,12 @@ pub trait ClaimedRunWorkers: Send + Sync {
     fn credential_capabilities(
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities;
+    /// Construct cancellation at the claim's original commit boundary without
+    /// realizing a Session. Only the claiming Worker owns a remote attempt executor.
+    async fn cancellation_worker(
+        &self,
+        claimed: &Claimed,
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error>;
     async fn root_worker(
         &self,
         thread: &ThreadId,
@@ -179,7 +185,8 @@ pub trait ClaimedRunWorkers: Send + Sync {
 }
 
 /// Constructs Environment-free Workers bound to a Thread's commit boundary:
-/// admission repair, cancellation, failure settlement and terminal recovery.
+/// admission repair, failure settlement and terminal recovery. Remote cancellation
+/// belongs to the claiming Worker's [`ClaimedRunWorkers`] role.
 #[async_trait::async_trait]
 pub trait CommitBoundaryWorkers: Send + Sync {
     async fn open_commit(&self, thread: &ThreadId) -> Result<Box<dyn ThreadCommitBoundary>, Error>;
@@ -192,11 +199,23 @@ pub trait CommitBoundaryWorkers: Send + Sync {
 #[async_trait::async_trait]
 pub trait ThreadCommitBoundary: Send + Sync {
     fn committed(&self) -> &dyn CommittedThreadView;
+    /// This recovery role cannot request a remote cancellation executor.
+    ///
+    /// Cause/effect rule: a Coordinator commit boundary plus an execution-capability
+    /// selector is rejected by the type system; only `ClaimedRunWorkers` admits it.
+    /// ```compile_fail,E0061
+    /// use awaken_dispatch_execution::session_execution::ThreadCommitBoundary;
+    /// async fn install_cancellation(
+    ///     boundary: &dyn ThreadCommitBoundary,
+    ///     claimed: &awaken_dispatch_contract::Claimed,
+    /// ) {
+    ///     let _ = boundary.boundary_worker(claimed, None, true).await;
+    /// }
+    /// ```
     async fn boundary_worker(
         &self,
         claimed: &Claimed,
         context: Option<RuntimeRunContext>,
-        install_cancellation_executor: bool,
     ) -> Result<DispatchWorker<AnyDispatchStore>, Error>;
 }
 

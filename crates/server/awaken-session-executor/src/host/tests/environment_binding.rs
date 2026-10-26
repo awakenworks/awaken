@@ -368,7 +368,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
@@ -455,7 +455,7 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -490,7 +490,7 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         .build()
         .expect("validated Host dependencies");
     let sink = Arc::new(ResponseLossBindingSink::default());
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -590,7 +590,7 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
             crate::host::worker_resolver::test_support::eager_environment(),
             &activation.snapshot,
         );
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     roots
         .install_projection(&managed, thread, projection.clone())
         .await
@@ -664,7 +664,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !ephemeral.dispatch.topology().ingress.is_durable(),
         "T1 precondition"
     );
-    crate::CoordinatorRoles::of(&ephemeral)
+    crate::session_dispatch_lifecycle(ephemeral.as_ref(), ephemeral.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(ephemeral.dispatch.pool().is_some(), "T1/E1");
@@ -694,7 +694,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         "T2 Host reads the sole authority"
     );
     assert!(local.run_assembly.runs_local_dispatch_pool(), "local");
-    crate::CoordinatorRoles::of(&local)
+    crate::session_dispatch_lifecycle(local.as_ref(), local.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(local.dispatch.pool().is_some(), "T2/E1");
@@ -720,7 +720,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !coordinator.run_assembly.runs_local_dispatch_pool(),
         "coordinator"
     );
-    crate::CoordinatorRoles::of(&coordinator)
+    crate::session_dispatch_lifecycle(coordinator.as_ref(), coordinator.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(coordinator.dispatch.pool().is_none(), "T3/E2");
@@ -860,7 +860,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -922,7 +922,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
         calls: AtomicUsize::new(0),
         accepted_epoch: AtomicU64::new(3),
     });
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -1061,7 +1061,7 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
 
@@ -1121,7 +1121,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         owned_session_id: None,
         committed_environment: None,
     });
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     managed
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
@@ -1202,7 +1202,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         owned_session_id: None,
         committed_environment: None,
     });
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     managed
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());

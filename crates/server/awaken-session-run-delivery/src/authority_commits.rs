@@ -60,6 +60,9 @@ mod tests {
 
     #[test]
     fn runtime_authority_failures_keep_one_run_class() {
+        // Causes: unavailable/corrupt/misconfigured original authority error.
+        // Effects: the same neutral fault/code plus the unchanged diagnostic.
+        // The three rows cover the closed source variants; no text selects policy.
         let rows = [
             (
                 RuntimeAuthorityError::Unavailable("x".into()),
@@ -80,6 +83,10 @@ mod tests {
         for (cause, kind, code) in rows {
             let error = runtime_authority_error(cause);
             assert_eq!((error.kind, error.code.as_str()), (kind, code));
+            assert_eq!(
+                error.message, "x",
+                "the original authority diagnostic survives"
+            );
         }
     }
 }

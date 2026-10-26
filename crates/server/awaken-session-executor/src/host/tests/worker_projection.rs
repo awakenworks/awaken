@@ -1225,7 +1225,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     .build()
     .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     let command = awaken_session_execution_contract::AdmitSessionRun {
         session_id: thread.into(),
         agent_id: "assistant".into(),
@@ -1292,6 +1292,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination
+            .threads()
             .session_run_state(
                 &SessionId::from(thread),
                 &RunId("cold-session-reservation-run".into())
@@ -1663,8 +1664,8 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
             std::time::Duration::ZERO,
         )
         .into_session_provider();
-    let (host, _managed) =
-        dispatch_test_host((raw_host).build().expect("validated Host dependencies"));
+    let host = (raw_host).build().expect("validated Host dependencies");
+    let _managed = host.clone();
 
     let reserved = host
         .run_assembly
@@ -1726,7 +1727,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     .build()
     .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     managed
         .install_complete_test_session(
             thread,
@@ -1884,7 +1885,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
 
     let executable = host
         .run_assembly
@@ -1945,7 +1946,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let thread = "inference-only-claimed";
     host.capabilities
         .register_thread_workspace(thread, "workspace-inference")

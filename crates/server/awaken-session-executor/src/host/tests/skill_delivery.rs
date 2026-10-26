@@ -463,7 +463,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         "A1/C4 proves the live catalog contains an otherwise advertisable Skill"
     );
     install_test_session_application(&host);
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_session_init(
             "managed-no-frozen-skill",
@@ -553,7 +553,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     roots
         .install_complete_test_session(
             &managed,

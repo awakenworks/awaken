@@ -177,9 +177,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
             .cloned(),
     ));
     let capture = Arc::new(capture);
-    let settlement =
-        crate::host::SettlementWakeup::over(&hub, session_application.lifecycle_wakeup_binding());
-    let completion = settlement.completion();
+    let completion = Arc::new(CompletionRegistry::new(hub.clone()));
     let dispatch_hint = dispatch_hint(authority.as_ref());
     let durable_run_cancellation = crate::host::DurableRunCancellation::new(
         installed_sessions.clone(),
@@ -230,7 +228,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         durable_run_cancellation,
         mcp_root_authority,
     });
-    let (dispatch, session_runs) = session_run_delivery(&run_assembly, &settlement, dispatch_hint);
+    let (dispatch, session_runs) = session_run_delivery(&run_assembly, &completion, dispatch_hint);
     ExecutorComponents {
         realization_executor,
         thread_reads,
@@ -249,7 +247,6 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         store_dir,
         clock,
         completion,
-        settlement,
         session_application,
     }
 }
@@ -391,7 +388,7 @@ fn committed_reads(
 /// and publishes through it.
 fn session_run_delivery(
     run_assembly: &Arc<crate::RunAssembly>,
-    settlement: &Arc<crate::host::SettlementWakeup>,
+    completion: &Arc<CompletionRegistry>,
     hint: awaken_dispatch_execution::DispatchHint,
 ) -> (
     Arc<awaken_dispatch_execution::ProcessDispatch>,
@@ -400,12 +397,11 @@ fn session_run_delivery(
     let dispatch = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
         run_assembly.execution.clone(),
         run_assembly.clock.clone(),
-        settlement.clone(),
         hint,
     ));
     let runs = Arc::new(crate::SessionRuns::new(
         run_assembly.clone(),
-        settlement.completion(),
+        completion.clone(),
         dispatch.clone(),
     ));
     (dispatch, runs)
@@ -504,19 +500,6 @@ impl ExecutorComponents {
         self.store_dir.as_deref()
     }
 
-    /// Clone the completion projection consumed by the authenticated Worker
-    /// settle boundary.
-    ///
-    /// A coordinator-only embedding has no local dispatch pool. Its foreground
-    /// Managed Session Run therefore registers with this sink before enqueueing
-    /// and the remote Worker transport projects the committed terminal/awaiting
-    /// state back into the same host. The sink is notification-only: committed
-    /// Run truth remains authoritative and the bounded timeout retains its
-    /// existing one-read recovery fallback.
-    pub fn dispatch_completion_sink(&self) -> Arc<dyn awaken_dispatch_contract::CompletionSink> {
-        self.settlement.clone()
-    }
-
     /// The edges back into the Session application built over this Host. The
     /// composition root binds each once, after it built that application.
     #[must_use]
@@ -557,7 +540,7 @@ impl ExecutorComponents {
     /// The Session application's executor roles: each role is served by the
     /// component that owns it.
     #[must_use]
-    pub(crate) fn session_execution_roles(
+    pub fn session_execution_roles(
         &self,
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
@@ -572,7 +555,7 @@ impl ExecutorComponents {
                 },
             ),
             coordination: self.coordination.clone(),
-            coordination_reads: self.coordination.clone(),
+            coordination_reads: self.session_runs.threads.clone(),
             budget: self.budget.clone(),
             streaming_runs: self.session_runs.clone(),
             thread_reads: self.thread_reads.clone(),
@@ -610,7 +593,6 @@ impl ExecutorComponents {
 fn session_budgets(runs: &crate::SessionRuns) -> awaken_session_run_delivery::SessionBudgets {
     awaken_session_run_delivery::SessionBudgets::new(
         runs.threads.clone(),
-        runs.dispatch.clone(),
         runs.thread_reads.clone(),
     )
 }
@@ -766,7 +748,12 @@ mod startup_tests {
         .expect("validated Host dependencies");
         assert!(
             matches!(
-                worker.run_assembly.authority.open_commit("role").await,
+                worker
+                    .run_assembly
+                    .authority
+                    .open_for_read("role")
+                    .await
+                    .as_deref(),
                 Ok(awaken_session_run_delivery::SessionCommit::Remote(_))
             ),
             "R1 remote commit boundary"
@@ -784,7 +771,7 @@ mod startup_tests {
             coordinator
                 .run_assembly
                 .authority
-                .open_commit("role")
+                .open_for_read("role")
                 .await
                 .is_ok(),
             "R2 selected local commit boundary"

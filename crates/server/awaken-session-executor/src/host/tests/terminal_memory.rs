@@ -1050,7 +1050,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         ))
     .build()
     .expect("validated Host dependencies");
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     install_test_session_application(&host);
     let thread = "absent-auxiliary-source";
     let projection = remote_terminal_cleanup_projection();
@@ -1795,7 +1795,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         receipt: receipt.clone(),
     });
     let host = (raw_host).build().expect("validated Host dependencies");
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     install_test_session_application(&host);
     let handle =
         terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread));
@@ -1911,7 +1911,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
             delete_gate: None,
         }));
     let host = (raw_host).build().expect("validated Host dependencies");
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     install_test_session_application(&host);
     let handle =
         terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread));

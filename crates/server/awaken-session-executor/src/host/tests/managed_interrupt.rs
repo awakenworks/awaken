@@ -163,8 +163,8 @@ async fn interrupt_with_admission_suspended(
     host.execution.ingress = crate::RunIngress::Direct;
     let host = (host).build().expect("validated Host dependencies");
     install_recording_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
-    crate::CoordinatorRoles::of(&host)
+    let managed = host.clone();
+    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 

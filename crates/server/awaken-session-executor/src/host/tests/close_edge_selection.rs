@@ -54,7 +54,7 @@ async fn rebuilt_successor_is_not_interrupted(original_run_active: bool) {
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
     let host = dependencies.build().unwrap();
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let thread = if original_run_active {
         "retirement-completed-original-rebuilt-successor"
     } else {

@@ -50,16 +50,17 @@ fn validate_environment_continuation_topology(
 
 #[cfg(kani)]
 mod environment_owner_kani_proof {
-    use super::{
-        SessionExecutionPlacement, SessionRuntimePlacement, runtime_placement_for_topology,
-    };
+    use super::{SessionExecutionPlacement, runtime_placement_for_topology};
     use awaken_session_state_contract::SessionPlacementClass;
+    use awaken_session_types::SessionRuntimePlacement;
 
     /// @obligation runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
     /// @obligation session_environment.owner_topology_is_exact_and_frozen
     /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
     #[kani::proof]
     fn environment_owner_topology_is_exact_and_frozen() {
+        // Build partition: cfg(kani) without test-support reads the defining
+        // type owner directly; ambient unit-test imports are not a proof input.
         // Process topology freezes exactly one runtime placement, and the one
         // contract placement class selects the Environment owner from that
         // placement alone: the self-hosted Environment bit never moves it.

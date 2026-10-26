@@ -34,6 +34,7 @@ use awaken_dispatch_erasure::RuntimeAuthority;
 use awaken_dispatch_erasure::RuntimeAuthorityError;
 #[cfg(test)]
 use awaken_dispatch_erasure::{LocalCommitQueries, ProjectedQueries};
+use awaken_session_run_delivery::SessionCommitSource;
 
 /// Test query policy for making committed State diverge from the underlying
 /// compatibility projection without constructing another store or observer.
@@ -253,14 +254,9 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
 /// role-dependent choice the Host makes is one method here, named for that
 /// decision, so the Host never asks which role it plays. Role-neutral
 /// dependencies (Session Control, the Worker credential resolver) stay outside.
-#[async_trait::async_trait]
-pub(crate) trait SessionAuthority: Send + Sync {
-    /// The commit boundary a Session writes through.
-    async fn open_commit(
-        &self,
-        thread: &str,
-    ) -> Result<awaken_session_run_delivery::SessionCommit, crate::SessionExecutionError>;
-
+/// Raw commit access uses the shared `SessionCommitSource` role; execution
+/// choices remain here, with no second commit-opening interface.
+pub(crate) trait SessionAuthority: SessionCommitSource {
     /// The durable interrupted-stream checkpoint store, when this process owns
     /// one. A Worker persists checkpoints through its claim-fenced dispatch
     /// transport, so a local store would be a second authority.
@@ -289,12 +285,6 @@ pub(crate) trait SessionAuthority: Send + Sync {
     fn terminal_cleanup_control(
         &self,
     ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>;
-
-    /// Whether committed Thread truth for `thread` already exists durably.
-    async fn durable_thread_exists(
-        &self,
-        thread: &str,
-    ) -> Result<bool, crate::SessionExecutionError>;
 
     /// The durable dispatch store this process owns, if any.
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding>;
@@ -345,16 +335,28 @@ impl LocalAuthority {
 }
 
 #[async_trait::async_trait]
-impl SessionAuthority for LocalAuthority {
-    async fn open_commit(
+impl SessionCommitSource for LocalAuthority {
+    async fn open_for_read(
         &self,
-        thread: &str,
-    ) -> Result<awaken_session_run_delivery::SessionCommit, crate::SessionExecutionError> {
-        Ok(awaken_session_run_delivery::SessionCommit::Local(
-            self.runtime.open_commit(thread).await?,
-        ))
+        session: &str,
+    ) -> Result<Arc<awaken_session_run_delivery::SessionCommit>, awaken_session_types::RunError>
+    {
+        awaken_session_run_delivery::AuthorityCommits::new(self.runtime.clone())
+            .open_for_read(session)
+            .await
     }
 
+    async fn durable_thread_exists(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        awaken_session_run_delivery::AuthorityCommits::new(self.runtime.clone())
+            .durable_thread_exists(thread)
+            .await
+    }
+}
+
+impl SessionAuthority for LocalAuthority {
     fn stream_checkpoint(
         &self,
         thread: &str,
@@ -382,13 +384,6 @@ impl SessionAuthority for LocalAuthority {
         &self,
     ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>> {
         None
-    }
-
-    async fn durable_thread_exists(
-        &self,
-        thread: &str,
-    ) -> Result<bool, crate::SessionExecutionError> {
-        Ok(self.runtime.durable_thread_exists(thread).await?)
     }
 
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding> {
@@ -517,16 +512,28 @@ impl UpstreamAuthority {
 }
 
 #[async_trait::async_trait]
-impl SessionAuthority for UpstreamAuthority {
-    async fn open_commit(
+impl SessionCommitSource for UpstreamAuthority {
+    async fn open_for_read(
         &self,
-        _thread: &str,
-    ) -> Result<awaken_session_run_delivery::SessionCommit, crate::SessionExecutionError> {
-        Ok(awaken_session_run_delivery::SessionCommit::Remote(
-            awaken_session_run_delivery::WorkerRecoveryCommit::new(),
+        _session: &str,
+    ) -> Result<Arc<awaken_session_run_delivery::SessionCommit>, awaken_session_types::RunError>
+    {
+        Ok(Arc::new(
+            awaken_session_run_delivery::SessionCommit::Remote(
+                awaken_session_run_delivery::WorkerRecoveryCommit::new(),
+            ),
         ))
     }
 
+    async fn durable_thread_exists(
+        &self,
+        _thread: &str,
+    ) -> Result<bool, awaken_session_types::RunError> {
+        Ok(false)
+    }
+}
+
+impl SessionAuthority for UpstreamAuthority {
     fn stream_checkpoint(
         &self,
         _thread: &str,
@@ -567,13 +574,6 @@ impl SessionAuthority for UpstreamAuthority {
         &self,
     ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>> {
         self.terminal_cleanup_control.clone()
-    }
-
-    async fn durable_thread_exists(
-        &self,
-        _thread: &str,
-    ) -> Result<bool, crate::SessionExecutionError> {
-        Ok(false)
     }
 
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding> {
@@ -656,3 +656,6 @@ mod worker_connection_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod commit_source_tests;

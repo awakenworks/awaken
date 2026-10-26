@@ -6,8 +6,8 @@
 //!
 //! It reserves and activates Session Runs, admits coordinated child Runs and
 //! child reports, validates and delivers tool replies against the committed
-//! ticket, interrupts and archives coordinated Threads, and answers the
-//! coordination reads the Session application validates against. Runs are
+//! ticket, and interrupts and archives coordinated Threads. The Session
+//! application selects coordination reads directly from `CoordinatedThreads`. Runs are
 //! delivered through [`crate::SessionRuns`]; committed truth is read through
 //! [`CommittedReads`](crate::CommittedReads).
 
@@ -16,7 +16,16 @@ mod roles;
 use std::sync::Arc;
 
 /// Session coordination for one process. Consumers: the Session application's
-/// `CoordinationRuntime` and `SessionCoordinationReads` roles.
+/// `CoordinationRuntime` role. Its read role selects the original shared Threads.
+///
+/// ```compile_fail,E0277
+/// use std::sync::Arc;
+/// use awaken_session_executor::ChildRunCoordination;
+/// use awaken_session_execution_contract::SessionCoordinationReads;
+/// fn duplicate_read_role(commands: Arc<ChildRunCoordination>) -> Arc<dyn SessionCoordinationReads> {
+///     commands
+/// }
+/// ```
 pub struct ChildRunCoordination {
     pub(crate) session_runs: Arc<crate::SessionRuns>,
     pub(crate) run_assembly: Arc<crate::RunAssembly>,

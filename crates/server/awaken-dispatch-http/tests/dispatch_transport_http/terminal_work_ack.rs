@@ -137,7 +137,7 @@ async fn terminal_run_work_ack_loss_retries_only_the_original_identity() {
     // dispatch is kept and no Work is released: Work success is never turned
     // into a Run result.
     let (store, claim, session_id, thread_id) =
-        claimed_terminal_dispatch("work-ack-loss", false).await;
+        claimed_terminal_dispatch("work-ack-loss", TerminalThread::Primary).await;
     let cancelled = RunState::Ended(EndCause::Cancelled);
     let recovery = terminal_recovery(
         &session_id,
@@ -229,7 +229,7 @@ async fn terminal_run_work_ack_loss_retries_only_the_original_identity() {
 
     // A4 negative control.
     let (store, claim, session_id, thread_id) =
-        claimed_terminal_dispatch("work-ack-running", false).await;
+        claimed_terminal_dispatch("work-ack-running", TerminalThread::Primary).await;
     let recovery = terminal_recovery(
         &session_id,
         &thread_id,

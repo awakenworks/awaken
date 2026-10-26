@@ -812,11 +812,11 @@ mod tests {
                     let commit = host
                         .run_assembly
                         .authority
-                        .open_commit("orphan-thread")
+                        .open_for_read("orphan-thread")
                         .await
                         .unwrap();
                     commit_run(
-                        &commit,
+                        commit.as_ref(),
                         &ThreadId("orphan-thread".into()),
                         RunDisposition::ended(old.run_id.clone(), EndCause::NaturalEnd),
                         Vec::new(),
@@ -1009,7 +1009,11 @@ mod tests {
         local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
         assert!(
-            !crate::CoordinatorRoles::of(&local_pool).start_terminal_reconciliation(),
+            !crate::session_dispatch_lifecycle(
+                local_pool.as_ref(),
+                local_pool.worker_completion_sink()
+            )
+            .start_terminal_reconciliation(),
             "R0"
         );
 
@@ -1072,11 +1076,11 @@ mod tests {
         let commit = host
             .run_assembly
             .authority
-            .open_commit("thread-terminal")
+            .open_for_read("thread-terminal")
             .await
             .expect("terminal Thread commit");
         commit_run(
-            &commit,
+            commit.as_ref(),
             &ThreadId("thread-terminal".to_string()),
             RunDisposition::ended(RunId("run-terminal".to_string()), EndCause::NaturalEnd),
             Vec::new(),
@@ -1085,9 +1089,13 @@ mod tests {
         .await
         .expect("record exact terminal truth");
 
-        assert!(crate::CoordinatorRoles::of(&host).start_terminal_reconciliation());
         assert!(
-            !crate::CoordinatorRoles::of(&host).start_terminal_reconciliation(),
+            crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+                .start_terminal_reconciliation()
+        );
+        assert!(
+            !crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+                .start_terminal_reconciliation(),
             "one coordinator daemon"
         );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1179,7 +1187,7 @@ mod tests {
     async fn terminal_reconciliation_ends_with_the_executor_or_its_drain() {
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::CoordinatorRoles::of(&host);
+        let roles = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink());
         assert!(roles.start_terminal_reconciliation(), "L1 start");
         let scan_state = Arc::downgrade(host.dispatch().terminal_reconciliation());
         let dispatch = Arc::downgrade(host.dispatch());
@@ -1201,7 +1209,7 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::CoordinatorRoles::of(&host);
+        let roles = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink());
         assert!(roles.start_terminal_reconciliation(), "L3 start");
         let scan_state = host.dispatch().terminal_reconciliation().clone();
         assert!(
@@ -1517,11 +1525,11 @@ mod tests {
         let parent_commit = host
             .run_assembly
             .authority
-            .open_commit(&parent.0)
+            .open_for_read(&parent.0)
             .await
             .expect("parent physical commit");
         commit_run(
-            &parent_commit,
+            parent_commit.as_ref(),
             &child,
             RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
             Vec::new(),

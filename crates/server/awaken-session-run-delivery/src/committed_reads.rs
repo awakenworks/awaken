@@ -59,8 +59,9 @@ pub fn application_error(error: RunError) -> ApplicationError {
 }
 
 /// Where committed reads open a Session's commit boundary. Consumers:
-/// [`CommittedReads`]. Implementations: a Coordinator's runtime authority, and
-/// the co-located executor's resident-context-aware source.
+/// [`CommittedReads`] and Environment-free Worker construction. Implementations:
+/// the Coordinator's runtime authority, the Worker's fresh recovery projection,
+/// and the co-located executor's resident-context-aware source.
 #[async_trait::async_trait]
 pub trait SessionCommitSource: Send + Sync {
     /// The commit boundary of `session`'s physical partition.
