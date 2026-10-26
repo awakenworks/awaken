@@ -1,5 +1,7 @@
 //! Programmatic diagnostics for SDK admission and infrastructure failures.
 
+use std::borrow::Cow;
+
 /// Classification describes the failure, never permission to replay an effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -16,7 +18,7 @@ pub enum RuntimeErrorKind {
 #[error("{source}")]
 pub struct RuntimeDiagnostic {
     kind: RuntimeErrorKind,
-    code: &'static str,
+    code: Cow<'static, str>,
     #[source]
     source: Box<dyn std::error::Error + Send + Sync>,
 }
@@ -24,12 +26,12 @@ pub struct RuntimeDiagnostic {
 impl RuntimeDiagnostic {
     pub fn new(
         kind: RuntimeErrorKind,
-        code: &'static str,
+        code: impl Into<Cow<'static, str>>,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
         Self {
             kind,
-            code,
+            code: code.into(),
             source: Box::new(source),
         }
     }
@@ -38,7 +40,7 @@ impl RuntimeDiagnostic {
         self.kind
     }
 
-    pub fn code(&self) -> &'static str {
-        self.code
+    pub fn code(&self) -> &str {
+        &self.code
     }
 }

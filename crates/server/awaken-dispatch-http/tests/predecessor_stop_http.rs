@@ -486,25 +486,9 @@ impl Fixture {
         (response.status(), response.json().await.unwrap())
     }
 
-    async fn committed_projection(
-        &self,
-        record: Option<RunRecord>,
-    ) -> awaken_dispatch::RecoveryProjection {
-        let mut snapshot = self
-            .recovery
-            .recovery_snapshot(&self.thread_id, &self.old.run_id)
-            .await
-            .unwrap();
-        snapshot.runs = record.into_iter().collect();
-        let view = awaken_dispatch::RecoveryProjection::new();
-        view.install(&self.old.run_id, &self.thread_id, snapshot)
-            .unwrap();
-        view
-    }
-
     async fn stop_terminal(
         &self,
-        view: &awaken_dispatch::RecoveryProjection,
+        view: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
         summary: &awaken_dispatch::DispatchSummary,
     ) -> Result<bool, ApplicationError> {
         stop_committed_terminal_attempt(
@@ -1899,7 +1883,7 @@ async fn committed_terminal_stop_rejects_unproven_or_changed_originals() {
                 _ => RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
             },
         });
-        let view = f.committed_projection(record).await;
+        let view = TerminalRunRead(record);
         let probe = AttemptStopProbe::install(&f);
         f.stop.release.add_permits(1);
         probe.release.add_permits(1);
@@ -1967,13 +1951,11 @@ async fn committed_terminal_closure_needs_no_current_successor_and_retains_unkno
             !f.store.claim_is_current(&f.next).await.unwrap(),
             "no current successor"
         );
-        let view = f
-            .committed_projection(Some(RunRecord {
-                id: f.old.run_id.clone(),
-                thread_id: f.thread_id.clone(),
-                state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
-            }))
-            .await;
+        let view = TerminalRunRead(Some(RunRecord {
+            id: f.old.run_id.clone(),
+            thread_id: f.thread_id.clone(),
+            state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+        }));
         let probe = AttemptStopProbe::install(&f);
         let original = f
             .store
@@ -2123,13 +2105,11 @@ async fn cancelled_terminal_observation_retries_the_same_original_closing_slot()
     // Barrier cancellation covers response loss without sleeps or new budgets.
     let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
     f.store.relinquish_claim(&f.next).await.unwrap();
-    let view = f
-        .committed_projection(Some(RunRecord {
-            id: f.old.run_id.clone(),
-            thread_id: f.thread_id.clone(),
-            state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
-        }))
-        .await;
+    let view = TerminalRunRead(Some(RunRecord {
+        id: f.old.run_id.clone(),
+        thread_id: f.thread_id.clone(),
+        state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+    }));
     let probe = AttemptStopProbe::install(&f);
     *f.stop.result.lock().unwrap() = Ok(Some("original-local-exit".into()));
     *probe.result.lock().unwrap() = Ok(Some("original-full-domain-exit".into()));
@@ -2214,3 +2194,46 @@ use awaken_dispatch_contract::{
 };
 
 use awaken_dispatch_http::WorkerDispatchAuthority;
+
+/// Input values for the terminal-stop application's identity/error matrix.
+/// Foreign records deliberately reach that application port: a Worker's
+/// recovery cache now refuses them at its own earlier installation boundary.
+/// This fixture owns no cache or commit/stop authority, and unexpected reads
+/// fail so the case cannot silently gain a dependency on another projection.
+struct TerminalRunRead(Option<RunRecord>);
+
+impl awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView
+    for TerminalRunRead
+{
+    fn run(&self, _: &awaken_agent_contract::agent::run::Id) -> Option<RunRecord> {
+        self.0.clone()
+    }
+
+    fn committed_messages(
+        &self,
+        _: &awaken_agent_contract::agent::thread::Id,
+    ) -> Vec<awaken_agent_contract::agent::message::Message> {
+        unreachable!("terminal-stop admission reads only its exact Run")
+    }
+
+    fn latest_run(&self, _: &awaken_agent_contract::agent::thread::Id) -> Option<RunRecord> {
+        unreachable!("an exact terminal Run does not require the Thread head")
+    }
+
+    fn resume_ticket(
+        &self,
+        _: &awaken_agent_contract::agent::run::Id,
+    ) -> Option<awaken_agent_contract::agent::awaiting::ResumeTicket> {
+        unreachable!("terminal-stop admission does not resume work")
+    }
+
+    fn open_wait_for_thread(
+        &self,
+        _: &awaken_agent_contract::agent::thread::Id,
+    ) -> Option<(
+        awaken_agent_contract::agent::run::Id,
+        awaken_agent_contract::agent::awaiting::ResumeTicket,
+    )> {
+        unreachable!("terminal-stop admission does not resume work")
+    }
+}
