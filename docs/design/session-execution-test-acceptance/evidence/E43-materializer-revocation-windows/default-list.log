@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.97s
+     Running unittests src\lib.rs (C:/t/sa26/cache\debug\deps\awaken_credential_materializer-030b10c365689c5f.exe)
+attempt_delivery_tests::tests::redelivery_revalidates_exact_revision_and_changes_only_the_envelope: test
+credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table: test
+http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape: test
+inference::tests::brokered_access_fails_closed_when_the_adapter_is_absent: test
+inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access: test
+inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes: test
+platform_relay::tests::platform_relay_resolves_only_an_exact_holder_and_workspace: test
+secret_broker::tests::local_source_has_one_injected_broker_and_absence_never_falls_back: test
+tests::binding_matrix::binding_matrix_holder_dimension_has_its_recipient_classification: test
+tests::binding_matrix::binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class: test
+tests::claimed_remote_materialization_is_fenced_before_secret_read: test
+tests::exact_control_reference_resolves_one_oauth_bundle_for_the_provider_driver: test
+tests::exact_resolution_tests_are_generated_from_the_decision_table: test
+tests::extension_registry_drives_discovery_resolution_consumption_and_receipt: test
+tests::extension_registry_rejects_duplicates_and_forged_receipts: test
+tests::external_resolution_tests_are_generated_from_the_decision_table: test
+tests::materialization_revalidates_the_source_owned_exact_target: test
+tests::native_capabilities::native_manifest_admission_uses_installed_materializer_evidence: test
+tests::provider_adapter_capabilities_match_the_decision_table: test
+tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once: test
+tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect: test
+tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed: test
+tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected: test
+tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt: test
+
+24 tests, 0 benchmarks

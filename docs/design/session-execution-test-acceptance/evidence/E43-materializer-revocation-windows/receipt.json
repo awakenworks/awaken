@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "kind": "component-evidence",
+  "full_ci": false,
+  "source": {
+    "head": "365606709d19819fde31221c6eef5b655addc30a",
+    "tree": "3529fb51bfcec99326adde7e20fc86aac9879504",
+    "patch": "ff69d265e55dab9dc4b4c9f4ae00da3507b28254bf0c6b699b74ce11b7fe33a8",
+    "status": "working source includes the four code/gate files and any earlier ledger/evidence; this new receipt and ledger update follow execution and are not claimed tested"
+  },
+  "source_subject": {
+    "revision": "365606709d19819fde31221c6eef5b655addc30a",
+    "source_digest": "9d259dd423521de4d92570a39ae386a656255563261b210dbc11efead18d1aa3",
+    "index_tree": "3529fb51bfcec99326adde7e20fc86aac9879504"
+  },
+  "source_files_sha256": {
+    "crates/server/awaken-credential-materializer/src/claimed_materialization.rs": "e6cee55bec0c260d5720415a6c5bc99de8e615ae82d1d16eb6edf0f1855ef23c",
+    "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs": "b25379d78458bddb84435e395024b91aea7e53a17f26b386c8ad5543bffc9ba8",
+    "scripts/ci/check-trusted-host-portability.sh": "1a98c3b7aed03bee8bdc7c8d275149e78863e1518fe5ecbb28ac3f9fb96f08f7",
+    "scripts/ci/test_trusted_host_portability.py": "f3c9b4e90ad360d7e032b4464180d75fda5a6022747fafb4e7e55ed6e2b4e6c0"
+  },
+  "platform": "local Windows x86_64-pc-windows-msvc",
+  "passed": true,
+  "profiles": [
+    {
+      "profile": "default",
+      "list": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--list"
+      ],
+      "run": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "local_vault_revocation_matrix": true
+    },
+    {
+      "profile": "neutral",
+      "list": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--no-default-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--list"
+      ],
+      "run": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--no-default-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "local_vault_revocation_matrix": false
+    },
+    {
+      "profile": "neutral-brokered",
+      "list": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--no-default-features",
+        "--features",
+        "brokered",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--list"
+      ],
+      "run": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--no-default-features",
+        "--features",
+        "brokered",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "local_vault_revocation_matrix": false
+    },
+    {
+      "profile": "all-features",
+      "list": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--all-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--list"
+      ],
+      "run": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--all-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "local_vault_revocation_matrix": true
+    }
+  ],
+  "executed": [
+    "awaken-credential-materializer attempt_delivery_tests::tests::redelivery_revalidates_exact_revision_and_changes_only_the_envelope",
+    "awaken-credential-materializer credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table",
+    "awaken-credential-materializer http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape",
+    "awaken-credential-materializer inference::tests::brokered_access_fails_closed_when_the_adapter_is_absent",
+    "awaken-credential-materializer inference::tests::brokered_mode_and_candidate_routing_share_one_decision_table",
+    "awaken-credential-materializer inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access",
+    "awaken-credential-materializer inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes",
+    "awaken-credential-materializer inference::tests::pinned_materialization_preserves_journal_identity_in_both_model_modes",
+    "awaken-credential-materializer inference::tests::published_reasoning_policy_survives_candidate_materialization",
+    "awaken-credential-materializer platform_relay::tests::platform_relay_resolves_only_an_exact_holder_and_workspace",
+    "awaken-credential-materializer secret_broker::tests::local_source_has_one_injected_broker_and_absence_never_falls_back",
+    "awaken-credential-materializer tests::binding_matrix::binding_matrix_holder_dimension_has_its_recipient_classification",
+    "awaken-credential-materializer tests::binding_matrix::binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+    "awaken-credential-materializer tests::claimed_remote_materialization_is_fenced_before_secret_read",
+    "awaken-credential-materializer tests::exact_control_reference_resolves_one_oauth_bundle_for_the_provider_driver",
+    "awaken-credential-materializer tests::exact_resolution_tests_are_generated_from_the_decision_table",
+    "awaken-credential-materializer tests::extension_registry_drives_discovery_resolution_consumption_and_receipt",
+    "awaken-credential-materializer tests::extension_registry_rejects_duplicates_and_forged_receipts",
+    "awaken-credential-materializer tests::external_resolution_tests_are_generated_from_the_decision_table",
+    "awaken-credential-materializer tests::materialization_revalidates_the_source_owned_exact_target",
+    "awaken-credential-materializer tests::native_capabilities::native_manifest_admission_uses_installed_materializer_evidence",
+    "awaken-credential-materializer tests::provider_adapter_capabilities_match_the_decision_table",
+    "awaken-credential-materializer tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once",
+    "awaken-credential-materializer tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect",
+    "awaken-credential-materializer tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+    "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+    "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt"
+  ],
+  "counts_by_profile": {
+    "default": 24,
+    "neutral": 5,
+    "neutral-brokered": 7,
+    "all-features": 26
+  },
+  "raw_sha256": {
+    "default-results.json": "316625e9d62316aac304102b15d6d2a7b271f31026e5aacef87bba8af4e6849f",
+    "default-list.log": "703378f710b78cac0e7882defebca1ef67fc74740e315b8f27e7ab0b69f02b2c",
+    "default-results.log.json": "14d33c8df30176d5acc6de6627ce0fcfa789b6a37d9ae7e9fffd3e8fc353292d",
+    "neutral-results.json": "8f556c9e26c81cf34d6196af677bf733a9e0039489b769e9f48a6b8482cddb17",
+    "neutral-list.log": "89d3a671bdc27bffecdb2667321f6eb19ab1c99c5664aed5a8af87bf539f3205",
+    "neutral-results.log.json": "8677550ef50b77dbb4a2b997ac7a39c4a8ec5726e54d8fe01daf8a836bcc49ce",
+    "neutral-brokered-results.json": "30e605d6283670fc73bfccc043e1a2c7f264f7dc0fef68b880b41a80a311c030",
+    "neutral-brokered-list.log": "d263e8c953cb9eec7c0e282b803b77359c970c64fe7bef480803ab413e756643",
+    "neutral-brokered-results.log.json": "ff41cc28c72529fb86968c9a03cc778d441db575107c9e5c301b7cb9094b33aa",
+    "all-features-results.json": "39d35bffd53e79502200db685e9fcea9a39a081c09408bca6b8c2e39283275e6",
+    "all-features-list.log": "20cc371c0afa4794786db40fe0329aaf69cb1c77411fb12148a63cb1cb6f9074",
+    "all-features-results.log.json": "ad2dc6f5a57dbd855dc6ae95c53a4f8c6448919efe154642eb601ec25d4c8afd",
+    "before-fix-results.json": "85a0782de239e5e746288fb32ebfd12fc095d792bbb0f404dde8a1c297112d74",
+    "before-fix-results.log": "77dfefe261b460efbd5b057e75fa6cf2bcfd3f3c27ebd8d521da497417f1c9df",
+    "source-base.bundle": "f6c19f9b5716014f6f3dc954f13b1247d41da3d9f44aa53ac625f25bab57a447",
+    "working-source.patch.json": "1e68a8c0734a1582efd3efc8ae6588148d8f0c888099f88af530aca09463b865",
+    "previous-E42-source.patch.json": "a800f3cbef16ee70741b44e878e74836ab6c59af574dcab2d222987c6dbcfb78"
+  },
+  "raw_encodings": {
+    "default-results.log.json": {
+      "original_filename": "default-results.log",
+      "original_sha256": "17901576599f4769360e2abd11b183ed938f75de62df204eb5e80fd8093c2dd7",
+      "decode": "JSON text field encoded as UTF-8 reproduces original log bytes"
+    },
+    "neutral-results.log.json": {
+      "original_filename": "neutral-results.log",
+      "original_sha256": "aca8e2ab5b767d5e1948654029ce9b071f63bc3da10bf3d0a1abe34ea0c16a16",
+      "decode": "JSON text field encoded as UTF-8 reproduces original log bytes"
+    },
+    "neutral-brokered-results.log.json": {
+      "original_filename": "neutral-brokered-results.log",
+      "original_sha256": "1b9fbb100408c903e459d15beae168ec9f94c392b5ec1fdf8c0c80d2d149e62b",
+      "decode": "JSON text field encoded as UTF-8 reproduces original log bytes"
+    },
+    "all-features-results.log.json": {
+      "original_filename": "all-features-results.log",
+      "original_sha256": "c02c6b4f8593bc86a8f4730ebd7964f469f383ffc83f9a11063f7755e6053b94",
+      "decode": "JSON text field encoded as UTF-8 reproduces original log bytes"
+    }
+  },
+  "source_reconstruction": {
+    "bundle": "source-base.bundle",
+    "prerequisite_commit": "53314a2bbea4badbe4ecef145cb81ac5910ee415",
+    "subject_commit": "365606709d19819fde31221c6eef5b655addc30a",
+    "bundle_verified": true,
+    "scope": "Preserve six unpublished base commits so later rebasing does not make the tested subject unreachable; prerequisite is an internal-main ancestor, no remote publication performed here.",
+    "working_patch": "working-source.patch.json",
+    "prior_E42_working_patch": "previous-E42-source.patch.json"
+  },
+  "scope": "Current-claim credential materialization through both production provider and remote entrypoints. Real Vault authority with controlled SecretStore/ownership/receipt collaborators. No database/server/HTTP end-to-end claim.",
+  "limitations": [
+    "Neutral profiles execute their own adapter tests; authority-gated Vault revocation tests are not present there.",
+    "A receipt committed before later ownership loss remains valid; the awaited response grants no permission to publish plaintext.",
+    "Checks observe current ownership; no atomic transaction between an arbitrary external authority and an arbitrary recorder is claimed.",
+    "This receipt proves its recorded working source, not subsequent ledger/receipt metadata or a later commit identifier.",
+    "Full Windows CI, native service E2E, heavy/cold-cache and other refresh/provision modes are not qualified by this component run."
+  ]
+}

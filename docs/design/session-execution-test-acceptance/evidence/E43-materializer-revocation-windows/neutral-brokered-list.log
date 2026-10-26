@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.97s
+     Running unittests src\lib.rs (C:/t/sa26/cache\debug\deps\awaken_credential_materializer-17bcc748d8596d84.exe)
+credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table: test
+http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape: test
+inference::tests::brokered_mode_and_candidate_routing_share_one_decision_table: test
+inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access: test
+inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes: test
+inference::tests::pinned_materialization_preserves_journal_identity_in_both_model_modes: test
+inference::tests::published_reasoning_policy_survives_candidate_materialization: test
+
+7 tests, 0 benchmarks

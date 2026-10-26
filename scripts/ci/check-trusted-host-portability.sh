@@ -125,6 +125,15 @@ cargo test -p awaken-run-executor-acp --lib
 cargo test -p awaken-acp-application --lib
 run_required_rust_tests -p awaken-worker --lib bootstrap::
 cargo test -p awaken-worker-contract --lib
+# A claim can be revoked while plaintext resolution or a committed receipt's
+# response is outstanding. Both provider and remote paths must refuse material
+# after loss, without abandoning/reissuing the read or erasing a prior receipt.
+run_required_rust_tests -p awaken-credential-materializer --lib tests::revocation_wait:: \
+  --require-case=tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected \
+  --require-case=tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed \
+  --require-case=tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt \
+  --require-case=tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once \
+  --require-case=tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect
 run_required_rust_tests -p awaken-cli --lib acp_local_credentials
 # Publication lifecycle uses the same portable task/slot kernel. Include both
 # adapter races on every matrix runner; Namespace's Unix-socket rows remain

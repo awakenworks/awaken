@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "kind": "required-libtest",
+  "full_gate": false,
+  "source_kind": "working-tree",
+  "revision": "365606709d19819fde31221c6eef5b655addc30a",
+  "source_digest": "2975bac3bb799c2a77d3d2333f96ea8cfb2fc7da5061e5b801866d941c0c2ed7",
+  "index_tree": "378314506bb72aab9ce81fcc84b80c715958a286",
+  "arguments": [
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--lib",
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "--require-case=tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "--",
+    "--ignored",
+    "--exact",
+    "--test-threads=1"
+  ],
+  "required_cases": [
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt"
+  ],
+  "commands": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--lib",
+      "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+      "--",
+      "--ignored",
+      "--exact",
+      "--test-threads=1",
+      "--list"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--lib",
+      "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+      "--",
+      "--ignored",
+      "--exact",
+      "--test-threads=1",
+      "--show-output"
+    ]
+  ],
+  "list_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--lib",
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "--",
+    "--ignored",
+    "--exact",
+    "--test-threads=1",
+    "--list"
+  ],
+  "test_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--lib",
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "--",
+    "--ignored",
+    "--exact",
+    "--test-threads=1",
+    "--show-output"
+  ],
+  "selected_cases": [
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt"
+  ],
+  "executed_cases": [
+    [
+      "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+      "FAILED"
+    ]
+  ],
+  "execution_inputs": {
+    "fixture": null,
+    "crash_backend": null
+  },
+  "postgres_fixture_required": false,
+  "postgres_fixture_configured": false,
+  "s3_fixture_required": false,
+  "s3_fixture_configured": false,
+  "status": "failed",
+  "rows": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--lib",
+        "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+        "--",
+        "--ignored",
+        "--exact",
+        "--test-threads=1",
+        "--list"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 501.4479239000939
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--lib",
+        "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+        "--",
+        "--ignored",
+        "--exact",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "exit_code": 101,
+      "duration_seconds": 1.8288330000359565
+    }
+  ],
+  "errors": [
+    "test command failed with status 101",
+    "required tests failed or were ignored",
+    "passing, non-skipped execution summaries are required",
+    "summary counts differ from named test results"
+  ],
+  "preparation": {
+    "path": "C:\\t\\sa26\\materializer-current-repro-v1\\build.json",
+    "sha256": "00984834e473430658d1e30c3ce85e0763138d09b046a510a47f83ce83f40a50"
+  },
+  "command_exit_code": 101,
+  "duration_seconds": 503.27675690012984,
+  "source_unchanged": true,
+  "exit_code": 101
+}

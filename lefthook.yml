@@ -162,7 +162,7 @@ pre-commit:
     # counter-examples; a change to what they read re-proves the refusals.
     session-acceptance-gates:
       # >>> generated glob from test_session_acceptance.py INPUT_GLOBS — do not edit
-      glob: "{Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py}"
+      glob: "{.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py}"
       # <<< generated glob
       run: python3 scripts/ci/test_session_acceptance.py
 

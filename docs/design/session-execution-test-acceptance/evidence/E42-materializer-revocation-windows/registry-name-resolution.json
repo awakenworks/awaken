@@ -1,0 +1,8 @@
+{
+  "reason": "Independent unpublished Windows registration collided with upstream E42. E42W identifies the Windows registration in the merged catalog. Original entry, source identity, receipt and log bytes are preserved. Upstream Linux E42 is external evidence, not Windows qualification dispatched by this task.",
+  "original_id": "E42",
+  "catalog_id": "E42W",
+  "original_entry_sha256": "539da5ecad3b6b7ef20fbf59c724290230f1a9e07cccbe710295457bd4b1fb61",
+  "catalog_entry_sha256": "5a800512a3d8f0792407be48ec985a9d05783889742eb070abd5bb6a3f761265",
+  "receipt_sha256": "e16bbe33906e3e27f971534f564cb4f85920d24d1a129b397fa4ecc38b15be15"
+}

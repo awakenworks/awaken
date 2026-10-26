@@ -5,6 +5,9 @@
 *.py text eol=lf
 # Public API comparisons must be reproducible in fresh Windows checkouts.
 public-api/*.txt text eol=lf
+# Published evidence hashes cover exact raw bytes, including native CRLF.
+# Keep receipt/log/source archives unchanged through staging and checkout.
+docs/design/session-execution-test-acceptance/evidence/** -text whitespace=cr-at-eol
 # Generated protocol artifacts are compared byte-for-byte on every platform.
 contracts/**/*.generated.json text eol=lf
 contracts/*.d.ts text eol=lf

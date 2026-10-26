@@ -1,0 +1,25 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.59s
+     Running unittests src\lib.rs (C:/t/sa26/cache\debug\deps\awaken_credential_materializer-030b10c365689c5f.exe)
+
+running 1 test
+test tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt ... FAILED
+
+successes:
+
+successes:
+
+failures:
+
+---- tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt stdout ----
+
+thread 'tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt' (67296) panicked at crates\server\awaken-credential-materializer\src\tests\revocation_wait.rs:438:41:
+Revoke: material was returned under revoked authority
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p awaken-credential-materializer --lib`
