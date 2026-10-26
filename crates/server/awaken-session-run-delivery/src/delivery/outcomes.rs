@@ -10,86 +10,20 @@
 //! ordinary Run and observed until it settles: no execution context opens on
 //! the Coordinator.
 
-use std::sync::Arc;
-
-use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch_contract::DispatchEnqueue as _;
 use awaken_ext_goal::controller::{Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{
     AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker,
 };
 use awaken_ext_goal::outcome::{Definition, Grade, Grader, GraderError, GradingInput, Id};
 use awaken_ext_goal::state::{Binding, grader_thread_id};
-use awaken_runtime_contract::execution::{Error as ExecutionError, Result as ExecutionResult};
-use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation, RuntimeRunContext};
+use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_session_execution_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
-use super::{SETTLED_RECONCILIATION_INTERVAL, WorkerPlacedSessions};
-use crate::session_run_activation::read_settled_phase;
-use crate::{
-    SessionCommit, SessionLowering as _, await_completion_state, outcome_controller_error,
-    outcome_report,
-};
-
-/// Runs of one Thread, dispatched to registered Workers and observed until
-/// they settle.
-struct DispatchedRuns<'a> {
-    sessions: &'a WorkerPlacedSessions,
-    thread: ThreadId,
-    commit: Arc<SessionCommit>,
-    /// An Outcome's Worker Runs extend the Session's Thread; a Grader Run is a
-    /// fresh Run of its own Thread.
-    extension: bool,
-}
-
-impl DispatchedRuns<'_> {
-    async fn dispatch(&self, activation: RunActivation) -> Result<RunState, RunError> {
-        if activation.thread_id != self.thread {
-            return Err(RunError::internal(
-                "Run activation does not match its bound Thread",
-            ));
-        }
-        let projections = self.sessions.ports.projections.as_ref();
-        let session_dispatch = projections.projection(&self.thread.0)?.is_some();
-        let activation = awaken_dispatch_execution::placement::bind_root_tool_configuration_format(
-            activation,
-            session_dispatch,
-        );
-        let run_id = activation.run_id.clone();
-        let (settled, _waiter_guard) = self.sessions.ports.completion.register(&run_id, None)?;
-        let preparation = projections.prepare(activation);
-        let request = if self.extension {
-            preparation.extension()
-        } else {
-            preparation.fresh()
-        }?;
-        self.sessions
-            .ports
-            .owner
-            .enqueue(request)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
-        await_completion_state(settled, SETTLED_RECONCILIATION_INTERVAL, || {
-            read_settled_phase(&self.commit, &self.thread, &run_id, None)
-        })
-        .await
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_runtime_contract::execution::RunExecutor for DispatchedRuns<'_> {
-    async fn execute(
-        &self,
-        activation: RunActivation,
-        _context: RuntimeRunContext,
-    ) -> ExecutionResult<RunState> {
-        self.dispatch(activation)
-            .await
-            .map_err(|error| ExecutionError::Execution(error.to_string()))
-    }
-}
+use super::WorkerPlacedSessions;
+use super::dispatched_runs::DispatchedRuns;
+use crate::{outcome_controller_error, outcome_report};
 
 /// The Grader of a Worker-placed Session's Outcome: each grading is a Run of
 /// the round's own grader Thread, in the Session's Workspace.
@@ -119,12 +53,14 @@ impl Grader for DispatchedGrader<'_> {
             .commit_for_read(&thread.0)
             .await
             .map_err(execution)?;
-        let runs = DispatchedRuns {
-            sessions: self.sessions,
+        let runs = DispatchedRuns::new(
+            self.sessions.ports.projections.as_ref(),
+            self.sessions.ports.owner.as_ref(),
+            &self.sessions.ports.completion,
             thread,
-            commit: commit.clone(),
-            extension: false,
-        };
+            commit.clone(),
+            false,
+        );
         AgentGrader::new(&runs, commit.as_ref(), RuntimeRunContext::new())
             .grade(snapshot, input)
             .await
@@ -166,12 +102,14 @@ impl WorkerPlacedSessions {
             sessions: self,
             workspace: projection.workspace().to_owned(),
         };
-        let runs = DispatchedRuns {
-            sessions: self,
-            thread: thread_id.clone(),
-            commit: commit.clone(),
-            extension: true,
-        };
+        let runs = DispatchedRuns::new(
+            self.ports.projections.as_ref(),
+            self.ports.owner.as_ref(),
+            &self.ports.completion,
+            thread_id.clone(),
+            commit.clone(),
+            true,
+        );
         let controller = Controller::new(
             &thread_id,
             commit.as_ref(),
