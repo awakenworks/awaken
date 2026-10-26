@@ -69,6 +69,21 @@ impl CommittedAuthority<Arc<dyn awaken_dispatch_erasure::LocalCommit>> {
             .authoritative_committed_state(thread_id)
             .await
     }
+
+    /// Read one internally consistent committed prefix through this same
+    /// capability. A Worker projection cannot mint it, so consumers do not
+    /// repeat the Local/Remote authority decision before recovery.
+    pub async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.authority().recovery_snapshot(thread_id, run_id).await
+    }
+
+    pub async fn run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
+        self.authority().authoritative_run(run_id).await
+    }
 }
 
 impl<A: Clone, R> SessionCommitBoundary<A, R> {

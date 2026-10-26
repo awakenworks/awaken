@@ -121,7 +121,7 @@ impl ResourcePorts {
         selection: ResourceSelection,
         memory: Arc<crate::memory::MemoryRuntime>,
         sessions: std::sync::Weak<crate::InstalledSessions>,
-        bindings: awaken_session_realization::memory_binding_compiler::MemoryBindingCompiler,
+        bindings: awaken_session_run_delivery::MemoryBindingCompiler,
         local_workspace: String,
         direct_config: Option<serde_json::Value>,
     ) -> Self {

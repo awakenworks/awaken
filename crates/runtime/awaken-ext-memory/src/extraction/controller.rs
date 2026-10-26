@@ -57,6 +57,41 @@ impl MemoryExtractionController {
         self.repository.put_extraction_if_absent(intent).await
     }
 
+    /// Freeze execution facts on an existing, still-pristine intent through its
+    /// original revision fence. This selects no claim and performs no external
+    /// effect. Already selected or progressed work retains its exact choice;
+    /// a competing first claim/selection wins once, without relocation retries.
+    pub async fn prepare_execution(
+        &self,
+        intent_id: &str,
+        execution: MemoryExtractionExecution,
+    ) -> Result<MemoryExtractionIntent, MemoryExtractionError> {
+        let current = self
+            .repository
+            .get_extraction(intent_id)
+            .await?
+            .ok_or_else(|| MemoryExtractionError::NotFound(intent_id.into()))?;
+        let Some(selected) = current.clone().selected_execution(execution)? else {
+            return Ok(current);
+        };
+        if selected == current {
+            return Ok(current);
+        }
+        match self
+            .repository
+            .compare_and_swap_extraction(current.revision, selected.clone())
+            .await
+        {
+            Ok(()) => Ok(selected),
+            Err(MemoryExtractionError::RevisionConflict(_)) => self
+                .repository
+                .get_extraction(intent_id)
+                .await?
+                .ok_or_else(|| MemoryExtractionError::NotFound(intent_id.into())),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Create the stable terminal-Run intent over only the transcript suffix not
     /// already owned by an earlier durable intent.
     pub async fn enqueue_terminal(
@@ -72,6 +107,9 @@ impl MemoryExtractionController {
         let idempotency_key = format!("{}:{}", logical_thread_id, request.terminal_run_id);
         let intent_id = format!("memory-extraction:{idempotency_key}");
         if let Some(existing) = self.repository.get_extraction(&intent_id).await? {
+            // This terminal's first intent already freezes execution facts.
+            // Redelivery after deployment never relocates an existing Run or
+            // rewrites unknown historical attribution from ambient defaults.
             let same_binding = existing.workspace_id == request.workspace_id
                 && existing.session_id == request.session_id
                 && existing.logical_thread_id() == logical_thread_id
@@ -135,7 +173,8 @@ impl MemoryExtractionController {
             ranges,
             transcript,
             request.extractor,
-        )?;
+        )?
+        .with_execution(request.execution)?;
         self.repository.put_extraction_if_absent(intent).await
     }
 
@@ -305,7 +344,7 @@ impl MemoryExtractionController {
         driver
             .validate_binding(intent)
             .await
-            .map_err(AdvanceFailure::Permanent)?;
+            .map_err(AdvanceFailure::binding)?;
         if intent.status == MemoryExtractionStatus::Claimed {
             let extraction_input = intent.clone();
             let extraction = driver.extract(&extraction_input);
@@ -371,7 +410,7 @@ impl MemoryExtractionController {
             driver
                 .validate_binding(intent)
                 .await
-                .map_err(AdvanceFailure::Permanent)?;
+                .map_err(AdvanceFailure::binding)?;
             let mut receipts = Vec::with_capacity(intent.mutations.len());
             for mutation in &intent.mutations {
                 receipts.push(
@@ -427,6 +466,25 @@ enum AdvanceFailureAction {
 }
 
 impl AdvanceFailure {
+    /// Binding validation reports a typed observation, never a message to parse.
+    /// Completed proposals remain on the same intent when observation must retry.
+    fn binding(error: MemoryExtractionError) -> Self {
+        match error {
+            MemoryExtractionError::Unavailable(reason) | MemoryExtractionError::Storage(reason) => {
+                Self::Retryable(reason)
+            }
+            MemoryExtractionError::Invalid(reason) => Self::Permanent(reason),
+            error @ (MemoryExtractionError::NotFound(_)
+            | MemoryExtractionError::IdempotencyConflict(_)
+            | MemoryExtractionError::RevisionConflict(_)
+            | MemoryExtractionError::LeaseHeld { .. }
+            | MemoryExtractionError::StaleClaim
+            | MemoryExtractionError::InvalidTransition { .. }) => {
+                Self::Permanent(error.to_string())
+            }
+        }
+    }
+
     /// Sole controller decision for an observed extraction failure. Unknown
     /// execution has its own terminal action and can never enter retry-budget
     /// handling, regardless of the current attempt counters.
@@ -447,6 +505,7 @@ impl AdvanceFailure {
 #[cfg(test)]
 mod tests {
     use super::{AdvanceFailure, AdvanceFailureAction};
+    use crate::{MemoryExtractionError, MemoryExtractionStatus};
 
     #[test]
     fn failure_action_table_never_retries_indeterminate_execution() {
@@ -458,6 +517,8 @@ mod tests {
         // F2=C1(retryable)+!C2(below)->E3; F3=C1(indeterminate)+any C2->E2;
         // F4=C1(permanent)+any C2->E3. Boundary and extreme counters cover the
         // complete comparison partition while the Kani harness exhausts u32.
+        // B1 typed dependency/storage observation => F1/F2; B2 every other
+        // closed binding error => F4, never an execution-indeterminate action.
         for (attempts, max_attempts) in [
             (0, 0),
             (0, 1),
@@ -486,6 +547,45 @@ mod tests {
                 AdvanceFailureAction::Terminal("permanent".into()),
                 "F4 attempts={attempts} max={max_attempts}"
             );
+            for (error, retryable) in [
+                (MemoryExtractionError::Unavailable("same".into()), true),
+                (MemoryExtractionError::Storage("same".into()), true),
+                (MemoryExtractionError::Invalid("same".into()), false),
+                (MemoryExtractionError::NotFound("same".into()), false),
+                (
+                    MemoryExtractionError::IdempotencyConflict("same".into()),
+                    false,
+                ),
+                (
+                    MemoryExtractionError::RevisionConflict("same".into()),
+                    false,
+                ),
+                (
+                    MemoryExtractionError::LeaseHeld {
+                        lease_expires_at_unix_ms: u64::MAX,
+                    },
+                    false,
+                ),
+                (MemoryExtractionError::StaleClaim, false),
+                (
+                    MemoryExtractionError::InvalidTransition {
+                        from: MemoryExtractionStatus::Pending,
+                        to: MemoryExtractionStatus::Completed,
+                    },
+                    false,
+                ),
+            ] {
+                let action = AdvanceFailure::binding(error).into_action(attempts, max_attempts);
+                assert_eq!(
+                    matches!(action, AdvanceFailureAction::Retry(_)),
+                    retryable && attempts < max_attempts,
+                    "B1/B2"
+                );
+                assert!(
+                    !matches!(action, AdvanceFailureAction::ExecutionIndeterminate(_)),
+                    "B1/B2"
+                );
+            }
         }
     }
 }
@@ -536,6 +636,36 @@ mod verification {
             }
             _ => assert!(matches!(action, AdvanceFailureAction::Terminal(_))),
         }
+
+        // Exhaust the typed binding boundary before the same failure policy.
+        // Only failed dependency observations enter the existing retry budget;
+        // no binding observation can manufacture unknown execution or proposals.
+        let binding_class: u8 = kani::any();
+        let binding_error = match binding_class % 9 {
+            0 => MemoryExtractionError::Unavailable(String::new()),
+            1 => MemoryExtractionError::Storage(String::new()),
+            2 => MemoryExtractionError::Invalid(String::new()),
+            3 => MemoryExtractionError::NotFound(String::new()),
+            4 => MemoryExtractionError::IdempotencyConflict(String::new()),
+            5 => MemoryExtractionError::RevisionConflict(String::new()),
+            6 => MemoryExtractionError::LeaseHeld {
+                lease_expires_at_unix_ms: kani::any(),
+            },
+            7 => MemoryExtractionError::StaleClaim,
+            _ => MemoryExtractionError::InvalidTransition {
+                from: symbolic_status(kani::any()),
+                to: symbolic_status(kani::any()),
+            },
+        };
+        let action = AdvanceFailure::binding(binding_error).into_action(attempts, max_attempts);
+        assert_eq!(
+            matches!(action, AdvanceFailureAction::Retry(_)),
+            binding_class % 9 < 2 && attempts < max_attempts
+        );
+        assert!(!matches!(
+            action,
+            AdvanceFailureAction::ExecutionIndeterminate(_)
+        ));
 
         let status = symbolic_status(kani::any());
         assert_eq!(status.is_terminal(), !status.is_recoverable());

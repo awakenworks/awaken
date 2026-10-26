@@ -43,17 +43,21 @@ pub(crate) trait SessionMemoryBinding: Send + Sync {
 }
 
 #[async_trait]
-impl SessionMemoryBinding for crate::memory_binding::MemoryBinding {
+impl SessionMemoryBinding for awaken_session_run_delivery::MemoryBinding {
     async fn list(
         &self,
         prefix: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform().list(prefix).await
     }
 
     async fn read(&self, path: &str) -> Result<Option<awaken_resource_contract::Memory>, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform().read(path).await
     }
 
@@ -63,7 +67,9 @@ impl SessionMemoryBinding for crate::memory_binding::MemoryBinding {
         content: &str,
         expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform()
             .write_exact(path, content, expected_generation)
             .await
@@ -74,7 +80,9 @@ impl SessionMemoryBinding for crate::memory_binding::MemoryBinding {
         path: &str,
         expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String> {
-        self.validate_live_resource().await?;
+        self.validate_live_resource()
+            .await
+            .map_err(|error| error.message)?;
         self.platform()
             .delete_exact(path, expected_generation)
             .await
@@ -269,7 +277,7 @@ pub(crate) struct SessionMemoryTools {
 
 impl SessionMemoryTools {
     pub(crate) fn new(
-        bindings: HashMap<String, Arc<crate::memory_binding::MemoryBinding>>,
+        bindings: HashMap<String, Arc<awaken_session_run_delivery::MemoryBinding>>,
         snapshot: Option<&ExecutableAgentSnapshot>,
     ) -> Option<Self> {
         let bindings: HashMap<String, Arc<dyn SessionMemoryBinding>> = bindings

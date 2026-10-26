@@ -13,8 +13,8 @@ use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, SessionEnvironmentOwner,
     SessionEnvironmentPreparation,
 };
-use crate::memory_binding::MemoryBinding;
 use awaken_session_configuration_contract::resource as session_resource;
+use awaken_session_run_delivery::MemoryBinding;
 use std::sync::Arc;
 
 /// One process-local projection of aggregate authority, not another lease.

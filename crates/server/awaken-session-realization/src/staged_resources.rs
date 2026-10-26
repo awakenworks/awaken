@@ -85,8 +85,10 @@ pub enum EnvironmentResourceReconciliation {
 /// cannot publish one generation with bindings from another.
 pub struct CompiledEffectiveInputs {
     pub staged: crate::staged_resources::StagedResources,
-    pub memory_bindings:
-        std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
+    pub memory_bindings: std::collections::HashMap<
+        String,
+        std::sync::Arc<awaken_session_run_delivery::MemoryBinding>,
+    >,
 }
 
 #[derive(Debug)]

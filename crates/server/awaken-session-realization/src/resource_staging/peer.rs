@@ -22,7 +22,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
 
     fn memory_reference_encoder(
         &self,
-    ) -> Option<&Arc<dyn crate::memory_binding::SessionMemoryReferenceEncoder>> {
+    ) -> Option<&Arc<dyn crate::memory_references::SessionMemoryReferenceEncoder>> {
         ResourceStaging::memory_reference_encoder(self)
     }
 

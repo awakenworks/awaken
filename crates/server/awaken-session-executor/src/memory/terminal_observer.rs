@@ -47,7 +47,7 @@ impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
 /// Selected terminal Memory roles, with only a weak view of resident Sessions.
 pub(crate) struct MemoryTerminalObservers {
     sessions: Weak<crate::installed_session::InstalledSessions>,
-    bindings: awaken_session_realization::memory_binding_compiler::MemoryBindingCompiler,
+    bindings: awaken_session_run_delivery::MemoryBindingCompiler,
     runtime: Arc<super::MemoryRuntime>,
     local_workspace: String,
     direct_config: Option<serde_json::Value>,
@@ -55,7 +55,7 @@ pub(crate) struct MemoryTerminalObservers {
 impl MemoryTerminalObservers {
     pub(crate) fn new(
         sessions: Weak<crate::installed_session::InstalledSessions>,
-        bindings: awaken_session_realization::memory_binding_compiler::MemoryBindingCompiler,
+        bindings: awaken_session_run_delivery::MemoryBindingCompiler,
         runtime: Arc<super::MemoryRuntime>,
         local_workspace: String,
         direct_config: Option<serde_json::Value>,

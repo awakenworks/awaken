@@ -874,7 +874,7 @@ pub(crate) fn bind_test_memory(
         .staging()
         .register_thread_memory(
             thread,
-            Some(Arc::new(crate::memory_binding::MemoryBinding::new(
+            Some(Arc::new(awaken_session_run_delivery::MemoryBinding::new(
                 thread,
                 "default",
                 handle,
