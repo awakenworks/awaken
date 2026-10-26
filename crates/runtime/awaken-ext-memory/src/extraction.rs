@@ -758,6 +758,14 @@ pub trait MemoryExtractionDriver: Send + Sync {
     /// Whether this driver owns the frozen binding carried by `intent`.
     fn accepts(&self, intent: &MemoryExtractionIntent) -> bool;
 
+    /// The partition a pristine intent's extractor uses. The controller freezes
+    /// this fact through the existing revision CAS before claiming work; an
+    /// already selected or progressed intent retains its original context.
+    /// Embedded drivers use the original Session partition.
+    fn extraction_commit_scope(&self) -> MemoryExtractionCommitScope {
+        MemoryExtractionCommitScope::Session
+    }
+
     /// Revalidate immediately before external IO. A failed dependency observation
     /// remains retryable; it is not proof that the frozen binding was revoked.
     async fn validate_binding(
@@ -1830,6 +1838,118 @@ mod tests {
                 target_sha256: mutation.target_sha256.clone(),
                 already_applied: false,
             })
+        }
+    }
+
+    struct ScopedDriver {
+        inner: TestDriver,
+        seen: Mutex<Vec<MemoryExtractionIntent>>,
+    }
+
+    #[async_trait]
+    impl MemoryExtractionDriver for ScopedDriver {
+        fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
+            self.inner.accepts(intent)
+        }
+
+        fn extraction_commit_scope(&self) -> MemoryExtractionCommitScope {
+            MemoryExtractionCommitScope::AuxiliaryThread
+        }
+
+        async fn validate_binding(
+            &self,
+            intent: &MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            self.inner.validate_binding(intent).await
+        }
+
+        async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
+            self.seen.lock().unwrap().push(intent.clone());
+            self.inner.extract(intent).await
+        }
+
+        async fn apply(
+            &self,
+            intent: &MemoryExtractionIntent,
+            mutation: &MemoryExtractionMutation,
+        ) -> Result<MemoryMutationReceipt, String> {
+            self.inner.apply(intent, mutation).await
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_selects_execution_before_claim_without_relocating_prior_work() {
+        // C1 pristine / already attributed / retried intent; C2 a driver that
+        // executes on an auxiliary Thread. R1 pristine+C2 => existing revision
+        // CAS freezes AuxiliaryThread before the first claim/extract. R2 any
+        // selected or progressed C1 => original partition/attribution retained.
+        // Every row keeps its stable auxiliary Run, owns a claim at extraction,
+        // and completes through the original controller without content IO.
+        for stage in ["pristine", "selected", "retried"] {
+            let repository = Arc::new(TestRepository::default());
+            let mut original = intent();
+            if stage == "selected" {
+                original = original
+                    .with_execution(MemoryExtractionExecution {
+                        commit_scope: MemoryExtractionCommitScope::Session,
+                        data_subject_id: Some(awaken_runtime_contract::DataSubjectId(
+                            "original".into(),
+                        )),
+                    })
+                    .unwrap();
+            } else if stage == "retried" {
+                let generation = original.claim("previous", 1_000, 3_000).unwrap();
+                original
+                    .retry("previous", generation, 1_000, "retry")
+                    .unwrap();
+            }
+            let expected = if stage == "pristine" {
+                MemoryExtractionExecution {
+                    commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                    data_subject_id: None,
+                }
+            } else {
+                original.execution().clone()
+            };
+            let controller = MemoryExtractionController::new(
+                repository.clone(),
+                "driver-owner",
+                Arc::new(awaken_lease_testkit::ManualClock::new(1_000)),
+            );
+            controller.enqueue(original.clone()).await.unwrap();
+            let driver = ScopedDriver {
+                inner: TestDriver {
+                    extraction_calls: AtomicUsize::new(0),
+                    first_outcome: Some(MemoryExtractionOutcome::Mutations(Vec::new())),
+                    binding_valid: true,
+                    validation_errors: Mutex::new(std::collections::VecDeque::new()),
+                    application_calls: AtomicUsize::new(0),
+                },
+                seen: Mutex::new(Vec::new()),
+            };
+            controller.drive_recoverable(&driver).await;
+            let stored = repository
+                .get_extraction(&original.intent_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.status,
+                MemoryExtractionStatus::Completed,
+                "R1/R2 {stage}"
+            );
+            assert_eq!(stored.execution(), &expected, "R1/R2 {stage}");
+            assert_eq!(
+                stored.auxiliary_run_id(),
+                original.auxiliary_run_id(),
+                "R1/R2 {stage}"
+            );
+            let seen = driver.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "R1/R2 {stage}");
+            assert_eq!(seen[0].execution(), &expected, "R1/R2 {stage}");
+            assert_eq!(seen[0].claim_owner.as_deref(), Some("driver-owner"));
+            assert!(seen[0].claim_generation > 0);
+            assert_eq!(driver.inner.application_calls.load(Ordering::SeqCst), 0);
         }
     }
 

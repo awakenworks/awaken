@@ -27,7 +27,17 @@ impl SessionInputAdmission for WorkerPlacedSessions {
         thread: &str,
         projection: FrozenSessionProjection,
     ) -> Result<(), SessionRealizationEffectFailure> {
-        Ok(self.ports.projections.install(thread, projection)?)
+        let manifest =
+            awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+                projection.workspace_id.clone(),
+                projection.resource_revision,
+                projection.resources.clone(),
+            );
+        self.ports.projections.install(thread, projection)?;
+        // Recover every writable frozen binding even when the current Agent
+        // disabled extraction: older durable intents retain their own snapshot.
+        super::memory::recover_bindings(&self.ports, thread, &manifest).await?;
+        Ok(())
     }
 
     /// Decision table (causes → effect):

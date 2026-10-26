@@ -36,6 +36,7 @@ mod memory_binding_compiler;
 mod memory_content;
 mod memory_extractions;
 mod memory_proposals;
+mod memory_settlement;
 mod outcome_projection;
 mod run_publications;
 mod session_activation;
@@ -53,7 +54,7 @@ mod thread_coordination;
 mod thread_resume;
 
 pub use authority_commits::{AuthorityCommits, runtime_authority_error};
-pub use auxiliary_snapshot::resolve_auxiliary_snapshot;
+pub use auxiliary_snapshot::{memory_extractor_snapshot, resolve_auxiliary_snapshot};
 pub use background::{BackgroundRuns, BackgroundWorkClass};
 pub use child_dispatch::{ChildDispatchRefusal, child_dispatch_request};
 pub use commit_boundary::{
@@ -84,6 +85,7 @@ pub use memory_extractions::MemoryExtractions;
 pub use memory_proposals::{
     MemoryProposalError, MemoryWriteProposals, committed_memory_writes, memory_extraction_input,
 };
+pub use memory_settlement::observe_dispatched_memory_terminal;
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
 };

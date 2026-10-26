@@ -16,6 +16,7 @@
 mod dispatched_runs;
 mod durable_operations;
 mod inputs;
+mod memory;
 mod outcomes;
 mod roles;
 mod thread_runs;
@@ -78,6 +79,10 @@ pub struct WorkerPlacement {
     /// The content-addressed store of pinned Skill bundles.
     pub skill_bundles: Option<Arc<dyn SkillBundleSource<ResourceOperationFence>>>,
     pub resource_bindings: ResourceBindingVerifiers,
+    /// Frozen Memory bindings over the process's existing Resource authority.
+    pub memory_bindings: crate::MemoryBindingCompiler,
+    /// The process's existing durable Memory extraction controller factory.
+    pub memory_extractions: Arc<crate::MemoryExtractions>,
     /// The Workspaces' Skill catalog a Session's Skill selections pin from.
     pub skill_catalog:
         Option<Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>>,
@@ -128,6 +133,31 @@ impl WorkerPlacedSessions {
     #[must_use]
     pub fn projections(&self) -> &Arc<SessionProjections> {
         &self.ports.projections
+    }
+
+    /// The existing Memory controller's Worker-placement driver. The driver
+    /// borrows these same delivery owners and executes no local model.
+    #[must_use]
+    pub fn memory_extraction_driver(
+        &self,
+        binding: Arc<crate::MemoryBinding>,
+    ) -> Arc<dyn awaken_ext_memory::MemoryExtractionDriver> {
+        Arc::new(memory::DispatchedMemory::new(
+            binding,
+            self.ports.reads.clone(),
+            self.ports.projections.clone(),
+            self.ports.owner.clone(),
+            self.ports.completion.clone(),
+        ))
+    }
+
+    /// Coordinator-side Memory observation for the original Worker settlement
+    /// boundary. The observer holds only the selected delivery collaborators.
+    #[must_use]
+    pub fn worker_memory_settlement_observer(
+        &self,
+    ) -> Arc<dyn awaken_dispatch_contract::DispatchSettlementObserver> {
+        memory::settlement_observer(&self.ports)
     }
 
     /// The Session application's role set for the Sessions registered Workers
@@ -373,7 +403,7 @@ mod tests {
     }
 
     /// A live MemoryStore binding at version 4.
-    struct Memory;
+    pub(super) struct Memory;
 
     #[async_trait::async_trait]
     impl LiveResourceBindingVerifier for Memory {
@@ -398,7 +428,7 @@ mod tests {
         }
     }
 
-    fn memory_input(version: u64) -> ResolvedInput {
+    pub(super) fn memory_input(version: u64) -> ResolvedInput {
         ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
@@ -450,8 +480,21 @@ mod tests {
         }
     }
 
-    fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
+    pub(super) async fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
         let clock = awaken_time::system_clock();
+        let memory_content = awaken_resource_contract::MemoryExecutionContent::new(Arc::new(
+            awaken_memory_store::VolatileMemoryRepository::new(clock.clone()),
+        ));
+        let extractions = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .expect("private Memory extraction authority"),
+        );
+        let memory_extractions = Arc::new(crate::MemoryExtractions::new(
+            extractions,
+            Arc::new(crate::BackgroundRuns::new()),
+            clock.clone(),
+        ));
         let projections = Arc::new(SessionProjections::new("local", None));
         let hub = Arc::new(ThreadEventHub::new());
         let completion = Arc::new(CompletionRegistry::new(hub.clone()));
@@ -489,6 +532,11 @@ mod tests {
                 memory: Some(Arc::new(Memory)),
                 repositories: None,
             },
+            memory_bindings: crate::MemoryBindingCompiler::new(
+                memory_content,
+                Some(Arc::new(Memory)),
+            ),
+            memory_extractions,
             skill_catalog: None,
             wake: None,
             clock: awaken_time::system_clock(),
@@ -571,7 +619,7 @@ mod tests {
         let stored = skill();
 
         // C1: no installed projection is a retryable refusal.
-        let delivery = delivery(Some(stored.clone()));
+        let delivery = delivery(Some(stored.clone())).await;
         let refused = delivery
             .reserve_session_run(command("cold", "hello"))
             .await
@@ -595,7 +643,7 @@ mod tests {
 
         // C4: a pinned bundle the store does not hold, then one whose digest
         // is not the pin.
-        let missing = delivery_without_store();
+        let missing = delivery_without_store().await;
         install(&missing, "missing", Vec::new(), vec![pin(&stored)]);
         missing
             .reserve_session_run(command("missing", "/review the patch"))
@@ -658,14 +706,14 @@ mod tests {
         );
     }
 
-    fn delivery_without_store() -> WorkerPlacedSessions {
-        delivery(None)
+    async fn delivery_without_store() -> WorkerPlacedSessions {
+        delivery(None).await
     }
 
     #[tokio::test]
     async fn coordinator_activation_publishes_only_a_committed_reservation() {
         // A1: a zero activity epoch is refused before the store is touched.
-        let delivery = delivery(Some(skill()));
+        let delivery = delivery(Some(skill())).await;
         install(&delivery, "session", Vec::new(), Vec::new());
         assert_eq!(
             delivery
@@ -754,7 +802,7 @@ mod tests {
     async fn coordinator_input_admission_follows_its_decision_table() {
         use awaken_session_execution_contract::SessionInputAdmission as _;
         use awaken_session_types::SessionRuntimePlacement::{Local, Worker};
-        let delivery = delivery(None);
+        let delivery = delivery(None).await;
 
         // V2: a local placement needs a co-located Worker.
         let local = delivery
@@ -833,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn coordinator_capabilities_and_live_inbox_follow_their_decision_tables() {
         use awaken_session_execution_contract::{CapabilityRuntime as _, LiveInboxRuntime as _};
-        let delivery = delivery(None);
+        let delivery = delivery(None).await;
         // C2: a Thread with no projection advertises the Workspace default
         // roster (no publication: none) and the built-in Hand tools.
         let flat = delivery.capabilities_for("flat").expect("C2");
@@ -872,7 +920,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_thread_runs_follow_their_decision_table() {
-        let delivery = delivery(None);
+        let delivery = delivery(None).await;
         // T1: a Managed Session root admits its own Runs.
         install(&delivery, "session", Vec::new(), Vec::new());
         let root = delivery
@@ -937,7 +985,7 @@ mod tests {
         // registration still precedes enqueue. Its admission rules and the
         // completion/activation tables retain their original owners.
         use awaken_session_execution_contract::OutcomeRuntime as _;
-        let delivery = delivery(None);
+        let delivery = delivery(None).await;
         // An Outcome needs the Session's installed projection.
         let cold = delivery
             .prepare_outcome("session", "outcome-1", "goal", "rubric", 2)
@@ -994,7 +1042,7 @@ mod tests {
 
         for extension in [false, true] {
             for cause in ["foreign-thread", "unconfigured", "conflicting-request"] {
-                let delivery = delivery(None);
+                let delivery = delivery(None).await;
                 let thread = ThreadId("auxiliary".into());
                 let run = RunId(format!("{cause}-{extension}"));
                 let model = if cause == "unconfigured" {
@@ -1081,9 +1129,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_worker_placement_role_set_realizes_no_session() {
-        let delivery = Arc::new(delivery(None));
+    #[tokio::test]
+    async fn the_worker_placement_role_set_realizes_no_session() {
+        // A configured durable Memory authority is an input collaborator;
+        // constructing Worker-placement roles still acquires no local
+        // realization capability and starts no extraction or Environment.
+        let delivery = Arc::new(delivery(None).await);
         let roles = delivery.session_execution_roles();
         assert!(roles.placement.colocated().is_none());
         assert!(roles.placement.require_colocated().is_err());
@@ -1092,7 +1143,7 @@ mod tests {
     #[tokio::test]
     async fn coordinator_durable_operations_follow_their_decision_table() {
         use awaken_session_execution_contract::DurableRunOperations as _;
-        let delivery = delivery(Some(skill()));
+        let delivery = delivery(Some(skill())).await;
         install(&delivery, "session", Vec::new(), Vec::new());
         delivery
             .reserve_session_run(command("session", "hello"))
