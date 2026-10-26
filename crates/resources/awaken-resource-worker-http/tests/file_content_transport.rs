@@ -630,9 +630,10 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         lifecycle,
         awaken_time::system_clock(),
     ));
-    let selected = awaken_session_execution_contract::SessionExecutor::from(Arc::new(
-        awaken_session_execution_contract::NeutralRuntime,
-    ));
+    let selected = awaken_session_execution_contract::SessionExecutor::colocated(
+        Arc::new(awaken_session_execution_contract::NeutralRuntime),
+        Arc::new(awaken_session_execution_contract::NeutralRuntime),
+    );
     let queries = Arc::new(awaken_session_application::SessionQueries::new(
         sessions.clone(),
         &selected,

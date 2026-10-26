@@ -203,7 +203,6 @@ pub struct SessionRealizations {
     lifecycle: Arc<crate::SessionLifecycle>,
     resource_references: Arc<crate::SessionResourceReferences>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
-    mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     executable_projections: crate::ExecutableProjections,
     execution_admission: Arc<crate::SessionExecutionAdmission>,
     local_realization_owner: String,
@@ -227,7 +226,6 @@ pub(crate) struct SessionRealizationCollaborators {
     pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
     pub(crate) resource_references: Arc<crate::SessionResourceReferences>,
     pub(crate) placement: awaken_session_execution_contract::SessionPlacementRoles,
-    pub(crate) mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     pub(crate) executable_projections: crate::ExecutableProjections,
     pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
     pub(crate) local_realization_owner: String,
@@ -245,7 +243,6 @@ impl SessionRealizations {
             lifecycle,
             resource_references,
             placement,
-            mcp,
             executable_projections,
             execution_admission,
             local_realization_owner,
@@ -260,7 +257,6 @@ impl SessionRealizations {
             lifecycle,
             resource_references,
             placement,
-            mcp,
             executable_projections,
             execution_admission,
             local_realization_owner,
@@ -445,7 +441,11 @@ impl SessionRealizations {
             &LocalProjectionSynchronizer {
                 runtime: realization,
             },
-            self.mcp.as_ref(),
+            self.placement
+                .require_colocated()
+                .map_err(SessionRealizationDriveError::from)?
+                .mcp
+                .as_ref(),
             directive,
             request_started,
         )

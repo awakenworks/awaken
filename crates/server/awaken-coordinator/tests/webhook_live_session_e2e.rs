@@ -135,14 +135,16 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         let session_fixture_runtime =
             awaken_session_executor::CoordinatorRoles::of(&host).session_execution();
         let session_fixture_clock = awaken_time::system_clock();
-        awaken_protocol_managed_testkit::managed_state_from_parts(
-            session_fixture_runtime,
-            None,
-            sessions,
-            awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
-                .execution,
-            session_fixture_clock,
-            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        awaken_protocol_managed::ManagedState::from_application(
+            awaken_protocol_managed_testkit::session_application_from_parts(
+                session_fixture_runtime,
+                sessions,
+                awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
+                    .execution,
+                session_fixture_clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            ),
+            awaken_data_governance_contract::CapturePolicy::default(),
         )
     });
     prepare_managed_lifecycle_delivery(

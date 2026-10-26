@@ -1,16 +1,13 @@
 // @formal surface requirement=protocol.mcp.mcp_protocol
-// @formal reason: Test-support-only Managed-state construction now implements the required MCP effect port
-// @formal reason: explicitly and fails closed for stage, publish and drain. Production composition still
-// @formal reason: installs the canonical RealizationExecutor; this adapter creates no MCP state, receipt
-// @formal reason: or fallback path.
-//! Default MCP attachment normalization policy.
+// @formal reason: The canonical neutral MCP role preserves the original classified refusal for stage,
+// @formal reason: publication and drain before any effect. Co-located production placements select their
+// @formal reason: exact MCP owner; Worker-only placements carry no MCP effect capability.
+//! The neutral MCP effect role of a non-owning Session fixture.
 
-/// Private fail-closed null adapter for applications that do not enable MCP
-/// attachment commands. It is Session policy, not part of the public wire API.
-pub struct UnsupportedMcpAttachmentRealizer;
+use super::NeutralRuntime;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::McpAttachmentRealizer for UnsupportedMcpAttachmentRealizer {
+impl crate::McpAttachmentRealizer for NeutralRuntime {
     async fn stage_mcp_attachment(
         &self,
         _request: awaken_session_configuration_contract::mcp::StageMcpAttachment,

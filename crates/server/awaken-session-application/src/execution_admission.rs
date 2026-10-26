@@ -73,7 +73,8 @@ impl SessionExecutionAdmission {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn fixture() -> Self {
+    /// Explicit partial admission for test/scenario composition only.
+    pub fn fixture() -> Self {
         Self {
             dispatch: OnceLock::new(),
             workers: OnceLock::new(),

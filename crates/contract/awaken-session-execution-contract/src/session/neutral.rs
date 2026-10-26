@@ -1002,6 +1002,8 @@ impl $crate::SessionCoordinationReads for $ty {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NeutralRuntime;
 
+mod mcp;
+
 #[async_trait]
 impl SessionRuntime for NeutralRuntime {
     async fn run(

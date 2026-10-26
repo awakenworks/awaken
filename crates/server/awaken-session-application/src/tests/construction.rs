@@ -38,8 +38,7 @@ async fn builder_rejects_invalid_configuration_before_observing_or_starting_serv
         let runtime = Arc::new(creation::RecordingCreateRuntime::default());
         let probe = Arc::new(ExecutionObservationProbe::default());
         let built = SessionApplicationBuilder::new(
-            runtime.clone(),
-            Arc::new(NoopMcpRealizer),
+            SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer)),
             SessionPersistence::new(store, clock.clone()),
             environment.clone(),
             SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe.clone()),
@@ -319,8 +318,7 @@ async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_inst
         let clock = Arc::new(ConstructionClock::default());
         let runtime = Arc::new(creation::RecordingCreateRuntime::default());
         let app = SessionApplicationBuilder::new(
-            runtime.clone(),
-            Arc::new(NoopMcpRealizer),
+            SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer)),
             SessionPersistence::new(store, clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
             SessionExecutionAdmission::new(dispatch.clone(), workers.clone(), placement.clone()),

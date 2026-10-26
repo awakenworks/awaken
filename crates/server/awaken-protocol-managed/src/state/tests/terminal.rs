@@ -186,7 +186,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
         awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock()).execution;
     let application = awaken_session_application::SessionApplicationBuilder::fixture(
         runtime.clone(),
-        Arc::new(awaken_protocol_managed_testkit::UnsupportedMcpAttachmentRealizer),
+        Arc::new(awaken_session_execution_contract::NeutralRuntime),
         awaken_session_application::SessionPersistence::new(
             repo.clone(),
             awaken_time::system_clock(),

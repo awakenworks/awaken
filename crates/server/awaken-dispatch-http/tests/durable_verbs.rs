@@ -105,7 +105,6 @@ async fn durable_router(
 ) -> Router {
     let sessions = awaken_protocol_managed_testkit::session_application_from_parts(
         awaken_session_executor::CoordinatorRoles::of(&host).session_execution(),
-        None,
         awaken_protocol_managed_testkit::ephemeral_session_repository().await,
         awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
         clock.clone(),

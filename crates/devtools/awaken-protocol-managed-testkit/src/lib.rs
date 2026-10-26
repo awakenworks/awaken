@@ -160,20 +160,22 @@ impl ManagedStateFixture for ManagedState {
 
     async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self {
         let clock = awaken_time::system_clock();
-        managed_state_from_parts(
-            roles,
-            None,
-            ephemeral_session_repository().await,
-            environment_fixture(clock.clone()).execution,
-            clock,
-            std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        ManagedState::from_application(
+            session_application_from_parts(
+                roles,
+                ephemeral_session_repository().await,
+                environment_fixture(clock.clone()).execution,
+                clock,
+                std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            ),
+            awaken_data_governance_contract::CapturePolicy::default(),
         )
     }
 }
 
 /// Explicit bootstrap of a test Session application over supplied ports.
 pub fn managed_state_from_parts(
-    runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
@@ -182,8 +184,10 @@ pub fn managed_state_from_parts(
 ) -> ManagedState {
     ManagedState::from_application(
         session_application_from_parts(
-            runtime,
-            mcp,
+            awaken_session_execution_contract::SessionExecutor::colocated(
+                runtime,
+                mcp.unwrap_or_else(|| Arc::new(awaken_session_execution_contract::NeutralRuntime)),
+            ),
             sessions,
             environments.clone(),
             clock,
@@ -197,24 +201,20 @@ pub fn managed_state_from_parts(
 /// ManagedState type rather than importing the non-test copy through testkit.
 pub fn session_application_from_parts(
     runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
-    mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
     compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
 ) -> Arc<awaken_session_application::SessionApplication> {
     Arc::new(
-        awaken_session_application::SessionApplicationBuilder::fixture(
+        awaken_session_application::SessionApplicationBuilder::new(
             runtime,
-            mcp.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
             awaken_session_application::SessionPersistence::new(sessions, clock),
             environments,
+            awaken_session_application::SessionExecutionAdmission::fixture(),
             compiler,
         )
         .build()
         .expect("valid fixture Session application"),
     )
 }
-
-mod unsupported_mcp;
-pub use unsupported_mcp::UnsupportedMcpAttachmentRealizer;

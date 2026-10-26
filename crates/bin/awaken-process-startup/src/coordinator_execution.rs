@@ -79,7 +79,7 @@ pub fn coordinator_execution(
         dispatch: roles.dispatch().clone(),
         dispatch_lifecycle: Arc::new(roles),
         coordinator_dispatch,
-        commit_owners: Arc::new(SessionCommitOwner(host.clone())),
+        commit_owners: Arc::new(SessionCommitOwner(host.thread_reads().clone())),
         worker_recovery: host.worker_recovery_source(),
         worker_completion: host.worker_completion_sink(),
         worker_settlement: host.worker_memory_settlement_observer(),
@@ -127,11 +127,12 @@ fn bind_committed_progress_wakeup(
         }))
 }
 
-/// Binds [`ClaimedOperationCoordinatorResolver`] to the Session commit owner
-/// of the executor's committed reads (`CommittedReads::commit_owner`). It only
-/// resolves the existing owner; `ClaimedCommitService` remains the sole caller
-/// of its write method.
-struct SessionCommitOwner(Arc<ExecutorComponents>);
+/// Binds [`ClaimedOperationCoordinatorResolver`] to the selected committed
+/// reads without retaining their execution composition. It only resolves the
+/// existing owner; `ClaimedCommitService` remains the sole caller of its write
+/// method. The root keeps this port adapter because Dispatch owns the caller's
+/// contract and Run delivery owns `CommittedReads`.
+struct SessionCommitOwner(Arc<awaken_session_run_delivery::CommittedReads>);
 
 #[async_trait::async_trait]
 impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
@@ -139,7 +140,7 @@ impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
         &self,
         session_thread_id: &ThreadId,
     ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
-        self.0.thread_reads().commit_owner(session_thread_id).await
+        self.0.commit_owner(session_thread_id).await
     }
 }
 
@@ -223,20 +224,22 @@ mod tests {
 
     #[tokio::test]
     async fn shared_binding_preserves_host_owner_selection() {
-        // Causes: one selected Host and a non-resident Session Thread. Rule R1:
-        // the shared binding retains that exact Host and resolves its configured
-        // commit boundary without installing a resident Session. Existing
-        // commit_ingest tests own valid/stale claims,
-        // child partitioning, replay and persistence. This test covers only
-        // the newly shared binding, not a second implementation of those rules.
+        // Causes: C1 one selected committed-read owner, C2 a non-resident
+        // Session Thread, C3 its execution composition is released. R1 C1+C2:
+        // the binding selects the exact read owner, resolves only its configured
+        // commit boundary and never installs a resident Session. R2 C1+C2+C3:
+        // the binding releases the composition and still resolves through the
+        // same read owner. Claim/epoch/partition/replay decisions remain owned
+        // by the existing commit_ingest tests; this adapter adds no such rule.
         let host = awaken_session_executor_testkit::volatile_host(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "stub",
         )
         .await;
         let thread = ThreadId("unknown-shared-commit-session".into());
-        let binding = SessionCommitOwner(host.clone());
-        assert!(Arc::ptr_eq(&binding.0, &host));
+        let reads = host.thread_reads().clone();
+        let binding = SessionCommitOwner(reads.clone());
+        assert!(Arc::ptr_eq(&binding.0, &reads), "R1 exact read owner");
         assert!(
             host.capabilities()
                 .registered_thread_workspace(&thread.0)
@@ -257,5 +260,13 @@ mod tests {
                 .expect("healthy registry")
                 .is_none()
         );
+        let composition = Arc::downgrade(&host);
+        drop(host);
+        assert!(composition.upgrade().is_none(), "R2 no retained executor");
+        binding
+            .resolve(&thread)
+            .await
+            .expect("R2 original configured commit source survives composition release");
+        assert!(composition.upgrade().is_none(), "R2 no resurrection");
     }
 }
