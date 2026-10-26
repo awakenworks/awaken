@@ -31,12 +31,12 @@
     "fully_accepted_scenarios": 0,
     "case_evidence_states": {
       "design_only": 20,
-      "current_subset": 42,
+      "current_subset": 43,
       "source_binding_only": 6,
       "historical_subset": 12,
       "aggregate_subset_only": 1,
       "current_clause_complete": 30,
-      "product_gap": 16
+      "product_gap": 15
     }
   },
   "scope_rules": {

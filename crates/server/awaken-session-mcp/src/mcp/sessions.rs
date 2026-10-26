@@ -16,7 +16,7 @@ use crate::mcp_material::{
 use crate::mcp_relay::{McpRelay, McpRelayOutboundProxy};
 use awaken_session_types::RunError;
 
-const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether absence after the original drain lock is an idempotent current
 /// lookup or the loss of a caller's captured physical owner. This is operation
@@ -32,6 +32,7 @@ enum ProjectionDrainIntent {
 struct ProjectionDrain<R> {
     call_fences: Vec<awaken_ext_mcp::transport::McpCallFence>,
     process: Option<Arc<dyn awaken_provisioning_contract::ProcessHandle>>,
+    platform_egress: Option<crate::mcp_material::McpPlatformEgress>,
     staging: Option<crate::mcp_material::McpStagingActivity>,
     runtime: Option<R>,
     route: Option<crate::mcp_relay::CapturedRelayRoute>,
@@ -51,6 +52,76 @@ async fn wait_for_preparation(
             })?;
     }
     Ok(())
+}
+
+/// Release only the allocation captured by the original drain. The capability
+/// was installed before provision I/O, so a missing URL still requires its
+/// acknowledgement before this drain can finish.
+async fn release_platform_allocation(
+    platform: Option<crate::mcp_material::McpPlatformEgress>,
+) -> Result<(), McpError> {
+    if let Some(platform) = platform {
+        tokio::time::timeout(
+            MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT,
+            platform.allocation.revoke_and_wait(),
+        )
+        .await
+        .map_err(|_| {
+            McpError::unavailable_classified(
+                "mcp_gateway_route_release_timeout",
+                "the original Platform MCP allocation has not acknowledged quiescence",
+            )
+        })?
+        .map_err(|error| {
+            McpError::unavailable_classified(
+                "mcp_gateway_route_release_failed",
+                format!("the original Platform MCP allocation could not be released: {error}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Acknowledge the settled original owner in the same canonical slot. The
+/// drain keeps its original serialization guard until this transaction ends.
+fn finish_projection_drain<S: SessionMcpStates>(
+    slots: &S,
+    selected: &McpGenerationProjection,
+) -> Result<(), McpError> {
+    let generation = &selected.request.generation;
+    match slots.modify_mcp(generation.session_id().as_str(), |mcp| {
+        let Some(projection) = mcp
+            .projections
+            .iter_mut()
+            .find(|projection| projection.request.generation == *generation)
+        else {
+            return Ok(());
+        };
+        if !Arc::ptr_eq(&projection.drain, &selected.drain) {
+            return Err(McpError::unavailable_classified(
+                "mcp_generation_owner_changed",
+                "MCP generation projection was replaced while cleanup was quiescing",
+            ));
+        }
+        if projection.effects_cleared() {
+            return Ok(());
+        }
+        if projection.state != McpProjectionState::Draining {
+            return Err(McpError::internal(
+                "MCP generation changed while its drain was quiescing",
+            ));
+        }
+        projection.server = None;
+        projection.native_wiring = None;
+        projection.mcp_process = None;
+        projection.platform_egress = None;
+        projection.staging = None;
+        projection.state = McpProjectionState::Removed;
+        Ok(())
+    })? {
+        Some(result) => result,
+        None => Ok(()),
+    }
 }
 
 /// The MCP state of each installed Session, seen only through its
@@ -507,7 +578,7 @@ impl McpSessions {
                     return false;
                 }
                 let Some(index) = mcp.projections.iter().position(|projection| {
-                    projection.state == McpProjectionState::Removed
+                    projection.effects_cleared()
                         && ((projection.request == *request
                             && projection.receipt.receipt_fingerprint == request_fingerprint)
                             || (projection.request.renewal_binding_fingerprint()
@@ -685,7 +756,7 @@ impl McpSessions {
                         "MCP generation projection was replaced while cleanup was waiting",
                     ));
                 }
-                if projection.state == McpProjectionState::Removed {
+                if projection.effects_cleared() {
                     return Ok::<_, McpError>(None);
                 }
                 // Visibility closes before cancellation. Existing Runtime clones may
@@ -698,6 +769,7 @@ impl McpSessions {
                     .map(|wiring| wiring.call_fences.clone())
                     .unwrap_or_default();
                 let process = projection.mcp_process.clone();
+                let platform_egress = projection.platform_egress.clone();
                 let staging = projection.staging.clone();
                 let route = self
                     .relay
@@ -712,6 +784,7 @@ impl McpSessions {
                 Ok(Some(ProjectionDrain {
                     call_fences,
                     process,
+                    platform_egress,
                     staging,
                     runtime,
                     route,
@@ -741,6 +814,7 @@ impl McpSessions {
         let Some(ProjectionDrain {
             mut call_fences,
             process,
+            platform_egress,
             staging,
             runtime,
             route,
@@ -773,6 +847,7 @@ impl McpSessions {
 
         let had_staging = staging.is_some();
         wait_for_preparation(staging).await?;
+        release_platform_allocation(platform_egress).await?;
         // A stage that was already registered may finish while drain waits.
         // Read its route only under the original projection allocation check;
         // never select a successor projection by generation alone.
@@ -870,38 +945,7 @@ impl McpSessions {
             route.remove_if_current();
         }
 
-        match slots.modify_mcp(generation.session_id().as_str(), |mcp| {
-            let Some(projection) = mcp
-                .projections
-                .iter_mut()
-                .find(|projection| projection.request.generation == *generation)
-            else {
-                return Ok(());
-            };
-            if !Arc::ptr_eq(&projection.drain, &drain) {
-                return Err(McpError::unavailable_classified(
-                    "mcp_generation_owner_changed",
-                    "MCP generation projection was replaced while cleanup was quiescing",
-                ));
-            }
-            if projection.state == McpProjectionState::Removed {
-                return Ok(());
-            }
-            if projection.state != McpProjectionState::Draining {
-                return Err(McpError::internal(
-                    "MCP generation changed while its drain was quiescing",
-                ));
-            }
-            projection.server = None;
-            projection.native_wiring = None;
-            projection.mcp_process = None;
-            projection.staging = None;
-            projection.state = McpProjectionState::Removed;
-            Ok(())
-        })? {
-            Some(result) => result,
-            None => Ok(()),
-        }
+        finish_projection_drain(slots, selected)
     }
 
     /// Drain the caller's original physical selection, continuing after each
@@ -950,7 +994,7 @@ impl McpSessions {
             .read_mcp(thread, |mcp| {
                 mcp.projections
                     .iter()
-                    .filter(|projection| projection.state != McpProjectionState::Removed)
+                    .filter(|projection| !projection.effects_cleared())
                     .map(|projection| projection.request.generation.clone())
                     .collect::<Vec<_>>()
             })?
@@ -973,7 +1017,7 @@ impl McpSessions {
             .read_mcp(thread, |mcp| {
                 mcp.projections
                     .iter()
-                    .any(|projection| projection.state != McpProjectionState::Removed)
+                    .any(|projection| !projection.effects_cleared())
             })?
             .unwrap_or(false);
         if let Some(error) = first_error {

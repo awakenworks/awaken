@@ -146,6 +146,31 @@ impl Drop for McpStagingActivityGuard {
     }
 }
 
+/// Cleanup capability reserved before Platform route provision. An absent
+/// route response still retains the original allocation for uncertain cleanup.
+#[derive(Clone)]
+pub struct McpPlatformEgress {
+    pub(crate) allocation: Arc<dyn awaken_credential_materializer::PlatformMcpEgressAllocation>,
+    pub(crate) route: Option<awaken_credential_materializer::MediatedMcpRoute>,
+}
+
+impl McpPlatformEgress {
+    pub(crate) fn new(
+        allocation: Arc<dyn awaken_credential_materializer::PlatformMcpEgressAllocation>,
+    ) -> Self {
+        Self {
+            allocation,
+            route: None,
+        }
+    }
+
+    /// The returned physical route and expiry, when provision returned them.
+    #[must_use]
+    pub fn route(&self) -> Option<&awaken_credential_materializer::MediatedMcpRoute> {
+        self.route.as_ref()
+    }
+}
+
 /// Process-local effect for one exact durable MCP generation. This is live
 /// material/connection state only; desired state remains in the Session
 /// aggregate and is never reconstructed from this slot.
@@ -165,12 +190,26 @@ pub struct McpGenerationProjection {
     /// starts its stdio child itself and HTTP generations have no sandbox
     /// process, so both leave this empty.
     pub mcp_process: Option<Arc<dyn awaken_provisioning_contract::ProcessHandle>>,
+    /// Original mediator allocation, retained through errors and cancellation
+    /// until its own admission and accepted calls have acknowledged quiescence.
+    pub platform_egress: Option<McpPlatformEgress>,
     /// Owned spawn/connect activity. Drain waits for it before proving that a
     /// process cannot appear after cleanup has completed.
     pub staging: Option<McpStagingActivity>,
     /// One cancellation-safe cleanup owner for this exact generation.
     pub drain: Arc<tokio::sync::Mutex<()>>,
     pub state: McpProjectionState,
+}
+
+impl McpGenerationProjection {
+    pub(crate) fn effects_cleared(&self) -> bool {
+        self.state == McpProjectionState::Removed
+            && self.server.is_none()
+            && self.native_wiring.is_none()
+            && self.mcp_process.is_none()
+            && self.platform_egress.is_none()
+            && self.staging.is_none()
+    }
 }
 
 /// Process-local admission fence for one exact durable suspend operation. It
@@ -297,13 +336,9 @@ impl SessionMcpState {
     /// process, or staging activity.
     #[must_use]
     pub fn local_effects_cleared(&self) -> bool {
-        self.projections.iter().all(|projection| {
-            projection.state == McpProjectionState::Removed
-                && projection.server.is_none()
-                && projection.native_wiring.is_none()
-                && projection.mcp_process.is_none()
-                && projection.staging.is_none()
-        })
+        self.projections
+            .iter()
+            .all(McpGenerationProjection::effects_cleared)
     }
 
     /// The state that survives revocation of process-local realization: only
@@ -324,7 +359,7 @@ impl SessionMcpState {
     pub fn select_projections_for_drain(&self) -> Vec<McpGenerationProjection> {
         self.projections
             .iter()
-            .filter(|projection| projection.state != McpProjectionState::Removed)
+            .filter(|projection| !projection.effects_cleared())
             .cloned()
             .collect()
     }

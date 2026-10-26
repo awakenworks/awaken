@@ -321,7 +321,7 @@
           "B234",
           "B258"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -363,20 +363,24 @@
         ],
         "slices": {
           "executed": [
-            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+            "Original E16 retains its broader SQL/native-effect batch and source identity; only its named Host preparation-window rows apply to this case. No SQL backend qualification is inferred from that batch total.",
+            "E-MCP-ALLOCATION-20261027: native Windows/MSVC Host and MCP components, controlled allocation capability and real loopback transport; both named Platform window tests and nine cleanup/handoff laws passed on frozen staged tree 558d56d7a5fd305e8ca1e7250cc9ad1f89bd41e3."
           ],
           "unaccepted": [
             "T35 platform gate open (Linux not run by policy)",
-            "sandbox-stdio and ACP stdio branches not covered"
+            "sandbox-stdio and ACP stdio branches not covered",
+            "Real hosted Platform mediation and process-death recovery are not established by the injected allocation."
           ]
         },
-        "product_gap": {
+        "previous_product_gap": {
           "reason": "窗口内铸造的 PlatformRelay 路由没有清理所有者（无 revoke、过期被丢弃）",
           "follow_up": "credential-materializer platform egress 与 session-mcp attachment（M）",
           "reproducers": [
             "t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner"
-          ]
-        }
+          ],
+          "original_failed_evidence": "E17"
+        },
+        "resolution_note": "E-MCP-ALLOCATION-20261027 passes the former ignored Platform regression and the staging-window test. The original allocation owns cleanup before I/O and awaits release acknowledgement. This fixes that component bug, not every expanded provider/native-effect facet."
       },
       {
         "id": "T16-C02",

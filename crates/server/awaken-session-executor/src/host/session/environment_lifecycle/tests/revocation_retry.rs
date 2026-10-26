@@ -51,6 +51,7 @@ async fn install_active_worker_relay(
             server: Some(server),
             native_wiring: None,
             mcp_process: None,
+            platform_egress: None,
             staging: None,
             drain: Arc::new(tokio::sync::Mutex::new(())),
             state: awaken_session_mcp::McpProjectionState::Active,
