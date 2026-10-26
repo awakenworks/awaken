@@ -131,6 +131,21 @@ have left the executor and the Worker-side crates.
 | Credential realization the startup named for Control and its own guard | *done*: the endpoint executors and the Awaken Cloud broker transport ([`awaken-inference-endpoint`](../../crates/server/awaken-inference-endpoint/src/lib.rs)), the recipient-key envelope ([`awaken-credential-envelope`](../../crates/shared/awaken-credential-envelope/src/lib.rs)), the refresh port (`awaken-credential-contract`), the ambient provider-key guard (`awaken-deployment-config`) and the live MCP credential probe (`awaken-control`) | No | The startup still names the materializer only for the AllInOne model and credential plane (`PinnedCredentialMaterializer` over the local Vault, `CredentialInferenceMaterializer`, the A2A attempt relay capabilities, the hosted `InferenceExecutorMaterializer` adapter). Destination: the co-located execution composition (`awaken-cli`) with the executor; the hosted inference materializer becomes an input of that composition, so awaken-cloud's `CoordinatorServiceAdapters::with_inference_materializer` call moves with it |
 | Process startup (configuration, stores, identity, listeners, drain) | *done*: `awaken-process-startup`, declared over by `awaken-coordinator-process` (`awaken-coordinator`) and `awaken-cli` (`awaken`, `awaken-control`) | No longer links `awaken-worker`, the Memory mount data plane or the Hand executor factory; still composes the executor; Environment image provisioning selects its builder from `awaken-package-image`, so the execution composition and the Sandbox adapters are only test fixtures | The co-located Worker is the launcher's (`ColocatedWorkerPreparation`). A process whose Sessions run on its own local claim pool (`LocalWorker` placement) receives its Session execution through the startup's `ColocatedExecution` role; the implementation is `awaken-cli`'s `LocalExecution` (Session environment, Hand factory, ACP routes, Memory mount data plane, auxiliary sandboxes), supplied by the scenario host and the startup's AllInOne test builders. Production processes never take that placement: the `awaken` AllInOne co-locates a registered Worker, which installs its own execution, and a Coordinator's Sessions run on registered Workers. The executor composition moves to `awaken-cli` once the Coordinator-side crate exists |
 
+An extraction intent's `MemoryExtractionExecution` freezes its output commit
+scope and the request's existing neutral DataSubject attribution. The existing
+Session affinity continues to select the Memory binding; an independent ordinary
+extractor Run reads its own auxiliary Thread partition instead. Missing historical
+execution context keeps the original Session partition and unknown attribution.
+The Session-store codec writes one versioned envelope for the intent, understood
+execution facts included, so an older bare-intent reader refuses the new format.
+Historical bare records remain readable without inventing a context; unknown
+fields, versions and unversioned new execution facts are refused.
+The Memory controller retains the first stored context on terminal redelivery;
+its direct immutable-request port still rejects a changed request. Embedded
+extraction accepts only Session commit scope and projects the frozen attribution
+before invoking its existing inference materializer. Remote dispatch remains to
+be connected through these same values and the existing Run delivery path.
+
 The order that removes D4's transitions, each step a reviewed `--tighten`:
 the Deployment configuration (done); the Memory invalidation bus (done); the
 Coordinator process package over the extracted startup (done: removed

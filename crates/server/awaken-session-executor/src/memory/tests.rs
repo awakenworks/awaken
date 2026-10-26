@@ -212,6 +212,162 @@ fn extractor(
     extractor
 }
 
+struct InspectExtractorContext {
+    subject: Option<awaken_runtime_contract::DataSubjectId>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl awaken_credential_materializer::InferenceExecutorMaterializer for InspectExtractorContext {
+    fn materialize_pinned(
+        &self,
+        _model: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        context: &RuntimeRunContext,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        assert_eq!(context.capture.subject, self.subject);
+        assert_eq!(
+            context
+                .execution_scope
+                .as_ref()
+                .map(|scope| scope.0.as_str()),
+            Some("ws-test")
+        );
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Some(Arc::new(ExtractorModel))
+    }
+}
+
+#[tokio::test]
+async fn extractor_context_retains_frozen_attribution_before_materialization() {
+    // Cause/effect table: C1 no materializer / installed exact materializer;
+    // C2 frozen subject missing/A/B. All six rows retain C2 in the returned
+    // context together with the intent's original Workspace; the installed
+    // materializer observes both before it creates its
+    // executor. No caller/process default fills the missing historical subject.
+    for materialized in [false, true] {
+        for subject in [None, Some("subject-a"), Some("subject-b")] {
+            let root = tempfile::tempdir().unwrap();
+            let (_runtime, bound, _content, _intents) = bound_test_memory(
+                Arc::new(ExtractorModel),
+                "subject-context",
+                root.path(),
+                root.path(),
+            )
+            .await;
+            let subject = subject.map(|s| awaken_runtime_contract::DataSubjectId(s.into()));
+            let materializer = Arc::new(InspectExtractorContext {
+                subject: subject.clone(),
+                calls: Default::default(),
+            });
+            let runtime = MemoryRuntime::new(
+                bound.runtime.llm.clone(),
+                bound.runtime.provider.clone(),
+                bound.runtime.background(),
+                bound.runtime.extraction_repository(),
+                bound.runtime.clock.clone(),
+                materialized.then(|| {
+                    materializer.clone()
+                        as Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>
+                }),
+            );
+            let mut intent = MemoryExtractionIntent::new_range(
+                "execution-context",
+                "terminal",
+                "ws-test",
+                "subject-context",
+                "terminal",
+                "test-store",
+                1,
+                0,
+                1,
+                vec![user("prefers tea")],
+                extractor(None, None),
+            )
+            .unwrap()
+            .with_execution(awaken_ext_memory::MemoryExtractionExecution {
+                commit_scope: awaken_ext_memory::MemoryExtractionCommitScope::Session,
+                data_subject_id: subject.clone(),
+            })
+            .unwrap();
+            use awaken_time::WallClockExt as _;
+            intent
+                .claim("owner", runtime.clock.now_ms(), 60_000)
+                .unwrap();
+            let (_, context) = runtime.materialize_extractor(&intent).unwrap();
+            assert_eq!(context.capture.subject, subject);
+            assert_eq!(
+                context
+                    .execution_scope
+                    .as_ref()
+                    .map(|scope| scope.0.as_str()),
+                Some("ws-test")
+            );
+            assert_eq!(
+                materializer.calls.load(Ordering::SeqCst),
+                usize::from(materialized)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn embedded_extraction_cannot_claim_an_independent_commit_partition() {
+    // P1 the exact Session/Workspace/Memory binding matches, but its frozen
+    // commit scope is AuxiliaryThread => this embedded driver does not accept
+    // it. P2 explicit direct misuse also refuses before materializer/model IO.
+    // A Session scope with identical coordinates remains accepted (P3).
+    let root = tempfile::tempdir().unwrap();
+    let (_runtime, bound, _content, _intents) = bound_test_memory(
+        Arc::new(ExtractorModel),
+        "independent-partition",
+        root.path(),
+        root.path(),
+    )
+    .await;
+    let materializer = Arc::new(InspectExtractorContext {
+        subject: None,
+        calls: Default::default(),
+    });
+    let selected = Arc::new(MemoryRuntime::new(
+        bound.runtime.llm.clone(),
+        bound.runtime.provider.clone(),
+        bound.runtime.background(),
+        bound.runtime.extraction_repository(),
+        bound.runtime.clock.clone(),
+        Some(materializer.clone()),
+    ))
+    .bound(bound.binding.clone());
+    let original = MemoryExtractionIntent::new_range(
+        "partition-context",
+        "terminal",
+        "ws-test",
+        "independent-partition",
+        "terminal",
+        "test-store",
+        1,
+        0,
+        1,
+        vec![user("prefers tea")],
+        extractor(None, None),
+    )
+    .unwrap();
+    assert!(selected.accepts(&original), "P3");
+    let intent = original
+        .with_execution(awaken_ext_memory::MemoryExtractionExecution {
+            commit_scope: awaken_ext_memory::MemoryExtractionCommitScope::AuxiliaryThread,
+            data_subject_id: None,
+        })
+        .unwrap();
+    assert!(!selected.accepts(&intent), "P1");
+    assert!(
+        matches!(
+            selected.extract_mutations(&intent).await,
+            MemoryExtractionOutcome::PermanentFailure { .. }
+        ),
+        "P2"
+    );
+    assert_eq!(materializer.calls.load(Ordering::SeqCst), 0, "P2");
+}
+
 async fn bound_test_memory(
     llm: Arc<dyn LlmExecutor>,
     session_id: &str,

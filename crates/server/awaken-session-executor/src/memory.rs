@@ -204,6 +204,13 @@ impl MemoryRuntime {
         intent: &MemoryExtractionIntent,
     ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
         let snapshot = &intent.extractor;
+        let mut request_context =
+            RuntimeRunContext::new().with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from(intent.workspace_id.clone()),
+            ));
+        if let Some(subject) = intent.execution().data_subject_id.clone() {
+            request_context = request_context.with_data_subject(subject);
+        }
         let materializer = self.inference_materializer.as_ref();
         let bindings = if let Some(materializer) = materializer {
             let holder = CredentialRealizationProfile::self_hosted_native().inference_holder;
@@ -242,7 +249,7 @@ impl MemoryRuntime {
         });
         // Host-executor extraction has the same durable claim as a materialized
         // model. The SDK checks this existing verifier before either model effect.
-        let context = RuntimeRunContext::new().with_ownership(authority.clone());
+        let context = request_context.with_ownership(authority.clone());
         if let Some(materializer) = materializer {
             let model = &snapshot.agent.resolved_spec.model_binding;
             let context = context.with_credential_realization(AttemptCredentialRealization::new(
@@ -301,6 +308,7 @@ impl BoundMemory {
                 memory_config_version: self.binding.memory_config_version,
                 committed_transcript: committed,
                 extractor,
+                execution: Default::default(),
             })
             .await?;
         self.reconcile().await?;
@@ -327,6 +335,15 @@ impl BoundMemory {
     }
 
     async fn extract_mutations(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
+        if intent.execution().commit_scope
+            != awaken_ext_memory::MemoryExtractionCommitScope::Session
+        {
+            return MemoryExtractionOutcome::PermanentFailure {
+                reason:
+                    "embedded Memory extraction cannot use an auxiliary Thread commit partition"
+                        .into(),
+            };
+        }
         let commit = match self.binding.extraction_commit() {
             Ok(Some(commit)) => commit,
             Err(error) => {
@@ -453,6 +470,8 @@ impl BoundMemory {
 impl MemoryExtractionDriver for BoundMemory {
     fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
         self.binding.matches_intent(intent)
+            && intent.execution().commit_scope
+                == awaken_ext_memory::MemoryExtractionCommitScope::Session
     }
 
     async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {

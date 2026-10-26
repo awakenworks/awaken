@@ -3597,6 +3597,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-contract",
+ "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-session-application-contract",
  "awaken-session-budget-contract",

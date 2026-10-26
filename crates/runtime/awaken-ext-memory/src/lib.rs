@@ -38,12 +38,13 @@ pub use agent::{
     SELECTOR_AGENT_ID, default_memory_agent, default_selector_agent, memory_agent,
 };
 pub use extraction::{
-    CredentialRealizationToken, MemoryExtractionController, MemoryExtractionDriver,
-    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
-    MemoryExtractionOutcome, MemoryExtractionPolicy, MemoryExtractionReceipt,
-    MemoryExtractionRepository, MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryHeadToken,
-    MemoryMutationReceipt, MemoryTerminalExtraction, MemoryTerminalExtractionRequest,
-    MemoryTerminalObserver, PutMemoryExtractionOutcome,
+    CredentialRealizationToken, MemoryExtractionCommitScope, MemoryExtractionController,
+    MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionExecution,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionOutcome,
+    MemoryExtractionPolicy, MemoryExtractionReceipt, MemoryExtractionRepository,
+    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryHeadToken, MemoryMutationReceipt,
+    MemoryTerminalExtraction, MemoryTerminalExtractionRequest, MemoryTerminalObserver,
+    PutMemoryExtractionOutcome,
 };
 pub use localfs::{Entry, MemoryDir, MemoryStoreHandle, sanitize_stem};
 pub use recall::{RecallBounds, recall_block};

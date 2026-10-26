@@ -11,6 +11,7 @@
 //! No authorization principal, API key, Project/WorkUnit identity, or raw
 //! credential material crosses this boundary. The complete executable snapshot
 //! may carry secret-free permission policy and credential references.
+//! Request content attribution is a neutral SDK id, not an authorization grant.
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
@@ -24,14 +25,17 @@ pub use types::*;
 
 /// Recoverable application intent keyed by one terminal commit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryExtractionIntent {
     pub intent_id: String,
     pub idempotency_key: String,
     pub workspace_id: String,
-    /// Physical Session/commit partition that owns auxiliary execution.
+    /// Physical Session whose frozen Memory binding owns the extraction.
     ///
     /// The logical Thread remains `transcript_snapshot.thread_id`. Legacy range
     /// intents have no snapshot and therefore use this same id for both roles.
+    /// Embedded auxiliary commits also use it; an explicitly selected
+    /// `execution.commit_scope` may use the auxiliary Thread's own partition.
     pub session_id: String,
     pub terminal_commit_id: String,
     pub memory_store_id: String,
@@ -57,6 +61,10 @@ pub struct MemoryExtractionIntent {
     pub auxiliary_thread_id: String,
     #[serde(default)]
     pub auxiliary_run_id: String,
+    /// The first accepted read partition and content attribution. Legacy JSON
+    /// omits this field and keeps its original embedded execution semantics.
+    #[serde(default, skip_serializing_if = "MemoryExtractionExecution::is_default")]
+    execution: MemoryExtractionExecution,
     pub extractor: MemoryExtractorSnapshot,
     pub status: MemoryExtractionStatus,
     pub attempts: u32,
@@ -111,6 +119,7 @@ impl MemoryExtractionIntent {
             transcript,
             auxiliary_thread_id: format!("{intent_id}/agent"),
             auxiliary_run_id: format!("{intent_id}/agent/run"),
+            execution: MemoryExtractionExecution::default(),
             extractor,
             status: MemoryExtractionStatus::Pending,
             attempts: 0,
@@ -342,6 +351,7 @@ impl MemoryExtractionIntent {
             && self.transcript == other.transcript
             && self.auxiliary_thread_id() == other.auxiliary_thread_id()
             && self.auxiliary_run_id() == other.auxiliary_run_id()
+            && self.execution == other.execution
             && self.extractor == other.extractor
     }
 
@@ -390,6 +400,49 @@ impl MemoryExtractionIntent {
         } else {
             self.auxiliary_run_id.clone()
         }
+    }
+
+    /// The one committed partition this frozen intent selects. Recovery never
+    /// probes both partitions or infers execution placement from an empty read.
+    #[must_use]
+    pub fn auxiliary_commit_thread_id(&self) -> String {
+        match self.execution.commit_scope {
+            MemoryExtractionCommitScope::Session => self.session_id.clone(),
+            MemoryExtractionCommitScope::AuxiliaryThread => self.auxiliary_thread_id(),
+        }
+    }
+
+    #[must_use]
+    pub fn execution(&self) -> &MemoryExtractionExecution {
+        &self.execution
+    }
+
+    /// Select execution facts before the first execution admission. A changed
+    /// choice advances this same intent's revision, so a virgin legacy row can
+    /// be CAS-prepared without racing its first claim. Progressed work refuses
+    /// relocation; ordinary lifecycle commands retain the frozen choice.
+    pub fn with_execution(
+        mut self,
+        execution: MemoryExtractionExecution,
+    ) -> Result<Self, MemoryExtractionError> {
+        self.validate()?;
+        if self.status != MemoryExtractionStatus::Pending
+            || self.revision != 0
+            || self.attempts != 0
+            || self.claim_generation != 0
+            || self.claim_owner.is_some()
+            || self.lease_expires_at_unix_ms.is_some()
+            || self.last_error.is_some()
+        {
+            return Err(MemoryExtractionError::Invalid(
+                "execution facts can only be selected before the first extraction admission".into(),
+            ));
+        }
+        if self.execution != execution {
+            self.execution = execution;
+            self.bump_revision()?;
+        }
+        Ok(self)
     }
 
     /// Acquire or recover the lease for a non-terminal intent.
@@ -719,6 +772,9 @@ pub struct MemoryTerminalExtractionRequest {
     pub memory_config_version: u64,
     pub committed_transcript: TranscriptSnapshot,
     pub extractor: MemoryExtractorSnapshot,
+    /// Initial execution choice. Exact terminal redelivery retains the already
+    /// stored choice, like the Dispatch owner's first-accepted submit options.
+    pub execution: MemoryExtractionExecution,
 }
 
 /// Embedding adapter used by the Memory-owned terminal observer after it has read
@@ -865,6 +921,258 @@ mod tests {
         let error = serde_json::from_value::<MemoryExtractorSnapshot>(incomplete_json)
             .expect_err("R2 incomplete extractor storage must be rejected");
         assert!(error.to_string().contains("agent"), "R2/E2: {error}");
+    }
+
+    #[test]
+    fn extraction_execution_context_preserves_legacy_shape_and_one_frozen_partition() {
+        // Cause/effect matrix: C1 legacy missing execution / explicit context;
+        // C2 Session/AuxiliaryThread partition; C3 no subject/subject A/subject B.
+        // E1 missing => original parent commit and unknown subject, with the
+        // original JSON unchanged. E2 explicit => exactly the selected partition
+        // and attribution survive serde and lifecycle changes. E3 malformed or
+        // unknown explicit scope is refused rather than treated as legacy.
+        let legacy = intent();
+        let legacy_json = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_json.get("execution").is_none(), "E1");
+        let decoded: MemoryExtractionIntent = serde_json::from_value(legacy_json.clone()).unwrap();
+        assert_eq!(
+            decoded.auxiliary_commit_thread_id(),
+            legacy.session_id,
+            "E1"
+        );
+        assert!(decoded.execution().data_subject_id.is_none(), "E1");
+        for scope in [
+            MemoryExtractionCommitScope::Session,
+            MemoryExtractionCommitScope::AuxiliaryThread,
+        ] {
+            for subject in [None, Some("subject-a"), Some("subject-b")] {
+                let execution = MemoryExtractionExecution {
+                    commit_scope: scope,
+                    data_subject_id: subject
+                        .map(|s| awaken_runtime_contract::DataSubjectId(s.into())),
+                };
+                let mut selected = intent().with_execution(execution.clone()).unwrap();
+                let json = serde_json::to_value(&selected).unwrap();
+                if execution.is_default() {
+                    assert_eq!(json, legacy_json, "E1");
+                }
+                let expected_partition = match scope {
+                    MemoryExtractionCommitScope::Session => selected.session_id.clone(),
+                    MemoryExtractionCommitScope::AuxiliaryThread => selected.auxiliary_thread_id(),
+                };
+                let restored: MemoryExtractionIntent = serde_json::from_value(json).unwrap();
+                assert_eq!(restored.execution(), &execution, "E2");
+                assert_eq!(
+                    restored.auxiliary_commit_thread_id(),
+                    expected_partition,
+                    "E2"
+                );
+                let generation = selected.claim("worker", 100, 50).unwrap();
+                assert!(
+                    selected
+                        .clone()
+                        .with_execution(MemoryExtractionExecution::default())
+                        .is_err(),
+                    "E2 claimed execution cannot relocate"
+                );
+                assert!(
+                    restored.same_request(&selected),
+                    "E2 lifecycle is not a second request"
+                );
+                selected
+                    .mark_execution_indeterminate("worker", generation, 110, "unknown")
+                    .unwrap();
+                assert!(
+                    selected
+                        .clone()
+                        .with_execution(MemoryExtractionExecution::default())
+                        .is_err(),
+                    "E2 unknown execution cannot relocate"
+                );
+                assert_eq!(selected.execution(), &execution, "E2");
+                assert_eq!(
+                    selected.auxiliary_commit_thread_id(),
+                    expected_partition,
+                    "E2"
+                );
+            }
+        }
+        for bad in [
+            serde_json::json!({"commit_scope":"unknown"}),
+            serde_json::json!({"data_subject_id":"subject-a"}),
+            serde_json::json!({"commit_scope":"session","new_authority":true}),
+        ] {
+            let mut encoded = legacy_json.clone();
+            encoded["execution"] = bad;
+            assert!(
+                serde_json::from_value::<MemoryExtractionIntent>(encoded).is_err(),
+                "E3"
+            );
+        }
+    }
+
+    #[test]
+    fn execution_context_selection_requires_a_pristine_extraction() {
+        // Construction decision table: all seven lifecycle statuses crossed
+        // with zero/nonzero revision, attempts and claim generation. Only the
+        // valid virgin Pending row may select execution facts. Invalid synthetic
+        // lifecycle combinations fail validation; valid progressed intents also
+        // refuse relocation. The original caller-owned value is unchanged.
+        for status in [
+            MemoryExtractionStatus::Pending,
+            MemoryExtractionStatus::Claimed,
+            MemoryExtractionStatus::Extracted,
+            MemoryExtractionStatus::Stored,
+            MemoryExtractionStatus::Completed,
+            MemoryExtractionStatus::ExecutionIndeterminate,
+            MemoryExtractionStatus::TerminalFailed,
+        ] {
+            for revision in [0, 1] {
+                for attempts in [0, 1] {
+                    for generation in [0, 1] {
+                        let mut candidate = intent();
+                        candidate.status = status;
+                        candidate.revision = revision;
+                        candidate.attempts = attempts;
+                        candidate.claim_generation = generation;
+                        let execution = MemoryExtractionExecution {
+                            commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                            data_subject_id: Some(awaken_runtime_contract::DataSubjectId(
+                                "subject-a".into(),
+                            )),
+                        };
+                        let result = candidate.clone().with_execution(execution.clone());
+                        let virgin = status == MemoryExtractionStatus::Pending
+                            && revision == 0
+                            && attempts == 0
+                            && generation == 0;
+                        assert_eq!(
+                            result.is_ok(),
+                            virgin,
+                            "{status:?}/{revision}/{attempts}/{generation}"
+                        );
+                        if let Ok(selected) = result {
+                            assert_eq!(selected.execution(), &execution);
+                            assert_eq!(
+                                selected.revision, 1,
+                                "selection can use the existing expected-revision CAS"
+                            );
+                            assert!(
+                                !selected.same_request(&candidate),
+                                "the direct immutable-request port fences a changed context"
+                            );
+                        }
+                        assert!(candidate.execution().is_default());
+                    }
+                }
+            }
+        }
+        let mut diagnostic = intent();
+        diagnostic.last_error = Some("historical outcome requires observation".into());
+        assert!(
+            diagnostic
+                .with_execution(MemoryExtractionExecution {
+                    commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                    data_subject_id: None,
+                })
+                .is_err(),
+            "historical diagnostics cannot be reinterpreted as never executed"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_redelivery_retains_the_first_execution_context() {
+        // T1 first accepted Session or AuxiliaryThread execution, with/without
+        // subject => context persists in the one existing intent. T2 the same
+        // terminal is redelivered after another composition chooses different
+        // execution facts => Existing with byte-exact original intent, no Run
+        // relocation or guessed legacy subject. T3 direct request reuse with
+        // changed context => conflict; T4 changed Memory binding => conflict.
+        for first in [
+            MemoryExtractionExecution::default(),
+            MemoryExtractionExecution {
+                commit_scope: MemoryExtractionCommitScope::AuxiliaryThread,
+                data_subject_id: Some(awaken_runtime_contract::DataSubjectId("subject-a".into())),
+            },
+        ] {
+            let repository = Arc::new(TestRepository::default());
+            let controller = MemoryExtractionController::new(
+                repository.clone(),
+                "worker",
+                awaken_time::system_clock(),
+            );
+            let request = |execution| MemoryTerminalExtractionRequest {
+                workspace_id: "ws-a".into(),
+                session_id: "session-1".into(),
+                terminal_run_id: "terminal".into(),
+                memory_store_id: "memory-1".into(),
+                memory_config_version: 2,
+                committed_transcript: TranscriptSnapshot::new(
+                    awaken_agent_contract::agent::thread::Id("logical-child".into()),
+                    awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
+                    vec![Message::text(Id("input".into()), Role::User, "prefers tea")],
+                ),
+                extractor: intent().extractor,
+                execution,
+            };
+            assert_eq!(
+                controller
+                    .enqueue_terminal(request(first.clone()))
+                    .await
+                    .unwrap(),
+                PutMemoryExtractionOutcome::Inserted,
+                "T1"
+            );
+            let key = "memory-extraction:logical-child:terminal";
+            let original = repository.get_extraction(key).await.unwrap().unwrap();
+            assert_eq!(original.execution(), &first, "T1");
+            let next = MemoryExtractionExecution {
+                commit_scope: if first.commit_scope == MemoryExtractionCommitScope::Session {
+                    MemoryExtractionCommitScope::AuxiliaryThread
+                } else {
+                    MemoryExtractionCommitScope::Session
+                },
+                data_subject_id: Some(awaken_runtime_contract::DataSubjectId("subject-b".into())),
+            };
+            assert_eq!(
+                controller
+                    .enqueue_terminal(request(next.clone()))
+                    .await
+                    .unwrap(),
+                PutMemoryExtractionOutcome::Existing,
+                "T2"
+            );
+            assert_eq!(
+                repository.get_extraction(key).await.unwrap().unwrap(),
+                original,
+                "T2"
+            );
+            // Deliberately corrupt an incoming value inside this owner-level
+            // test: callers cannot mutate the private field through its getter.
+            let mut changed_context = original.clone();
+            changed_context.execution = next;
+            assert!(
+                matches!(
+                    controller.enqueue(changed_context).await,
+                    Err(MemoryExtractionError::IdempotencyConflict(_))
+                ),
+                "T3"
+            );
+            let mut changed = request(first);
+            changed.memory_store_id = "another-store".into();
+            assert!(
+                matches!(
+                    controller.enqueue_terminal(changed).await,
+                    Err(MemoryExtractionError::IdempotencyConflict(_))
+                ),
+                "T4"
+            );
+            assert_eq!(
+                repository.get_extraction(key).await.unwrap().unwrap(),
+                original,
+                "T3/T4"
+            );
+        }
     }
 
     fn credential_receipt(generation: u64) -> CredentialRealizationToken {
@@ -1626,6 +1934,7 @@ mod tests {
                 transcript,
             ),
             extractor: intent().extractor,
+            execution: MemoryExtractionExecution::default(),
         };
 
         controller
@@ -1735,6 +2044,7 @@ mod tests {
                     transcript,
                 ),
                 extractor: intent().extractor,
+                execution: MemoryExtractionExecution::default(),
             }
         };
         let child_a_first = Message::text(Id("a1".into()), Role::User, "first child A fact");

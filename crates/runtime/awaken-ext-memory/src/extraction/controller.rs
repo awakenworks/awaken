@@ -72,6 +72,9 @@ impl MemoryExtractionController {
         let idempotency_key = format!("{}:{}", logical_thread_id, request.terminal_run_id);
         let intent_id = format!("memory-extraction:{idempotency_key}");
         if let Some(existing) = self.repository.get_extraction(&intent_id).await? {
+            // This terminal's first intent already freezes execution facts.
+            // Redelivery after deployment never relocates an existing Run or
+            // rewrites unknown historical attribution from ambient defaults.
             let same_binding = existing.workspace_id == request.workspace_id
                 && existing.session_id == request.session_id
                 && existing.logical_thread_id() == logical_thread_id
@@ -135,7 +138,8 @@ impl MemoryExtractionController {
             ranges,
             transcript,
             request.extractor,
-        )?;
+        )?
+        .with_execution(request.execution)?;
         self.repository.put_extraction_if_absent(intent).await
     }
 
