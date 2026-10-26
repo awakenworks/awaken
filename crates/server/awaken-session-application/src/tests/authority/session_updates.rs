@@ -46,6 +46,9 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     // without re-authoring any public field.
     // Constraint: normalization is pure before C2; no title/metadata/budget or
     // MCP intent may commit through an independent command mutation.
+    // Refactoring coverage: preparing the MCP replacement borrows this same
+    // aggregate; M1's single revision/receipt assertions prove preparation adds
+    // no commit, and M2 proves it is not repeated after a committed command.
     //
     // | Rule | C1 | C2 | C3 | C4 | Effect |
     // |---|---|---|---|---|---|

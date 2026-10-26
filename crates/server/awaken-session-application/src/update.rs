@@ -775,6 +775,52 @@ impl SessionUpdateCommands {
         Ok(outcome)
     }
 
+    /// Prepare a replacement on the borrowed aggregate only. The caller keeps
+    /// the same root CAS for MCP and every other field of this command.
+    async fn prepare_mcp_replacement(
+        &self,
+        owner_scope: &str,
+        session: &mut crate::SessionAggregate,
+        mcp_update: &SessionMcpUpdate,
+    ) -> Result<bool, SessionUpdateError> {
+        let baseline = session
+            .frozen_baseline()
+            .ok_or(SessionUpdateError::NotFrozen)?
+            .clone();
+        let selected_mcp_holder = baseline
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let drafts = self
+            .credentials
+            .normalize_mcp_drafts(
+                owner_scope,
+                mcp_update.candidates(),
+                &baseline.mcp_authoring.ordered_vault_ids,
+                &selected_mcp_holder,
+            )
+            .await
+            .map_err(SessionUpdateError::Rejected)?;
+        if let SessionMcpUpdate::CredentialLifecycle {
+            source_id, revoked, ..
+        } = mcp_update
+        {
+            validate_credential_lifecycle_replacement(&session.mcp, source_id, *revoked, &drafts)
+                .map_err(SessionUpdateError::Rejected)?;
+        }
+        let plan = session
+            .mcp()
+            .request_full_replacement(
+                drafts,
+                Some(baseline.environment.credential_realization.mcp_holder),
+            )
+            .map_err(|error| {
+                SessionUpdateError::Rejected(RunError::bad_request(error.to_string()))
+            })?;
+        Ok(plan.changed)
+    }
+
     async fn update_session_once(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -833,52 +879,13 @@ impl SessionUpdateCommands {
         let compiler = self.tool_configuration_compiler.as_ref();
         let command = &compile_update_tool_settings(compiler, command, &session)?;
         let before = session.snapshot().clone();
-        let mut mcp_changed = false;
-        if let Some(mcp_update) = command.mcp_update.clone() {
-            let baseline = session
-                .frozen_baseline()
-                .ok_or(SessionUpdateError::NotFrozen)?
-                .clone();
-            let selected_mcp_holder = baseline
-                .environment
-                .credential_realization
-                .mcp_holder
-                .clone();
-            let drafts = self
-                .credentials
-                .normalize_mcp_drafts(
-                    &owner_scope,
-                    mcp_update.candidates(),
-                    &baseline.mcp_authoring.ordered_vault_ids,
-                    &selected_mcp_holder,
-                )
-                .await
-                .map_err(SessionUpdateError::Rejected)?;
-            if let SessionMcpUpdate::CredentialLifecycle {
-                source_id, revoked, ..
-            } = &mcp_update
-            {
-                validate_credential_lifecycle_replacement(
-                    &session.mcp,
-                    source_id,
-                    *revoked,
-                    &drafts,
-                )
-                .map_err(SessionUpdateError::Rejected)?;
+        let mcp_changed = match command.mcp_update.as_ref() {
+            Some(update) => {
+                self.prepare_mcp_replacement(&owner_scope, &mut session, update)
+                    .await?
             }
-            let plan = session
-                .mcp()
-                .request_full_replacement(
-                    drafts,
-                    Some(baseline.environment.credential_realization.mcp_holder),
-                )
-                .map_err(|error| {
-                    SessionUpdateError::Rejected(RunError::bad_request(error.to_string()))
-                })?;
-            if plan.changed {
-                mcp_changed = true;
-            }
-        }
+            None => false,
+        };
 
         apply_configuration_update(&mut session, command)?;
         if let Some(requested) = &command.budget {
