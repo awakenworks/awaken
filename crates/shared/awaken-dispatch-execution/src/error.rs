@@ -99,6 +99,18 @@ pub(crate) enum ClaimRelease {
 }
 
 impl Error {
+    /// The originating owner's classified resolution failure, or the historical
+    /// fallback for a legacy string-only error. This does not select retry policy.
+    pub(crate) fn resolution_failure_code(&self) -> &str {
+        match self {
+            Self::Execution(error @ awaken_runtime_contract::execution::Error::Diagnostic(_))
+            | Self::TerminalResolution(
+                error @ awaken_runtime_contract::execution::Error::Diagnostic(_),
+            ) => error.code(),
+            _ => "dispatch_resolution_failed",
+        }
+    }
+
     /// The one decision of how a failed claim is returned to the queue, read
     /// from this failure's class only. A terminal resolution reaches here only
     /// after execution began, where it can no longer be absorbed before entry,
@@ -149,6 +161,30 @@ impl Error {
 #[cfg(test)]
 mod error_scope_tests {
     use super::{DispatchError, Error};
+
+    #[test]
+    fn pre_execution_settlement_preserves_owner_codes_without_reclassifying_text() {
+        // S1 an owned neutral diagnostic -> exact code at terminal commit;
+        // S2 legacy error text mentions authentication -> generic fallback,
+        // never a guessed code. The admission table covers fault disposition;
+        // this table covers the actual code selector used by claimed settlement.
+        use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
+        let source = std::io::Error::other("mcp server `flow`: original refusal");
+        let diagnostic = RuntimeDiagnostic::new(
+            RuntimeErrorKind::Internal,
+            String::from("mcp_authentication_failed"),
+            source,
+        );
+        let error = Error::TerminalResolution(diagnostic.into());
+        assert_eq!(error.resolution_failure_code(), "mcp_authentication_failed");
+        let legacy = crate::session_execution::terminal_resolution_error(
+            "mcp_authentication_failed is only untrusted display text",
+        );
+        assert_eq!(
+            legacy.resolution_failure_code(),
+            "dispatch_resolution_failed"
+        );
+    }
 
     #[test]
     fn only_an_exact_dispatch_conflict_is_a_benign_fence() {

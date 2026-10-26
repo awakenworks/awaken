@@ -1,7 +1,7 @@
 // @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 //! Project canonical Session realization failures into Worker claim outcomes.
 
-use super::{execution_error, terminal_resolution_error};
+use super::execution_error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRealizationWorkerEffect {
@@ -58,7 +58,27 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
 /// through [`map_session_realization_drive_error`], so both paths agree.
 pub fn map_admission_error(error: impl Into<crate::AdmissionError>) -> crate::Error {
     let error = error.into();
-    claim_outcome(error.claim_disposition(), error.to_string(), None)
+    let disposition = error.claim_disposition();
+    match error {
+        crate::AdmissionError::Run(error) => {
+            claim_runtime_outcome(disposition, classified_run_error(error), None)
+        }
+        error => claim_outcome(disposition, error.to_string(), None),
+    }
+}
+
+fn classified_run_error(
+    error: awaken_session_types::RunError,
+) -> awaken_runtime_contract::execution::Error {
+    use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
+    use awaken_session_types::RunErrorKind;
+    let kind = match error.kind {
+        RunErrorKind::BadRequest => RuntimeErrorKind::InvalidRequest,
+        RunErrorKind::Conflict => RuntimeErrorKind::Conflict,
+        RunErrorKind::Unavailable => RuntimeErrorKind::Unavailable,
+        RunErrorKind::Internal => RuntimeErrorKind::Internal,
+    };
+    RuntimeDiagnostic::new(kind, error.code.clone(), error).into()
 }
 
 /// The claim outcome of one disposition, carrying the operator message. A
@@ -69,12 +89,24 @@ pub fn claim_outcome(
     message: String,
     retry_after: Option<std::time::Duration>,
 ) -> crate::Error {
+    claim_runtime_outcome(
+        disposition,
+        awaken_runtime_contract::execution::Error::Execution(message),
+        retry_after,
+    )
+}
+
+fn claim_runtime_outcome(
+    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    error: awaken_runtime_contract::execution::Error,
+    retry_after: Option<std::time::Duration>,
+) -> crate::Error {
     match session_realization_worker_effect(disposition) {
         SessionRealizationWorkerEffect::Defer => {
-            crate::Error::ResolutionNotReady(crate::NotReady::after(message, retry_after))
+            crate::Error::ResolutionNotReady(crate::NotReady::after(error.to_string(), retry_after))
         }
-        SessionRealizationWorkerEffect::Relinquish => execution_error(message),
-        SessionRealizationWorkerEffect::Absorb => terminal_resolution_error(message),
+        SessionRealizationWorkerEffect::Relinquish => crate::Error::Execution(error),
+        SessionRealizationWorkerEffect::Absorb => crate::Error::TerminalResolution(error),
     }
 }
 
@@ -84,18 +116,16 @@ pub fn map_session_realization_drive_error(
     use awaken_session_realization_contract::SessionRealizationDriveError as Drive;
     // An effect and a Control failure share one Worker projection; a
     // capacity refusal is NotReady, the request-local deferral (ADR-0092).
-    let (disposition, message, retry_after) = match error {
-        Drive::Effect(error) => (
-            awaken_session_realization_contract::effect_failure_disposition(error.run_error()),
-            error.to_string(),
-            error.retry_after(),
-        ),
-        Drive::Control(control) => (control.disposition(), control.to_string(), None),
-        retryable @ Drive::DidNotConverge => {
-            return execution_error(retryable.to_string());
+    match error {
+        Drive::Effect(error) => {
+            let disposition =
+                awaken_session_realization_contract::effect_failure_disposition(error.run_error());
+            let retry_after = error.retry_after();
+            claim_runtime_outcome(disposition, classified_run_error(error.into()), retry_after)
         }
-    };
-    claim_outcome(disposition, message, retry_after)
+        Drive::Control(control) => claim_outcome(control.disposition(), control.to_string(), None),
+        retryable @ Drive::DidNotConverge => execution_error(retryable.to_string()),
+    }
 }
 
 /// When a deferred claim is due again: the pool's backoff, shortened to the
@@ -134,6 +164,45 @@ mod retry_hint_tests {
     };
     use awaken_session_types::RunError;
     use std::time::Duration;
+
+    #[test]
+    fn classified_admission_failures_keep_the_original_code_and_disposition() {
+        // Causes: A1 classified MCP authentication refusal, A2 classified
+        // connection outage, A3 an owner-defined code unknown to dispatch.
+        // Effects: preserve the exact neutral code and message; A1/A3 remain
+        // absorbing and A2 remains retryable. Dispatch must not parse a message
+        // or maintain another list of MCP/owner codes. The terminal commit's
+        // projection is checked separately by the claimed-resolution tests.
+        let cases = [
+            (
+                RunError::classified("mcp_authentication_failed", "original refusal"),
+                true,
+            ),
+            (
+                RunError::unavailable_classified("mcp_connection_failed", "original refusal"),
+                false,
+            ),
+            (
+                RunError::classified("future_owner_rejection", "original refusal"),
+                true,
+            ),
+        ];
+        for (source, terminal) in cases {
+            let code = source.code.clone();
+            let error = map_admission_error(crate::AdmissionError::Run(source));
+            assert_eq!(error.is_terminal_resolution(), terminal, "{code}");
+            let cause = match error {
+                crate::Error::Execution(cause) | crate::Error::TerminalResolution(cause) => cause,
+                actual => panic!("{code} had wrong claim outcome {actual:?}"),
+            };
+            assert_eq!(
+                cause.code(),
+                code,
+                "classification survives Session admission"
+            );
+            assert!(cause.to_string().contains("original refusal"));
+        }
+    }
 
     #[test]
     fn only_driver_deferrals_retain_a_provider_retry_hint() {
