@@ -912,22 +912,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1039,
+        "line": 1054,
         "file_sha256": "3152420a7f06986a8a78cef43c42c3e40a0ab20fd9cd079cc7e42fdb7ffcd282"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1069
+        "line": 1084
       },
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1070
+        "line": 1085
       },
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1071
+        "line": 1086
       }
     ],
     "execution_witnesses": [
@@ -952,7 +952,7 @@
         "negative_control": false
       }
     },
-    "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch.",
+    "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch. Navigation lines refreshed after the proxy fixtures changed; this bound test body and its assertions are byte-identical. Original execution source and log hashes are retained.",
     "limitation": null,
     "id": "B114"
   },

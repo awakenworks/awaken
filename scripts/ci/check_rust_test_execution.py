@@ -482,6 +482,14 @@ esac
                 with self.assertRaisesRegex(ValueError, "tool identity changed"):
                     verify_preparation(directory/"build.json", arguments, digest)
 
+    def rustup_cargo_proxy(self, rustup: str) -> Path:
+        # Resolve rustup itself: a PATH alias may live beside the host's Cargo
+        # build-admission wrapper instead of rustup's own proxy. These fixture
+        # probes execute no build and must test the actual rustup injection.
+        proxy = Path(rustup).resolve().parent/"cargo"
+        self.assertTrue(proxy.is_file(), proxy)
+        return proxy
+
     @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
     def test_proxy_selected_toolchain_judges_the_same_context_outside_cargo(self) -> None:
         # DT-PROXY row P1, end to end: preparation and execution run inside the
@@ -490,8 +498,7 @@ esac
         # pass, so the shell must pass: the unchanged selection is one context.
         rustup = shutil.which("rustup")
         self.assertIsNotNone(rustup, "the Linux gate installs rustup")
-        proxy = Path(rustup).parent/"cargo"
-        self.assertTrue(proxy.is_file(), proxy)
+        proxy = self.rustup_cargo_proxy(rustup)
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Path(temporary); self.runner_fixture(fixture)
             environment = self.cargo_fixture(fixture, '''
@@ -524,10 +531,12 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         # P5 caller selects another toolchain (a path) at check         -> changed
         # P6 caller selection rustup cannot resolve at check            -> changed
         # P7 no rustup on PATH: no proxy, literal values compared       -> same/changed
+        # P8 rustup is a symlink beside an unrelated Cargo wrapper     -> same
+        #    P8's shadow exits 97 if selected; only the resolved rustup proxy
+        #    may execute this no-build context probe. Build admission is unchanged.
         from _required_build_context import build_context
         rustup = shutil.which("rustup")
         self.assertIsNotNone(rustup, "the gate installs rustup")
-        proxy = Path(rustup).parent/"cargo"
         arguments = ["-p", "critical", "--lib"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)/"repo"; root.mkdir()
@@ -546,7 +555,8 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
             launcher.chmod(0o755)
             caller = {name: value for name, value in os.environ.items() if name.upper() not in PROXY_INJECTED}
             caller["PATH"] = str(probe_directory) + os.pathsep + caller.get("PATH", "")
-            def proxied(**overrides):
+            def proxied(*, rustup_path=rustup, **overrides):
+                proxy = self.rustup_cargo_proxy(rustup_path)
                 completed = subprocess.run([str(proxy), "awaken-context-probe"], cwd=root, capture_output=True,
                                            text=True, env={**caller, **overrides}, timeout=120)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -559,6 +569,11 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
                         return str(error)
                     return "same"
             build = proxied()
+            alias_directory = Path(temporary)/"aliases"; alias_directory.mkdir()
+            alias = alias_directory/"rustup"; alias.symlink_to(Path(rustup).resolve())
+            shadow = alias_directory/"cargo"
+            shadow.write_text('#!/bin/sh\nexit 97\n', encoding="utf-8"); shadow.chmod(0o755)
+            self.assertEqual(proxied(rustup_path=str(alias)), build, "P8")
             injected = build["injected"]
             for name in ("CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"):
                 self.assertTrue(injected[name], f"the proxy must inject {name}: {injected}")
