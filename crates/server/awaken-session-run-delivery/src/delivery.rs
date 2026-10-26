@@ -13,6 +13,7 @@
 //! slash commands expand from, each against its digest; it stages, mounts and
 //! realizes nothing.
 
+mod dispatched_runs;
 mod durable_operations;
 mod inputs;
 mod outcomes;
@@ -928,6 +929,13 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_outcomes_drive_only_installed_sessions() {
+        // Change-impact design for sharing DispatchedRuns: O1 cold => refuse;
+        // O2 installed+idle => no work; O3 preparation => one aggregate/no Run;
+        // O4 grader Workspace replay is exact. The adapter borrows the same
+        // queue/observation owners. DispatchPreparation alone binds the closed
+        // execution format from its correlated frozen-input read; completion
+        // registration still precedes enqueue. Its admission rules and the
+        // completion/activation tables retain their original owners.
         use awaken_session_execution_contract::OutcomeRuntime as _;
         let delivery = delivery(None);
         // An Outcome needs the Session's installed projection.
@@ -970,6 +978,107 @@ mod tests {
                 .register_thread_workspace("outcome/outcome-1/grader/1", "other")
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn ordinary_worker_runs_share_lowering_and_preserve_admission_refusals() {
+        // Cause/effect decision table, crossed with fresh/extension mode:
+        // D1 foreign Thread => refuse before queue effects; D2 matching Thread
+        // with no configured model => canonical actionable refusal and no row;
+        // D3 configured model but an existing different request at the same Run
+        // id => refuse and preserve that exact original row. These use the real
+        // queue and lowering, without a model, provider, worker or second store.
+        use awaken_dispatch_contract::DispatchEnqueue as _;
+        use awaken_runtime_contract::execution::RunExecutor as _;
+        use awaken_runtime_contract::{RunActivation, RuntimeRunContext};
+
+        for extension in [false, true] {
+            for cause in ["foreign-thread", "unconfigured", "conflicting-request"] {
+                let delivery = delivery(None);
+                let thread = ThreadId("auxiliary".into());
+                let run = RunId(format!("{cause}-{extension}"));
+                let model = if cause == "unconfigured" {
+                    awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
+                } else {
+                    "model"
+                };
+                let snapshot =
+                    awaken_runtime_contract::ExecutableAgentSnapshot::builder("auxiliary")
+                        .model(
+                            awaken_runtime_contract::resolved::ModelBinding::parse(
+                                "provider", model, "native",
+                            )
+                            .expect("literal test model binding"),
+                        )
+                        .build();
+                let activation = RunActivation::new(
+                    run.clone(),
+                    if cause == "foreign-thread" {
+                        ThreadId("foreign".into())
+                    } else {
+                        thread.clone()
+                    },
+                    snapshot,
+                    vec![Message::text(
+                        MessageId("input".into()),
+                        Role::User,
+                        "new input",
+                    )],
+                );
+                let original = if cause == "conflicting-request" {
+                    let mut old = activation.clone();
+                    old.input[0] =
+                        Message::text(MessageId("original".into()), Role::User, "original input");
+                    let request = awaken_dispatch_contract::RunDispatch::new(old);
+                    delivery
+                        .ports
+                        .owner
+                        .enqueue(request.clone())
+                        .await
+                        .expect("D3 original row");
+                    Some(request)
+                } else {
+                    None
+                };
+                let commit = delivery
+                    .ports
+                    .reads
+                    .commit_for_read(&thread.0)
+                    .await
+                    .unwrap();
+                let runs = super::dispatched_runs::DispatchedRuns::new(
+                    delivery.ports.projections.as_ref(),
+                    delivery.ports.owner.as_ref(),
+                    &delivery.ports.completion,
+                    thread,
+                    commit,
+                    extension,
+                );
+                let error = runs
+                    .execute(activation, RuntimeRunContext::new())
+                    .await
+                    .expect_err("D1-D3 refuse");
+                if cause == "unconfigured" {
+                    assert!(
+                        error.to_string().contains("No model is configured."),
+                        "D2: {error}"
+                    );
+                }
+                let observed = delivery
+                    .ports
+                    .owner
+                    .observe_session_run_admission(&run)
+                    .await
+                    .unwrap();
+                match (original, observed) {
+                    (None, SessionRunAdmissionObservation::Missing) => {}
+                    (Some(original), SessionRunAdmissionObservation::Live(stored)) => {
+                        assert_eq!(*stored, original, "D3 original authority retained")
+                    }
+                    other => panic!("unexpected admission side effect: {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]
