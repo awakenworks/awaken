@@ -3,6 +3,9 @@
 //! Decision tables for the process dispatch: pool start, coordinator-side
 //! terminal reconciliation start and lifetime, and the drain fence deadline.
 
+#[path = "tests/startup_drain.rs"]
+mod startup_drain;
+
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{

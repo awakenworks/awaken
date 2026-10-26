@@ -23,6 +23,10 @@
 //! | T2 | this dispatch dropped (the executor that owns it dropped) | the loop is cancelled and aborted; its resolver and the scan state are freed |
 //! | T3 | the process begins draining ([`ProcessDispatch::begin_drain`]) | the loop ends at its next await and frees its resolver; this dispatch stays usable |
 //! | T4 | start after T3 | refused: a stopped loop is never restarted |
+//!
+//! The pool's existing admission owner is constructed with this process, before
+//! either service. Its absorbing drain fences a cold or still-constructing
+//! service without waiting for its synchronous resolver factory.
 
 use std::sync::Arc;
 
@@ -31,6 +35,7 @@ use once_cell::sync::OnceCell;
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore, DispatchBinding};
 use awaken_time::WallClock;
 
+use crate::pool::PoolAdmission;
 use crate::session_reconciliation::TerminalReconciliationState;
 use crate::{
     AdmissionError, DEFAULT_LEASE_MS, DispatchHint, DispatchPool, DispatchReconciler, Error,
@@ -47,6 +52,7 @@ pub struct ProcessDispatch {
     topology: ExecutionTopology,
     clock: Arc<dyn WallClock>,
     hint: DispatchHint,
+    admission: Arc<PoolAdmission>,
     pool: OnceCell<Arc<DispatchPool<AnyDispatchStore>>>,
     /// The scan state the claimed-Run resolver shares.
     terminal_reconciliation: Arc<TerminalReconciliationState>,
@@ -117,10 +123,14 @@ impl ProcessDispatch {
     /// The selected topology with no pool yet: [`Self::ensure_pool`] spawns it.
     #[must_use]
     pub fn new(topology: ExecutionTopology, clock: Arc<dyn WallClock>, hint: DispatchHint) -> Self {
+        let admission = Arc::new(PoolAdmission::new(
+            crate::DispatchServiceConfig::for_topology(&topology).max_attempts,
+        ));
         Self {
             topology,
             clock,
             hint,
+            admission,
             pool: OnceCell::new(),
             terminal_reconciliation: Arc::default(),
             terminal_reconciler: OnceCell::new(),
@@ -172,16 +182,20 @@ impl ProcessDispatch {
         let binding = binding.expect("a spawn decision requires the bound authority");
         self.pool
             .get_or_try_init(|| {
-                let pool = DispatchPool::spawn_bound(
+                self.admission.require_startable()?;
+                let resolver = resolver()?;
+                self.admission.require_startable()?;
+                let pool = DispatchPool::spawn_bound_admitted(
                     binding,
                     self.clock.clone(),
                     self.topology.lease_owner.as_str().to_owned(),
                     DEFAULT_LEASE_MS,
                     crate::DispatchServiceConfig::for_topology(&self.topology),
-                    resolver()?,
+                    resolver,
                     sizing.slots().get(),
                     self.hint.wake(),
                     Some(completion),
+                    self.admission.clone(),
                 )?;
                 Ok(Arc::new(pool))
             })
@@ -210,32 +224,24 @@ impl ProcessDispatch {
         let mut started = false;
         self.terminal_reconciler
             .get_or_try_init(|| {
+                self.admission.require_startable().map_err(|_| ())?;
                 let owner = owner.ok_or(())?;
                 let resolver = resolver().ok_or(())?;
-                let reconciler = DispatchReconciler::spawn(
+                self.admission.require_startable().map_err(|_| ())?;
+                let reconciler = DispatchReconciler::spawn_with_shutdown(
                     owner,
                     self.clock.clone(),
                     self.hint.wake(),
                     crate::DispatchServiceConfig::for_topology(&self.topology),
                     resolver,
                     Some(completion),
+                    self.admission.shutdown(),
                 );
                 started = true;
                 Ok::<_, ()>(reconciler)
             })
             .is_ok()
             && started
-    }
-
-    /// Stop the coordinator-side terminal reconciliation loop, when it runs
-    /// (rule T3). The process lifecycle ends the loop, not the last reference
-    /// to this dispatch: a composed process keeps the dispatch shared until it
-    /// exits, so the loop and the resolver it holds end when the process
-    /// begins draining. A stopped loop is never restarted (T4). Idempotent.
-    fn stop_terminal_reconciliation(&self) {
-        if let Some(reconciler) = self.terminal_reconciler.get() {
-            reconciler.stop();
-        }
     }
 
     /// Bind the exact Worker directory and terminal-reconciliation source the
@@ -285,13 +291,12 @@ impl ProcessDispatch {
     /// Begin a graceful drain (scale-in / SIGTERM): stop claiming while the
     /// in-flight Runs finish, and stop the coordinator-side terminal
     /// reconciliation loop, which claims maintenance work too (rule T3).
-    /// `None` when no pool runs. Idempotent.
+    /// The local topology issues its fence even before its pool is constructed;
+    /// a topology without a local pool returns `None`. A resolver still being
+    /// constructed does not delay this fence. Idempotent.
     pub async fn begin_drain(&self) -> Option<PoolDrainFence> {
-        self.stop_terminal_reconciliation();
-        match self.pool.get() {
-            Some(pool) => Some(pool.begin_drain().await),
-            None => None,
-        }
+        let fence = self.admission.begin_drain().await;
+        self.topology.local.runs_local_pool().then_some(fence)
     }
 
     /// Install the drain fence and wait until every claimed Run settled, both
@@ -349,7 +354,7 @@ impl ProcessDispatch {
     /// Physically admitted executions of the local pool; zero without one.
     #[must_use]
     pub fn in_flight(&self) -> u32 {
-        self.pool.get().map_or(0, |pool| pool.in_flight())
+        self.admission.in_flight()
     }
 }
 
