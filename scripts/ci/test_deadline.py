@@ -33,7 +33,11 @@ HELPER = ROOT / INPUT_GLOBS[1]
 GROUP_CODE = """
 import json, os, signal, sys, time
 from pathlib import Path
-Path(sys.argv[1]).write_text(str(os.getpid()))
+def publish(path, value):
+    pending = path.with_name(path.name + '.pending')
+    pending.write_text(value)
+    pending.replace(path)
+publish(Path(sys.argv[1]), str(os.getpid()))
 ready_read, ready_write = os.pipe()
 child = os.fork()
 if child == 0:
@@ -46,15 +50,107 @@ else:
     signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[2] == '1' else signal.SIG_DFL)
     assert os.read(ready_read, 1) == b'R'
     os.close(ready_read)
-    Path(sys.argv[1] + '.ready').write_text(json.dumps({'leader':os.getpid(),'child':child}))
+    publish(Path(sys.argv[1] + '.ready'), json.dumps({'leader':os.getpid(),'child':child}))
     print('ready', flush=True)
 while True:
     time.sleep(1)
 """
 
 
+def cleanup_fixture_group(coordinate: Path, process=None) -> None:
+    """Retire only this fixture's group, including a nested inherited group."""
+    if coordinate.exists():
+        leader = int(coordinate.read_text())
+        try:
+            group = os.getpgid(leader)
+        except ProcessLookupError:
+            group = leader
+        if group == os.getpgrp():
+            raise RuntimeError("fixture cleanup refuses its observer's process group")
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process is not None:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
+
+
 @unittest.skipIf(os.name == "nt", "POSIX process groups and Cargo admission are owned by Linux/macOS")
 class DeadlineTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux owned PID observation")
+    def test_group_coordinates_publish_atomically_and_cleanup_failed_observers(self):
+        # Causes C1 a readiness write is paused after its first byte; C2 the
+        # write completes; C3 its observer then raises. R1 C1 => no published
+        # readiness file. R2 C2 => one complete exact leader/child document.
+        # R3 C3 => finally releases the actual owned group and inherited pipes.
+        # The same GROUP_CODE producer is exercised; no retrying JSON reader
+        # or relaxed process/deadline assertion can make R1 pass.
+        import selectors
+        driver = """
+from pathlib import Path
+import sys, time
+original = Path.write_text
+def controlled(path, value, *args, **kwargs):
+    if '.ready' not in path.name:
+        return original(path, value, *args, **kwargs)
+    with path.open('w') as stream:
+        stream.write(value[:1]); stream.flush()
+        print('partial', flush=True)
+        release = Path(sys.argv[1] + '.release')
+        until = time.monotonic() + 10
+        while not release.exists() and time.monotonic() < until:
+            time.sleep(.01)
+        assert release.exists(), 'observer did not release the controlled write'
+        stream.write(value[1:])
+    return len(value)
+Path.write_text = controlled
+exec(sys.argv[4])
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinate = Path(tmp) / "group"
+            ready = Path(str(coordinate) + ".ready")
+            members = {}
+            process = subprocess.Popen(
+                [sys.executable, "-c", driver, str(coordinate), "0", "0", GROUP_CODE],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, start_new_session=True)
+            with self.assertRaisesRegex(RuntimeError, "controlled observer failure"):
+                try:
+                    with selectors.DefaultSelector() as barrier:
+                        barrier.register(process.stdout, selectors.EVENT_READ)
+                        self.assertTrue(barrier.select(10), "R1 partial write barrier")
+                        self.assertEqual(process.stdout.readline(), "partial\n")
+                        self.assertFalse(ready.exists(), "R1 incomplete readiness must be invisible")
+                        Path(str(coordinate) + ".release").write_text("continue")
+                        self.assertTrue(barrier.select(10), "R2 complete write barrier")
+                        self.assertEqual(process.stdout.readline(), "ready\n")
+                    members = json.loads(ready.read_text())
+                    self.assertEqual(members["leader"], process.pid, "R2 exact producer")
+                    self.assertGreater(members["child"], 0, "R2 exact child")
+                    raise RuntimeError("controlled observer failure")
+                finally:
+                    cleanup_fixture_group(coordinate, process)
+            self.assertIsNotNone(process.poll(), "R3 producer reaped")
+            for pid in members.values():
+                stat = Path(f"/proc/{pid}/stat")
+                self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z",
+                                "R3 no surviving fixture process")
+
+    def test_fixture_cleanup_refuses_the_observer_group_before_any_signal(self):
+        # F1 coordinate names the observer itself => refuse before signaling.
+        # A controlled signal boundary makes a missing guard fail without
+        # killing the test runner; real owned/expired groups use R3/D1-D4/S1.
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinate = Path(tmp) / "group"
+            coordinate.write_text(str(os.getpid()))
+            with patch.object(os, "killpg", side_effect=AssertionError("observer signaled")) as send:
+                with self.assertRaisesRegex(RuntimeError, "observer's process group"):
+                    cleanup_fixture_group(coordinate)
+                send.assert_not_called()
+
     def group_command(self, coordinate, leader_ignores, child_ignores):
         return [sys.executable, "-c", GROUP_CODE, str(coordinate),
                 str(int(leader_ignores)), str(int(child_ignores))]
@@ -251,11 +347,7 @@ finally:
                             self.assertEqual(result.returncode, 124, result.stderr)
                             self.assertEqual(result.stdout.strip(), "ready")
                         finally:
-                            if coordinate.exists():
-                                try:
-                                    os.killpg(int(coordinate.read_text()), signal.SIGKILL)
-                                except ProcessLookupError:
-                                    pass
+                            cleanup_fixture_group(coordinate)
 
     def test_driver_cancellation_reaps_the_same_ready_group(self):
         # C/E table S1 TERM or INT reaches the driver, after both actual group
@@ -301,11 +393,7 @@ raise SystemExit(m.run(60,sys.argv[2:]))
                                     self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z',
                                                     'S1 no surviving live member')
                             finally:
-                                if coordinate.exists():
-                                    try: os.killpg(int(coordinate.read_text()), signal.SIGKILL)
-                                    except ProcessLookupError: pass
-                                if process.poll() is None: process.kill()
-                                process.communicate(timeout=5)
+                                cleanup_fixture_group(coordinate, process)
 
     def test_nonfinite_or_nonpositive_deadline_starts_nothing(self):
         # V1 zero/negative/NaN/infinity is not a finite execution deadline:
@@ -352,9 +440,7 @@ raise SystemExit(status)
                 self.assertEqual(result.returncode, 143, result.stderr)
                 self.assertFalse(Path(f'/proc/{coordinate.read_text()}/stat').exists())
             finally:
-                if coordinate.exists():
-                    try: os.killpg(int(coordinate.read_text()),signal.SIGKILL)
-                    except ProcessLookupError: pass
+                cleanup_fixture_group(coordinate)
 
     def test_success_and_failure_preserve_command_status(self):
         # D5: command returns before deadline, with zero/nonzero status => exact
