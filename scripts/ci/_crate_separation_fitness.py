@@ -234,14 +234,6 @@ def separation_errors(
     return [f"crate-separation: {error}" for error in errors]
 
 
-def _all_dependencies(manifest: dict) -> frozenset[str]:
-    deps: set[str] = set(_crate_boundary_workspace.normal_dependency_names(manifest))
-    for target in manifest.get("target", {}).values():
-        for section in ("dependencies", "build-dependencies"):
-            deps.update(target.get(section, {}).keys())
-    return frozenset(deps)
-
-
 def crate_separation(manifest_path: Path) -> CrateSeparation:
     manifest = _crate_boundary_workspace.load_manifest(manifest_path)
     metadata = manifest.get("package", {}).get("metadata", {}).get("awaken", {})
@@ -251,7 +243,7 @@ def crate_separation(manifest_path: Path) -> CrateSeparation:
         product=str(metadata.get("product", "")),
         bounded_context=str(metadata.get("bounded_context", "")),
         layer=str(metadata.get("layer", "")),
-        deps=_all_dependencies(manifest),
+        deps=frozenset(_crate_boundary_workspace.normal_dependency_names(manifest)),
         separation=str(metadata.get("separation", "")),
         isolates=tuple(metadata.get("isolates", ())),
         protocol=str(metadata.get("protocol", "")),

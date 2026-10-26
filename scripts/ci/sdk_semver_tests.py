@@ -1320,6 +1320,18 @@ def compiler_input_tests(owner):
                 if cause == "unknown-dependency":
                     path = root / "crates/fixture-provider/Cargo.toml"
                     path.write_text(path.read_text() + 'unrecorded="1"\n')
+                elif cause == "unknown-workspace-dependency":
+                    path = root / "crates/fixture-provider/Cargo.toml"
+                    path.write_text(path.read_text() + 'unrecorded={workspace=true}\n')
+                elif cause in ("renamed-target", "inherited-target"):
+                    path = root / "crates/fixture-provider/Cargo.toml"
+                    dependency = 'kube_client={package="kube",version="4.2.0"}\n'
+                    if cause == "inherited-target":
+                        workspace = root / "Cargo.toml"
+                        workspace.write_text(workspace.read_text() + dependency)
+                        dependency = 'kube_client={workspace=true}\n'
+                    path.write_text(path.read_text().replace('kube={version="4.2.0",optional=true}\n', '')
+                                    + '[target.\'cfg(windows)\'.build-dependencies]\n' + dependency)
                 elif cause == "root-malformed":
                     (root / "Cargo.toml").write_text("[workspace\n")
                 elif cause == "root-absent":
@@ -1372,7 +1384,8 @@ def compiler_input_tests(owner):
             # refusal before either compiler. No all-feature narrowing or SDK
             # library feature edit can substitute for this preflight evidence.
             causes = ("missing", "multiple", "invalid", "root-malformed", "unsupported", "identity",
-                      "version", "duplicate", "incomplete", "unknown-dependency", "ambient-empty", "ambient-conflict")
+                      "version", "duplicate", "incomplete", "unknown-dependency", "unknown-workspace-dependency",
+                      "ambient-empty", "ambient-conflict")
             for mode in ("package", "semver"):
                 for cause in causes:
                     with self.subTest(mode=mode, cause=cause), self.subject(cause=cause) as (helper, root):
@@ -1381,6 +1394,24 @@ def compiler_input_tests(owner):
                         status, calls = helper.execute(root, qualification=mode, compiler_cause=cause)
                         self.assertEqual(status, 1)
                         self.assertEqual(self.compiles(calls), [])
+
+        def test_renamed_target_edges_use_the_exact_git_workspace_authority(self):
+            # K10 explicit/inherited aliases on a foreign-target build edge
+            # retain the actual locked package in both qualifier modes. Source
+            # observation must use the selected Git revision's workspace table,
+            # never a live Root manifest. Original compiler profiles stay exact.
+            import _crate_boundary_workspace
+            original = owner._sdk_compiler_input.observe_source
+            def observe(*arguments, **keywords):
+                with mock.patch.object(_crate_boundary_workspace, "load_manifest",
+                                       side_effect=AssertionError("live workspace read")):
+                    return original(*arguments, **keywords)
+            for mode in ("package", "semver"):
+                for cause in ("renamed-target", "inherited-target"):
+                    with self.subTest(mode=mode, cause=cause), self.subject(cause=cause) as (helper, root):
+                        with mock.patch.object(owner._sdk_compiler_input, "observe_source", side_effect=observe):
+                            status, calls = helper.execute(root, qualification=mode, compiler_cause="valid")
+                        self.assertEqual((status, len(self.compiles(calls))), (0, 2))
 
         def test_applicable_sides_with_conflicting_models_refuse_without_overriding_baseline(self):
             # K6 baseline SDK actually reaches K8s and declaresv1_33 while the

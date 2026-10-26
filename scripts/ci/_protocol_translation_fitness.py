@@ -103,8 +103,8 @@ def source_violations(sources: dict[str, str]) -> list[str]:
 
 
 def manifest_violations(relative: str, manifest: dict) -> list[str]:
-    """T1 at the dependency level: only dev-dependencies may name the port."""
-    if REPOSITORY_CONTRACT in manifest.get("dependencies", {}):
+    """T1 uses package identity across normal/build targets; dev is exempt."""
+    if REPOSITORY_CONTRACT in _crate_boundary_workspace.normal_dependency_names(manifest):
         return [f"{relative}: protocol T1: {REPOSITORY_CONTRACT} is a production dependency"]
     return []
 
@@ -185,6 +185,23 @@ def selftest() -> None:
     assert manifest_violations("x/Cargo.toml", dev_only) == [], "M1"
     production = {"dependencies": {REPOSITORY_CONTRACT: {}}}
     assert len(manifest_violations("x/Cargo.toml", production)) == 1, "M2"
+    # M3 aliases and workspace inheritance retain the port's package identity;
+    # M4 target-only declarations are still production; M5 build dependencies
+    # cannot bypass the boundary. Cross all three with the dev-only exemption.
+    from unittest import mock
+    inherited = {"workspace": {"dependencies": {
+        "renamed": {"package": REPOSITORY_CONTRACT, "path": "repo"}}}}
+    for section in ("dependencies", "build-dependencies", "dev-dependencies"):
+        for target in (False, True):
+            for spelling in ("original", "alias", "inherited"):
+                alias = REPOSITORY_CONTRACT if spelling == "original" else "renamed"
+                specification = ({"workspace": True} if spelling == "inherited"
+                                 else {"package": REPOSITORY_CONTRACT})
+                table = {section: {alias: specification}}
+                manifest = {"target": {"cfg(windows)": table}} if target else table
+                with mock.patch.object(_crate_boundary_workspace, "load_manifest", return_value=inherited):
+                    found = manifest_violations("x/Cargo.toml", manifest)
+                assert len(found) == int(section != "dev-dependencies"), (section, target, spelling, found)
 
 
 def check_all(repo_root: Path) -> list[str]:

@@ -7,6 +7,7 @@ import tomllib
 from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from typing import NamedTuple
 
 import _arch_fitness
 import _crate_dependency_fitness
@@ -656,12 +657,92 @@ def production_module_files(
     return reachable
 
 
-def normal_dependency_names(manifest: dict) -> set[str]:
-    """Normal + build deps only; tests/examples are composition roots."""
-    deps: set[str] = set()
-    for section in ("dependencies", "build-dependencies"):
-        deps.update(manifest.get(section, {}).keys())
-    return deps
+class DeclaredDependency(NamedTuple):
+    alias: str
+    package: str
+    specification: dict
+
+
+def dependency_declarations(
+    manifest: dict, *, include_build: bool = True, workspace_dependencies: dict | None = None,
+) -> list[DeclaredDependency]:
+    """Normal/build declarations across every target, resolved to package identity.
+
+    Aliases remain available for Rust-use and feature checks. A Git-source caller
+    supplies that revision's workspace declarations; it never borrows live files.
+    This is a declaration graph, not feature resolution or host-target selection.
+    """
+    sections = ("dependencies", "build-dependencies") if include_build else ("dependencies",)
+    entries: list[DeclaredDependency] = []
+    for document in (manifest, *manifest.get("target", {}).values()):
+        for section in sections:
+            for alias, authored in document.get(section, {}).items():
+                authored = {"version": authored} if isinstance(authored, str) else dict(authored)
+                inherited: dict = {}
+                if authored.get("workspace"):
+                    if workspace_dependencies is None:
+                        workspace_dependencies = load_manifest(REPO_ROOT / "Cargo.toml").get(
+                            "workspace", {}).get("dependencies", {})
+                    if alias not in workspace_dependencies:
+                        raise ValueError(f"unresolved workspace dependency: {alias}")
+                    declaration = workspace_dependencies[alias]
+                    inherited = {"version": declaration} if isinstance(declaration, str) else declaration
+                specification = {**inherited, **authored}
+                if "features" in inherited and "features" in authored:
+                    specification["features"] = list(dict.fromkeys(
+                        [*inherited["features"], *authored["features"]]))
+                package = specification.get("package", alias)
+                if not isinstance(package, str) or not package:
+                    raise ValueError(f"invalid dependency package identity: {alias}")
+                entries.append(DeclaredDependency(alias, package, specification))
+    return entries
+
+
+def normal_dependency_names(manifest: dict, *, workspace_dependencies: dict | None = None) -> set[str]:
+    """Package identities of normal/build deps, including optional/target edges."""
+    return {dependency.package for dependency in dependency_declarations(
+        manifest, workspace_dependencies=workspace_dependencies)}
+
+
+def _selftest_dependency_declarations() -> None:
+    # Cause/effect matrix: D1 normal/build/dev scope; D2 root/target table;
+    # D3 original name/explicit alias/workspace-inherited alias. Normal/build
+    # edges always name the actual package, while dev edges never enter the
+    # graph. The Rust alias stays separate. D4 inherited features are additive;
+    # D5 missing inheritance or invalid identity refuses rather than dropping
+    # an edge. Reading never mutates either authored or inherited declarations.
+    import copy
+
+    workspace = {"renamed": {"package": "awaken-example", "path": "crates/example",
+                             "features": ["base"]}}
+    original_workspace = copy.deepcopy(workspace)
+    for section in ("dependencies", "build-dependencies", "dev-dependencies"):
+        for target in (False, True):
+            for spelling in ("original", "alias", "inherited"):
+                alias = "awaken-example" if spelling == "original" else "renamed"
+                specification = ({"workspace": True, "features": ["extra"]} if spelling == "inherited"
+                                 else {"package": "awaken-example", "features": ["extra"]})
+                tables = {section: {alias: specification}}
+                manifest = {"target": {"cfg(windows)": tables}} if target else tables
+                original = copy.deepcopy(manifest)
+                entries = dependency_declarations(manifest, workspace_dependencies=workspace)
+                expected = [] if section == "dev-dependencies" else ["awaken-example"]
+                assert [entry.package for entry in entries] == expected, (section, target, spelling)
+                assert normal_dependency_names(manifest, workspace_dependencies=workspace) == set(expected)
+                normal = dependency_declarations(manifest, include_build=False, workspace_dependencies=workspace)
+                assert [entry.package for entry in normal] == (expected if section == "dependencies" else [])
+                if entries:
+                    assert entries[0].alias == alias, "D3 Rust namespace is not package identity"
+                    assert entries[0].specification["features"] == (
+                        ["base", "extra"] if spelling == "inherited" else ["extra"]), "D4"
+                assert manifest == original and workspace == original_workspace, "D5 immutable inputs"
+    for specification in ({"workspace": True}, {"package": ""}, {"package": 1}):
+        try:
+            dependency_declarations({"dependencies": {"missing": specification}}, workspace_dependencies={})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("D5 invalid or unresolved package identity must refuse")
 
 
 def public_first_party_reexports(sources: Iterable[str]) -> frozenset[str]:
@@ -769,6 +850,7 @@ def selftest() -> None:
             raise AssertionError("P4 outside source must not become an ownership key")
     _selftest_projection_cache()
     _selftest_crate_discovery()
+    _selftest_dependency_declarations()
     # Production-source cause/effect table: C4 an exact/`all` cfg predicate is
     # false whenever test=false; C5 `not(test)` or `any(test, feature=...)` can
     # compile outside tests; C6 a test-only item precedes later production; C7
