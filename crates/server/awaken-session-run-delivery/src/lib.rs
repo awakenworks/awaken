@@ -31,6 +31,8 @@ mod completion;
 mod delivery;
 mod hub;
 mod lock;
+mod memory_binding;
+mod memory_binding_compiler;
 mod memory_content;
 mod memory_extractions;
 mod memory_proposals;
@@ -75,6 +77,8 @@ pub use completion::{
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
+pub use memory_binding::MemoryBinding;
+pub use memory_binding_compiler::MemoryBindingCompiler;
 pub use memory_content::PlatformMemoryHandle;
 pub use memory_extractions::MemoryExtractions;
 pub use memory_proposals::{

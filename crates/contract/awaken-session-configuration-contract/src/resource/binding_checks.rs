@@ -8,6 +8,7 @@
 
 use awaken_resource_contract::{
     LiveResourceBindingVerifier, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    ResourceRegistryError,
 };
 use awaken_session_types::RunError;
 
@@ -15,6 +16,52 @@ use super::{ResolvedInputSource, SessionResourceManifest};
 
 /// The code of a Repository binding authority that returned corrupt data.
 pub const REPOSITORY_BINDING_CORRUPT_CODE: &str = "repository_binding_authority_corrupt";
+
+/// Preserve a Memory binding authority's observation at every Session boundary.
+/// Missing or changed frozen inputs remain invalid; a failed observation is
+/// never evidence that the binding was revoked.
+#[must_use]
+pub fn memory_binding_run_error(error: &ResourceRegistryError) -> RunError {
+    let message = error.to_string();
+    match error {
+        ResourceRegistryError::AuthorityUnavailable { .. }
+        | ResourceRegistryError::Indeterminate { .. } => RunError::unavailable(message),
+        ResourceRegistryError::ConcurrentModification(_) => RunError::conflict(message),
+        ResourceRegistryError::CorruptData(_) => {
+            RunError::classified("memory_binding_authority_corrupt", message)
+        }
+        ResourceRegistryError::EncodingFailure { .. } => {
+            RunError::classified("memory_binding_authority_encoding", message)
+        }
+        ResourceRegistryError::AlreadyRegistered(_)
+        | ResourceRegistryError::NotFound(_)
+        | ResourceRegistryError::NotActive { .. }
+        | ResourceRegistryError::ConfigConflict { .. }
+        | ResourceRegistryError::ConfigNotFound { .. }
+        | ResourceRegistryError::IdentityRejected { .. }
+        | ResourceRegistryError::ConfigurationRejected { .. }
+        | ResourceRegistryError::AdmissionRejected { .. }
+        | ResourceRegistryError::VersionExhausted { .. } => RunError::bad_request(message),
+    }
+}
+
+/// The single live Memory binding check used by admission and realization.
+pub async fn verify_memory_binding(
+    verifier: Option<&dyn LiveResourceBindingVerifier>,
+    workspace: &str,
+    id: &str,
+    version: awaken_resource_contract::ConfigVersion,
+) -> Result<(), RunError> {
+    verifier
+        .ok_or_else(|| {
+            RunError::bad_request(
+                "memory resources require a configured resource binding validator",
+            )
+        })?
+        .verify_memory_binding(workspace, id, version)
+        .await
+        .map_err(|error| memory_binding_run_error(&error))
+}
 
 /// The stable code of a Repository binding failure.
 #[must_use]
@@ -78,15 +125,10 @@ pub async fn verify_manifest_bindings<C: Sync>(
             ResolvedInputSource::MemoryStore {
                 memory_store_id,
                 config,
-            } => memory
-                .ok_or_else(|| {
-                    RunError::bad_request(
-                        "memory resources require a configured resource binding validator",
-                    )
-                })?
-                .verify_memory_binding(workspace, memory_store_id.as_str(), config.version)
-                .await
-                .map_err(|error| RunError::bad_request(error.to_string()))?,
+            } => {
+                verify_memory_binding(memory, workspace, memory_store_id.as_str(), config.version)
+                    .await?
+            }
             ResolvedInputSource::Repository {
                 repository_id,
                 config,
@@ -120,6 +162,7 @@ mod tests {
     struct Live {
         memory: u64,
         repository: u64,
+        fault: Option<ResourceRegistryError>,
     }
 
     #[async_trait::async_trait]
@@ -130,6 +173,9 @@ mod tests {
             id: &str,
             version: ConfigVersion,
         ) -> Result<(), ResourceRegistryError> {
+            if let Some(error) = &self.fault {
+                return Err(error.clone());
+            }
             if version == ConfigVersion(self.memory) {
                 Ok(())
             } else {
@@ -237,6 +283,7 @@ mod tests {
         let live = Live {
             memory: 4,
             repository: 7,
+            fault: None,
         };
         // B1: a File input binds nothing live.
         let file = manifest(vec![input(
@@ -278,5 +325,129 @@ mod tests {
         verify(&manifest(vec![memory(4), repository(7)]), Some(&live))
             .await
             .expect("B6");
+    }
+
+    #[tokio::test]
+    async fn memory_binding_faults_share_one_classification_at_admission() {
+        // Cause/effect table: M1 unavailable/indeterminate observation =>
+        // Unavailable; M2 concurrent mutation => Conflict; M3 corrupt/encoding
+        // authority => classified Internal; M4 every definitive invalid binding
+        // => the original BadRequest. All closed Registry variants are covered.
+        // Direct staging checks and manifest admission must agree on kind,
+        // stable code and exact diagnostic, without inspecting diagnostic text.
+        use awaken_resource_contract::ResourceState;
+        use awaken_session_types::RunErrorKind;
+        for (fault, kind, code) in [
+            (
+                ResourceRegistryError::AuthorityUnavailable {
+                    detail: "same".into(),
+                },
+                RunErrorKind::Unavailable,
+                "unavailable",
+            ),
+            (
+                ResourceRegistryError::Indeterminate {
+                    detail: "same".into(),
+                },
+                RunErrorKind::Unavailable,
+                "unavailable",
+            ),
+            (
+                ResourceRegistryError::ConcurrentModification("same".into()),
+                RunErrorKind::Conflict,
+                "conflict",
+            ),
+            (
+                ResourceRegistryError::CorruptData("same".into()),
+                RunErrorKind::Internal,
+                "memory_binding_authority_corrupt",
+            ),
+            (
+                ResourceRegistryError::EncodingFailure {
+                    detail: "same".into(),
+                },
+                RunErrorKind::Internal,
+                "memory_binding_authority_encoding",
+            ),
+            (
+                ResourceRegistryError::AlreadyRegistered("same".into()),
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::NotFound("same".into()),
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::NotActive {
+                    id: "same".into(),
+                    state: ResourceState::Suspended,
+                },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::ConfigConflict {
+                    id: "same".into(),
+                    expected: ConfigVersion(4),
+                    current: ConfigVersion(5),
+                },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::ConfigNotFound {
+                    id: "same".into(),
+                    version: ConfigVersion(4),
+                },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::IdentityRejected {
+                    detail: "same".into(),
+                },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::ConfigurationRejected {
+                    detail: "same".into(),
+                },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::AdmissionRejected {
+                    detail: "same".into(),
+                },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+            (
+                ResourceRegistryError::VersionExhausted { id: "same".into() },
+                RunErrorKind::BadRequest,
+                "invalid_request",
+            ),
+        ] {
+            let live = Live {
+                memory: 4,
+                repository: 7,
+                fault: Some(fault.clone()),
+            };
+            let direct =
+                verify_memory_binding(Some(&live), "workspace", "memory-1", ConfigVersion(4))
+                    .await
+                    .unwrap_err();
+            let admitted = verify(&manifest(vec![memory(4)]), Some(&live))
+                .await
+                .unwrap_err();
+            for error in [direct, admitted] {
+                assert_eq!(error.kind, kind, "{fault:?}");
+                assert_eq!(error.code, code, "{fault:?}");
+                assert_eq!(error.message, fault.to_string(), "{fault:?}");
+            }
+        }
     }
 }

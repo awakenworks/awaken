@@ -224,10 +224,12 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
             disposition,
         ));
     }
+    // Memory's context lock moved with its sole binding into Run delivery;
+    // memory_commit_binding_preserves_identity_and_refuses_poisoned_reads_and_writes
+    // exercises the real lock and preserves this row's original code/class there.
     for lock in [
         RealizationLock::InstalledSessions,
         RealizationLock::EnvironmentBindingSink,
-        RealizationLock::MemoryExecutionContext,
     ] {
         rows.push((
             "D11 poisoned lock denies",

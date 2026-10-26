@@ -7,7 +7,7 @@
 //! their remote, claim-fenced transports instead. [`SessionAuthority`] is the
 //! one place the Host asks which of the two it is given.
 
-use crate::memory_binding::SessionMemoryReferenceEncoder;
+use crate::memory_references::SessionMemoryReferenceEncoder;
 use std::sync::Arc;
 
 #[cfg(any(test, feature = "test-support"))]

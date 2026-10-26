@@ -55,7 +55,7 @@ pub(crate) async fn close_repository(repository: SqliteManagedSessionRepository)
 
 /// A fresh temporary directory and the path of database `file` inside it; the
 /// directory must outlive every connection to that database.
-fn temp_database(file: &str) -> (tempfile::TempDir, String) {
+pub(super) fn temp_database(file: &str) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(file).to_string_lossy().into_owned();
     (dir, path)
@@ -2778,7 +2778,7 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
     ));
 }
 
-fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
+pub(super) fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
     awaken_ext_memory::MemoryExtractionIntent::new_range(
         id,
         key,
@@ -2851,13 +2851,31 @@ async fn put_snapshot_cursor_fixture(
 ) {
     use awaken_ext_memory::PutMemoryExtractionOutcome;
 
-    for intent in [
-        snapshot_extraction(namespace, "parent", "child-a", "terminal-1", 1),
-        snapshot_extraction(namespace, "parent", "child-a", "terminal-2", 3),
-        snapshot_extraction(namespace, "parent", "child-b", "terminal-1", 2),
+    for (intent, execution) in [
+        (
+            snapshot_extraction(namespace, "parent", "child-a", "terminal-1", 1),
+            Default::default(),
+        ),
+        (
+            snapshot_extraction(namespace, "parent", "child-a", "terminal-2", 3),
+            awaken_ext_memory::MemoryExtractionExecution {
+                commit_scope: awaken_ext_memory::MemoryExtractionCommitScope::AuxiliaryThread,
+                data_subject_id: Some(awaken_runtime_contract::DataSubjectId("subject-a".into())),
+            },
+        ),
+        (
+            snapshot_extraction(namespace, "parent", "child-b", "terminal-1", 2),
+            awaken_ext_memory::MemoryExtractionExecution {
+                commit_scope: awaken_ext_memory::MemoryExtractionCommitScope::Session,
+                data_subject_id: Some(awaken_runtime_contract::DataSubjectId("subject-b".into())),
+            },
+        ),
     ] {
         assert_eq!(
-            repository.put_extraction_if_absent(intent).await.unwrap(),
+            repository
+                .put_extraction_if_absent(intent.with_execution(execution).unwrap())
+                .await
+                .unwrap(),
             PutMemoryExtractionOutcome::Inserted
         );
     }
@@ -2865,6 +2883,7 @@ async fn put_snapshot_cursor_fixture(
 
 async fn assert_snapshot_cursor_fixture(
     repository: &dyn awaken_ext_memory::MemoryExtractionRepository,
+    namespace: &str,
 ) {
     // C/E/K/D backend-conformance design. Causes: C1 two snapshot-backed
     // terminals share logical child A; C2 sibling child B shares their physical
@@ -2875,6 +2894,9 @@ async fn assert_snapshot_cursor_fixture(
     // identity for new intents; K2 `session_id` remains recovery affinity; K3
     // pending intents count. Decision table: D1 C1=>E1; D2 C1+C2=>E1+E2+E3;
     // D3 D2 across each C3 backend=>identical results.
+    // D4 legacy/default, independent auxiliary+subject A, and Session+subject B
+    // retain their exact frozen context after backend JSON storage/reopen. The
+    // Session affinity and logical cursors do not move with the output partition.
     assert_eq!(
         repository.extraction_cursor("child-a").await.unwrap(),
         3,
@@ -2890,6 +2912,50 @@ async fn assert_snapshot_cursor_fixture(
         0,
         "D3/E3"
     );
+    for (thread, terminal, scope, subject) in [
+        (
+            "child-a",
+            "terminal-1",
+            awaken_ext_memory::MemoryExtractionCommitScope::Session,
+            None,
+        ),
+        (
+            "child-a",
+            "terminal-2",
+            awaken_ext_memory::MemoryExtractionCommitScope::AuxiliaryThread,
+            Some("subject-a"),
+        ),
+        (
+            "child-b",
+            "terminal-1",
+            awaken_ext_memory::MemoryExtractionCommitScope::Session,
+            Some("subject-b"),
+        ),
+    ] {
+        let stored = repository
+            .get_extraction(&format!("{namespace}-{thread}-{terminal}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.execution().commit_scope, scope, "D4");
+        assert_eq!(
+            stored
+                .execution()
+                .data_subject_id
+                .as_ref()
+                .map(|s| s.0.as_str()),
+            subject,
+            "D4"
+        );
+        let partition = if scope == awaken_ext_memory::MemoryExtractionCommitScope::Session {
+            "parent".into()
+        } else {
+            stored.auxiliary_thread_id()
+        };
+        assert_eq!(stored.auxiliary_commit_thread_id(), partition, "D4");
+        assert_eq!(stored.session_id, "parent", "D4");
+        assert_eq!(stored.logical_thread_id(), thread, "D4");
+    }
 }
 
 #[tokio::test]
@@ -2929,7 +2995,7 @@ async fn extraction_intent_and_claim_survive_sqlite_reopen() {
     put_snapshot_cursor_fixture(&reopened, "sqlite-snapshot").await;
     drop(reopened);
     let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
-    assert_snapshot_cursor_fixture(&reopened).await;
+    assert_snapshot_cursor_fixture(&reopened, "sqlite-snapshot").await;
     assert_eq!(recovered, vec![claimed]);
     assert_eq!(recovered[0].status, MemoryExtractionStatus::Claimed);
     assert!(matches!(
@@ -3604,7 +3670,7 @@ async fn postgres_round_trips_and_upserts() {
     );
     assert_eq!(repo.extraction_cursor("sesn-1").await.unwrap(), 1);
     put_snapshot_cursor_fixture(&repo, "postgres-snapshot").await;
-    assert_snapshot_cursor_fixture(&repo).await;
+    assert_snapshot_cursor_fixture(&repo, "postgres-snapshot").await;
 
     /* Removed-completion rolling-upgrade parity. Causes/effects/rules are S2-S4
      * in the SQLite cold-reopen test: an exact v2 row must pass through this

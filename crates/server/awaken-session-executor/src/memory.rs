@@ -36,7 +36,7 @@ use awaken_session_run_delivery::{BackgroundRuns, MemoryExtractions, SessionComm
 
 mod selector;
 mod terminal_observer;
-pub(crate) use crate::memory_binding::MemoryBinding;
+use awaken_session_run_delivery::MemoryBinding;
 pub(crate) use selector::AgentSelector;
 pub(crate) use terminal_observer::MemoryTerminalObservers;
 
@@ -204,34 +204,57 @@ impl MemoryRuntime {
         intent: &MemoryExtractionIntent,
     ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
         let snapshot = &intent.extractor;
-        if let Some(materializer) = self.inference_materializer.as_ref() {
+        let mut request_context =
+            RuntimeRunContext::new().with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from(intent.workspace_id.clone()),
+            ));
+        if let Some(subject) = intent.execution().data_subject_id.clone() {
+            request_context = request_context.with_data_subject(subject);
+        }
+        let materializer = self.inference_materializer.as_ref();
+        let bindings = if let Some(materializer) = materializer {
             let holder = CredentialRealizationProfile::self_hosted_native().inference_holder;
             let model = &snapshot.agent.resolved_spec.model_binding;
-            let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
+            awaken_credential_contract::compile_candidate_credential_bindings(
                 &[model],
                 Some(&holder),
                 &materializer.credential_realization_capabilities(),
                 intent.claim_generation,
                 awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
             )
-            .map_err(|error| error.to_string())?;
-            let owner = intent
-                .claim_owner
-                .clone()
-                .ok_or_else(|| "Memory extractor has no durable claim owner".to_string())?;
-            let authority = Arc::new(MemoryExtractionCredentialAuthority {
-                repository: self.extraction_repository(),
-                clock: self.clock.clone(),
-                intent_id: intent.intent_id.clone(),
-                owner,
-                generation: intent.claim_generation,
-                bindings: bindings.clone(),
-            });
-            let context = RuntimeRunContext::new()
-                .with_ownership(authority.clone())
-                .with_credential_realization(AttemptCredentialRealization::new(
-                    bindings, authority,
-                ));
+            .map_err(|error| error.to_string())?
+        } else {
+            if !matches!(
+                snapshot.agent.resolved_spec.model_binding.provisioning(),
+                awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+            ) {
+                return Err(
+                    "published model candidate requires an installed credential materializer"
+                        .into(),
+                );
+            }
+            Vec::new()
+        };
+        let owner = intent
+            .claim_owner
+            .clone()
+            .ok_or_else(|| "Memory extractor has no durable claim owner".to_string())?;
+        let authority = Arc::new(MemoryExtractionCredentialAuthority {
+            repository: self.extraction_repository(),
+            clock: self.clock.clone(),
+            intent_id: intent.intent_id.clone(),
+            owner,
+            generation: intent.claim_generation,
+            bindings: bindings.clone(),
+        });
+        // Host-executor extraction has the same durable claim as a materialized
+        // model. The SDK checks this existing verifier before either model effect.
+        let context = request_context.with_ownership(authority.clone());
+        if let Some(materializer) = materializer {
+            let model = &snapshot.agent.resolved_spec.model_binding;
+            let context = context.with_credential_realization(AttemptCredentialRealization::new(
+                bindings, authority,
+            ));
             return materializer
                 .materialize_pinned(model, &context)
                 .map(|executor| (executor, context))
@@ -242,14 +265,7 @@ impl MemoryRuntime {
                     )
                 });
         }
-        matches!(
-            snapshot.agent.resolved_spec.model_binding.provisioning(),
-            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
-        )
-        .then(|| (self.llm.clone(), RuntimeRunContext::new()))
-        .ok_or_else(|| {
-            "published model candidate requires an installed credential materializer".into()
-        })
+        Ok((self.llm.clone(), context))
     }
 
     pub(crate) fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
@@ -292,6 +308,7 @@ impl BoundMemory {
                 memory_config_version: self.binding.memory_config_version,
                 committed_transcript: committed,
                 extractor,
+                execution: Default::default(),
             })
             .await?;
         self.reconcile().await?;
@@ -318,12 +335,15 @@ impl BoundMemory {
     }
 
     async fn extract_mutations(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
-        let seed = awaken_session_run_delivery::memory_extraction_input(intent);
-        let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
-        let (executor, context) = match self.runtime.materialize_extractor(intent) {
-            Ok(materialized) => materialized,
-            Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
-        };
+        if intent.execution().commit_scope
+            != awaken_ext_memory::MemoryExtractionCommitScope::Session
+        {
+            return MemoryExtractionOutcome::PermanentFailure {
+                reason:
+                    "embedded Memory extraction cannot use an auxiliary Thread commit partition"
+                        .into(),
+            };
+        }
         let commit = match self.binding.extraction_commit() {
             Ok(Some(commit)) => commit,
             Err(error) => {
@@ -337,6 +357,21 @@ impl BoundMemory {
                         .to_string(),
                 };
             }
+        };
+        let Some(authority) = commit.committed_authority() else {
+            return MemoryExtractionOutcome::PermanentFailure {
+                reason: "Memory extraction requires the original committed Session authority"
+                    .into(),
+            };
+        };
+        if let Some(outcome) = self.committed_mutations(intent, &authority).await {
+            return outcome;
+        }
+        let seed = awaken_session_run_delivery::memory_extraction_input(intent);
+        let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
+        let (executor, context) = match self.runtime.materialize_extractor(intent) {
+            Ok(materialized) => materialized,
+            Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
         };
         let context = context
             .with_commit(commit.clone() as Arc<dyn awaken_agent_contract::CommitCoordinator>)
@@ -357,21 +392,70 @@ impl BoundMemory {
         )
         .await
         {
-            return classify_extraction_run_error(
-                intent,
-                commit.run_state(&RunId(intent.auxiliary_run_id())),
-                error,
-            );
-        }
-        let writes =
-            match awaken_session_run_delivery::committed_memory_writes(intent, commit.as_ref()) {
-                Ok(writes) => writes,
-                Err(error) => return error.into_extraction_outcome(intent),
+            let observed_state = match authority.run(&RunId(intent.auxiliary_run_id())).await {
+                Ok(record) => record.map(|record| record.state),
+                Err(read_error) => {
+                    return MemoryExtractionOutcome::ExecutionIndeterminate {
+                        auxiliary_run_id: intent.auxiliary_run_id(),
+                        reason: format!(
+                            "{error}; committed extractor state is unavailable: {read_error}"
+                        ),
+                    };
+                }
             };
-        match self.binding.platform().plan_mutations(writes).await {
+            return classify_extraction_run_error(intent, observed_state, error);
+        }
+        self.committed_mutations(intent, &authority)
+            .await
+            .unwrap_or_else(|| {
+                awaken_session_run_delivery::MemoryProposalError::ExecutionIndeterminate
+                    .into_extraction_outcome(intent)
+            })
+    }
+
+    /// One transaction supplies the record and transcript. Shared stores do not
+    /// have to refresh a synchronous compatibility projection for this read.
+    async fn committed_mutations(
+        &self,
+        intent: &MemoryExtractionIntent,
+        authority: &awaken_session_run_delivery::CommittedAuthority<
+            Arc<dyn awaken_dispatch_erasure::LocalCommit>,
+        >,
+    ) -> Option<MemoryExtractionOutcome> {
+        use awaken_session_run_delivery::MemoryProposalError;
+        let run = RunId(intent.auxiliary_run_id());
+        let thread = awaken_agent_contract::agent::thread::Id(intent.auxiliary_thread_id());
+        let snapshot = match authority.recovery_snapshot(&thread, &run).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Some(MemoryExtractionOutcome::Retryable {
+                    reason: error.to_string(),
+                });
+            }
+        };
+        if snapshot.thread_id != thread || snapshot.claimed_run_id != run {
+            return Some(MemoryProposalError::RunIdentityMismatch.into_extraction_outcome(intent));
+        }
+        let record = match snapshot.run_record(&run) {
+            Ok(record) => record?,
+            Err(_) => {
+                return Some(
+                    MemoryProposalError::RunIdentityMismatch.into_extraction_outcome(intent),
+                );
+            }
+        };
+        let writes = match awaken_session_run_delivery::committed_memory_writes(
+            intent,
+            Some(record),
+            &snapshot.messages,
+        ) {
+            Ok(writes) => writes,
+            Err(error) => return Some(error.into_extraction_outcome(intent)),
+        };
+        Some(match self.binding.platform().plan_mutations(writes).await {
             Ok(mutations) => MemoryExtractionOutcome::Mutations(mutations),
             Err(reason) => MemoryExtractionOutcome::Retryable { reason },
-        }
+        })
     }
 
     /// A live-validating Memory handle shared with the recall plugin. Returning
@@ -386,13 +470,15 @@ impl BoundMemory {
 impl MemoryExtractionDriver for BoundMemory {
     fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
         self.binding.matches_intent(intent)
+            && intent.execution().commit_scope
+                == awaken_ext_memory::MemoryExtractionCommitScope::Session
     }
 
-    async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
-        self.binding
-            .validate_live_resource()
-            .await
-            .map_err(|_| "MemoryStore is missing, suspended, archived, or deleted".to_string())
+    async fn validate_binding(
+        &self,
+        _intent: &MemoryExtractionIntent,
+    ) -> Result<(), MemoryExtractionError> {
+        self.binding.validate_extraction_binding().await
     }
 
     async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {

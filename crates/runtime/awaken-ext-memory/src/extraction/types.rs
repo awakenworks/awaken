@@ -49,6 +49,36 @@ impl MemoryExtractorSnapshot {
     }
 }
 
+/// Where the ordinary extractor Run's committed output is stored. The Session
+/// binding still owns the Memory operation; this value selects only its read
+/// partition and never grants execution, provider or store authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryExtractionCommitScope {
+    /// Embedded and historical extractors use their physical Session's commit.
+    #[default]
+    Session,
+    /// An independently dispatched extractor uses its own existing Thread id.
+    AuxiliaryThread,
+}
+
+/// Secret-free execution facts frozen with the first accepted extraction.
+/// Missing historical values retain the original Session commit partition and
+/// unknown attribution rather than selecting current process defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryExtractionExecution {
+    pub commit_scope: MemoryExtractionCommitScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
+}
+
+impl MemoryExtractionExecution {
+    pub(crate) fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// The Memory head the extractor observed before storage, as an opaque token.
 ///
 /// The SDK carries it and never interprets it: the store that issued the token
@@ -225,6 +255,8 @@ impl MemoryExtractionStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryExtractionError {
     Invalid(String),
+    /// A dependency could not establish the binding's current validity.
+    Unavailable(String),
     NotFound(String),
     IdempotencyConflict(String),
     RevisionConflict(String),
@@ -244,6 +276,12 @@ impl std::fmt::Display for MemoryExtractionError {
         match self {
             Self::Invalid(message) => {
                 write!(formatter, "invalid Memory extraction intent: {message}")
+            }
+            Self::Unavailable(message) => {
+                write!(
+                    formatter,
+                    "Memory extraction dependency unavailable: {message}"
+                )
             }
             Self::NotFound(id) => {
                 write!(formatter, "Memory extraction intent `{id}` was not found")
