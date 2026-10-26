@@ -11,6 +11,7 @@ struct Slot {
     state: SessionMcpState,
     root: Option<bool>,
     runtime: Option<()>,
+    read_unavailable: bool,
 }
 
 struct Slots(Mutex<Slot>);
@@ -21,6 +22,7 @@ impl Slots {
             state: SessionMcpState::default(),
             root: Some(true),
             runtime: None,
+            read_unavailable: false,
         })))
     }
 }
@@ -32,7 +34,14 @@ impl SessionMcpStates for Slots {
         _: &str,
         f: impl FnOnce(&SessionMcpState) -> R,
     ) -> Result<Option<R>, McpError> {
-        Ok(Some(f(&self.0.lock().unwrap().state)))
+        let slot = self.0.lock().unwrap();
+        if slot.read_unavailable {
+            return Err(McpError::unavailable_classified(
+                "test_mcp_read_unavailable",
+                "original MCP read fixture is unavailable",
+            ));
+        }
+        Ok(Some(f(&slot.state)))
     }
     fn update_mcp<R>(
         &self,

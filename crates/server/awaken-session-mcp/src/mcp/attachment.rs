@@ -157,15 +157,23 @@ impl McpSessions {
         let sessions = self.clone();
         let slots = slots.clone();
         tokio::spawn(async move {
-            sessions
+            let mut platform_preparation = None;
+            let result = sessions
                 .stage_with_admission(
                     &slots,
                     host.as_ref(),
                     credentials(host.as_ref()),
                     request,
                     admission,
+                    &mut platform_preparation,
                 )
-                .await
+                .await;
+            drop(host);
+            if let Some(preparation) = platform_preparation {
+                let completion = preparation.finish(slots).await;
+                return result.and_then(|receipt| completion.map(|()| receipt));
+            }
+            result
         })
         .await
         .map_err(|error| {
@@ -183,6 +191,7 @@ impl McpSessions {
         credentials: McpCredentialMaterialization<'_>,
         request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
         admission: StagingAdmission,
+        platform_preparation: &mut Option<staging::PlatformMcpPreparation>,
     ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         use awaken_credential_contract::{CredentialRealizationKind, PlaintextBoundary};
 
@@ -464,40 +473,28 @@ impl McpSessions {
                             "Platform-held MCP credentials require an installed egress mediator",
                         )
                     })?;
-                    let upstream = request.target.http_url().ok_or_else(|| {
-                        RunError::classified(
+                    if request.target.http_url().is_none() {
+                        return Err(RunError::classified(
                             "mcp_relay_target_invalid",
                             "a mediated MCP credential requires one canonical HTTP MCP target",
-                        )
-                    })?;
+                        ));
+                    }
                     staging = Some(McpStagingOwner::begin(
                         slots,
                         &request,
                         admission,
                         self.clock.as_ref(),
                     )?);
-                    let route = provisioner
-                        .provision(awaken_credential_materializer::PlatformMcpEgressRequest {
-                            holder,
-                            credential: &access.credential,
-                            workspace_id: &request.workspace_id,
-                            session_id: request.generation.session_id().as_str(),
-                            attachment_id: &request.generation.attachment_id().0,
-                            generation: request.generation.generation().version(),
-                            runtime_incarnation: request.generation.runtime_incarnation(),
-                            lease_epoch: request.generation.lease_epoch().get(),
-                            upstream_url: upstream,
-                        })
-                        .await
-                        .map_err(|error| {
-                            RunError::unavailable_classified(
-                                "mcp_gateway_route_unavailable",
-                                format!(
-                                    "mcp server `{}` mediated route is unavailable: {error}",
-                                    request.name
-                                ),
-                            )
-                        })?;
+                    let route = staging
+                        .as_mut()
+                        .expect("Platform preparation has its original owner")
+                        .provision_platform(
+                            provisioner,
+                            admission,
+                            self.clock.as_ref(),
+                            platform_preparation,
+                        )
+                        .await?;
                     // Nothing is resolved here. The Host is a caller of the
                     // mediator, never a holder of this credential.
                     (None, None, Some(realization_kind), Some(route))

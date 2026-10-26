@@ -761,5 +761,56 @@
     "scope": "Claimed Provider/A2A materialization only: real Vault local authority, barrier-controlled SecretStore/verifier/receipt collaborators; model/network Provider invocation is outside this receipt",
     "files_changed_during_run": [],
     "entry_sha256": "bbdca04609508b7ee91ab4271a31f4ff5bd2748b63ee461c3451fab7b153cb69"
+  },
+  {
+    "id": "E-MCP-ALLOCATION-20261027",
+    "receipt": "target/session-acceptance-evidence/E-MCP-ALLOCATION-20261027/receipt.json",
+    "receipt_sha256": "77c617bcd37a1e4769e9e5088ae271ee4d1181e354de75c6e64748e00082a983",
+    "source": {
+      "head": "f42a6b5702b2664231451f5718f394113aa438a3",
+      "staged_tree": "558d56d7a5fd305e8ca1e7250cc9ad1f89bd41e3"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "761 actual component/Host passes, 10 existing ignored excluded. Named Platform rows bind injected allocation and loopback transport only; no full T16 or hosted gateway acceptance.",
+    "argv": [
+      "python",
+      "-B",
+      "-X",
+      "utf8",
+      "scripts/ci/deadline.py",
+      "4500",
+      "--",
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "-p",
+      "awaken-session-mcp",
+      "-p",
+      "awaken-session-executor",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "--",
+      "--test-threads=1"
+    ],
+    "environment_names": [
+      "CARGO_TARGET_DIR",
+      "CARGO_BUILD_BUILD_DIR",
+      "TEMP",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "RUSTFLAGS"
+    ],
+    "exit": 0,
+    "executed_count": 761,
+    "failed_count": 0,
+    "skipped_count": 10,
+    "log_sha256": "b2c62493c48a00cd21bbce5ef0a45f5ded73a79bd8dace7268a609f9ce15be2e",
+    "historical": false,
+    "entry_sha256": "3eeb589a530ddd47be0197a968a4cae1c7379cef3a6d11ef0f7e68fc2c10dd37"
   }
 ]

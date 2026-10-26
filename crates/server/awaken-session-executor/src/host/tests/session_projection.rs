@@ -1877,26 +1877,45 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
+    #[derive(Clone)]
     struct StubMediator {
         url: String,
     }
 
-    #[async_trait::async_trait]
     impl awaken_credential_materializer::PlatformMcpEgressProvisioner for StubMediator {
-        async fn provision(
+        fn prepare(
             &self,
             request: awaken_credential_materializer::PlatformMcpEgressRequest<'_>,
+        ) -> Arc<dyn awaken_credential_materializer::PlatformMcpEgressAllocation> {
+            assert_eq!(request.holder.boundary, PlaintextBoundary::Platform, "G2");
+            assert_eq!(request.session_id, "mcp-platform", "G2");
+            assert_eq!(request.runtime_incarnation, "runtime-1", "G2");
+            assert_eq!(request.realization_id, "realize-platform", "G2");
+            assert_eq!(request.stage_idempotency_key, "stage-platform", "G2");
+            Arc::new(self.clone())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_credential_materializer::PlatformMcpEgressAllocation for StubMediator {
+        async fn provision(
+            &self,
         ) -> Result<
             awaken_credential_materializer::MediatedMcpRoute,
             awaken_credential_contract::CredentialMaterialError,
         > {
-            assert_eq!(request.holder.boundary, PlaintextBoundary::Platform, "G2");
-            assert_eq!(request.session_id, "mcp-platform", "G2");
-            assert_eq!(request.runtime_incarnation, "runtime-1", "G2");
             Ok(awaken_credential_materializer::MediatedMcpRoute {
                 url: self.url.clone(),
                 expires_at_unix_ms: u64::MAX,
             })
+        }
+
+        async fn revoke_and_wait(
+            &self,
+        ) -> Result<(), awaken_credential_contract::CredentialMaterialError> {
+            // This materialization-only fixture has no mediated release service.
+            // A caller asking it for release must retain the original owner.
+            Err(awaken_credential_contract::CredentialMaterialError::Unavailable)
         }
     }
 

@@ -43,6 +43,74 @@ pub(super) struct McpStagingOwner<S: SessionMcpStates> {
     completed: bool,
 }
 
+/// The existing owned preparation task retains its effect until the original
+/// slot can own cleanup or the exact allocation acknowledges compensation.
+/// This is an operation capture, not another registry or generation authority.
+pub(super) struct PlatformMcpPreparation {
+    allocation: Arc<dyn awaken_credential_materializer::PlatformMcpEgressAllocation>,
+    generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
+    drain: Arc<tokio::sync::Mutex<()>>,
+    activity: crate::mcp_material::McpStagingActivityGuard,
+}
+
+impl PlatformMcpPreparation {
+    pub(super) async fn finish<S: SessionMcpStates>(self, slots: Arc<S>) -> Result<(), RunError> {
+        let handoff = slots
+            .read_mcp(self.generation.session_id().as_str(), |mcp| {
+                mcp.projections
+                    .iter()
+                    .any(|projection| Arc::ptr_eq(&projection.drain, &self.drain))
+            })
+            .map_err(run_error)
+            .and_then(|retained| match retained {
+                Some(true) => Ok(()),
+                _ => Err(stale_owner()),
+            });
+        if handoff.is_ok() {
+            return handoff;
+        }
+        // A failed observation cannot authorize a receipt or mean absence.
+        // Close the original visible projection if its write port remains
+        // available, then compensate before reporting the original refusal.
+        let _ = slots.modify_mcp(self.generation.session_id().as_str(), |mcp| {
+            if let Some(projection) = mcp
+                .projections
+                .iter_mut()
+                .find(|projection| Arc::ptr_eq(&projection.drain, &self.drain))
+            {
+                projection.state = McpProjectionState::Draining;
+            }
+        });
+        drop(slots);
+        let Self {
+            allocation,
+            activity,
+            ..
+        } = self;
+        let _activity = activity;
+        // The caller can cancel its waiter, but cannot discard this original
+        // owned task. Without the old slot, completion must await release.
+        // Each attempt is bounded; failures retain only this allocation and
+        // activity, never the Host or installed-Session registry.
+        let mut retry = std::time::Duration::from_millis(100);
+        loop {
+            if matches!(
+                tokio::time::timeout(
+                    crate::mcp::sessions::MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT,
+                    allocation.revoke_and_wait(),
+                )
+                .await,
+                Ok(Ok(()))
+            ) {
+                return handoff;
+            }
+            tracing::warn!("original Platform MCP preparation is awaiting release acknowledgement");
+            tokio::time::sleep(retry).await;
+            retry = (retry * 2).min(std::time::Duration::from_secs(30));
+        }
+    }
+}
+
 impl<S: SessionMcpStates> McpStagingOwner<S> {
     pub(super) fn begin(
         slots: &Arc<S>,
@@ -67,6 +135,7 @@ impl<S: SessionMcpStates> McpStagingOwner<S> {
             server: None,
             native_wiring: None,
             mcp_process: None,
+            platform_egress: None,
             staging: Some(McpStagingActivity::default()),
             drain: Arc::new(tokio::sync::Mutex::new(())),
             state: McpProjectionState::Staging,
@@ -152,6 +221,107 @@ impl<S: SessionMcpStates> McpStagingOwner<S> {
 
     pub(super) fn selection(&self) -> &McpGenerationProjection {
         &self.projection
+    }
+
+    /// Install the original release capability before provision can issue a
+    /// route. A response lost or refused after the wait retains that owner.
+    pub(super) async fn provision_platform(
+        &mut self,
+        provisioner: &dyn awaken_credential_materializer::PlatformMcpEgressProvisioner,
+        admission: StagingAdmission,
+        clock: &dyn awaken_time::WallClock,
+        preparation: &mut Option<PlatformMcpPreparation>,
+    ) -> Result<awaken_credential_materializer::MediatedMcpRoute, RunError> {
+        let request = &self.projection.request;
+        let (Some(access), Some(holder), Some(upstream_url)) = (
+            request.credential.as_ref(),
+            request.selected_plaintext_holder.as_ref(),
+            request.target.http_url(),
+        ) else {
+            return Err(RunError::classified(
+                "mcp_credential_binding_invalid",
+                "Platform MCP preparation requires its original HTTP credential and holder",
+            ));
+        };
+        let allocation =
+            provisioner.prepare(awaken_credential_materializer::PlatformMcpEgressRequest {
+                holder,
+                credential: &access.credential,
+                workspace_id: &request.workspace_id,
+                session_id: request.generation.session_id().as_str(),
+                attachment_id: &request.generation.attachment_id().0,
+                generation: request.generation.generation().version(),
+                realization_id: &request.realization_id,
+                stage_idempotency_key: &request.stage_idempotency_key,
+                runtime_incarnation: request.generation.runtime_incarnation(),
+                lease_epoch: request.generation.lease_epoch().get(),
+                upstream_url,
+            });
+        let owner = crate::mcp_material::McpPlatformEgress::new(allocation.clone());
+        self.update(admission, clock, |projection| {
+            if projection.platform_egress.is_some() {
+                return Err(stale_owner());
+            }
+            projection.platform_egress = Some(owner.clone());
+            Ok(())
+        })?;
+        self.projection.platform_egress = Some(owner);
+        *preparation = Some(PlatformMcpPreparation {
+            allocation: allocation.clone(),
+            generation: self.projection.request.generation.clone(),
+            drain: self.projection.drain.clone(),
+            activity: self
+                .projection
+                .staging
+                .take()
+                .expect("original preparation activity")
+                .guard(),
+        });
+        let route = allocation.provision().await.map_err(|error| {
+            RunError::unavailable_classified(
+                "mcp_gateway_route_unavailable",
+                format!(
+                    "mcp server `{}` mediated route is unavailable: {error}",
+                    self.projection.request.name
+                ),
+            )
+        })?;
+        // Capturing cleanup material is valid after admission closes. Only the
+        // exact original allocation may acquire this late physical result;
+        // publication still crosses the ordinary authorization check below.
+        self.slots
+            .modify_mcp(
+                self.projection.request.generation.session_id().as_str(),
+                |mcp| {
+                    let selected = mcp
+                        .projections
+                        .iter_mut()
+                        .find(|p| self.selects(p))
+                        .ok_or_else(stale_owner)?;
+                    if !matches!(
+                        selected.state,
+                        McpProjectionState::Staging | McpProjectionState::Draining
+                    ) {
+                        return Err(stale_owner());
+                    }
+                    let owner = selected.platform_egress.as_mut().ok_or_else(stale_owner)?;
+                    if owner
+                        .route
+                        .as_ref()
+                        .is_some_and(|existing| existing != &route)
+                    {
+                        return Err(stale_owner());
+                    }
+                    owner.route = Some(route.clone());
+                    Ok(())
+                },
+            )
+            .map_err(run_error)?
+            .ok_or_else(stale_owner)??;
+        if let Some(owner) = self.projection.platform_egress.as_mut() {
+            owner.route = Some(route.clone());
+        }
+        Ok(route)
     }
 
     pub(super) fn prepare_stdio(
@@ -253,7 +423,10 @@ impl<S: SessionMcpStates> Drop for McpStagingOwner<S> {
                     if let Some(selected) = mcp.projections.iter_mut().find(|p| self.selects(p))
                         && selected.state == McpProjectionState::Staging
                     {
-                        if selected.mcp_process.is_some() || selected.native_wiring.is_some() {
+                        if selected.mcp_process.is_some()
+                            || selected.native_wiring.is_some()
+                            || selected.platform_egress.is_some()
+                        {
                             selected.state = McpProjectionState::Draining;
                         } else {
                             selected.server = None;
