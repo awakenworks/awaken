@@ -317,15 +317,15 @@ impl ManagedSessionRootFixture {
                 );
                 let runtime = managed.session_execution_roles();
                 Arc::new(
-                    awaken_session_application::SessionApplicationBuilder::fixture(
+                    awaken_session_application::SessionApplicationBuilder::new(
                         runtime,
-                        managed.run_assembly.clone(),
                         self.persistence
                             .lock()
                             .unwrap()
                             .take()
                             .expect("one selected Persistence"),
                         environments,
+                        awaken_session_application::SessionExecutionAdmission::fixture(),
                         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                     )
                     .configuration(configuration)

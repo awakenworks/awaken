@@ -249,7 +249,7 @@ impl crate::RunAssembly {
             .mcp_generation_root_authority(generation)
     }
 
-    /// Drive an initial Worker-assigned Session through the same phase driver
+    /// Drive Worker-assigned Session preparation through the same phase driver
     /// used by claimed Runs, but without opening a Run or model operation.
     pub async fn prepare_session_without_run(
         &self,

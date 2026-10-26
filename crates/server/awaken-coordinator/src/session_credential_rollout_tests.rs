@@ -43,6 +43,7 @@ async fn current_published_credential_replay_does_not_park_an_already_running_se
     // R2 older pin, R3 missing acknowledgement, R4 requested/failed generation,
     // R5 revocation -> Pending and zero root writes until the root is idle.
     // These use the real repository/adoption and only the physical Runtime fake.
+    // R6 Create of that same published source has the same zero-write evidence.
     for (rule, state, acknowledged, version, operation, converged) in [
         (
             "R1",
@@ -91,6 +92,14 @@ async fn current_published_credential_replay_does_not_park_an_already_running_se
             1,
             ManagedCredentialOperation::Archive,
             false,
+        ),
+        (
+            "R6",
+            McpAttachmentState::Active,
+            true,
+            1,
+            ManagedCredentialOperation::Create,
+            true,
         ),
     ] {
         let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =

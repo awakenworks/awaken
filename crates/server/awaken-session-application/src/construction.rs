@@ -18,9 +18,8 @@ use awaken_tool_contract::ToolConfigurationCompiler;
 use std::sync::Arc;
 
 use crate::{
-    McpAttachmentRealizer, SessionApplication, SessionApplicationBuildError,
-    SessionApplicationConfiguration, SessionEnvironments, SessionExecutionAdmission,
-    SessionExecutor, SessionPersistence,
+    SessionApplication, SessionApplicationBuildError, SessionApplicationConfiguration,
+    SessionEnvironments, SessionExecutionAdmission, SessionExecutor, SessionPersistence,
 };
 
 /// Material ingress always includes the matching credential read capability.
@@ -126,15 +125,14 @@ impl SessionApplicationBuilder {
     /// Explicit partial assembly for fixtures only.
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(
-        runtime: impl Into<SessionExecutor>,
-        mcp: Arc<dyn McpAttachmentRealizer>,
+        runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+        mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: impl Into<SessionEnvironments>,
         tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     ) -> Self {
         Self::new(
-            runtime,
-            mcp,
+            SessionExecutor::colocated(runtime, mcp),
             persistence,
             environments,
             SessionExecutionAdmission::fixture(),
@@ -145,7 +143,6 @@ impl SessionApplicationBuilder {
     #[must_use]
     pub fn new(
         runtime: impl Into<SessionExecutor>,
-        mcp: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: impl Into<SessionEnvironments>,
         execution: SessionExecutionAdmission,
@@ -157,7 +154,6 @@ impl SessionApplicationBuilder {
             assembly: SessionAssembly {
                 runtime: runtime.into(),
                 tool_configuration_compiler,
-                mcp,
                 environments: environments.into(),
                 configuration: SessionApplicationConfiguration::default(),
                 credential_source: None,
@@ -280,7 +276,6 @@ pub(crate) struct SessionKernel {
 pub(crate) struct SessionAssembly {
     pub(crate) runtime: SessionExecutor,
     pub(crate) tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
-    pub(crate) mcp: Arc<dyn McpAttachmentRealizer>,
     pub(crate) environments: SessionEnvironments,
     pub(crate) configuration: SessionApplicationConfiguration,
     pub(crate) credential_source: Option<Arc<dyn SessionCredentialSource>>,
@@ -603,7 +598,6 @@ impl SessionAssembly {
                 lifecycle: kernel.lifecycle.clone(),
                 resource_references: foundation.resource_references.clone(),
                 placement: self.runtime.placement.clone(),
-                mcp: self.mcp.clone(),
                 executable_projections: foundation.executable_projections.clone(),
                 execution_admission: kernel.execution_admission.clone(),
                 local_realization_owner: self.configuration.local_realization_owner.clone(),

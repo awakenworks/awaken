@@ -564,6 +564,7 @@ impl ExecutorComponents {
             core: self.session_runs.clone(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::Colocated(
                 awaken_session_execution_contract::ColocatedRealizationRoles {
+                    mcp: self.run_assembly.clone(),
                     realization: self.run_assembly.clone(),
                     realization_effects: self.realization_executor.clone(),
                     environment: self.run_assembly.clone(),

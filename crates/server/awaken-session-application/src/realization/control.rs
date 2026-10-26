@@ -1130,7 +1130,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                         Err(SessionRepositoryError::NotFound) => continue,
                         Err(error) => return Err(repository_control(error)),
                     };
-                    if !current.is_run_free_initial_preparation_candidate() {
+                    if !current.is_run_free_preparation_candidate() {
                         continue;
                     }
                     let compiler = self.session_preparation_placement().ok_or_else(|| {
@@ -1171,7 +1171,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                         .map_err(repository_control)?;
                     if current_worker.state != awaken_worker_contract::WorkerState::Ready
                         || current_root.revision != directive.projection.revision
-                        || !current_root.is_run_free_initial_preparation_candidate()
+                        || !current_root.is_run_free_preparation_candidate()
                         || awaken_worker_contract::can_claim(
                             &current_worker.manifest,
                             &compiler.requirements(&current_root)?,
