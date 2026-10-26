@@ -32,6 +32,8 @@ const WORKER_BOOTSTRAP_CLOSE_PERMISSION: &str = "worker:close-bootstrap";
 pub const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
 pub use awaken_worker_contract::WORKER_RELAY_DESTINATION_PATH;
 #[cfg(all(test, feature = "test-support"))]
+mod occupancy_tests;
+#[cfg(all(test, feature = "test-support"))]
 mod relay_tests;
 /// Total per-attempt deadline for one private control-plane call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,8 +51,8 @@ pub(crate) struct DomainState {
     pub(crate) directory: Arc<dyn WorkerDirectory>,
     /// The durable dispatch authority whose physical attempts the read judges.
     pub(crate) dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
-    pub(crate) environments:
-        Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
+    /// Incarnation-qualified occupancy from the original WorkQueue authority.
+    pub(crate) work_claims: Arc<dyn awaken_executable_environment_contract::WorkerLeaseObservation>,
     pub(crate) session_queries: Arc<awaken_session_application::SessionQueries>,
     pub(crate) worker_occupancy: Arc<awaken_session_application::SessionWorkerOccupancy>,
     pub(crate) relay_targets: Option<Arc<dyn awaken_worker_contract::WorkerRelayTargetObserver>>,
@@ -473,7 +475,7 @@ async fn handle_domain(
                 );
             }
         };
-    let work_claims_active = match state.environments.has_worker_owner_claims(&owner).await {
+    let work_claims_active = match state.work_claims.has_owner_claims(&owner).await {
         Ok(active) => active,
         Err(error) => {
             return domain_read_failure(
