@@ -16,7 +16,8 @@ import uuid
 
 from native_services import NatsService, sha256
 from _native_postgres import PostgresService
-from _native_postgres_scopes import POSTGRES_PACKAGES, postgres_plan
+from _native_postgres_gap_policy import postgres_product_gap_report, postgres_work_limitations
+from _native_postgres_scopes import POSTGRES_SELECTORS, postgres_phases, postgres_plan
 from _native_s3 import MinioService
 from _native_recovery_postgres import ArchivePrimary
 from _native_recovery_drill import run_recovery
@@ -28,7 +29,7 @@ def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(allow_abbrev=False)
     p.add_argument("--service",choices=["nats", "postgres", "s3"],required=True)
     p.add_argument("--nats-bin",type=Path,help="native Windows NATS server executable")
-    p.add_argument("--postgres-scope",choices=sorted(POSTGRES_PACKAGES),default="core",
+    p.add_argument("--postgres-scope",choices=sorted(POSTGRES_SELECTORS),default="core",
                    help="required domain group on the owned PostgreSQL fixture")
     p.add_argument("--postgres-bin",type=Path,help="directory of native Windows PostgreSQL 16 bin tools")
     p.add_argument("--minio-bin",type=Path,help="native Windows MinIO executable")
@@ -40,14 +41,17 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def reconcile_receipts(log: str, source_digest: str, *, service: str, postgres_scope: str = "core") -> list[dict]:
+def reconcile_receipts(log: str, source_digest: str, *, service: str, fixture_owner: str, postgres_scope: str = "core") -> list[dict]:
     import check_rust_test_execution as q
     from collections import Counter
     references=re.findall(r"^execution evidence: (.+)$",log,re.M)
     if service not in ("nats", "postgres", "s3"): raise ValueError("unsupported native service receipt kind")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", fixture_owner):
+        raise ValueError("native reconciliation requires the current owned fixture")
+    phases=postgres_phases(postgres_scope,ROOT) if service == "postgres" else ()
     postgres = service == "postgres"
     s3 = service == "s3"
-    expected_count=len(POSTGRES_PACKAGES[postgres_scope]) if postgres else {"nats":2,"s3":4}[service]
+    expected_count=len(phases) if postgres else {"nats":2,"s3":4}[service]
     if len(references)!=expected_count:
         if s3: raise ValueError("S3 gate must return all four phase receipts")
         raise ValueError(f"PostgreSQL {postgres_scope} gate must return all {expected_count} required domain receipts" if postgres
@@ -55,17 +59,38 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str, postgres_s
     receipts=[]
     observed=set()
     packages=[]
-    for reference in references:
+    directories=set()
+    for ordinal,reference in enumerate(references):
         value=reference.strip()
         if re.match(r"^/[a-zA-Z]/",value): value=value[1]+":"+value[2:]
-        directory=Path(value).resolve(strict=True)
+        declared=Path(value)
+        if declared.is_symlink() or declared.is_junction():
+            raise ValueError("native service receipt must not be a linked directory")
+        directory=declared.resolve(strict=True)
+        if directory in directories:
+            raise ValueError("native service gate duplicated a phase receipt directory")
+        directories.add(directory)
         expected_parent=Path(os.environ.get("CARGO_TARGET_DIR",str(ROOT/"target"))).resolve()/"test-timings"
         if directory.parent!=expected_parent or directory.is_symlink():
             raise ValueError("native service receipt is outside the current Cargo evidence directory")
-        document=json.loads((directory/"results.json").read_text(encoding="utf-8"))
+        receipt_bytes=(directory/"results.json").read_bytes()
+        document=json.loads(receipt_bytes)
         if (document.get("status")!="passed" or document.get("exit_code")!=0
                 or document.get("source_unchanged") is not True or document.get("source_digest")!=source_digest):
             raise ValueError("native service execution receipt does not qualify this source")
+        runtime=document.get("execution_inputs")
+        if not isinstance(runtime,dict) or runtime.get("fixture")!={"kind":service,"owner":fixture_owner}:
+            raise ValueError("native service execution does not bind the current owned fixture")
+        if postgres:
+            phase=phases[ordinal]
+            expected=q.selection_commands(list(phase.arguments))
+            actual_signature=q.selection_commands(document["arguments"])
+            if actual_signature!=expected:
+                raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend phase: "+phase.identity)
+            if document.get("required_cases")!=expected[1]:
+                raise ValueError("PostgreSQL receipt changed the canonical required case floors: "+phase.identity)
+            if runtime.get("crash_backend")!=dict(phase.environment).get("AWAKEN_CRASH_BACKEND"):
+                raise ValueError("PostgreSQL phase selected the wrong runtime backend: "+phase.identity)
         if postgres and not (document.get("postgres_fixture_required") is True and document.get("postgres_fixture_configured") is True):
             raise ValueError("PostgreSQL execution did not require the owned live fixture")
         results=(directory/"results.log").read_text(encoding="utf-8",errors="replace")
@@ -85,13 +110,11 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str, postgres_s
             raise ValueError("S3 conformance did not report actual live protocol assertions")
         if s3 and any("minio_rotation" in case or "minio_rotated" in case for case in document["selected_cases"]) and "VERIFIED live S3 fixture" not in results:
             raise ValueError("S3 credential phase did not report actual live protocol assertions")
-        receipts.append({"directory":str(directory),"receipt_sha256":sha256(directory/"results.json"),
+        if (directory/"results.json").read_bytes()!=receipt_bytes:
+            raise ValueError("native service receipt changed during verification")
+        receipts.append({"directory":str(directory),"receipt_sha256":hashlib.sha256(receipt_bytes).hexdigest(),
             "selected_cases":document["selected_cases"]})
-    if postgres:
-        expected=Counter(POSTGRES_PACKAGES[postgres_scope])
-        if Counter(packages)!=expected:
-            raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend domain")
-    elif s3:
+    if s3:
         expected = [frozenset(("object::s3_fixture::tests::required_switch_has_one_canonical_value",
             "object::s3_fixture::tests::admission_table_preserves_values_and_rejects_missing_invalid_or_empty_fields")),
             frozenset(("object::tests::minio_conforms", "object::tests::minio_conforms_fixture_admission")),
@@ -99,22 +122,22 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str, postgres_s
             frozenset(("object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects",))]
         if Counter(frozenset(row["selected_cases"]) for row in receipts) != Counter(expected) or packages != ["awaken-file-store"] * 4:
             raise ValueError("S3 gate omitted or duplicated a required credential/conformance phase")
-    elif not {"wake::nats_tests::nats_wake_signal_notifies_a_waiter",
+    elif service == "nats" and not {"wake::nats_tests::nats_wake_signal_notifies_a_waiter",
             "hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable"}<=observed:
         raise ValueError("NATS gate omitted a required protocol law")
     return receipts
 
 
-def reconcile_nats(log: str, source_digest: str) -> list[dict]:
-    return reconcile_receipts(log,source_digest,service="nats")
+def reconcile_nats(log: str, source_digest: str, *, fixture_owner: str) -> list[dict]:
+    return reconcile_receipts(log,source_digest,service="nats",fixture_owner=fixture_owner)
 
 
-def reconcile_postgres(log: str, source_digest: str, scope: str = "core") -> list[dict]:
-    return reconcile_receipts(log,source_digest,service="postgres",postgres_scope=scope)
+def reconcile_postgres(log: str, source_digest: str, scope: str = "core", *, fixture_owner: str) -> list[dict]:
+    return reconcile_receipts(log,source_digest,service="postgres",postgres_scope=scope,fixture_owner=fixture_owner)
 
 
-def reconcile_s3(log: str, source_digest: str) -> list[dict]:
-    return reconcile_receipts(log,source_digest,service="s3")
+def reconcile_s3(log: str, source_digest: str, *, fixture_owner: str) -> list[dict]:
+    return reconcile_receipts(log,source_digest,service="s3",fixture_owner=fixture_owner)
 
 
 def _save_record(output: Path, record: dict) -> None:
@@ -161,6 +184,8 @@ def worker(args: argparse.Namespace) -> int:
                 service=PostgresService(args.postgres_bin,root/"postgres",out,owner)
             plan=postgres_plan(args.postgres_scope)
             record["postgres_scope"]=args.postgres_scope
+            record["unverified_product_gaps"]=postgres_product_gap_report(args.postgres_scope,ROOT)
+            record["unaccepted_limitations"]=postgres_work_limitations(args.postgres_scope,ROOT)
         elif args.service=="s3":
             service=MinioService(args.minio_bin,args.mc_bin,root/"minio",out,owner,
                 ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")
@@ -178,6 +203,9 @@ def worker(args: argparse.Namespace) -> int:
         for name in list(environment):
             if name.upper().startswith(("AWAKEN_TEST_", "AWS_", "MINIO_", "MC_HOST_")):
                 environment.pop(name,None)
+        environment.pop("AWAKEN_CRASH_BACKEND",None)
+        environment.update(AWAKEN_TEST_FIXTURE_KIND=args.service,AWAKEN_TEST_FIXTURE_OWNER=owner)
+        record["fixture_subject"]={"kind":args.service,"owner":owner}
         if args.service=="nats":
             environment.update(AWAKEN_TEST_NATS_URL=record["fixture"]["url"],AWAKEN_TEST_REQUIRE_NATS="1")
         elif args.service=="postgres":
@@ -207,8 +235,8 @@ def worker(args: argparse.Namespace) -> int:
             record["final_fixture"]=service.receipt()
             record["credential_rotation_applied"]=service.rotated
         reconcile={"nats":reconcile_nats,"postgres":reconcile_postgres,"s3":reconcile_s3}[args.service]
-        record["execution"]=(reconcile_postgres("\n".join(logs),digest,args.postgres_scope)
-                             if args.service=="postgres" else reconcile("\n".join(logs),digest))
+        record["execution"]=(reconcile_postgres("\n".join(logs),digest,args.postgres_scope,fixture_owner=owner)
+                             if args.service=="postgres" else reconcile("\n".join(logs),digest,fixture_owner=owner))
         if recovery_objects is not None:
             record["recovery"]=run_recovery(service,recovery_objects,root/"physical-recovery",out)
         if working_subject()[0]!=digest:

@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 import check_native_services as gate
+from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 from _native_postgres_scopes import postgres_plan
 
 INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
@@ -138,17 +139,7 @@ pg_required_test() {
 
 class StorageReceiptTests(unittest.TestCase):
     def receipts(self,base):
-        paths=[]
-        for index,package in enumerate(PACKAGES):
-            path=base/"test-timings"/str(index);path.mkdir(parents=True);case="storage_law_"+str(index)
-            doc={"status":"passed","exit_code":0,"source_unchanged":True,"source_digest":"source",
-                 "selected_cases":[case],"executed_cases":[[case,"ok"]],"required_cases":[case],
-                 "arguments":["-p",package],"postgres_fixture_required":True,"postgres_fixture_configured":True}
-            (path/"results.json").write_text(json.dumps(doc),encoding="utf-8")
-            (path/"list.log").write_text(case+": test\n",encoding="utf-8")
-            (path/"results.log").write_text("test "+case+" ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n",encoding="utf-8")
-            paths.append(path)
-        return paths
+        return postgres_receipts(base,"storage")
 
     def test_all_domains_require_exact_source_live_fixture_and_actual_executions(self):
         import check_rust_test_execution as q
@@ -157,22 +148,22 @@ class StorageReceiptTests(unittest.TestCase):
             def references(rows):return "".join("execution evidence: "+str(path)+"\n" for path in rows)
             log=references(paths)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log,"source","storage")),8)
+                self.assertEqual(len(gate.reconcile_postgres(log,"source","storage",fixture_owner=FIXTURE_OWNER)),8)
                 for rows in (paths[:-1],[*paths[:-1],paths[-2]]):
-                    with self.assertRaises(ValueError):gate.reconcile_postgres(references(rows),"source","storage")
-                with self.assertRaises(ValueError):gate.reconcile_postgres(log,"wrong-source","storage")
+                    with self.assertRaises(ValueError):gate.reconcile_postgres(references(rows),"source","storage",fixture_owner=FIXTURE_OWNER)
+                with self.assertRaises(ValueError):gate.reconcile_postgres(log,"wrong-source","storage",fixture_owner=FIXTURE_OWNER)
                 path=paths[0]/"results.json";original=json.loads(path.read_text())
                 changes=[{"arguments":["-p","awaken-memory-store"]}]
                 for key in ("postgres_fixture_required","postgres_fixture_configured"):
                     changes.extend({key:value} for value in (False,"1",None))
                 for changed in changes:
                     value=copy.deepcopy(original);value.update(changed);path.write_text(json.dumps(value),encoding="utf-8")
-                    with self.subTest(change=changed),self.assertRaises(ValueError):gate.reconcile_postgres(log,"source","storage")
+                    with self.subTest(change=changed),self.assertRaises(ValueError):gate.reconcile_postgres(log,"source","storage",fixture_owner=FIXTURE_OWNER)
                 path.write_text(json.dumps(original),encoding="utf-8")
                 path=paths[0]/"results.log";original_output=path.read_text()
                 for changed in (original_output.replace(" ... ok"," ... ignored"),original_output+"SKIPPED PostgreSQL fixture\n"):
                     path.write_text(changed,encoding="utf-8")
-                    with self.assertRaises(ValueError):gate.reconcile_postgres(log,"source","storage")
+                    with self.assertRaises(ValueError):gate.reconcile_postgres(log,"source","storage",fixture_owner=FIXTURE_OWNER)
 
 
 if __name__=="__main__":

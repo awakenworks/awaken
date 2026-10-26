@@ -162,7 +162,7 @@ pre-commit:
     # counter-examples; a change to what they read re-proves the refusals.
     session-acceptance-gates:
       # >>> generated glob from test_session_acceptance.py INPUT_GLOBS — do not edit
-      glob: "{Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,scripts/ci/*.json,scripts/ci/*.py}"
+      glob: "{.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py}"
       # <<< generated glob
       run: python3 scripts/ci/test_session_acceptance.py
 
@@ -175,10 +175,18 @@ pre-commit:
       run: python3 scripts/ci/check_test_orchestration.py --self-test && python3 scripts/ci/check_test_orchestration.py
 
     affected-rust-plan:
-      # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/modularity_baseline.json,scripts/ci/nextest_execution.py,scripts/ci/test.sh,scripts/ci/test_inventory.txt,scripts/e2e/sandbox_capability_suite.sh,tests/**,xtask/**}"
+      # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/modularity_baseline.json,scripts/ci/test_inventory.txt,tests/**,xtask/**}"
       # <<< generated glob
-      run: python3 scripts/ci/rust_test_plan.py --self-test && python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test
+      run: python3 scripts/ci/rust_test_plan.py --self-test
+
+    # Fixture-based execution regressions follow their own script/tool inputs.
+    # Ordinary Rust edits still run the impact planner and every live gate.
+    rust-execution-framework:
+      # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,scripts/e2e/sandbox_capability_suite.sh}"
+      # <<< generated glob
+      run: python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test
 
     # 3b. A failed read of durable state may never become an absence. The
     #     recovery path is derived -- every production module that names a
@@ -372,10 +380,10 @@ pre-commit:
       run: python3 scripts/ci/test_native_recording.py
 
     postgres-storage-selection:
-      # >>> generated glob from test_postgres_storage.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      # >>> generated glob from _postgres_phase_plan.py, test_postgres_storage.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**,scripts/ci/pg_tests.sh}"
       # <<< generated glob
-      run: python3 scripts/ci/test_postgres_storage.py
+      run: python3 scripts/ci/_postgres_phase_plan.py --self-test && python3 scripts/ci/test_postgres_storage.py
 
     postgres-resource-selection:
       # >>> generated glob from test_postgres_resources.py INPUT_GLOBS — do not edit

@@ -135,8 +135,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 515,
-        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
+        "line": 523,
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
       }
     ],
     "execution_witnesses": [
@@ -150,6 +150,17 @@
         "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
         "historical": false,
         "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
+      },
+      {
+        "evidence": "E43",
+        "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+        "package": "awaken-credential-materializer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "365606709d19819fde31221c6eef5b655addc30a",
+        "historical": false,
+        "log_sha256": "17901576599f4769360e2abd11b183ed938f75de62df204eb5e80fd8093c2dd7"
       }
     ],
     "relation": "covers_case_clauses",
@@ -162,13 +173,13 @@
         "negative_control": false
       }
     },
-    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets. Additional original Windows E43 witnesses retain their exact source/receipt identity; this merge is not a new execution receipt. Fresh merged-source Windows validation remains separately required.",
     "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt.",
     "id": "B257",
     "assertion_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 522
+        "line": 530
       }
     ]
   },
@@ -335,30 +346,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 528,
-        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
+        "line": 536,
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 552
+        "line": 560
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 557
+        "line": 565
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 566
-      },
-      {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 570
-      },
-      {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 576
+        "line": 574
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
@@ -366,15 +369,19 @@
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 579
-      },
-      {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 580
-      },
-      {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 585
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 590
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 591
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 596
       }
     ],
     "execution_witnesses": [

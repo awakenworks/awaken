@@ -24,9 +24,16 @@ NAMESPACE_PROCESSES = (
     "namespace::tests::opaque_processes_and_runtime_projections_share_the_workspace_root",
     "namespace::tests::spawn_agent_launches_an_opaque_process_confined_by_bwrap",
 )
+CLAIMED_MATERIALIZATION = (
+    "t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+    "t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+    "t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "current_authority_materializes_each_claimed_route_exactly_once",
+    "ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect",
+)
 
 
-def select(system: str, arguments: tuple[str, ...]) -> tuple[int, list[list[str]]]:
+def select(system: str, arguments: tuple[str, ...], *, gate_source: str | None = None) -> tuple[int, list[list[str]]]:
     # Only composition is under test. The real libtest evidence owner separately
     # rejects missing required cases, unavailable fixtures and skipped assertions.
     bash = bash_executable()
@@ -34,7 +41,7 @@ def select(system: str, arguments: tuple[str, ...]) -> tuple[int, list[list[str]
         root = Path(raw)
         ci = root / "scripts/ci"
         ci.mkdir(parents=True)
-        (root / GATE).write_bytes((ROOT / GATE).read_bytes())
+        (root / GATE).write_text(gate_source if gate_source is not None else (ROOT / GATE).read_text(encoding="utf-8"), encoding="utf-8")
         (ci / "_cargo_target.sh").write_text("""awaken_configure_cargo_target() { :; }
 awaken_unset_ambient_api_keys() { :; }
 awaken_append_repo_tools() { :; }
@@ -62,6 +69,12 @@ run_required_rust_tests() {
 
 
 class PortabilitySelectionTests(unittest.TestCase):
+    def assert_claimed_materialization_plan(self, calls: list[list[str]]) -> None:
+        selected = [call for call in calls if call[:2] == ["-p", "awaken-credential-materializer"]]
+        prefix = "tests::revocation_wait::"
+        self.assertEqual(selected, [["-p", "awaken-credential-materializer", "--lib", prefix,
+                                     *("--require-case=" + prefix + name for name in CLAIMED_MATERIALIZATION)]])
+
     def assert_realization_owner_plan(self, calls: list[list[str]]) -> None:
         # The source owner supplies the package and prompt identities. A crate
         # extraction must fail this cheap matrix before a long native build can
@@ -128,6 +141,7 @@ class PortabilitySelectionTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assert_terminal_plan(calls, False)
                 self.assert_realization_owner_plan(calls)
+                self.assert_claimed_materialization_plan(calls)
 
     def test_linux_supervision_requires_both_real_publication_cases(self) -> None:
         # P4 Linux plus explicit substrate gate: both names and ignored mode.
@@ -135,6 +149,26 @@ class PortabilitySelectionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assert_terminal_plan(calls, True)
         self.assert_realization_owner_plan(calls)
+        self.assert_claimed_materialization_plan(calls)
+
+    def test_each_claimed_materialization_floor_cannot_disappear_or_select_only_ignored(self) -> None:
+        source = (ROOT / GATE).read_text(encoding="utf-8")
+        code, calls = select("MINGW64_NT-10.0", ())
+        self.assertEqual(code, 0)
+        self.assert_claimed_materialization_plan(calls)
+        for name in CLAIMED_MATERIALIZATION:
+            floor = "--require-case=tests::revocation_wait::" + name
+            self.assertEqual(source.count(floor), 1)
+            with self.subTest(removed=name):
+                code, calls = select("MINGW64_NT-10.0", (), gate_source=source.replace(floor, ""))
+                self.assertEqual(code, 0)
+                with self.assertRaises(AssertionError):
+                    self.assert_claimed_materialization_plan(calls)
+        original = "--require-case=tests::revocation_wait::" + CLAIMED_MATERIALIZATION[-1]
+        code, calls = select("MINGW64_NT-10.0", (), gate_source=source.replace(original, original + " -- --ignored"))
+        self.assertEqual(code, 0)
+        with self.assertRaises(AssertionError):
+            self.assert_claimed_materialization_plan(calls)
 
     def test_non_linux_supervision_fails_before_any_test_selection(self) -> None:
         # P5/P6 unsupported OS: fail before even the portable run starts.

@@ -812,5 +812,69 @@
     "log_sha256": "b2c62493c48a00cd21bbce5ef0a45f5ded73a79bd8dace7268a609f9ce15be2e",
     "historical": false,
     "entry_sha256": "3eeb589a530ddd47be0197a968a4cae1c7379cef3a6d11ef0f7e68fc2c10dd37"
+  },
+  {
+    "id": "E42W",
+    "receipt": "target/session-acceptance-evidence/archive/e16bbe33906e3e27f971534f564cb4f85920d24d1a129b397fa4ecc38b15be15/receipt.json",
+    "receipt_sha256": "e16bbe33906e3e27f971534f564cb4f85920d24d1a129b397fa4ecc38b15be15",
+    "source": {
+      "head": "365606709d19819fde31221c6eef5b655addc30a",
+      "tree": "378314506bb72aab9ce81fcc84b80c715958a286",
+      "patch": "594cac7c915f30f7eadf0a8c4eca9b77ba83303678f42457f1a847bfcfb623be",
+      "status": "working tree: four files; receipt and ledger added after execution, never claimed tested"
+    },
+    "platform": "local Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "scope": "Current-claim credential materialization through both production provider and remote entrypoints. Real Vault authority with controlled SecretStore/ownership/receipt collaborators. No database/server/HTTP end-to-end claim.",
+    "argv": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--lib",
+      "--",
+      "--test-threads=1",
+      "--show-output"
+    ],
+    "executed_count": 27,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "0d9545c5a6815e4f860c31d9ee38f96833fb244969fbd804b9f36f3d11650d5d",
+    "historical": false,
+    "full_ci": false,
+    "entry_sha256": "5a800512a3d8f0792407be48ec985a9d05783889742eb070abd5bb6a3f761265"
+  },
+  {
+    "id": "E43",
+    "receipt": "target/session-acceptance-evidence/archive/2b34d71e7af55ae1b8330b860da7a7b543bef9399203cb981e02e3798b95428c/receipt.json",
+    "receipt_sha256": "2b34d71e7af55ae1b8330b860da7a7b543bef9399203cb981e02e3798b95428c",
+    "source": {
+      "head": "365606709d19819fde31221c6eef5b655addc30a",
+      "tree": "3529fb51bfcec99326adde7e20fc86aac9879504",
+      "patch": "ff69d265e55dab9dc4b4c9f4ae00da3507b28254bf0c6b699b74ce11b7fe33a8",
+      "status": "working source includes the four code/gate files and any earlier ledger/evidence; this new receipt and ledger update follow execution and are not claimed tested"
+    },
+    "platform": "local Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "scope": "Current-claim credential materialization through both production provider and remote entrypoints. Real Vault authority with controlled SecretStore/ownership/receipt collaborators. No database/server/HTTP end-to-end claim.",
+    "argv": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--lib",
+      "--",
+      "--test-threads=1",
+      "--show-output"
+    ],
+    "executed_count": 27,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "17901576599f4769360e2abd11b183ed938f75de62df204eb5e80fd8093c2dd7",
+    "historical": false,
+    "full_ci": false,
+    "entry_sha256": "0f16110f988ee440aecdfc6892e1328382fc03d1aec08eae391b8ff1498ab1d0"
   }
 ]

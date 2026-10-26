@@ -326,3 +326,234 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         "M2/E3 receipt remains the original command CAS"
     );
 }
+
+const RENEWAL_SOURCE: &str = "unkeyed-renewal-source";
+
+fn renewal_access(
+    revision: u64,
+    holder: &awaken_credential_contract::PlaintextHolder,
+) -> awaken_credential_contract::CredentialAccess {
+    use awaken_credential_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy,
+    };
+    CredentialAccess::new(
+        CredentialRef {
+            id: RENEWAL_SOURCE.into(),
+            revision,
+        },
+        CredentialMaterialSource::ControlPlaneReference,
+        CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        },
+        CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
+    )
+}
+
+struct RenewedMcpCredentialSource;
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::SessionCredentialSource for RenewedMcpCredentialSource {
+    async fn has_vault(&self, _: &str, _: &str) -> Result<bool, String> {
+        unreachable!("the explicit credential pin does not discover Vaults")
+    }
+
+    async fn mcp_credential_source_for_url(
+        &self,
+        _: &str,
+        _: &[String],
+        _: &str,
+    ) -> Result<Option<awaken_credential_contract::CredentialSourceId>, String> {
+        unreachable!("the explicit pin must not fall back to URL discovery")
+    }
+
+    async fn mcp_access_for_source(
+        &self,
+        source: &awaken_credential_contract::CredentialSourceId,
+        workspace: &str,
+        target: &McpTarget,
+        holder: &awaken_credential_contract::PlaintextHolder,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+        assert_eq!(source.0, RENEWAL_SOURCE);
+        assert_eq!(target.http_url(), Some("https://docs.example.test/mcp"));
+        let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        };
+        assert_eq!(
+            binding,
+            &awaken_credential_contract::CredentialMaterialBinding::for_target(
+                workspace, target, &usage,
+            )
+        );
+        Ok(renewal_access(4, holder))
+    }
+
+    async fn credential_access_for_source(
+        &self,
+        _: &awaken_credential_contract::CredentialSourceId,
+        _: &str,
+        _: awaken_credential_contract::SessionCredentialAccessRequest,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+        unreachable!("MCP renewal must use its existing MCP credential role")
+    }
+}
+
+async fn assert_unkeyed_credential_renewal(legacy: bool) {
+    // C1 fresh accepted versus genuinely absent legacy history; C2 only the
+    // exact credential revision changes; C3 no idempotency key and no authoring
+    // field change. Both rows must commit through the application before any
+    // realization, retaining identical Agent/history values. Replacing the
+    // mcp_changed commit predicate with changes.mcp() must fail these rows;
+    // command_record.is_some() cannot conceal that regression here.
+    let id = format!("unkeyed-credential-renewal-{legacy}");
+    let repo = authority_repository("unkeyed renewal SQLite repository").await;
+    let original = persisted(&id, false, "idle");
+    let baseline = original.frozen_baseline().unwrap().clone();
+    let holder = baseline
+        .environment
+        .credential_realization
+        .mcp_holder
+        .clone();
+    let target = McpTarget::parse_http("https://docs.example.test/mcp").unwrap();
+    let mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+        vec![
+            awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                name: "docs".into(),
+                target: target.clone(),
+                prompts_as_skills: false,
+                credential: Some(renewal_access(3, &holder)),
+                origin: crate::session_mcp::McpAttachmentOrigin::Session,
+            },
+        ],
+        Some(holder),
+    )
+    .unwrap();
+    let mut root =
+        awaken_session_contract::SessionAggregate::try_from(PersistedSession::frozen_with_budget(
+            &id,
+            baseline.clone(),
+            original.resources,
+            mcp,
+            original.title,
+            original.metadata,
+            original.tools,
+            original.budget,
+        ))
+        .unwrap();
+    let mut configuration = crate::agent_configuration::agent_configuration_from_profile(
+        &baseline.agent_id,
+        awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+            source_revision: baseline.agent_revision.unwrap_or(0),
+            model: Some(baseline.model.clone()),
+            ..Default::default()
+        },
+    );
+    if let Some(selected) = &baseline.model_override {
+        configuration.model.inference = selected.inference.clone();
+        configuration.model.source =
+            awaken_session_configuration_contract::SessionModelSource::Override;
+    }
+    root.record_initial_agent_configuration(Box::new(configuration))
+        .unwrap();
+    let mut session = root.into_snapshot();
+    session.execution = SessionExecutionState::Idle;
+    if legacy {
+        let mut wire = serde_json::to_value(session).unwrap();
+        for field in ["initial_agent_configuration", "update_history"] {
+            wire.as_object_mut().unwrap().remove(field);
+        }
+        session = serde_json::from_value(wire).unwrap();
+    }
+    create(repo.as_ref(), session).await;
+    let session_id = SessionId::from(id.as_str());
+    let before = repo.get(&session_id).await.unwrap();
+    assert_eq!(
+        awaken_session_contract::SessionUpdateHistory::agent_configuration(&before).is_some(),
+        !legacy,
+    );
+    let generation_before = before.mcp.desired_attachments()[0].generation.version();
+    let mut app = SessionApplicationBuilder::fixture(
+        Arc::new(NoopRuntime),
+        Arc::new(NoopMcpRealizer),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    )
+    .build()
+    .unwrap();
+    app.set_credential_source(Arc::new(RenewedMcpCredentialSource));
+    let outcome = app
+        .update_commands
+        .update_session(
+            &session_id,
+            SessionUpdateCommand {
+                title: None,
+                metadata: None,
+                budget: None,
+                tools: None,
+                mcp_update: Some(SessionMcpUpdate::CredentialLifecycle {
+                    source_id: RENEWAL_SOURCE.into(),
+                    revoked: false,
+                    candidates: vec![McpAttachmentCandidate {
+                        name: "docs".into(),
+                        target: McpAttachmentCandidateTarget::Normalized(target),
+                        prompts_as_skills: false,
+                        published_credential: Some((RENEWAL_SOURCE.into(), 4)),
+                        origin: crate::session_mcp::McpAttachmentOrigin::Session,
+                    }],
+                }),
+                idempotency_key: None,
+                request_fingerprint: "unkeyed-credential-revision-4".into(),
+                if_match: Some(before.revision),
+            },
+        )
+        .await
+        .expect("credential-only update commits through its application owner");
+    assert_eq!(outcome.changes, SessionUpdateChanges::default());
+    assert!(outcome.command_applied);
+    assert_eq!(
+        outcome.command_revision.0,
+        before.revision.0 + 1,
+        "credential-only command must commit before realization"
+    );
+    let after = repo.get(&session_id).await.unwrap();
+    let desired = after.mcp.desired_attachments();
+    assert_eq!(desired.len(), 1);
+    let pin = desired[0].credential.as_ref().unwrap();
+    assert_eq!(pin.credential.id, RENEWAL_SOURCE);
+    assert_eq!(
+        pin.credential.revision, 4,
+        "actual durable credential advance"
+    );
+    assert!(desired[0].generation.version() > generation_before);
+    assert_ne!(
+        after.mcp.desired_fingerprint,
+        before.mcp.desired_fingerprint
+    );
+    assert_eq!(
+        after.configured_mcp_servers(),
+        before.configured_mcp_servers()
+    );
+    assert_eq!(
+        awaken_session_contract::SessionUpdateHistory::for_session(&after),
+        awaken_session_contract::SessionUpdateHistory::for_session(&before),
+    );
+    assert_eq!(
+        awaken_session_contract::SessionUpdateHistory::agent_configuration(&after),
+        awaken_session_contract::SessionUpdateHistory::agent_configuration(&before),
+    );
+}
+
+#[tokio::test]
+async fn credential_renewal_without_idempotency_commits_operational_mcp_without_agent_fact() {
+    assert_unkeyed_credential_renewal(false).await;
+}
+
+#[tokio::test]
+async fn legacy_credential_renewal_without_idempotency_commits_operational_mcp_without_agent_fact()
+{
+    assert_unkeyed_credential_renewal(true).await;
+}
