@@ -1631,7 +1631,13 @@ async fn unreadable_committed_extraction_source_never_materializes_a_model() {
     let outcome = unavailable_extractor(&bound, materializations.clone())
         .extract_mutations(&intent)
         .await;
-    assert!(matches!(outcome, MemoryExtractionOutcome::Retryable { .. }));
+    let MemoryExtractionOutcome::Retryable { reason } = outcome else {
+        panic!("closed committed source must stay retryable: {outcome:?}");
+    };
+    assert!(
+        reason.contains("closed"),
+        "the real closed-pool read must be reached before model preparation: {reason}"
+    );
     assert_eq!(materializations.load(Ordering::SeqCst), 0);
     assert_eq!(
         intents.get_extraction(&intent.intent_id).await.unwrap(),

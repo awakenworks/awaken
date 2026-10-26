@@ -302,6 +302,13 @@ consumed_packages() {
 scoped_step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
   "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
 
+# The Host's test fixtures must name their own dev capabilities. The maximal
+# workspace enables store test-support through other members and can hide an
+# undeclared fixture constructor. Compile this package's tests independently;
+# keep the production-only check above so dev capabilities cannot mask CR1.
+scoped_step "runtime-host-neutral-tests" "declare every fixture capability in the consuming crate's dev dependencies" \
+  "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features --tests "${locked[@]}"
+
 # Compile-surface decision table: CR10 the Managed HTTP library is a production
 # root without test-support; CR11 it calls a fixture-only Session accessor;
 # CR12 workspace tests enable test-support through feature unification.
