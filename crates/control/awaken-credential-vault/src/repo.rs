@@ -143,6 +143,7 @@ use crate::{
 };
 
 mod application_mcp;
+pub(crate) use application_mcp::prepare_application_mcp_bearer_rotation_with_receipt_recovery;
 mod cleanup;
 pub use application_mcp::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
@@ -1219,8 +1220,8 @@ pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError>;
     /// Read one exact durable rollout through its primary identity. Request
-    /// paths use this bounded lookup; only the supervised reconciler enumerates
-    /// the full outbox.
+    /// paths use this bounded lookup for pending or retained acknowledged
+    /// events; only the supervised reconciler enumerates the pending outbox.
     async fn managed_rollout(
         &self,
         event_id: &str,
@@ -1228,6 +1229,14 @@ pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError>;
+    /// Re-arm one exact retained event before a current adoption check. Absence
+    /// or a changed payload is not proof of delivery and must fail closed.
+    async fn rearm_managed_rollout(
+        &self,
+        rollout: &ManagedCredentialRollout,
+    ) -> Result<(), CredentialError>;
+    /// Acknowledge the exact event and retain its payload for future replay.
+    /// Only older acknowledged events of the same complete lineage are pruned.
     async fn complete_managed_rollout(
         &self,
         rollout: &ManagedCredentialRollout,

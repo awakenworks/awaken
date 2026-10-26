@@ -163,7 +163,7 @@ WHERE data->'created_at' IS NULL;";
 
 /// Build the credential-schema migration bundle (prefix `credential`).
 pub fn credential_bundle() -> Result<MigrationBundle, MigrationError> {
-    credential_bundle_through(SPECS.len() + 1)
+    credential_bundle_through(SPECS.len() + 2)
 }
 
 /// The bundle as published through `count` migrations. Tests use a prefix to
@@ -179,6 +179,20 @@ fn credential_bundle_through(count: usize) -> Result<MigrationBundle, MigrationE
             TIMESTAMP_BACKFILL_DESCRIPTION,
             TIMESTAMP_BACKFILL_POSTGRES,
             TIMESTAMP_BACKFILL_SQLITE,
+        )?);
+    }
+    if count > SPECS.len() + 1 {
+        migrations.push(Migration::per_dialect(
+            10,
+            "managed credential delivery: retain exact acknowledged receipts for current replay",
+            "ALTER TABLE {prefix}_managed_credential_rollout ADD COLUMN delivered BOOLEAN NOT NULL DEFAULT FALSE; \
+             CREATE INDEX {prefix}_rollout_pending ON {prefix}_managed_credential_rollout (created_at,event_id) WHERE delivered=FALSE; \
+             CREATE INDEX {prefix}_rollout_ack_source ON {prefix}_managed_credential_rollout ((data->>'workspace_id'),(data->>'source_id')) WHERE delivered=TRUE;",
+            "ALTER TABLE {prefix}_managed_credential_rollout ADD COLUMN delivered BOOLEAN NOT NULL DEFAULT FALSE; \
+             CREATE INDEX {prefix}_rollout_pending ON {prefix}_managed_credential_rollout (created_at,event_id) WHERE delivered=FALSE; \
+             CREATE INDEX {prefix}_rollout_ack_source ON {prefix}_managed_credential_rollout \
+             ((CASE WHEN json_valid(data) THEN json_extract(data,'$.workspace_id') END), \
+              (CASE WHEN json_valid(data) THEN json_extract(data,'$.source_id') END)) WHERE delivered=TRUE;",
         )?);
     }
     MigrationBundle::new(BUNDLE_ID, migrations)

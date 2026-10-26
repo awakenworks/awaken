@@ -124,6 +124,33 @@ pub struct ManagedCredentialRollout {
     pub operation: ManagedCredentialOperation,
 }
 
+/// Only a strictly newer acknowledgement of the same complete authority
+/// lineage can supersede a retained receipt. Pending/unsupported records are
+/// filtered by the storage owner before calling this pure decision.
+#[must_use]
+pub fn managed_rollout_acknowledgement_superseded_by(
+    older: &ManagedCredentialRollout,
+    newer: &ManagedCredentialRollout,
+) -> bool {
+    !older.id.trim().is_empty()
+        && !newer.id.trim().is_empty()
+        && older.id != newer.id
+        && !older.workspace_id.trim().is_empty()
+        && !older.vault_id.trim().is_empty()
+        && !older.credential_id.trim().is_empty()
+        && !older.source_id.0.trim().is_empty()
+        && older.workspace_id == newer.workspace_id
+        && older.vault_id == newer.vault_id
+        && older.credential_id == newer.credential_id
+        && older.source_id == newer.source_id
+        && older.source_version > 0
+        && older.credential_revision > 0
+        && older.source_version <= newer.source_version
+        && older.credential_revision <= newer.credential_revision
+        && (older.source_version < newer.source_version
+            || older.credential_revision < newer.credential_revision)
+}
+
 /// Exact durable-event identity decision shared by every Credential store.
 ///
 /// `Absent` admits first publication or an idempotent acknowledgement. `Exact`
@@ -152,6 +179,100 @@ pub fn managed_credential_rollout_identity_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acknowledgement_retention_requires_complete_lineage_and_strict_monotonicity() {
+        // Causes: C1 all four authority fields equal; C2 both old revisions
+        // positive; C3 neither revision regresses; C4 at least one advances;
+        // C5 distinct non-empty event identities. Effect E1 permits pruning
+        // only C1+C2+C3+C4+C5. Each identity mask covers the complete C1
+        // conjunction; the table partitions zero/equality/one-axis regression,
+        // one-axis advancement, both advancement and full-width boundaries.
+        let older = ManagedCredentialRollout {
+            id: "older".into(),
+            workspace_id: "w".into(),
+            vault_id: "v".into(),
+            credential_id: "c".into(),
+            source_id: CredentialSourceId("s".into()),
+            source_version: 2,
+            credential_revision: 2,
+            operation: ManagedCredentialOperation::Update,
+        };
+        for mask in 0..16 {
+            let mut newer = older.clone();
+            newer.id = "newer".into();
+            newer.source_version = 3;
+            newer.credential_revision = 3;
+            if mask & 1 != 0 {
+                newer.workspace_id = "other".into();
+            }
+            if mask & 2 != 0 {
+                newer.vault_id = "other".into();
+            }
+            if mask & 4 != 0 {
+                newer.credential_id = "other".into();
+            }
+            if mask & 8 != 0 {
+                newer.source_id = CredentialSourceId("other".into());
+            }
+            assert_eq!(
+                managed_rollout_acknowledgement_superseded_by(&older, &newer),
+                mask == 0,
+                "authority mask {mask}"
+            );
+        }
+        for (rule, os, oc, ns, nc, prune) in [
+            ("zero-source", 0, 1, 2, 2, false),
+            ("zero-child", 1, 0, 2, 2, false),
+            ("equal", 2, 2, 2, 2, false),
+            ("source-regresses", 2, 2, 1, 3, false),
+            ("child-regresses", 2, 2, 3, 1, false),
+            ("source-advances", 2, 2, 3, 2, true),
+            ("child-advances", 2, 2, 2, 3, true),
+            ("both", 2, 2, 3, 3, true),
+            (
+                "ceiling-equal",
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                false,
+            ),
+            (
+                "ceiling-advance",
+                u64::MAX - 1,
+                u64::MAX - 1,
+                u64::MAX,
+                u64::MAX,
+                true,
+            ),
+        ] {
+            let mut a = older.clone();
+            a.source_version = os;
+            a.credential_revision = oc;
+            let mut b = a.clone();
+            b.id = "newer".into();
+            b.source_version = ns;
+            b.credential_revision = nc;
+            assert_eq!(
+                managed_rollout_acknowledgement_superseded_by(&a, &b),
+                prune,
+                "{rule}"
+            );
+        }
+        let mut newer = older.clone();
+        newer.source_version = 3;
+        newer.credential_revision = 3;
+        assert!(
+            !managed_rollout_acknowledgement_superseded_by(&older, &newer),
+            "same event cannot supersede itself"
+        );
+        newer.id.clear();
+        assert!(
+            !managed_rollout_acknowledgement_superseded_by(&older, &newer),
+            "empty event retained"
+        );
+    }
 
     #[test]
     fn rollout_wire_is_secret_free_and_round_trips() {

@@ -33,9 +33,9 @@ use crate::repo::{
     ApplicationMcpBearerCommand, CredentialMaterialPatch, ManagedCredentialCreateCommand,
     ManagedCredentialCreationError, ManagedCredentialOperation, ManagedCredentialRepository,
     application_mcp_material_ref, application_mcp_operation_id, create_managed_credential,
-    prepare_application_mcp_bearer_rotation, reconcile_managed_credential_rollout,
-    reconcile_managed_vault_deletion, retire_managed_credential, update_managed_credential,
-    update_managed_credential_prepared,
+    prepare_application_mcp_bearer_rotation_with_receipt_recovery,
+    reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
+    retire_managed_credential, update_managed_credential, update_managed_credential_prepared,
 };
 use crate::{
     CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, SecretStore,
@@ -217,9 +217,10 @@ impl VaultApplication {
             return Ok(ManagedCredentialAdoptionProgress::Converged);
         };
         let Some(event) = self.repository.managed_rollout(event_id).await? else {
-            // An absent exact update event has already been exactly
-            // acknowledged by this same repository.
-            return Ok(ManagedCredentialAdoptionProgress::Converged);
+            // Absence cannot prove current adoption. Legacy deleted receipts
+            // are republished by the command; a racing old writer must still
+            // never turn disappearance into a usable Session.
+            return Ok(ManagedCredentialAdoptionProgress::Pending);
         };
         if event.workspace_id != workspace_id
             || event.vault_id != vault_id
@@ -232,6 +233,9 @@ impl VaultApplication {
                 "application MCP rollout identity conflicts with committed credential".into(),
             ));
         }
+        // Persist the retry intent before any participant await. A cancelled
+        // replay or a target that became unavailable remains supervisor-owned.
+        self.repository.rearm_managed_rollout(&event).await?;
         let Some(target) = self.rollout_target() else {
             return Ok(ManagedCredentialAdoptionProgress::Pending);
         };
@@ -409,26 +413,52 @@ impl VaultApplication {
                     "application MCP Source has no matching Managed child".into(),
                 )
             })?;
-        let rotation =
-            prepare_application_mcp_bearer_rotation(command, &before_source, self.secrets.as_ref())
-                .await?;
+        let before_revision = u64::try_from(before_source.version)
+            .ok()
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| {
+                CredentialError::InvalidSource(
+                    "application MCP credential revision is invalid".into(),
+                )
+            })?;
+        let replay_rollout_id = before_source
+            .version
+            .checked_sub(1)
+            .filter(|prior| *prior > 0)
+            .map(|prior| {
+                application_mcp_operation_id(
+                    &source_id,
+                    prior,
+                    &replay_command_key_fingerprint,
+                    credential_generation,
+                )
+            })
+            .transpose()?;
+        let missing_receipt = match replay_rollout_id.as_deref() {
+            Some(id) => !self
+                .repository
+                .managed_rollout(id)
+                .await?
+                .is_some_and(|event| {
+                    event.workspace_id == before_source.workspace_id
+                        && event.source_id == before_source.id
+                        && event.source_version == before_revision
+                        && event.credential_revision > 0
+                        && event.vault_id == before_credential.vault_id
+                        && event.credential_id == before_credential.id
+                        && event.operation == ManagedCredentialOperation::Update
+                }),
+            None => false,
+        };
+        let rotation = prepare_application_mcp_bearer_rotation_with_receipt_recovery(
+            command,
+            &before_source,
+            self.secrets.as_ref(),
+            missing_receipt,
+        )
+        .await?;
         match rotation {
-            None => {
-                let rollout_id = before_source
-                    .version
-                    .checked_sub(1)
-                    .filter(|prior_version| *prior_version > 0)
-                    .map(|prior_version| {
-                        application_mcp_operation_id(
-                            &source_id,
-                            prior_version,
-                            &replay_command_key_fingerprint,
-                            credential_generation,
-                        )
-                    })
-                    .transpose()?;
-                Ok((before_source, rollout_id))
-            }
+            None => Ok((before_source, replay_rollout_id)),
             Some(rotation) => {
                 let rollout_id = rotation.operation_id.clone();
                 let source = update_managed_credential_prepared(

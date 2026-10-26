@@ -11,6 +11,112 @@
 
 use super::*;
 
+impl SqliteCredentialRepo {
+    async fn record_rollout_delivery(
+        &self,
+        event: &ManagedCredentialRollout,
+        delivered: bool,
+    ) -> Result<(), CredentialError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let row = sqlx::query_as::<_, (String, bool)>(&format!(
+            "SELECT data,delivered FROM {NS}_managed_credential_rollout WHERE event_id=?1"
+        ))
+        .bind(&event.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let Some((data, was_delivered)) = row else {
+            return if delivered {
+                tx.commit().await.map_err(storage)
+            } else {
+                Err(CredentialError::MutationConflict(
+                    "Managed credential redelivery has no exact receipt".into(),
+                ))
+            };
+        };
+        if delivered && was_delivered {
+            return tx.commit().await.map_err(storage);
+        }
+        let durable: ManagedCredentialRollout = serde_json::from_str(&data).map_err(storage)?;
+        if managed_credential_rollout_identity_decision(Some(&durable), event)
+            != ManagedCredentialRolloutIdentityDecision::Exact
+        {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential delivery receipt conflicts".into(),
+            ));
+        }
+        if was_delivered != delivered {
+            sqlx::query(&format!(
+                "UPDATE {NS}_managed_credential_rollout SET delivered=?2 WHERE event_id=?1"
+            ))
+            .bind(&event.id)
+            .bind(delivered)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        if delivered && !was_delivered {
+            let rows = sqlx::query_as::<_, (String, String)>(&format!(
+                "SELECT event_id,data FROM {NS}_managed_credential_rollout WHERE delivered=TRUE \
+                AND (CASE WHEN json_valid(data) THEN json_extract(data,'$.workspace_id') END)=?1 \
+                AND (CASE WHEN json_valid(data) THEN json_extract(data,'$.source_id') END)=?2"
+            ))
+            .bind(&event.workspace_id)
+            .bind(&event.source_id.0)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(storage)?;
+            for id in crate::rollout_receipts::obsolete_acknowledgements(rows) {
+                sqlx::query(&format!("DELETE FROM {NS}_managed_credential_rollout WHERE event_id=?1 AND delivered=TRUE"))
+                    .bind(id).execute(&mut *tx).await.map_err(storage)?;
+            }
+        }
+        tx.commit().await.map_err(storage)
+    }
+}
+
+async fn publish_rollout(
+    tx: &mut sqlx::SqliteConnection,
+    rollout: &ManagedCredentialRollout,
+) -> Result<(), ManagedCredentialMutationError> {
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {NS}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"
+    ))
+    .bind(&rollout.id)
+    .bind(serde_json::to_string(rollout).map_err(storage)?)
+    .execute(&mut *tx)
+    .await
+    .map_err(storage)?;
+    let (data, was_delivered) = sqlx::query_as::<_, (String, bool)>(&format!(
+        "SELECT data,delivered FROM {NS}_managed_credential_rollout WHERE event_id=?1"
+    ))
+    .bind(&rollout.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(storage)?;
+    let durable: ManagedCredentialRollout = serde_json::from_str(&data).map_err(storage)?;
+    if managed_credential_rollout_identity_decision(Some(&durable), rollout)
+        == ManagedCredentialRolloutIdentityDecision::Collision
+    {
+        if !was_delivered {
+            return Err(ManagedCredentialMutationError::RevisionConflict);
+        }
+        sqlx::query(&format!(
+            "UPDATE {NS}_managed_credential_rollout SET data=?2,delivered=FALSE WHERE event_id=?1"
+        ))
+        .bind(&rollout.id)
+        .bind(serde_json::to_string(rollout).map_err(storage)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+    }
+    Ok(())
+}
+
 fn invalid_pending(error: ManagedCredentialMutationError) -> CredentialError {
     match error {
         ManagedCredentialMutationError::Store(error) => error,
@@ -343,29 +449,8 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        if let Some(rollout) = plan.rollout {
-            sqlx::query(&format!(
-                "INSERT OR IGNORE INTO {p}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"
-            ))
-            .bind(&rollout.id)
-            .bind(serde_json::to_string(&rollout).map_err(storage)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-            let durable: String = sqlx::query_scalar(&format!(
-                "SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"
-            ))
-            .bind(&rollout.id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(storage)?;
-            let durable: ManagedCredentialRollout =
-                serde_json::from_str(&durable).map_err(storage)?;
-            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
-                == ManagedCredentialRolloutIdentityDecision::Collision
-            {
-                return Err(ManagedCredentialMutationError::RevisionConflict);
-            }
+        if let Some(rollout) = plan.rollout.as_ref() {
+            publish_rollout(&mut tx, rollout).await?;
         }
         tx.commit().await.map_err(storage)?;
         Ok(plan.reclaiming_mutation)
@@ -627,7 +712,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
         let p = NS;
         let rows = sqlx::query_as::<_, (String, String)>(&format!(
-            "SELECT event_id, data FROM {p}_managed_credential_rollout \
+            "SELECT event_id, data FROM {p}_managed_credential_rollout WHERE delivered=FALSE \
              ORDER BY created_at, event_id"
         ))
         .fetch_all(&self.pool)
@@ -652,45 +737,14 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         &self,
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
-        let p = NS;
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(storage)?;
-        let current = data_at(
-            &mut tx,
-            &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
-            &rollout.id,
-        )
-        .await?;
-        let Some(current) = current else {
-            tx.commit().await.map_err(storage)?;
-            return Ok(());
-        };
-        let durable: ManagedCredentialRollout = serde_json::from_str(&current).map_err(storage)?;
-        if managed_credential_rollout_identity_decision(Some(&durable), rollout)
-            == ManagedCredentialRolloutIdentityDecision::Collision
-        {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential rollout acknowledgement is stale".into(),
-            ));
-        }
-        let changed = sqlx::query(&format!(
-            "DELETE FROM {p}_managed_credential_rollout \
-                 WHERE event_id = ?1"
-        ))
-        .bind(&rollout.id)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?
-        .rows_affected();
-        if changed != 1 {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential rollout acknowledgement lost its exact event".into(),
-            ));
-        }
-        tx.commit().await.map_err(storage)
+        self.record_rollout_delivery(rollout, true).await
+    }
+
+    async fn rearm_managed_rollout(
+        &self,
+        rollout: &ManagedCredentialRollout,
+    ) -> Result<(), CredentialError> {
+        self.record_rollout_delivery(rollout, false).await
     }
 
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {

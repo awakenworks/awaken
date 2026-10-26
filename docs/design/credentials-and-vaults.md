@@ -495,6 +495,39 @@ without another credential rotation. The split-Control HTTP regression tests
 the production startup wiring as well as the pure conjunction; passing the
 latter alone cannot establish that startup actually installed both consumers.
 
+Application-credential replay requires a current adoption observation, not only
+an historical acknowledgement. The existing rollout row retains its exact event
+payload and delivery state after convergence. An application replay re-arms
+that exact event before consulting its targets; only the existing convergence
+acknowledgement marks it delivered again. Cancellation or target unavailability
+therefore leaves the same event for the existing supervisor. Pending events are never
+pruned; after an acknowledgement only the newest acknowledged current-format
+event for the same Workspace, Vault, child and source is retained. Unsupported
+records remain diagnostic evidence. This is one bounded outbox lifecycle, not a
+second receipt store or controller.
+An explicitly reused acknowledged event key keeps its prior absent-key
+publication semantics; a pending-key collision still rejects atomically.
+Replaced or pruned proof requires republication rather than inferred adoption.
+
+An exact application replay reads that retained event by its primary identity
+and rechecks both configured consumers without rotating material. A Session
+already holding the event's active, acknowledged MCP revision can acknowledge a
+replay while a Run is busy; an older busy Session remains Pending. Current
+receipt retention is introduced by the Credential schema's additive V10 tail.
+For legacy revisions whose acknowledged event was already deleted, exact
+authority/key/generation/material validation precedes one ordinary WAL/CAS
+republication. That recovery preserves source identity and material generation,
+advances the source/child revision once, and creates a new exact event. Its
+retained receipt then makes subsequent replays stable. An absent or failed read
+is never evidence that an existing Session adopted the credential.
+
+Reused unchanged: Managed source/child/material WAL, generation ordering, exact
+event identity, the supervised delivery loop and the Session adoption owner.
+Modified: the existing repository settlement and current-event lookup, store
+adapters, application replay and already-adopted Session handling. Added: the
+delivery-state migration and regression cases. No new aggregate, table, queue,
+scheduler, or authorization authority is introduced.
+
 When the application must bind the bearer before Session create, it predicts
 the opaque address through the Managed adapter's one exported pure Session-ID
 helper. The public create path reuses that helper, while the Session repository

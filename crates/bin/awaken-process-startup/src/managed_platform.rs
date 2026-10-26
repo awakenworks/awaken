@@ -690,7 +690,9 @@ mod tests {
                 "{rule}/E4 no second rotation after an unavailable response"
             );
             assert_eq!(receipts[2], receipts[1], "{rule}/E4");
-            let deliveries = if converged { 1 } else { 2 };
+            // Exact replay rechecks current adoption even after a prior ACK;
+            // it still performs no second credential rotation.
+            let deliveries = 2;
             assert_eq!(
                 canonical_calls.load(Ordering::Relaxed),
                 deliveries,

@@ -157,6 +157,20 @@ pub async fn prepare_application_mcp_bearer_rotation(
     current: &CredentialSource,
     store: &dyn SecretStore,
 ) -> Result<Option<PreparedApplicationMcpBearerRotation>, CredentialError> {
+    prepare_application_mcp_bearer_rotation_with_receipt_recovery(command, current, store, false)
+        .await
+}
+
+/// The same admission with one legacy recovery condition: a verified exact
+/// current material command has lost its historical adoption receipt. It may
+/// republish once through the ordinary WAL; stale/conflicting input is still
+/// rejected before this branch and can never force a rotation.
+pub(crate) async fn prepare_application_mcp_bearer_rotation_with_receipt_recovery(
+    command: ApplicationMcpBearerCommand,
+    current: &CredentialSource,
+    store: &dyn SecretStore,
+    missing_receipt: bool,
+) -> Result<Option<PreparedApplicationMcpBearerRotation>, CredentialError> {
     validate_command(&command)?;
     let material_ref = application_mcp_material_ref(
         &command.source_id,
@@ -179,7 +193,7 @@ pub async fn prepare_application_mcp_bearer_rotation(
         store,
     )
     .await?;
-    if exact_replay && current.descriptor.is_some() {
+    if exact_replay && current.descriptor.is_some() && !missing_receipt {
         return Ok(None);
     }
     let mut after_source = current.clone();
@@ -455,6 +469,119 @@ async fn verify_material(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_legacy_adoption_receipt_republishes_once_without_reopening_old_generations() {
+        use crate::repo::{InMemoryCredentialRepo, ManagedCredentialRepository};
+        use std::sync::Arc;
+        // Causes: L1 initial generation has no predecessor event; L2 a
+        // committed generation-2 event was deleted by an older binary; L3 the
+        // exact command repeats; L4 stale generation or conflicting bytes.
+        // Effects: L1 remains revision 1; L2 uses ordinary WAL/CAS to publish
+        // revision 3 with unchanged source identity and material generation;
+        // L3 reuses revision/event 3; L4 fails before material or state writes.
+        // The targeted row removal represents the actual old deletion format;
+        // all admission, material IO, pair publication and cleanup remain real.
+        let repo = Arc::new(InMemoryCredentialRepo::new());
+        let store = Arc::new(crate::InMemorySecretStore::new());
+        let app = crate::VaultApplication::new(
+            store.clone(),
+            repo.clone(),
+            awaken_time::system_clock(),
+            None,
+        );
+        let entry = |generation, token: &str| crate::ApplicationMcpBearerEntry {
+            workspace_id: "workspace".into(),
+            application_authority_id: "application".into(),
+            mcp_server_url: "https://flow.example.test/mcp".into(),
+            target: crate::McpCredentialTarget {
+                audience: "https://flow.example.test/mcp".into(),
+                fingerprint: "endpoint".into(),
+            },
+            idempotency_key: format!("lease-{generation}"),
+            credential_generation: generation,
+            bearer: RedactedString::new(token),
+        };
+        let first = app
+            .enter_application_mcp_bearer(entry(1, "first"))
+            .await
+            .unwrap();
+        assert_eq!(first.revision, 1, "L1");
+        assert_eq!(
+            app.enter_application_mcp_bearer(entry(1, "first"))
+                .await
+                .unwrap()
+                .revision,
+            1,
+            "L1 replay"
+        );
+        let second = app
+            .enter_application_mcp_bearer(entry(2, "second"))
+            .await
+            .unwrap();
+        assert_eq!(second.revision, 2);
+        let lost = repo
+            .pending_managed_rollouts()
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(
+            repo.state
+                .lock()
+                .unwrap()
+                .managed_rollouts
+                .remove(&lost.id)
+                .is_some()
+        );
+        let repaired = app
+            .enter_application_mcp_bearer(entry(2, "second"))
+            .await
+            .unwrap();
+        assert_eq!(repaired.source_id, second.source_id, "L2 same authority");
+        assert_eq!(repaired.revision, 3, "L2 fresh exact publication");
+        let pending = repo.pending_managed_rollouts().await.unwrap();
+        assert_eq!(pending.len(), 1, "L2 one new event");
+        assert_eq!(pending[0].source_version, 3);
+        let current = repo.get(&repaired.source_id).await.unwrap();
+        assert_eq!(
+            material_identity(&current).unwrap().1,
+            2,
+            "L2 generation unchanged"
+        );
+        assert_eq!(
+            app.enter_application_mcp_bearer(entry(2, "second"))
+                .await
+                .unwrap()
+                .revision,
+            3,
+            "L3 no second repair"
+        );
+        assert_eq!(
+            repo.pending_managed_rollouts().await.unwrap(),
+            pending,
+            "L3 exact event"
+        );
+        let material = store.inventory().await.unwrap();
+        for (generation, value) in [(1, "first"), (2, "conflicting")] {
+            assert!(
+                app.enter_application_mcp_bearer(entry(generation, value))
+                    .await
+                    .is_err(),
+                "L4"
+            );
+            assert_eq!(
+                repo.get(&repaired.source_id).await.unwrap(),
+                current,
+                "L4 source unchanged"
+            );
+            assert_eq!(
+                store.inventory().await.unwrap(),
+                material,
+                "L4 no material writes"
+            );
+        }
+    }
     use crate::InMemorySecretStore;
     use crate::repo::InMemoryCredentialRepo;
 

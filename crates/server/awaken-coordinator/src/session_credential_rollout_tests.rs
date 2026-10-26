@@ -32,6 +32,105 @@ fn rollout_event(
 }
 
 #[tokio::test]
+async fn current_published_credential_replay_does_not_park_an_already_running_session() {
+    use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRolloutTarget};
+    use awaken_session_configuration_contract::mcp::McpAttachmentState;
+    // C1 a busy root; C2 desired source revision covers the event; C3 its
+    // generation is Active and publication acknowledged; C4 operation=Update.
+    // R1 C1+C2+C3+C4 -> current adoption, cache publication and zero root writes.
+    // R2 older pin, R3 missing acknowledgement, R4 requested/failed generation,
+    // R5 revocation -> Pending and zero root writes until the root is idle.
+    // These use the real repository/adoption and only the physical Runtime fake.
+    for (rule, state, acknowledged, version, operation, converged) in [
+        (
+            "R1",
+            McpAttachmentState::Active,
+            true,
+            1,
+            ManagedCredentialOperation::Update,
+            true,
+        ),
+        (
+            "R2",
+            McpAttachmentState::Active,
+            true,
+            2,
+            ManagedCredentialOperation::Update,
+            false,
+        ),
+        (
+            "R3",
+            McpAttachmentState::Active,
+            false,
+            1,
+            ManagedCredentialOperation::Update,
+            false,
+        ),
+        (
+            "R4 requested",
+            McpAttachmentState::Requested,
+            true,
+            1,
+            ManagedCredentialOperation::Update,
+            false,
+        ),
+        (
+            "R4 failed",
+            McpAttachmentState::Failed,
+            true,
+            1,
+            ManagedCredentialOperation::Update,
+            false,
+        ),
+        (
+            "R5",
+            McpAttachmentState::Active,
+            true,
+            1,
+            ManagedCredentialOperation::Archive,
+            false,
+        ),
+    ] {
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+            Arc::new(ephemeral_session_repo().await);
+        let mut root = persisted_with_mcp_source("current", "source-a", "vault-event");
+        root.execution = SessionExecutionState::Running;
+        root.mcp.attachments[0].state = state;
+        root.mcp.attachments[0].publication_acknowledged = acknowledged;
+        create_session_fixture(repo.as_ref(), "workspace-a", root).await;
+        let before = repo.get(&SessionId::from("current")).await.unwrap();
+        let runtime = Arc::new(RehydrateFake::default());
+        let clock = awaken_time::system_clock();
+        let managed = Arc::new(
+            awaken_protocol_managed_testkit::managed_state_from_parts(
+                runtime.clone(),
+                Some(runtime),
+                repo.clone(),
+                awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+                clock,
+                Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            )
+            .with_credential_source(Arc::new(RolloutCredentialSource)),
+        );
+        let target = SessionCredentialRolloutAdoption::over_managed(
+            &managed.session_application(),
+            &managed,
+        );
+        let event = rollout_event("current-publication", version, operation);
+        assert_eq!(
+            target.rollout(&event).await.unwrap().is_converged(),
+            converged,
+            "{rule}"
+        );
+        assert_eq!(
+            repo.get(&SessionId::from("current")).await.unwrap(),
+            before,
+            "{rule}: no update/permission mutation"
+        );
+    }
+}
+
+#[tokio::test]
 async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roots() {
     // Vault rollout cause/effect graph. C1 a committed Vault event proves
     // Workspace A + source A while the affected Session's immutable authoring

@@ -16,6 +16,21 @@ use std::{collections::HashMap, sync::Mutex};
 
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct StoredRollout {
+    event: ManagedCredentialRollout,
+    delivered: bool,
+}
+
+impl From<ManagedCredentialRollout> for StoredRollout {
+    fn from(event: ManagedCredentialRollout) -> Self {
+        Self {
+            event,
+            delivered: false,
+        }
+    }
+}
+
 /// In-memory [`CredentialRepo`] for tests and scenario fixtures.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
@@ -24,7 +39,7 @@ pub(crate) struct RepoState {
     pub(super) pools: HashMap<String, CredentialPool>,
     pub(super) intents: HashMap<String, CredentialMutationIntent>,
     pub(super) managed_mutations: HashMap<String, PendingManagedCredentialMutation>,
-    pub(super) managed_rollouts: HashMap<String, ManagedCredentialRollout>,
+    pub(super) managed_rollouts: HashMap<String, StoredRollout>,
     pub(crate) vaults: HashMap<String, ManagedVault>,
     pub(crate) vault_credentials: HashMap<String, ManagedVaultCredential>,
 }
@@ -40,6 +55,26 @@ impl InMemoryCredentialRepo {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl RepoState {
+    // Called only after the complete source/child/rollout collision admission
+    // under this state's one mutex; publication never creates a second fence.
+    fn publish_rollout(&mut self, rollout: ManagedCredentialRollout) {
+        if self
+            .managed_rollouts
+            .get(&rollout.id)
+            .is_some_and(|stored| stored.delivered && stored.event != rollout)
+        {
+            self.managed_rollouts
+                .insert(rollout.id.clone(), rollout.into());
+        } else {
+            self.managed_rollouts
+                .entry(rollout.id.clone())
+                .or_insert_with(|| rollout.into());
+        }
     }
 }
 
@@ -434,10 +469,17 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             }
         }
         if plan.rollout.as_ref().is_some_and(|proposed| {
-            managed_credential_rollout_identity_decision(
-                state.managed_rollouts.get(&proposed.id),
-                proposed,
-            ) == ManagedCredentialRolloutIdentityDecision::Collision
+            state
+                .managed_rollouts
+                .get(&proposed.id)
+                .is_some_and(|stored| !stored.delivered)
+                && managed_credential_rollout_identity_decision(
+                    state
+                        .managed_rollouts
+                        .get(&proposed.id)
+                        .map(|stored| &stored.event),
+                    proposed,
+                ) == ManagedCredentialRolloutIdentityDecision::Collision
         }) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
@@ -446,10 +488,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             .vault_credentials
             .insert(plan.credential.id.clone(), plan.credential);
         if let Some(rollout) = plan.rollout {
-            state
-                .managed_rollouts
-                .entry(rollout.id.clone())
-                .or_insert(rollout);
+            state.publish_rollout(rollout);
         }
         state.managed_mutations.insert(
             pending.after_source.id.0.clone(),
@@ -577,7 +616,8 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             .expect("credential repo")
             .managed_rollouts
             .values()
-            .cloned()
+            .filter(|stored| !stored.delivered)
+            .map(|stored| stored.event.clone())
             .collect::<Vec<_>>();
         events.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(events)
@@ -593,7 +633,26 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             .expect("credential repo")
             .managed_rollouts
             .get(event_id)
-            .cloned())
+            .map(|stored| stored.event.clone()))
+    }
+
+    async fn rearm_managed_rollout(
+        &self,
+        rollout: &ManagedCredentialRollout,
+    ) -> Result<(), CredentialError> {
+        let mut state = self.state.lock().expect("credential repo");
+        let Some(stored) = state.managed_rollouts.get_mut(&rollout.id) else {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential redelivery has no exact receipt".into(),
+            ));
+        };
+        if stored.event != *rollout {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential redelivery receipt conflicts".into(),
+            ));
+        }
+        stored.delivered = false;
+        Ok(())
     }
 
     async fn complete_managed_rollout(
@@ -601,12 +660,42 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
         let mut state = self.state.lock().expect("credential repo");
+        if state
+            .managed_rollouts
+            .get(&rollout.id)
+            .is_some_and(|stored| stored.delivered)
+        {
+            // As before, repeated acknowledgement of an already completed key
+            // is a no-op. Retained proof is never overwritten by that call.
+            return Ok(());
+        }
         match managed_credential_rollout_identity_decision(
-            state.managed_rollouts.get(&rollout.id),
+            state
+                .managed_rollouts
+                .get(&rollout.id)
+                .map(|stored| &stored.event),
             rollout,
         ) {
             ManagedCredentialRolloutIdentityDecision::Exact => {
-                state.managed_rollouts.remove(&rollout.id);
+                state
+                    .managed_rollouts
+                    .get_mut(&rollout.id)
+                    .expect("exact receipt")
+                    .delivered = true;
+                let acknowledged = state
+                    .managed_rollouts
+                    .values()
+                    .filter(|stored| stored.delivered)
+                    .map(|stored| stored.event.clone())
+                    .collect::<Vec<_>>();
+                state.managed_rollouts.retain(|_, stored| {
+                    !stored.delivered || !acknowledged.iter().any(|newer| {
+                        awaken_credential_contract::managed_rollout_acknowledgement_superseded_by(
+                            &stored.event,
+                            newer,
+                        )
+                    })
+                });
                 Ok(())
             }
             ManagedCredentialRolloutIdentityDecision::Absent => Ok(()),
