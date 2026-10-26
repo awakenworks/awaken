@@ -18,6 +18,7 @@ mod fenced_checkpoint;
 mod live_control;
 pub mod pool;
 mod process_dispatch;
+mod publication;
 mod reconciliation;
 mod recovery_projection;
 mod service;
@@ -50,8 +51,10 @@ pub use coordination_activation::{coordinated_activation_matches, coordinated_ru
 pub use error::{Error, NotReady};
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
+pub use placement::PreparationPlacement;
 pub use pool::{DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
 pub use process_dispatch::{ClaimedRunsDrained, ProcessDispatch, ProcessDispatchLifecycle};
+pub use publication::DispatchPublication;
 pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use service::{DispatchService, DispatchServiceConfig};

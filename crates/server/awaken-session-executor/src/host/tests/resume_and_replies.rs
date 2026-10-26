@@ -37,7 +37,7 @@ async fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> Arc<E
         .with_gate_override(write_confirmation_gate()))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     host
 }
 
@@ -254,13 +254,12 @@ async fn confirm_cannot_answer_a_client_tool() {
     // rejected; E2 no reply is committed and the exact ticket remains resumable.
     // Constraint: typed reply kind must match target ownership. Decision rule:
     // exercise the inverse mismatch, then answer correctly to prove E1+E2.
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
-            .await
-            .with_client_tools(HashSet::from(["lookup".to_string()])))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
+        .await
+        .with_client_tools(HashSet::from(["lookup".to_string()])))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let r1 = host
         .session_runs
         .run(None, "t-bind2", user("hi"))
@@ -316,13 +315,12 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
     //
     // | Rule | ingress | ticket | answer | Effects |
     // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
-            .await
-            .with_client_tools(HashSet::from(["lookup".to_string()])))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
+        .await
+        .with_client_tools(HashSet::from(["lookup".to_string()])))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let r1 = host
         .session_runs
         .run(None, "t-client", user("hi"))
@@ -382,8 +380,8 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
         .with_ephemeral_dispatch(dispatch))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
-    crate::CoordinatorRoles::of(&host)
+    let _managed = host.clone();
+    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
@@ -433,7 +431,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let child_run = RunId("child-report-run".into());
     let command = awaken_session_execution_contract::SessionAgentReportContinuation {
         session_id: "primary-report".into(),
@@ -581,13 +579,12 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             .await
             .expect("coordinated reply dispatch"),
     );
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await
-            .with_ephemeral_dispatch(dispatch.clone()))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await
+        .with_ephemeral_dispatch(dispatch.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for(&parent.0, None)
@@ -1396,13 +1393,12 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 .await
                 .expect("primary reply dispatch"),
         );
-        let (host, _managed) = dispatch_test_host(
-            (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-                .await
-                .with_ephemeral_dispatch(dispatch.clone()))
-            .build()
-            .expect("validated Host dependencies"),
-        );
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+            .await
+            .with_ephemeral_dispatch(dispatch.clone()))
+        .build()
+        .expect("validated Host dependencies");
+        let _managed = host.clone();
         let ctx = host
             .run_assembly
             .ctx_for(&parent.0, None)
@@ -1675,13 +1671,12 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
             .await
             .expect("budget resume dispatch"),
     );
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await
-            .with_ephemeral_dispatch(dispatch.clone()))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await
+        .with_ephemeral_dispatch(dispatch.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
 
     let root = ThreadId("budget-resume-root".into());
     let root_run = RunId("budget-resume-root-run".into());
@@ -2121,8 +2116,8 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
-    crate::CoordinatorRoles::of(&host)
+    let _managed = host.clone();
+    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 
@@ -2198,8 +2193,8 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
         .with_ephemeral_coordinator_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
-    crate::CoordinatorRoles::of(&host)
+    let _managed = host.clone();
+    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(host.dispatch.pool().is_none(), "Q2/E2");
@@ -2265,13 +2260,12 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // | R2   | T  | T  | F  | T  | F  | E3     |
     // | R3   | T  | T  | F  | F  | T  | E4     |
     // | R4   | F  | T/F| T  | F  | F  | E2 (resume_with_no_awaiting_run) |
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
-            .await
-            .with_client_tools(HashSet::from(["lookup".to_string()])))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
+        .await
+        .with_client_tools(HashSet::from(["lookup".to_string()])))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let first = host
         .session_runs
         .run(None, "t-cross-protocol-pending", user("hi"))

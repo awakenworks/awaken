@@ -235,7 +235,7 @@ async fn local_managed_state_over(
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        awaken_session_executor::CoordinatorRoles::of(&host).session_execution(),
+        host.session_execution_roles(),
         persistence,
         environments.clone(),
         awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(

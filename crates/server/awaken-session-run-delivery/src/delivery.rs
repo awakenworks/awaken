@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
-use awaken_dispatch_execution::ProcessDispatch;
+use awaken_dispatch_execution::DispatchPublication;
 use awaken_resource_contract::{LiveResourceBindingVerifier, RepositoryBindingVerifier};
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SkillBundleSource;
@@ -66,8 +66,8 @@ pub struct ResourceBindingVerifiers {
 pub struct WorkerPlacement {
     /// The installed frozen projection of each Session.
     pub projections: Arc<SessionProjections>,
-    /// The process's dispatch, publishing activated rows to claiming Workers.
-    pub dispatch: Arc<ProcessDispatch>,
+    /// The construction-selected publication, retaining no process service.
+    pub publication: DispatchPublication,
     /// The durable dispatch owner rows are reserved and activated in.
     pub owner: Arc<AnyCoordinatorDispatch>,
     /// The Sessions' committed truth.
@@ -98,7 +98,7 @@ pub struct WorkerPlacement {
 pub struct WorkerPlacedSessions {
     ports: WorkerPlacement,
     threads: Arc<CoordinatedThreads>,
-    budgets: SessionBudgets,
+    budgets: Arc<SessionBudgets>,
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
     step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -111,15 +111,14 @@ impl WorkerPlacedSessions {
     pub fn new(ports: WorkerPlacement) -> Self {
         let threads = Arc::new(CoordinatedThreads::new(CoordinationAuthorities {
             owner: Some(ports.owner.clone()),
-            dispatch: ports.dispatch.clone(),
+            publication: ports.publication.clone(),
             reads: ports.reads.clone(),
             lowering: ports.projections.clone(),
             publications: ports.projections.publication_source(),
             wake: ports.wake.clone(),
             clock: ports.clock.clone(),
         }));
-        let budgets =
-            SessionBudgets::new(threads.clone(), ports.dispatch.clone(), ports.reads.clone());
+        let budgets = Arc::new(SessionBudgets::new(threads.clone(), ports.reads.clone()));
         Self {
             ports,
             threads,
@@ -161,7 +160,27 @@ impl WorkerPlacedSessions {
     }
 
     /// The Session application's role set for the Sessions registered Workers
-    /// realize: every role is served here, over the committed reads.
+    /// realize. Committed reads, coordination reads and budgets select their components.
+    ///
+    /// Budget ownership is selected through this role set, rather than a second
+    /// implementation on the placement aggregate.
+    /// ```compile_fail,E0277
+    /// use std::sync::Arc;
+    /// use awaken_session_execution_contract::BudgetRuntime;
+    /// use awaken_session_run_delivery::WorkerPlacedSessions;
+    /// fn duplicate_budget_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn BudgetRuntime> {
+    ///     sessions
+    /// }
+    /// ```
+    /// Coordination reads also select the original Thread component directly.
+    /// ```compile_fail,E0277
+    /// use std::sync::Arc;
+    /// use awaken_session_execution_contract::SessionCoordinationReads;
+    /// use awaken_session_run_delivery::WorkerPlacedSessions;
+    /// fn duplicate_read_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn SessionCoordinationReads> {
+    ///     sessions
+    /// }
+    /// ```
     #[must_use]
     pub fn session_execution_roles(
         self: &Arc<Self>,
@@ -172,8 +191,8 @@ impl WorkerPlacedSessions {
                 self.clone(),
             ),
             coordination: self.clone(),
-            coordination_reads: self.clone(),
-            budget: self.clone(),
+            coordination_reads: self.threads.clone(),
+            budget: self.budgets.clone(),
             streaming_runs: self.clone(),
             thread_reads: self.ports.reads.clone(),
             outcomes: self.clone(),
@@ -267,7 +286,7 @@ impl WorkerPlacedSessions {
         &self,
         delivery: SessionRunDelivery,
     ) -> Result<SessionRunActivation, RunError> {
-        activate_session_run_reservation(&self.ports.owner, &self.ports.dispatch, delivery).await
+        activate_session_run_reservation(&self.ports.owner, &self.ports.publication, delivery).await
     }
 
     /// Activate an admitted Run and observe it settle: the observer registers
@@ -481,6 +500,15 @@ mod tests {
     }
 
     pub(super) async fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
+        delivery_with_process(stored).await.0
+    }
+
+    async fn delivery_with_process(
+        stored: Option<SkillVersion>,
+    ) -> (
+        WorkerPlacedSessions,
+        Arc<awaken_dispatch_execution::ProcessDispatch>,
+    ) {
         let clock = awaken_time::system_clock();
         let memory_content = awaken_resource_contract::MemoryExecutionContent::new(Arc::new(
             awaken_memory_store::VolatileMemoryRepository::new(clock.clone()),
@@ -498,23 +526,23 @@ mod tests {
         let projections = Arc::new(SessionProjections::new("local", None));
         let hub = Arc::new(ThreadEventHub::new());
         let completion = Arc::new(CompletionRegistry::new(hub.clone()));
-        WorkerPlacedSessions::new(WorkerPlacement {
-            projections: projections.clone(),
-            dispatch: Arc::new(ProcessDispatch::new(
-                awaken_deployment_config::ExecutionTopology {
-                    ingress: awaken_deployment_config::RunIngress::Durable,
-                    local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
-                    lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator")
-                        .expect("lease owner"),
-                    lost_wake_recovery_bound: std::time::Duration::from_millis(5),
-                    queue_depth: awaken_deployment_config::QueueDepthSource::External,
-                },
-                clock.clone(),
-                completion.clone(),
-                awaken_dispatch_execution::wake::DispatchHint::new(Arc::new(
-                    awaken_dispatch_execution::LocalWakeSignal::new(),
-                )),
+        let process = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
+            awaken_deployment_config::ExecutionTopology {
+                ingress: awaken_deployment_config::RunIngress::Durable,
+                local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+                lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator")
+                    .expect("lease owner"),
+                lost_wake_recovery_bound: std::time::Duration::from_millis(5),
+                queue_depth: awaken_deployment_config::QueueDepthSource::External,
+            },
+            clock.clone(),
+            awaken_dispatch_execution::wake::DispatchHint::new(Arc::new(
+                awaken_dispatch_execution::LocalWakeSignal::new(),
             )),
+        ));
+        let sessions = WorkerPlacedSessions::new(WorkerPlacement {
+            projections: projections.clone(),
+            publication: process.publication(),
             owner: Arc::new(AnyCoordinatorDispatch::from_durable_store(
                 awaken_dispatch::MemoryDispatchStore::new(clock),
                 None,
@@ -541,7 +569,8 @@ mod tests {
             wake: None,
             clock: awaken_time::system_clock(),
             default_model: "provider/default".into(),
-        })
+        });
+        (sessions, process)
     }
 
     fn command(session: &str, text: &str) -> AdmitSessionRun {
@@ -1127,6 +1156,122 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn coordination_read_role_retains_the_original_threads_without_placement() {
+        // Cause/effect graph: C1 retain only the published coordination reads;
+        // C2 release all other roles and the placement; C3 drop the read role.
+        // R1=C1+C2 -> placement and unrelated Memory recovery are released,
+        // while the original Threads and committed reads answer the query.
+        // R2=R1+C3 -> those same collaborators are released. All eight read
+        // operations keep the existing CoordinatedThreads implementation;
+        // this table detects an unnecessary facade lifetime, not new policy.
+        let sessions = Arc::new(delivery(None).await);
+        let parent = Arc::downgrade(&sessions);
+        let memory = Arc::downgrade(&sessions.ports.memory_extractions);
+        let threads = Arc::downgrade(&sessions.threads);
+        let reads = Arc::downgrade(&sessions.ports.reads);
+        let roles = sessions.session_execution_roles();
+        let selected = roles.coordination_reads.clone();
+        drop(roles);
+        drop(sessions);
+        assert!(parent.upgrade().is_none(), "R1 placement released");
+        assert!(memory.upgrade().is_none(), "R1 unrelated Memory released");
+        assert!(threads.upgrade().is_some(), "R1 original Threads retained");
+        assert!(
+            reads.upgrade().is_some(),
+            "R1 original committed reads retained"
+        );
+        assert!(
+            selected
+                .delegated_runs("coordination-read-role")
+                .await
+                .expect("R1 query")
+                .is_empty()
+        );
+        drop(selected);
+        assert!(threads.upgrade().is_none(), "R2 Threads released");
+        assert!(reads.upgrade().is_none(), "R2 committed reads released");
+    }
+
+    #[tokio::test]
+    async fn delivery_roles_keep_publication_without_retaining_process_services() {
+        // C1 full Worker placement plus its budget/read/coordination roles;
+        // C2 the root releases the actual ProcessDispatch; C3 retained roles
+        // still read original committed truth and publish through the owner.
+        // L1=C1+C2 -> service owner released despite all application roles;
+        // L2=L1+C3 -> same successful reads and outbox, no replacement service.
+        // This checks the complete placement, not merely a narrow trait cast.
+        let (sessions, process) = delivery_with_process(None).await;
+        let sessions = Arc::new(sessions);
+        let weak = Arc::downgrade(&process);
+        let publication = process.publication();
+        let roles = sessions.session_execution_roles();
+        drop(process);
+        assert!(
+            weak.upgrade().is_none(),
+            "L1 no service retained by delivery/Threads/budget"
+        );
+        roles
+            .budget
+            .session_usage("publication-session")
+            .await
+            .expect("L2 budget reads");
+        assert!(
+            roles
+                .coordination_reads
+                .delegated_runs("publication-session")
+                .await
+                .expect("L2 original committed reads")
+                .is_empty()
+        );
+        publication
+            .publish_staged(&sessions.ports.owner)
+            .await
+            .expect("L2 original outbox");
+        sessions
+            .threads()
+            .durable_run_control()
+            .expect("L2 original control owner");
+        assert!(
+            weak.upgrade().is_none(),
+            "L2 no replacement service constructed"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_role_retains_only_its_own_delivery_collaborators() {
+        // Cause/effect graph: C1 retain only the published BudgetRuntime;
+        // C2 drop the placement aggregate and every other selected role;
+        // C3 drop the budget role itself. E1 C1+C2 releases the aggregate and
+        // unrelated Memory recovery while retaining the original committed
+        // reads; E2 a budget query still uses those live collaborators;
+        // E3 C3 releases those reads. This detects a forwarding facade that
+        // accidentally gives a narrow caller the entire placement lifetime.
+        // | Rule | placement | budget role | Effect |
+        // | B1 | dropped | retained | E1+E2 |
+        // | B2 | dropped | dropped | E3 |
+        let sessions = Arc::new(delivery(None).await);
+        let parent = Arc::downgrade(&sessions);
+        let extractions = Arc::downgrade(&sessions.ports.memory_extractions);
+        let reads = Arc::downgrade(&sessions.ports.reads);
+        let roles = sessions.session_execution_roles();
+        let budget = roles.budget.clone();
+        drop(roles);
+        drop(sessions);
+        assert!(parent.upgrade().is_none(), "B1/E1 aggregate released");
+        assert!(
+            extractions.upgrade().is_none(),
+            "B1/E1 Memory recovery released"
+        );
+        assert!(reads.upgrade().is_some(), "B1/E1 required reads retained");
+        budget
+            .session_usage("budget-role-thread")
+            .await
+            .expect("B1/E2");
+        drop(budget);
+        assert!(reads.upgrade().is_none(), "B2/E3 reads released");
     }
 
     #[tokio::test]

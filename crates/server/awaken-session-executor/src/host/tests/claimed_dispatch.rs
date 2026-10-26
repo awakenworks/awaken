@@ -5,17 +5,144 @@ use super::*;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 
 #[tokio::test]
+async fn cancellation_resolution_keeps_execution_capabilities_on_the_claiming_worker() {
+    use awaken_dispatch::WorkerResolver as _;
+    use awaken_dispatch_contract::{DispatchAdministration as _, DispatchReads as _};
+    use awaken_dispatch_execution::session_execution::CommitBoundaryWorkers as _;
+
+    // Cause/effect graph: C1 a durable cancellation claim; C2 Native/Remote
+    // backend; C3 no installed remote executor; C4 no resident Session; C5 the
+    // logical child differs from the physical Session commit partition.
+    // E1 the read/repair boundary constructs without execution capabilities;
+    // E2 Worker Native cancellation commits Cancelled only in C5's parent;
+    // E3 Worker Remote cancellation retains the exact row and reports the
+    // original missing-executor error; E4 neither route realizes an Environment.
+    // | Rule | role | backend | C3+C4+C5 | Effect |
+    // | R1 | commit boundary | Native/Remote | true | E1+E4 |
+    // | R2 | claiming Worker | Native | true | E2+E4 |
+    // | R3 | claiming Worker | Remote | true | E3+E4 |
+    // The existing active-remote interrupt test owns the configured-executor
+    // row and proves exactly one remote cancel through the ordinary claim pool.
+    for remote in [false, true] {
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let dispatch = Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
+                .unwrap(),
+        );
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_ephemeral_dispatch(dispatch.clone()))
+        .build()
+        .unwrap();
+        let parent = ThreadId("cancellation-parent".into());
+        let child = ThreadId("cancellation-child".into());
+        let run = RunId("cancellation-run".into());
+        let mut activation =
+            crate::host::worker_resolver::test_support::test_activation(&child.0, &run.0);
+        if remote {
+            activation.snapshot.resolved_spec.model_binding =
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "remote",
+                        "",
+                        "a2a:http://remote.invalid",
+                    )
+                    .expect("valid literal remote binding"),
+                    awaken_tenancy::ScopeId::from("default"),
+                    None,
+                    "sha256:cancellation",
+                )
+                .unwrap();
+        }
+        dispatch
+            .enqueue(awaken_dispatch::RunDispatch::new(activation).for_session(parent.clone()))
+            .await
+            .unwrap();
+        dispatch.cancel(&run).await.unwrap();
+        let claimed = dispatch
+            .claim_run(
+                &run,
+                "cancellation-worker",
+                DEFAULT_LEASE_MS,
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(claimed.cancellation_requested, "R2-R3/C1");
+        let boundaries = crate::host::boundary_run::commit_boundary_workers(&host.run_assembly);
+        let opened = boundaries.open_commit(&parent).await.unwrap();
+        opened.boundary_worker(&claimed, None).await.expect("R1/E1");
+        let resolver =
+            crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch).unwrap();
+        let resolved = resolver.worker_for_claimed(&claimed).await;
+        if remote {
+            let error = resolved.err().expect("R3/E3");
+            assert_eq!(
+                error.to_string(),
+                "runtime execution failed: remote cancellation requires a configured remote attempt executor"
+            );
+            let rows = dispatch.list_dispatches().await.unwrap();
+            assert_eq!(rows.len(), 1, "R3 exact row retained");
+            assert_eq!(rows[0].run_id, run, "R3 exact Run retained");
+            assert!(rows[0].cancellation_requested, "R3 intent retained");
+            assert_eq!(opened.committed().run_state(&run), None, "R3 no commit");
+        } else {
+            let result = resolved
+                .unwrap()
+                .drive_claimed(claimed, clock)
+                .await
+                .unwrap();
+            assert_eq!(
+                result,
+                Some((run.clone(), RunState::Ended(EndCause::Cancelled))),
+                "R2/E2"
+            );
+            assert_eq!(
+                opened.committed().run_state(&run),
+                Some(RunState::Ended(EndCause::Cancelled)),
+                "R2 physical parent"
+            );
+            assert_eq!(
+                host.thread_reads
+                    .commit_for_read(&child.0)
+                    .await
+                    .unwrap()
+                    .run_state(&run),
+                None,
+                "R2 no child-partition write"
+            );
+            assert!(
+                dispatch.list_dispatches().await.unwrap().is_empty(),
+                "R2 settled"
+            );
+        }
+        for thread in [&parent, &child] {
+            assert!(
+                host.run_assembly
+                    .installed_sessions
+                    .read_run(&thread.0, |run| run.context.clone())
+                    .unwrap()
+                    .flatten()
+                    .is_none(),
+                "R1-R3/E4"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
     use awaken_runtime_contract::resolver::RunResolver;
 
     // A durable run is driven by whichever pool node claims it (ADR-0019). Its
     // session config is already the complete execution authority and resolves
     // without manufacturing a second node-local catalog object.
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for("t-catalog", None)
@@ -38,11 +165,10 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
     )
     .expect("literal model reference");
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = host.clone();
     let thread = "claim-inference-only-judge";
     host.capabilities
         .register_thread_workspace(thread, "workspace-judge")
@@ -110,14 +236,13 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
         )])
         .build();
     let roots = ManagedSessionRootFixture::new().await;
-    let (host, managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     // P1 also requires actual Managed Root/lease authority before physical I/O;
     // the explicit publication remains byte-exact, not resolved from a catalog.
@@ -168,11 +293,10 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         )])
         .build();
 
-    let (local, _local_managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _local_managed = local.clone();
     local
         .capabilities
         .register_thread_agent_projection("background-local", "background-agent")
@@ -244,14 +368,13 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         ))
         .build();
     let roots = ManagedSessionRootFixture::new().await;
-    let (host, managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     let mut projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
@@ -1016,17 +1139,16 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     // Root and its first receipt survive, not a foreign Worker reassignment.
     let roots = ManagedSessionRootFixture::new().await;
 
-    let (first, first_managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-                    .await
-                    .with_store_dir(storage.path())
-                    .await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let first = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let first_managed = first.clone();
     install_test_session_application(&first);
     let original_projection = roots
         .install_complete_test_session(
@@ -1057,17 +1179,16 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     drop(first_managed);
     drop(first);
 
-    let (replacement, replacement_managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-                    .await
-                    .with_store_dir(storage.path())
-                    .await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let replacement = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let replacement_managed = replacement.clone();
     install_test_session_application(&replacement);
     // Recovery reads the existing authoritative Root. The replacement Host's
     // defaults are not a new creation request or an idempotency replay input.
@@ -1117,14 +1238,13 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 #[tokio::test]
 async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
-    let (host, managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
         &managed,
@@ -1224,14 +1344,13 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 #[tokio::test]
 async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
-    let (host, managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
         &managed,

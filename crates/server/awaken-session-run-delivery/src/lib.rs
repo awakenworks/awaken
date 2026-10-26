@@ -4,13 +4,16 @@
 //! A Coordinator admits a Run into dispatch, a registered Worker claims and
 //! executes it, and the Worker's settlement and live progress come back over
 //! the Worker transport. This crate owns the Coordinator half of that loop
-//! that needs no execution machinery: the per-Thread live observation point
+//! that owns no attempt execution: the per-Thread live observation point
 //! ([`ThreadEventHub`]) every protocol adapter subscribes to, and the
 //! foreground completion relay ([`CompletionRegistry`]) a caller registers
 //! with before its Run is activated. It links no Session realization, no
 //! Sandbox and no credential realization, so the Coordinator process composes
 //! it without the Worker-side executor; the executor builds on it for the
 //! Runs a co-located pool executes.
+//! Both ordinary and Environment-free Session Workers use
+//! [`session_dispatch_worker`] over the same combined commit. Callers supply
+//! the Runtime and retain model, credential and attempt-capability assembly.
 //!
 //! The same process-local [`BackgroundRuns`] registry tracks auxiliary work
 //! through drain and exact Environment-generation quiescence. Durable intent and
@@ -29,6 +32,7 @@ mod committed_reads;
 mod committed_step;
 mod completion;
 mod delivery;
+mod dispatch_lifecycle;
 mod hub;
 mod lock;
 mod memory_binding;
@@ -42,11 +46,14 @@ mod run_publications;
 mod session_activation;
 mod session_budgets;
 mod session_capabilities;
+mod session_commit_workers;
+mod session_dispatch_observer;
 mod session_inputs;
 mod session_projections;
 mod session_run_activation;
 mod session_run_reservation;
 mod session_skills;
+mod session_worker;
 mod settled_step;
 #[cfg(test)]
 mod test_support;
@@ -72,10 +79,11 @@ pub use committed_step::{
     verify_committed_step,
 };
 pub use completion::{
-    CompletionRegistry, CompletionSignalClosed, WaiterGuard, activate_and_await_session_run,
-    await_completion_state,
+    CompletionRegistry, CompletionSignalClosed, SettlementWakeup, WaiterGuard,
+    activate_and_await_session_run, await_completion_state,
 };
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
+pub use dispatch_lifecycle::SessionDispatchLifecycle;
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use memory_binding::MemoryBinding;
@@ -99,6 +107,7 @@ pub use session_budgets::SessionBudgets;
 pub use session_capabilities::{
     builtin_hand_tools, hand_tool_descriptors, supports_mid_conversation_system,
 };
+pub use session_commit_workers::{SessionBoundaryEffects, SessionCommitWorkers};
 pub use session_inputs::{
     client_result_for_ticket, resume_activation, session_system_message,
     session_thread_reply_result,
@@ -114,6 +123,7 @@ pub use session_skills::{
     published_skill_ids, requires_filesystem, session_allows_agent_tool,
     session_allows_filesystem_tools,
 };
+pub use session_worker::session_dispatch_worker;
 pub use settled_step::settled_step;
 pub use thread_coordination::{
     ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
@@ -132,3 +142,5 @@ pub(crate) fn poison_for_test<T>(lock: &std::sync::Mutex<T>) {
     }));
     assert!(lock.is_poisoned());
 }
+
+pub use session_dispatch_observer::SessionDispatchObserver;

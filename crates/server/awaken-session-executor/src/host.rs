@@ -1,7 +1,7 @@
 //! [`ExecutorComponents`] — the Session executor's components, assembled once.
 //!
 //! The composition root builds it from [`SessionExecutorBuilder`] and selects
-//! [`crate::CoordinatorRoles`] or [`crate::WorkerRoles`] from it. It holds each
+//! its shared dispatch lifecycle or [`crate::WorkerRoles`] from it. It holds each
 //! component and the process-level facts they share; behaviour lives in the
 //! components, which every protocol adapter drives on the same thread ids.
 
@@ -36,7 +36,6 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 #[cfg(test)]
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_dispatch_contract::CompletionSink;
 use awaken_dispatch_contract::Inbox;
 #[cfg(test)]
 use awaken_dispatch_contract::RunDispatch;
@@ -89,7 +88,6 @@ pub struct RemoteAttemptInstallation {
 mod build;
 pub use build::SessionExecutionProcess;
 mod dependencies;
-pub(crate) use dependencies::ApplicationPortBinding;
 pub use dependencies::{
     SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
     SessionExecutorBuilder,
@@ -128,7 +126,6 @@ mod worker_resolver;
 pub(crate) use awaken_dispatch_execution::session_worker_resolver::SessionWorkerResolver;
 use awaken_session_run_delivery::CommittedStepReceipt;
 pub(crate) use awaken_session_run_delivery::CompletionRegistry;
-pub(crate) use completion::SettlementWakeup;
 pub(crate) use foreground_run::{ForegroundRun, ForegroundRunPoisoned, ForegroundRunRecord};
 pub(crate) use run_control::{
     DurableRunCancellation, LiveAttemptControl, SelectedAttemptInterruption,
@@ -165,12 +162,9 @@ pub struct ExecutorComponents {
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     /// Owns temporary run-id registrations for event-driven durable completion,
     /// foreground stream relay, and publication into the existing Thread hub.
-    /// Injected into the pool as its `CompletionSink` and into each local Session
-    /// worker as its `StreamSink`.
+    /// The composition selects the pool/Worker completion sink over this
+    /// same relay; local Session streaming uses it directly.
     pub(crate) completion: Arc<CompletionRegistry>,
-    /// The process's one settlement sink: the completion relay, then the
-    /// Session application's committed-progress wakeup.
-    pub(crate) settlement: Arc<SettlementWakeup>,
     /// This process's dispatch: topology, pool, terminal reconciliation, hint.
     pub(crate) dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     /// The realization executor and the sandbox providers it realizes through.

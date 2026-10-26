@@ -59,16 +59,16 @@ impl crate::RunAssembly {
         let local_credential_capabilities = self
             .capabilities
             .local_credential_realization_capabilities();
-        let recovery_projection = commit.recovery_projection();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let mut worker = awaken_dispatch_execution::DispatchWorker::new_bound(
+        let mut worker = awaken_session_run_delivery::session_dispatch_worker(
             runtime.clone(),
             binding,
             commit,
             self.dispatch_owner().to_owned(),
-        );
+        )
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         if let Some(checkpoint) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(checkpoint);
         }
@@ -93,11 +93,6 @@ impl crate::RunAssembly {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }
 
-        if let Some(projection) = recovery_projection {
-            worker = worker
-                .with_recovery_projection(projection)
-                .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-        }
         let claimed_worker = Arc::new(worker);
         claimed_worker.install_attempt_executor(attempt_executor.clone());
         // No per-session recovery sweep here: this session's worker shares one queue

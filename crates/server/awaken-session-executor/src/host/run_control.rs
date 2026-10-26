@@ -205,6 +205,7 @@ impl crate::SessionRuns {
     pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, SessionExecutionError> {
         Ok(self
             .dispatch
+            .publication()
             .durable_run_control(self.coordinator_dispatch()?))
     }
 

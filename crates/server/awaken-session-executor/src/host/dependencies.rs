@@ -23,7 +23,6 @@ mod tools;
 
 mod session_application;
 
-pub(crate) use session_application::ApplicationPortBinding;
 pub use session_application::{SessionApplicationBindingError, SessionApplicationBindings};
 
 /// Immutable Session execution ports selected once at process startup.

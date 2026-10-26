@@ -38,7 +38,7 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
     let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
 
     // Cause/effect rule: C0 the canonical Dispatch runtime is installed; C1 an
     // Outcome receives needs_revision; C2 its next Worker Run reaches blocked
@@ -95,7 +95,7 @@ async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
     let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
 
     let driver = host.clone();
     let mut task = tokio::spawn(async move {
@@ -137,7 +137,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
 
     let driver = host.clone();
     let mut task = tokio::spawn(async move {
@@ -211,7 +211,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&local);
+    let _managed = local.clone();
     let ctx = local
         .run_assembly
         .ctx_for("worker-stop", None)
@@ -432,23 +432,20 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
     let captured = Arc::new(CountingCaptureSink::default());
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral_with_deployment(
-            Arc::new(MemoryHostModel),
-            "stub",
-            deployment,
-        )
-        .await
-        .with_capture_sink(captured.clone())
-        .with_capture_policy_sources(
-            awaken_data_governance_contract::CapturePolicySources {
-                consent: Arc::new(SubjectConsent),
-                ..Default::default()
-            },
-        ))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
+        Arc::new(MemoryHostModel),
+        "stub",
+        deployment,
+    )
+    .await
+    .with_capture_sink(captured.clone())
+    .with_capture_policy_sources(awaken_data_governance_contract::CapturePolicySources {
+        consent: Arc::new(SubjectConsent),
+        ..Default::default()
+    }))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
 
     host.session_runs
         .run_attributed(
@@ -547,23 +544,20 @@ async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
         }),
     );
     narrowing.set("ws-broken", None);
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral_with_deployment(
-            Arc::new(MemoryHostModel),
-            "stub",
-            deployment,
-        )
-        .await
-        .with_capture_sink(captured.clone())
-        .with_capture_policy_sources(
-            awaken_data_governance_contract::CapturePolicySources {
-                narrowing: narrowing.clone(),
-                ..Default::default()
-            },
-        ))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral_with_deployment(
+        Arc::new(MemoryHostModel),
+        "stub",
+        deployment,
+    )
+    .await
+    .with_capture_sink(captured.clone())
+    .with_capture_policy_sources(awaken_data_governance_contract::CapturePolicySources {
+        narrowing: narrowing.clone(),
+        ..Default::default()
+    }))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let subject = || Some(awaken_runtime_contract::DataSubjectId("subject".into()));
     for (thread, workspace) in [
         ("narrow-open", "ws-open"),
@@ -612,11 +606,10 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
     use crate::run_exec::BoundRunExecutor;
     use awaken_runtime_contract::execution::RunExecutor;
 
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for("snapshot-run", None)
@@ -691,18 +684,17 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let decorator_calls = calls.clone();
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await
-            .with_attempt_decorator(Arc::new(move |inner| {
-                Arc::new(ObservingAttemptExecutor {
-                    calls: decorator_calls.clone(),
-                    inner,
-                })
-            })))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await
+        .with_attempt_decorator(Arc::new(move |inner| {
+            Arc::new(ObservingAttemptExecutor {
+                calls: decorator_calls.clone(),
+                inner,
+            })
+        })))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for("injected-attempt", None)
@@ -729,11 +721,10 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
     use awaken_runtime_contract::execution::RunExecutor;
     use awaken_runtime_contract::resolved::ToolDescriptor;
 
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for("unsafe-grader", None)
@@ -818,7 +809,7 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
 
     let driver = host.clone();
     let mut task =
@@ -875,8 +866,8 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     .with_ephemeral_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
-    crate::CoordinatorRoles::of(&host)
+    let _managed = host.clone();
+    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 
@@ -1275,7 +1266,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     .build()
     .expect("validated Host dependencies");
     install_recording_session_application(&host);
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for(thread, None)
@@ -1285,7 +1276,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         !ctx.foreground.has_run().unwrap(),
         "M1/C3 Managed admission has no foreground hint"
     );
-    crate::CoordinatorRoles::of(&host)
+    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 

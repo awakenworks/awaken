@@ -245,7 +245,26 @@ impl DispatchReconciler {
         resolver: Arc<dyn WorkerResolver<S>>,
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Self {
-        let shutdown = CancellationToken::new();
+        Self::spawn_with_shutdown(
+            store,
+            clock,
+            wake,
+            config,
+            resolver,
+            completion,
+            CancellationToken::new(),
+        )
+    }
+
+    pub(crate) fn spawn_with_shutdown<S: Dispatch + 'static>(
+        store: Arc<dyn ControlDispatch>,
+        clock: Arc<dyn WallClock>,
+        wake: Arc<dyn WakeSignal>,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        completion: Option<Arc<dyn CompletionSink>>,
+        shutdown: CancellationToken,
+    ) -> Self {
         let depth_sampler = spawn_observed_depth(
             store.clone(),
             shutdown.clone(),
@@ -272,6 +291,15 @@ impl DispatchReconciler {
     /// loop then drops the resolver it holds. Idempotent.
     pub fn stop(&self) {
         self.shutdown.cancel();
+    }
+
+    /// Observe the original owned tasks after their shutdown signal. A scan
+    /// can still publish settlement effects while physical capacity is zero.
+    pub(crate) fn task_completions(&self) -> impl Iterator<Item = bool> + '_ {
+        self.task
+            .iter()
+            .chain(self.depth_sampler.iter())
+            .map(JoinHandle::is_finished)
     }
 
     pub async fn shutdown(mut self) {
@@ -360,8 +388,9 @@ impl AdmissionState {
     }
 }
 
-struct PoolAdmission {
+pub(crate) struct PoolAdmission {
     gate: tokio::sync::RwLock<AdmissionState>,
+    shutdown: CancellationToken,
     error_gate: DrainErrorGate,
     execution_capacity: ExecutionCapacity,
     wake: Notify,
@@ -517,14 +546,43 @@ impl Default for PoolAdmission {
 }
 
 impl PoolAdmission {
-    fn new(max_attempts: u64) -> Self {
+    pub(crate) fn new(max_attempts: u64) -> Self {
         Self {
             gate: tokio::sync::RwLock::new(AdmissionState::Open),
+            shutdown: CancellationToken::new(),
             error_gate: DrainErrorGate::default(),
             execution_capacity: ExecutionCapacity::default(),
             wake: Notify::new(),
             max_attempts,
         }
+    }
+
+    pub(crate) fn shutdown(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    pub(crate) fn require_startable(&self) -> Result<(), Error> {
+        if self.shutdown.is_cancelled() {
+            return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                "process dispatch is draining".into(),
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn in_flight(&self) -> u32 {
+        self.execution_capacity.in_flight()
+    }
+
+    pub(crate) async fn begin_drain(&self) -> PoolDrainFence {
+        // The same owner exists before pool construction. The write lock
+        // linearizes drain against every read-side claim, including a pool
+        // whose initializer has not published its handle yet.
+        let mut admission = self.gate.write().await;
+        let (draining, fence) = admission.begin_drain();
+        *admission = draining;
+        self.shutdown.cancel();
+        fence
     }
 }
 
@@ -583,6 +641,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             concurrency,
             wake,
             None,
+            Arc::new(PoolAdmission::new(config.max_attempts)),
         )
     }
 
@@ -618,6 +677,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             concurrency,
             wake,
             Some(completion),
+            Arc::new(PoolAdmission::new(config.max_attempts)),
         )
     }
 
@@ -649,6 +709,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             concurrency,
             Arc::new(LocalWakeSignal::new()),
             Some(completion),
+            Arc::new(PoolAdmission::new(config.max_attempts)),
         )
     }
 
@@ -664,6 +725,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
         completion: Option<Arc<dyn CompletionSink>>,
+        admission: Arc<PoolAdmission>,
     ) -> Result<Self, Error> {
         let owner = owner.into();
         if owner.trim().is_empty() {
@@ -672,7 +734,8 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             )));
         }
         verify_resolver_store(&store, resolver.as_ref())?;
-        let shutdown = CancellationToken::new();
+        admission.require_startable()?;
+        let shutdown = admission.shutdown();
         let depth_sampler = match &scheduling {
             SchedulingAuthority::Local(local) => spawn_observed_depth(
                 local.clone(),
@@ -681,7 +744,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             ),
             SchedulingAuthority::Remote => None,
         };
-        let admission = Arc::new(PoolAdmission::new(config.max_attempts));
         let reconciliation_wake = Arc::new(LocalWakeSignal::new());
         let drains = (0..concurrency.max(1))
             .map(|_| {
@@ -840,16 +902,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// grace period), and it takes `&self` so a live handle (e.g. behind an `Arc` in
     /// the host) can trigger it.
     pub async fn begin_drain(&self) -> PoolDrainFence {
-        // The write lock linearizes drain against the short read-side claim
-        // critical section. Once this returns, every claim either completed
-        // before the state became absorbing (and is now in-flight), or saw a
-        // non-open state and did not touch the store.
-        let mut admission = self.admission.gate.write().await;
-        let (draining, fence) = admission.begin_drain();
-        *admission = draining;
-        self.shutdown.cancel();
-        drop(admission);
-        fence
+        self.admission.begin_drain().await
     }
 
     /// Whether a drain has been requested (the drain tasks are stopping/stopped).
@@ -868,7 +921,19 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// heartbeat reports this value; capacity enforcement remains server-side.
     #[must_use]
     pub fn in_flight(&self) -> u32 {
-        self.admission.execution_capacity.in_flight()
+        self.admission.in_flight()
+    }
+
+    /// Completion of the same tasks `shutdown` joins. Claim resolution and
+    /// terminal observation may still run before/after physical admission;
+    /// they must return before process drain can move to auxiliary work.
+    pub(crate) fn task_completions(&self) -> impl Iterator<Item = bool> + '_ {
+        self.drains
+            .iter()
+            .chain(std::iter::once(&self.wake_coordinator))
+            .chain(self.reconciler.iter())
+            .chain(self.depth_sampler.iter())
+            .map(JoinHandle::is_finished)
     }
 
     /// Stop every task and wait for the in-flight drains to finish.
@@ -1534,6 +1599,33 @@ impl DispatchPool<AnyDispatchStore> {
         wake: Arc<dyn WakeSignal>,
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Result<Self, Error> {
+        Self::spawn_bound_admitted(
+            binding,
+            clock,
+            owner,
+            lease_ms,
+            config,
+            resolver,
+            concurrency,
+            wake,
+            completion,
+            Arc::new(PoolAdmission::new(config.max_attempts)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_bound_admitted(
+        binding: DispatchBinding,
+        clock: Arc<dyn WallClock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<AnyDispatchStore>>,
+        concurrency: usize,
+        wake: Arc<dyn WakeSignal>,
+        completion: Option<Arc<dyn CompletionSink>>,
+        admission: Arc<PoolAdmission>,
+    ) -> Result<Self, Error> {
         let scheduling = match binding.placement() {
             DispatchTopology::Local(local) => SchedulingAuthority::Local(local.clone()),
             DispatchTopology::Remote { .. } => SchedulingAuthority::Remote,
@@ -1549,6 +1641,7 @@ impl DispatchPool<AnyDispatchStore> {
             concurrency,
             wake,
             completion,
+            admission,
         )
     }
 }

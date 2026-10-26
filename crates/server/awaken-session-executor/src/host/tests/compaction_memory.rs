@@ -155,13 +155,12 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // C3 the Host supplies request-only environment context on both attempts:
     // it must remain model-visible while contributing no conversational prefix
     // to compaction. C1+C3 => still E1; C2+C3 => E2 over actual Thread history.
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
-            .await
-            .with_compaction_tokens(1, 1))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
+        .await
+        .with_compaction_tokens(1, 1))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
     // Run 1: only the single user message → below threshold, no summary injected.
@@ -204,13 +203,12 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     // activates. Constraint/Invariant: window truncation requires committed prefix
     // coverage from a summary. Decision rule: keep C1 false for summary activation
     // and require both user messages remain visible.
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
-            .await
-            .with_compaction_tokens(100, 1))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(CompactHostModel), "stub")
+        .await
+        .with_compaction_tokens(100, 1))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
     host.session_runs
@@ -256,7 +254,7 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
     ))
     .build()
     .expect("validated Host dependencies");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
 
     let provisional = host
         .run_assembly
@@ -327,16 +325,15 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
             .expect("one immutable published Agent");
     let roots = ManagedSessionRootFixture::new().await;
-    let (host, managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-                    .await
-                    .with_agent_publications(Arc::new(publications)),
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_agent_publications(Arc::new(publications)),
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     // F4 the exact publication remains input authority; one real Root and
     // assignment precede Run effects, without a mock authorization or ambient
@@ -500,7 +497,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     .await
     .expect("Thread 1 Run");
     assert!(
-        crate::CoordinatorRoles::of(&host)
+        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -692,6 +689,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         assert!(
             host.resources
                 .memory
+                .background()
                 .drain(std::time::Duration::from_secs(10))
                 .await,
             "R1/R2 extraction drains"
@@ -756,16 +754,15 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // Constraint K1: neither rule adopts, deletes, or fabricates durable identity
     // for the legacy root. The test injects authority because runtime-host no
     // longer opens a commit Store.
-    let (first, first_managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await
-            .with_store_dir(&dir)
-            .await
-            .with_runtime_authority(authority.clone())
-            .expect("local authority is selected before Host construction"))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let first = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await
+        .with_store_dir(&dir)
+        .await
+        .with_runtime_authority(authority.clone())
+        .expect("local authority is selected before Host construction"))
+    .build()
+    .expect("validated Host dependencies");
+    let first_managed = first.clone();
     first
         .session_runs
         .run(None, thread, user("remember rust"))
@@ -790,16 +787,15 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // Rebind the frozen resource and reopen the committed thread. Context recovery
     // derives the missing outbox identity from the latest terminal run and inserts
     // the same durable intent normal after-commit delivery would have produced.
-    let (second, second_managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await
-            .with_store_dir(&dir)
-            .await
-            .with_runtime_authority(authority)
-            .expect("local authority is selected before Host construction"))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let second = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await
+        .with_store_dir(&dir)
+        .await
+        .with_runtime_authority(authority)
+        .expect("local authority is selected before Host construction"))
+    .build()
+    .expect("validated Host dependencies");
+    let second_managed = second.clone();
     bind_test_memory(&second, thread, "outbox-store", true);
     let commit = second
         .thread_reads
@@ -817,7 +813,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         "D2/E2: {error:?}"
     );
     assert!(
-        crate::CoordinatorRoles::of(&second)
+        crate::session_dispatch_lifecycle(second.as_ref(), second.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -946,7 +942,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .await
     .unwrap();
     assert!(
-        crate::CoordinatorRoles::of(&host)
+        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1426,7 +1422,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .unwrap_or_default();
     assert_eq!(reply, "ok", "disabled recall does not inject store content");
     assert!(
-        crate::CoordinatorRoles::of(&host)
+        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(1))
             .await
     );
@@ -1559,7 +1555,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
     );
 
     assert!(
-        crate::CoordinatorRoles::of(&host)
+        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1648,7 +1644,7 @@ async fn extraction_cursor_only_processes_new_messages() {
         .await
         .expect("Run 1");
     assert!(
-        crate::CoordinatorRoles::of(&host)
+        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1656,7 +1652,7 @@ async fn extraction_cursor_only_processes_new_messages() {
         .await
         .expect("Run 2");
     assert!(
-        crate::CoordinatorRoles::of(&host)
+        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1704,7 +1700,7 @@ async fn run_end_fires_background_memory_extraction() {
         "Run should end"
     );
 
-    let drained = crate::CoordinatorRoles::of(&host)
+    let drained = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
         .drain(std::time::Duration::from_secs(10))
         .await;
     assert!(drained, "memory extraction should drain");

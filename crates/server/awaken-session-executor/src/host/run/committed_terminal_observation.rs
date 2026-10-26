@@ -535,7 +535,7 @@ mod tests {
             .with_memory_extraction_repository(Arc::new(FailingTerminalExtractionRepository)))
         .build()
         .expect("validated Host dependencies");
-        let _managed = crate::host::tests::install_test_dispatch_runtime(&host);
+        let _managed = host.clone();
         crate::host::tests::bind_test_memory(
             &host,
             "direct-terminal-observer-failure",
@@ -545,11 +545,11 @@ mod tests {
         let commit = host
             .run_assembly
             .authority
-            .open_commit("direct-terminal-observer-failure")
+            .open_for_read("direct-terminal-observer-failure")
             .await
             .expect("commit authority");
         commit_run(
-            &commit,
+            commit.as_ref(),
             &ThreadId("direct-terminal-observer-failure".into()),
             RunDisposition::ended(
                 RunId("direct-terminal-observer-failure-run".into()),

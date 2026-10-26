@@ -464,13 +464,8 @@ impl SessionActivities {
             }
             Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
         }
-        self.continuations
-            .ensure_environment_resident(session_id, self.clock.now_ms())
-            .await
-            .map_err(|error| match error {
-                super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
-                error => SessionActivityError::Unavailable(error.to_string()),
-            })?;
+        self.ensure_activity_environment_resident(session_id)
+            .await?;
         let admission = mutations.fresh_mutation_record(
             self.runtime_incarnation.as_str(),
             session_id.as_str(),
@@ -707,6 +702,58 @@ impl SessionActivities {
         .await
     }
 
+    /// Use the original continuation owner and one activity error mapping.
+    async fn ensure_activity_environment_resident(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<PersistedSession, SessionActivityError> {
+        self.continuations
+            .ensure_environment_resident(session_id, self.clock.now_ms())
+            .await
+            .map_err(|error| match error {
+                super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
+                error => SessionActivityError::Unavailable(error.to_string()),
+            })
+    }
+
+    /// After receipt replay, check the projection before physical recovery.
+    /// Only the original continuation may advance an ineligible Environment's
+    /// revision; a fresh activity is still fenced again inside the root CAS.
+    async fn activity_revision_after_continuation(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        projected_revision: Option<SessionRevision>,
+    ) -> Result<Option<SessionRevision>, SessionActivityError> {
+        let continuation_may_advance = match projected_revision {
+            Some(projected_revision) => {
+                let projected_root = self
+                    .mutations
+                    .session_aggregate(session_id)
+                    .await
+                    .map_err(repository_failure)
+                    .map_err(SessionActivityError::mutation)?;
+                if !activity_projection_revision_matches(
+                    projected_root.revision.0,
+                    Some(projected_revision.0),
+                ) {
+                    return Err(SessionActivityError::Conflict);
+                }
+                !projected_root.environment.admits_realization_effects()
+            }
+            None => false,
+        };
+        let resident = self
+            .ensure_activity_environment_resident(session_id)
+            .await?;
+        Ok(projected_revision.map(|revision| {
+            if continuation_may_advance {
+                resident.revision
+            } else {
+                revision
+            }
+        }))
+    }
+
     pub(crate) async fn begin_activity_for_operation_with_policy(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -730,41 +777,9 @@ impl SessionActivities {
             return Ok(committed);
         }
 
-        let continuation_may_advance = match projected_revision {
-            Some(projected_revision) => {
-                let projected_root = mutations
-                    .session_aggregate(session_id)
-                    .await
-                    .map_err(repository_failure)
-                    .map_err(SessionActivityError::mutation)?;
-                if !activity_projection_revision_matches(
-                    projected_root.revision.0,
-                    Some(projected_revision.0),
-                ) {
-                    return Err(SessionActivityError::Conflict);
-                }
-                !projected_root.environment.admits_realization_effects()
-            }
-            None => false,
-        };
-        // Admission receipt above still wins first. The projected branch alone
-        // reads and checks its pre-continuation revision; both paths then use
-        // the same existing continuation operation and error law exactly once.
-        let resident = self
-            .continuations
-            .ensure_environment_resident(session_id, self.clock.now_ms())
-            .await
-            .map_err(|error| match error {
-                super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
-                error => SessionActivityError::Unavailable(error.to_string()),
-            })?;
-        let projected_revision = projected_revision.map(|revision| {
-            if continuation_may_advance {
-                resident.revision
-            } else {
-                revision
-            }
-        });
+        let projected_revision = self
+            .activity_revision_after_continuation(session_id, projected_revision)
+            .await?;
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             if let Some(committed) = self
                 .replayed_activity_operation(session_id, &record, operation_id, source)

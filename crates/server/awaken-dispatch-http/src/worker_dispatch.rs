@@ -1431,29 +1431,26 @@ async fn settle(
                         RunState::Awaiting
                     ) | (awaken_dispatch::DispatchOutcome::Done, RunState::Ended(_))
                 );
-                if !state_matches || session_activity_epoch == 0 {
+                if !state_matches {
                     return Err(RealizationHttpError::from(ApplicationError::invalid(
                         "coordinated settlement does not match committed Session activity truth",
                     )));
                 }
-                Some(
-                    awaken_session_execution_contract::SessionAgentBoundaryCommand {
-                        session_id: awaken_session_types::SessionId::from(
-                            session_thread_id.0.clone(),
-                        ),
-                        source_thread_id: thread_id.clone(),
-                        source_run_id: claim.run_id.clone(),
-                        source_agent_id: guard
-                            .request()
-                            .activation
-                            .snapshot
-                            .root_agent_id
-                            .0
-                            .clone(),
-                        session_activity_epoch,
-                        cancellation_requested: guard.cancellation_requested(),
-                    },
+                awaken_session_execution_contract::SessionAgentBoundaryCommand::from_claimed_boundary(
+                    Some(session_activity_epoch),
+                    Some(&session_thread_id),
+                    (
+                        guard.request().thread_id(),
+                        guard.request().run_id(),
+                        &guard.request().activation.snapshot.root_agent_id.0,
+                    ),
+                    &claim.run_id,
+                    state,
+                    guard.cancellation_requested(),
                 )
+                .map_err(|_| RealizationHttpError::from(ApplicationError::invalid(
+                    "coordinated settlement does not match committed Session activity truth",
+                )))?
             } else {
                 None
             }

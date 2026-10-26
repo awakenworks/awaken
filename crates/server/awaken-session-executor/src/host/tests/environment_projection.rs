@@ -959,7 +959,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
 
     let init = SessionInit {
         workspace_id: "ws".into(),
@@ -1088,7 +1088,7 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     roots
         .install_complete_test_session(
             &managed,
@@ -1167,7 +1167,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     let host = (host).build().expect("validated Host dependencies");
 
     install_test_session_application(&host);
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_session_init(
             "coordinator-dispatch-only",
@@ -1700,7 +1700,7 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     managed
         .run_assembly
         .install_test_session_init(
@@ -1787,7 +1787,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         )
         .build()
         .expect("validated Host dependencies");
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     roots
         .install_complete_test_session(
             &managed,
@@ -1885,7 +1885,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
     let direct = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let _direct_runtime = install_test_dispatch_runtime(&direct);
+    let _direct_runtime = direct.clone();
     let direct_context = direct
         .run_assembly
         .ctx_for("gate-direct-absent", None)
@@ -1902,7 +1902,8 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies");
-    install_test_dispatch_runtime(&direct_with_endpoint)
+    direct_with_endpoint
+        .clone()
         .session_application_bindings()
         .bind_agent_coordination(coordination.clone())
         .unwrap();
@@ -1930,7 +1931,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
     let managed = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let managed_runtime = install_test_dispatch_runtime(&managed);
+    let managed_runtime = managed.clone();
     managed_runtime
         .run_assembly
         .install_test_session_init("gate-managed-present", session_init())
@@ -1970,7 +1971,8 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
     let missing = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    install_test_dispatch_runtime(&missing)
+    missing
+        .clone()
         .run_assembly
         .install_test_session_init("gate-managed-absent", session_init())
         .await

@@ -40,7 +40,7 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
     let host = dependencies.build().expect("complete Host composition");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let thread = if delayed {
         "terminal-missing-delayed-successor"
     } else {
@@ -201,7 +201,7 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
     let host = dependencies.build().expect("complete Host composition");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let thread = if renew {
         "terminal-original-renewed"
     } else {
@@ -336,7 +336,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
     let host = dependencies.build().expect("complete Host composition");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let thread = "terminal-completed-projection";
     let ctx = host
         .run_assembly

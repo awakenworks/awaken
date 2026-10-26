@@ -51,7 +51,7 @@ async fn delayed_interruption_preserves_the_successor(
         .with_ephemeral_dispatch(dispatch);
     dependencies.execution.ingress = crate::RunIngress::Direct;
     let host = dependencies.build().expect("complete Host composition");
-    let _managed = install_test_dispatch_runtime(&host);
+    let _managed = host.clone();
     let thread = match (start_with_active_run, fail_read) {
         (false, false) => "idle-interrupt-later-run",
         (false, true) => "idle-interrupt-failed-read-later-run",

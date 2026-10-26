@@ -267,7 +267,7 @@ async fn assert_completed_memory(
 ) {
     let (host, versions) = memory;
     assert!(
-        crate::CoordinatorRoles::of(host)
+        crate::session_dispatch_lifecycle(host, host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await,
         "{rule}: Memory extraction did not drain"
@@ -1152,7 +1152,10 @@ async fn retained_memory_settlement_observes_frozen_child_after_executor_release
             }
         }
         assert!(
-            runtime.drain(std::time::Duration::from_secs(10)).await,
+            runtime
+                .background()
+                .drain(std::time::Duration::from_secs(10))
+                .await,
             "{rule}: original Memory runtime drains"
         );
         let intent = runtime

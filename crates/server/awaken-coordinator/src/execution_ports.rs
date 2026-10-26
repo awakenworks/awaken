@@ -14,7 +14,7 @@
 //! | AI SDK / AG-UI / A2A Runs | `SessionRuns`, `RunCapabilities` thread scope | `session_runs`: the root builds the `SessionRunApplication` and binds it back as background submission |
 //! | Durable-ingress verbs | `SessionRuns` | `durable_runs` (session-runtime contract) |
 //! | Worker claim / settle / commit transport | coordinator dispatch, commit owner, recovery, completion, settlement, stream, file content | the `worker_*`, `coordinator_dispatch` and `commit_owners` ports; the commit-owner adapter lives in the root |
-//! | Pool, terminal reconciliation (commit-boundary Workers), drain | `CoordinatorRoles` | `dispatch_lifecycle` ([`ProcessDispatchLifecycle`], dispatch-execution) implemented by the executor |
+//! | Pool, terminal reconciliation (commit-boundary Workers), drain | `CoordinatorRoles` | `dispatch_lifecycle` ([`ProcessDispatchLifecycle`], dispatch-execution) implemented once by Run delivery's `SessionDispatchLifecycle` |
 //! | Child-Run coordination binding, committed-progress wakeup | `SessionApplicationBindings` | bound once by the root before the Coordinator exists |
 //! | Worker observation reads | coordinator dispatch, looked up per request | `coordinator_dispatch`, given at construction |
 //! | Persistence selection | `DeploymentConfig` | `CoordinatorStorage` (dispatch-execution) |

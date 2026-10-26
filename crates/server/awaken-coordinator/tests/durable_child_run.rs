@@ -149,9 +149,12 @@ async fn durable_child_run_scenario() {
     )))
     .build()
     .expect("validated Host dependencies");
-    awaken_session_executor::CoordinatorRoles::of(&host)
-        .start_local_pool()
-        .expect("valid test dispatch composition");
+    awaken_session_executor::session_dispatch_lifecycle(
+        host.as_ref(),
+        host.worker_completion_sink(),
+    )
+    .start_local_pool()
+    .expect("valid test dispatch composition");
 
     let awaiting = tokio::time::timeout(
         std::time::Duration::from_secs(20),

@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::{SessionRunReservationActivation, SessionRunReservations as _};
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
-use awaken_dispatch_execution::ProcessDispatch;
+use awaken_dispatch_execution::DispatchPublication;
 use awaken_session_execution_contract::{SessionRunActivation, SessionRunDelivery};
 use awaken_session_types::RunError;
 
@@ -30,7 +30,7 @@ use crate::SessionCommit;
 /// | A5 | nonzero | the store fails | retryable |
 pub async fn activate_session_run_reservation(
     owner: &AnyCoordinatorDispatch,
-    dispatch: &ProcessDispatch,
+    publication: &DispatchPublication,
     delivery: SessionRunDelivery,
 ) -> Result<SessionRunActivation, RunError> {
     if delivery.session_activity_epoch == 0 {
@@ -51,7 +51,7 @@ pub async fn activate_session_run_reservation(
         projected,
         SessionRunActivation::Activated | SessionRunActivation::AlreadyActivated { .. }
     ) {
-        dispatch
+        publication
             .publish_staged(owner)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;

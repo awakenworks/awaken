@@ -3,8 +3,18 @@
 //! Decision tables for the process dispatch: pool start, coordinator-side
 //! terminal reconciliation start and lifetime, and the drain fence deadline.
 
+#[path = "tests/startup_drain.rs"]
+mod startup_drain;
+
+#[path = "tests/publication.rs"]
+mod publication;
+
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{
+    Mutex,
+    mpsc::{Receiver, SyncSender, sync_channel},
+};
 
 #[test]
 fn pool_start_follows_the_selected_topology_and_pool_state() {
@@ -200,26 +210,32 @@ struct CoordinatorFixture {
     dropped: Arc<AtomicBool>,
 }
 
-fn coordinator_fixture() -> CoordinatorFixture {
+fn coordinator_fixture(local: awaken_deployment_config::LocalExecution) -> CoordinatorFixture {
+    coordinator_fixture_with_wake(local, Arc::new(crate::LocalWakeSignal::new()))
+}
+
+fn coordinator_fixture_with_wake(
+    local: awaken_deployment_config::LocalExecution,
+    wake: Arc<dyn awaken_dispatch_contract::WakeSignal>,
+) -> CoordinatorFixture {
     let clock = awaken_time::system_clock();
     let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone()));
-    let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store.clone()));
+    let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store));
     let dispatch = ProcessDispatch::new(
         ExecutionTopology {
             ingress: awaken_deployment_config::RunIngress::Durable,
-            local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+            local,
             lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(5),
             queue_depth: awaken_deployment_config::QueueDepthSource::External,
         },
         clock,
-        Arc::new(NoCompletion),
-        DispatchHint::new(Arc::new(crate::LocalWakeSignal::new())),
+        DispatchHint::new(wake),
     );
     let scans = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicBool::new(false));
     let resolver = Arc::new(ScanStateResolver {
-        queue: Arc::new(AnyDispatchStore::from_dispatch(store)),
+        queue: owner.worker_view(),
         _scan_state: dispatch.terminal_reconciliation().clone(),
         scans: scans.clone(),
         dropped: dropped.clone(),
@@ -261,13 +277,14 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
     // | T2   | yes | yes | -   | -   | E2     |
     // | T3   | yes | no  | yes | -   | E3     |
     // | T4   | yes | no  | yes | yes | E4     |
-    let fixture = coordinator_fixture();
+    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
     let scan_state = Arc::downgrade(fixture.dispatch.terminal_reconciliation());
     let resolver = fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>;
     assert!(
         fixture.dispatch.ensure_terminal_reconciliation(
             true,
             Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
             || Some(resolver)
         ),
         "T1 start"
@@ -290,12 +307,13 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
         "T2/E2 the scan state is freed"
     );
 
-    let fixture = coordinator_fixture();
+    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
     let resolver = fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>;
     assert!(
         fixture.dispatch.ensure_terminal_reconciliation(
             true,
             Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
             || Some(resolver)
         ),
         "T3 start"
@@ -322,11 +340,343 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
         "T3/E3 the dispatch stays usable"
     );
     assert!(
-        !fixture
-            .dispatch
-            .ensure_terminal_reconciliation(true, Some(fixture.owner), || {
-                panic!("T4/E4 a stopped loop builds no second resolver")
-            }),
+        !fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner),
+            Arc::new(NoCompletion),
+            || { panic!("T4/E4 a stopped loop builds no second resolver") }
+        ),
         "T4/E4"
+    );
+}
+
+/// Pause the first actual initializer while a competing call can enter. The
+/// bounded receive only releases fixture setup; exact factory counts after
+/// both calls finish determine success, never a scheduling or timing SLO.
+struct StartRace {
+    calls: AtomicUsize,
+    first: (SyncSender<()>, Mutex<Receiver<()>>),
+    competing: (SyncSender<()>, Mutex<Receiver<()>>),
+    release: (SyncSender<()>, Mutex<Receiver<()>>),
+}
+
+impl StartRace {
+    fn new() -> Self {
+        let signal = || {
+            let (send, receive) = sync_channel(1);
+            (send, Mutex::new(receive))
+        };
+        Self {
+            calls: AtomicUsize::new(0),
+            first: signal(),
+            competing: signal(),
+            release: signal(),
+        }
+    }
+
+    fn enter_factory(&self) {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first.0.send(()).unwrap();
+            self.release
+                .1
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        } else {
+            self.competing.0.send(()).unwrap();
+        }
+    }
+
+    fn wait_for_first(&self) {
+        self.first
+            .1
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+    }
+
+    fn release_when_competitor_can_enter(self: &Arc<Self>) -> std::thread::JoinHandle<()> {
+        let race = self.clone();
+        std::thread::spawn(move || {
+            // awaken-allow(wait): release a controlled factory stall even when
+            // atomic initialization correctly blocks the competing factory.
+            let _ = race
+                .competing
+                .1
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(2));
+            race.release.0.send(()).unwrap();
+        })
+    }
+}
+
+#[tokio::test]
+async fn concurrent_pool_start_constructs_one_pool_and_one_resolver() {
+    // C1 local topology + bound queue + absent pool; C2 first factory is
+    // paused; C3 another start arrives. Rule I1 C1+C2+C3 => both calls succeed,
+    // one factory/pool is constructed. I2 an already-started call never builds
+    // another resolver or replaces the registered pool. The real constructor
+    // and empty authoritative queue run; no fake pool or second queue is used.
+    let fixture = Arc::new(coordinator_fixture(
+        awaken_deployment_config::LocalExecution::InProcessPool(
+            DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
+        ),
+    ));
+    let race = Arc::new(StartRace::new());
+    let first = {
+        let fixture = fixture.clone();
+        let race = race.clone();
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let _runtime = runtime.enter();
+            fixture.dispatch.ensure_pool(
+                Some(DispatchBinding::local(fixture.owner.clone())),
+                Arc::new(NoCompletion),
+                || {
+                    race.enter_factory();
+                    Ok(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
+                },
+            )
+        })
+    };
+    race.wait_for_first();
+    let release = race.release_when_competitor_can_enter();
+    let second = fixture.dispatch.ensure_pool(
+        Some(DispatchBinding::local(fixture.owner.clone())),
+        Arc::new(NoCompletion),
+        || {
+            race.enter_factory();
+            Ok(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
+        },
+    );
+    first.join().unwrap().unwrap();
+    second.unwrap();
+    release.join().unwrap();
+    let calls = race.calls.load(Ordering::SeqCst);
+    let original = fixture.dispatch.pool().unwrap().clone();
+    fixture
+        .dispatch
+        .ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || panic!("I2 an existing pool cannot construct another resolver"),
+        )
+        .unwrap();
+    assert!(
+        Arc::ptr_eq(&original, fixture.dispatch.pool().unwrap()),
+        "I2"
+    );
+    let _drain = fixture.dispatch.begin_drain().await;
+    assert_eq!(calls, 1, "I1 one physical pool constructor");
+}
+
+#[tokio::test]
+async fn concurrent_terminal_start_constructs_one_loop_and_one_resolver() {
+    // C1 poolless durable committed-truth owner + absent loop; C2 first
+    // factory paused; C3 competing start. I3 C1+C2+C3 => one physical loop and
+    // resolver, exactly one caller reports a new start. I4 an existing loop
+    // ignores later factories. Original T1-T4 below still own drop/drain.
+    let fixture = Arc::new(coordinator_fixture(
+        awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+    ));
+    let race = Arc::new(StartRace::new());
+    let first = {
+        let fixture = fixture.clone();
+        let race = race.clone();
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let _runtime = runtime.enter();
+            fixture.dispatch.ensure_terminal_reconciliation(
+                true,
+                Some(fixture.owner.clone()),
+                Arc::new(NoCompletion),
+                || {
+                    race.enter_factory();
+                    Some(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
+                },
+            )
+        })
+    };
+    race.wait_for_first();
+    let release = race.release_when_competitor_can_enter();
+    let second = fixture.dispatch.ensure_terminal_reconciliation(
+        true,
+        Some(fixture.owner.clone()),
+        Arc::new(NoCompletion),
+        || {
+            race.enter_factory();
+            Some(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
+        },
+    );
+    let first = first.join().unwrap();
+    release.join().unwrap();
+    let calls = race.calls.load(Ordering::SeqCst);
+    assert_eq!(usize::from(first) + usize::from(second), 1, "I3 one start");
+    assert!(!fixture.dispatch.ensure_terminal_reconciliation(
+        true,
+        Some(fixture.owner.clone()),
+        Arc::new(NoCompletion),
+        || panic!("I4 an existing loop cannot construct another resolver"),
+    ));
+    assert!(fixture.dispatch.begin_drain().await.is_none());
+    assert_eq!(calls, 1, "I3 one physical reconciliation-loop constructor");
+}
+
+#[tokio::test]
+async fn failed_pool_initialization_preserves_refusal_and_remains_retryable() {
+    // F1 unbound queue => no factory; F2 factory error or pool-binding
+    // refusal => unchanged refusal and no pool; F3 factory panic => it
+    // propagates without caching a pool;
+    // F4 a later valid factory => one pool. Neither a transient error nor an
+    // unwound initializer may poison/cache failure as the permanent owner.
+    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::InProcessPool(
+        DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
+    ));
+    fixture
+        .dispatch
+        .ensure_pool(None, Arc::new(NoCompletion), || {
+            panic!("F1 an unbound queue cannot construct a resolver")
+        })
+        .unwrap();
+    assert!(fixture.dispatch.pool().is_none(), "F1");
+    let error = crate::session_execution::execution_error("controlled pool initializer refusal");
+    let expected = error.to_string();
+    let refused = fixture
+        .dispatch
+        .ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || Err(error),
+        )
+        .unwrap_err();
+    assert_eq!(refused.to_string(), expected, "F2 unchanged error");
+    assert!(fixture.dispatch.pool().is_none(), "F2 empty");
+    let foreign = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let mismatch = fixture.dispatch.ensure_pool(
+        Some(DispatchBinding::local(fixture.owner.clone())),
+        Arc::new(NoCompletion),
+        || Ok(foreign.resolver.clone()),
+    );
+    assert!(mismatch.is_err(), "F2 underlying pool-binding refusal");
+    assert!(
+        fixture.dispatch.pool().is_none(),
+        "F2 rejected pool is not cached"
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fixture.dispatch.ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || panic!("controlled pool initializer panic"),
+        )
+    }));
+    assert!(panic.is_err(), "F3 original unwind");
+    assert!(fixture.dispatch.pool().is_none(), "F3 empty");
+    fixture
+        .dispatch
+        .ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || Ok(fixture.resolver.clone()),
+        )
+        .unwrap();
+    assert!(fixture.dispatch.pool().is_some(), "F4 successful retry");
+    let _drain = fixture.dispatch.begin_drain().await;
+}
+
+#[tokio::test]
+async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
+    // F5 missing owner => no resolver factory; F6 resolver declines => no loop;
+    // F7 factory panic propagates without registering a loop; F8 a later valid
+    // factory starts exactly once. The existing lifetime tests still own
+    // cancellation/drain, and I3/I4 above own concurrent construction.
+    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    assert!(!fixture.dispatch.ensure_terminal_reconciliation(
+        true,
+        None,
+        Arc::new(NoCompletion),
+        || { panic!("F5 no owner means no resolver") }
+    ));
+    assert!(
+        !fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
+            || None,
+        ),
+        "F6"
+    );
+    assert!(
+        fixture.dispatch.terminal_reconciler.get().is_none(),
+        "F5/F6 empty"
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
+            || panic!("controlled terminal initializer panic"),
+        )
+    }));
+    assert!(panic.is_err(), "F7 original unwind");
+    assert!(
+        fixture.dispatch.terminal_reconciler.get().is_none(),
+        "F7 empty"
+    );
+    assert!(
+        fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
+            || Some(fixture.resolver.clone()),
+        ),
+        "F8 successful retry"
+    );
+    assert!(!fixture.dispatch.ensure_terminal_reconciliation(
+        true,
+        Some(fixture.owner.clone()),
+        Arc::new(NoCompletion),
+        || panic!("F8 a successful initializer is immutable"),
+    ));
+    assert!(fixture.dispatch.begin_drain().await.is_none());
+}
+
+#[test]
+fn preparation_role_retains_one_pure_compiler_without_process_services() {
+    // C1 application and Worker transport select their preparation role from
+    // the same process; C2 an unrelated root has equal stateless behavior;
+    // C3 the process owner drops while its compiler remains retained.
+    // R1=C1 -> exact Arc identity shared; R2=C2 -> different identity, so the
+    // existing mount validator still refuses foreign instances; R3=C3 ->
+    // process services released, original compiler retained without replacement.
+    let process = Arc::new(
+        coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly).dispatch,
+    );
+    let weak = Arc::downgrade(&process);
+    let application: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        process.preparation_placement();
+    let transport: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        process.preparation_placement();
+    assert!(
+        Arc::ptr_eq(&application, &transport),
+        "R1 one original pure compiler"
+    );
+    let other = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let foreign: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        other.dispatch.preparation_placement();
+    assert!(
+        !Arc::ptr_eq(&application, &foreign),
+        "R2 independent root remains distinguishable"
+    );
+    drop(process);
+    assert!(
+        weak.upgrade().is_none(),
+        "R3 preparation role retains no service owner"
+    );
+    assert!(
+        Arc::ptr_eq(&application, &transport),
+        "R3 original compiler identity survives"
     );
 }

@@ -2,8 +2,7 @@
 // @formal reason: Foreground submit and completion observe the one dispatch owner and exact committed Run result.
 // @formal reason: This classifies the Host observation edge, not a proof claim.
 //! Durable-foreground observation: the [`ExecutorComponents`] pool-submit/await
-//! methods over the completion relay (`awaken-session-run-delivery`), and the
-//! process's settlement sink that wakes the Session application.
+//! methods over the completion relay (`awaken-session-run-delivery`).
 
 use super::*;
 #[cfg(test)]
@@ -56,7 +55,7 @@ impl crate::SessionRuns {
         Ok(
             awaken_session_run_delivery::activate_session_run_reservation(
                 store.as_ref(),
-                &self.dispatch,
+                &self.dispatch.publication(),
                 delivery,
             )
             .await?,
@@ -145,7 +144,7 @@ impl crate::SessionRuns {
             .await
             .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
 
-        self.dispatch.hint_local_pool().await;
+        self.dispatch.publication().hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, None, settled).await
     }
 
@@ -174,7 +173,7 @@ impl crate::SessionRuns {
             .append(input)
             .await
             .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-        self.dispatch.hint_local_pool().await;
+        self.dispatch.publication().hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
             .await
     }
@@ -212,42 +211,6 @@ impl crate::SessionRuns {
             answered_correlation,
         )
         .await?)
-    }
-}
-
-/// The process's one [`CompletionSink`]: it settles the foreground observers
-/// of the completion relay, then wakes the Session application's lifecycle
-/// reconciliation the composition bound. Both a local pool and the remote
-/// Worker settle boundary settle through it.
-pub(crate) struct SettlementWakeup {
-    completion: Arc<CompletionRegistry>,
-    committed_progress: crate::ApplicationPortBinding<Arc<dyn Fn() + Send + Sync>>,
-}
-
-impl SettlementWakeup {
-    /// A fresh completion relay over `hub` that wakes `committed_progress`.
-    pub(crate) fn over(
-        hub: &Arc<crate::ThreadEventHub>,
-        committed_progress: crate::ApplicationPortBinding<Arc<dyn Fn() + Send + Sync>>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            completion: Arc::new(CompletionRegistry::new(hub.clone())),
-            committed_progress,
-        })
-    }
-
-    /// The completion relay foreground callers register with.
-    pub(crate) fn completion(&self) -> Arc<CompletionRegistry> {
-        self.completion.clone()
-    }
-}
-
-impl CompletionSink for SettlementWakeup {
-    fn settled(&self, run_id: &RunId, state: &RunState) {
-        self.completion.settled(run_id, state);
-        if let Some(wakeup) = self.committed_progress.get() {
-            wakeup();
-        }
     }
 }
 

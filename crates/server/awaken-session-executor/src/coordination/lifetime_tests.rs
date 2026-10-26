@@ -3,6 +3,7 @@
 use super::test_support::RemoteControl;
 use super::*;
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
+use awaken_dispatch_execution::SessionRunAdmissionObserver as _;
 use std::time::Duration;
 
 async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponents> {
@@ -319,29 +320,55 @@ async fn explicit_claim_controls_continue_after_original_installed_sessions_drop
             .unwrap(),
         ModelRequestAdmission::Admit
     );
+    let observer = HostDispatchSettlementObserver::new(endpoint);
+    let publication = |agent| {
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent)
+            .model(
+                awaken_runtime_contract::resolved::ModelBinding::parse("test", "model", "native")
+                    .unwrap(),
+            )
+            .build()
+    };
+    // The explicit-claim path now crosses the same dispatch observer the real
+    // Worker uses. Root admission and child settlement retain the original
+    // claim, mode and frozen identity, without consulting installed Sessions.
+    let admission = RunDispatch::new(awaken_runtime_contract::RunActivation::new(
+        exact.run_id.clone(),
+        ThreadId("session".into()),
+        publication("child"),
+        Vec::new(),
+    ))
+    .for_session(ThreadId("session".into()));
     assert_eq!(
-        endpoint
-            .admit_run_activity(
+        observer
+            .admit_session_run_activity(
+                &admission,
                 &exact,
-                &"session".into(),
-                "child",
-                &exact.run_id,
                 SessionRunActivityAdmissionMode::RecoverOnly
             )
             .await
             .unwrap(),
-        SessionRunActivityAdmission::Rejected
+        SessionRunActivityAdmission::Rejected,
     );
-    let command = SessionAgentBoundaryCommand {
-        session_id: "session".into(),
-        source_thread_id: ThreadId("child".into()),
-        source_run_id: exact.run_id.clone(),
-        source_agent_id: "agent".into(),
-        session_activity_epoch: 3,
-        cancellation_requested: false,
-    };
-    endpoint.settle(&exact, command.clone()).await.unwrap();
-    endpoint.finalize(command).await.unwrap();
+    let boundary = RunDispatch::new(awaken_runtime_contract::RunActivation::new(
+        exact.run_id.clone(),
+        ThreadId("child".into()),
+        publication("agent"),
+        Vec::new(),
+    ))
+    .for_session(ThreadId("session".into()))
+    .with_session_activity_epoch(3);
+    let state = awaken_agent_contract::agent::run::RunState::Ended(
+        awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+    );
+    observer
+        .before_settle(&boundary, &exact, &state, false)
+        .await
+        .unwrap();
+    observer
+        .after_settle(&boundary, &exact, &state, false)
+        .await
+        .unwrap();
     assert!(
         factory(&exact)
             .admit_model_request(ModelRequestAdmissionRequest {

@@ -25,13 +25,12 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
             .await
             .unwrap(),
     );
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
-            .await
-            .with_ephemeral_dispatch(dispatch.clone()))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(MemoryHostModel), "stub")
+        .await
+        .with_ephemeral_dispatch(dispatch.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
     let ctx = host.run_assembly.ctx_for(&thread.0, None).await.unwrap();
@@ -238,6 +237,7 @@ mod cold_terminal_cleanup;
 mod compaction_memory;
 mod context_construction;
 mod coordinated_thread_close;
+mod coordination_reads;
 mod environment_binding;
 mod environment_capacity;
 mod environment_installation_order;
@@ -1154,26 +1154,6 @@ impl LlmExecutor for GatedModel {
             stop_reason: None,
         })
     }
-}
-
-/// Install the one production-owned Dispatch composition required before a
-/// direct or durable Run can apply its canonical empty Resource transition.
-/// Interrupt fixtures retain the returned adapter so no test-only runtime or
-/// partial Session projection competes with that composition.
-pub(crate) fn install_test_dispatch_runtime(
-    host: &Arc<ExecutorComponents>,
-) -> Arc<crate::ExecutorComponents> {
-    host.clone()
-}
-
-/// Wrap a fully configured ordinary Host and install the same canonical
-/// Dispatch composition used by the application. Callers configure the Host
-/// first, so this fixture cannot publish a partially configured adapter.
-fn dispatch_test_host(
-    host: Arc<ExecutorComponents>,
-) -> (Arc<ExecutorComponents>, Arc<ExecutorComponents>) {
-    let managed = install_test_dispatch_runtime(&host);
-    (host, managed)
 }
 
 /// Compile the one complete projection corresponding to `SessionInit` test
