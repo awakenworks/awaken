@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "kind": "required-libtest",
+  "full_gate": false,
+  "source_kind": "working-tree",
+  "revision": "365606709d19819fde31221c6eef5b655addc30a",
+  "source_digest": "d8232066d6fbd75901d28c721c49e54f0d6a3c2c357776ff6ac3796eb7571087",
+  "index_tree": "378314506bb72aab9ce81fcc84b80c715958a286",
+  "arguments": [
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--no-default-features",
+    "--features",
+    "brokered",
+    "--lib",
+    "--require-case=inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes",
+    "--",
+    "--test-threads=1"
+  ],
+  "required_cases": [
+    "inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes"
+  ],
+  "commands": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--no-default-features",
+      "--features",
+      "brokered",
+      "--lib",
+      "--",
+      "--test-threads=1",
+      "--list"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--no-default-features",
+      "--features",
+      "brokered",
+      "--lib",
+      "--",
+      "--test-threads=1",
+      "--show-output"
+    ]
+  ],
+  "list_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--no-default-features",
+    "--features",
+    "brokered",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--list"
+  ],
+  "test_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--no-default-features",
+    "--features",
+    "brokered",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--show-output"
+  ],
+  "selected_cases": [
+    "credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table",
+    "http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape",
+    "inference::tests::brokered_mode_and_candidate_routing_share_one_decision_table",
+    "inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access",
+    "inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes",
+    "inference::tests::pinned_materialization_preserves_journal_identity_in_both_model_modes",
+    "inference::tests::published_reasoning_policy_survives_candidate_materialization"
+  ],
+  "executed_cases": [
+    [
+      "credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table",
+      "ok"
+    ],
+    [
+      "http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape",
+      "ok"
+    ],
+    [
+      "inference::tests::brokered_mode_and_candidate_routing_share_one_decision_table",
+      "ok"
+    ],
+    [
+      "inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access",
+      "ok"
+    ],
+    [
+      "inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes",
+      "ok"
+    ],
+    [
+      "inference::tests::pinned_materialization_preserves_journal_identity_in_both_model_modes",
+      "ok"
+    ],
+    [
+      "inference::tests::published_reasoning_policy_survives_candidate_materialization",
+      "ok"
+    ]
+  ],
+  "execution_inputs": {
+    "fixture": null,
+    "crash_backend": null
+  },
+  "postgres_fixture_required": false,
+  "postgres_fixture_configured": false,
+  "s3_fixture_required": false,
+  "s3_fixture_configured": false,
+  "status": "passed",
+  "rows": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--no-default-features",
+        "--features",
+        "brokered",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--list"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 2.5593717000447214
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--no-default-features",
+        "--features",
+        "brokered",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 1.2649457999505103
+    }
+  ],
+  "errors": [],
+  "preparation": {
+    "path": "C:\\t\\sa26\\materializer-fix-v4\\neutral-brokered\\build.json",
+    "sha256": "b141b37b465a7e27c8ad0d2ef2d20cd6c3f5bf04e28cde2ac9a455c3375aa7a8"
+  },
+  "command_exit_code": 0,
+  "duration_seconds": 3.8243174999952316,
+  "source_unchanged": true,
+  "exit_code": 0
+}

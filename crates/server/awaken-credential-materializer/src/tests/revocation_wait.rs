@@ -301,7 +301,7 @@ impl Fixture {
 fn context(
     fixture: &Fixture,
     authority: Arc<OwnerAuthority>,
-    recorder: Arc<CountingRecorder>,
+    recorder: Arc<dyn awaken_credential_contract::CredentialRealizationRecorder>,
 ) -> awaken_runtime_contract::RuntimeRunContext {
     awaken_runtime_contract::RuntimeRunContext::new()
         .with_ownership(authority)
@@ -319,27 +319,20 @@ struct RevokedObservation {
     outcome: Result<Option<RedactedString>, String>,
     new_reads: usize,
     new_receipts: usize,
+    expected_error: String,
 }
 
 /// The T15-C02 oracle for a call whose authority is not current: refuse with
 /// an ownership error, release no material and record no realization.
-fn check_material_rejected(outcome: &Result<Option<RedactedString>, String>) -> Result<(), String> {
-    match outcome {
+fn check_rejected_under_current_authority(observed: &RevokedObservation) -> Result<(), String> {
+    match &observed.outcome {
         Ok(Some(_)) => return Err("material was returned under revoked authority".into()),
         Ok(None) => return Err("revoked call reported an anonymous success".into()),
-        Err(error)
-            if !(error.contains("attempt ownership was lost")
-                || error.contains("authority down")) =>
-        {
+        Err(error) if error != &observed.expected_error => {
             return Err(format!("revoked call failed for another reason: {error}"));
         }
         Err(_) => {}
     }
-    Ok(())
-}
-
-fn check_rejected_under_current_authority(observed: &RevokedObservation) -> Result<(), String> {
-    check_material_rejected(&observed.outcome)?;
     if observed.new_receipts != 0 {
         return Err(format!(
             "{} realization receipt(s) recorded under revoked authority",
@@ -357,6 +350,17 @@ enum Change {
 }
 
 const CHANGES: [Change; 3] = [Change::Revoke, Change::SwapOwner, Change::Unavailable];
+
+fn expected_ownership_error(change: Change) -> String {
+    let cause = match change {
+        Change::Revoke | Change::SwapOwner => AttemptOwnershipError::Lost,
+        Change::Unavailable => AttemptOwnershipError::Unavailable("authority down".into()),
+    };
+    awaken_runtime_contract::execution::Error::Execution(format!(
+        "Run attempt no longer owns external execution: {cause}"
+    ))
+    .to_string()
+}
 
 fn apply(authority: &OwnerAuthority, change: Change) {
     match change {
@@ -428,6 +432,7 @@ async fn materialize_with_change_during_read(
         outcome,
         new_reads,
         new_receipts: recorder.receipts(),
+        expected_error: expected_ownership_error(change),
     }
 }
 
@@ -461,6 +466,7 @@ async fn t15_c02_revocation_before_resolution_and_cached_replay_are_rejected() {
                 outcome: fixture.materialize(&ctx).await,
                 new_reads: fixture.secrets.reads() - reads_before,
                 new_receipts: recorder.receipts(),
+                expected_error: expected_ownership_error(change),
             };
             check_rejected_under_current_authority(&observed)
                 .unwrap_or_else(|violation| panic!("W1 {change:?}: {violation}"));
@@ -474,6 +480,7 @@ async fn t15_c02_revocation_before_resolution_and_cached_replay_are_rejected() {
             outcome: Ok(Some(cached.clone())),
             new_reads: 0,
             new_receipts: 0,
+            expected_error: expected_ownership_error(Change::Revoke),
         };
         let violation = check_rejected_under_current_authority(&replay)
             .expect_err("NC: cached-success replay must violate the oracle");
@@ -487,6 +494,7 @@ async fn t15_c02_revocation_before_resolution_and_cached_replay_are_rejected() {
             outcome: fixture.materialize(&ctx).await,
             new_reads: fixture.secrets.reads() - reads_before,
             new_receipts: recorder.receipts() - receipts_before,
+            expected_error: expected_ownership_error(Change::Revoke),
         };
         check_rejected_under_current_authority(&observed)
             .unwrap_or_else(|violation| panic!("NC production re-entry: {violation}"));
@@ -574,8 +582,11 @@ async fn t15_c02_receipt_acknowledgement_never_releases_material_after_authority
             })
             .await
             .expect("receipt barrier settles");
-            check_material_rejected(&outcome)
-                .unwrap_or_else(|violation| panic!("{kind:?}/{change:?}: {violation}"));
+            assert_eq!(
+                outcome.unwrap_err(),
+                expected_ownership_error(change),
+                "{kind:?}/{change:?}"
+            );
             assert_eq!(recorder.receipts(), 1, "W5-W7 no duplicate or rollback");
             assert_eq!(
                 recorder.acknowledged.load(Ordering::SeqCst),
@@ -586,6 +597,126 @@ async fn t15_c02_receipt_acknowledgement_never_releases_material_after_authority
                 fixture.secrets.reads(),
                 reads_before + 1,
                 "W5-W7 no re-issued material read"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn current_authority_materializes_each_claimed_route_exactly_once() {
+    for kind in KINDS {
+        let fixture = fixture(kind).await;
+        let authority = Arc::new(OwnerAuthority::new("worker-a"));
+        let recorder = Arc::new(CountingRecorder::default());
+        let ctx = context(&fixture, authority, recorder.clone());
+        let reads_before = fixture.secrets.reads();
+        let secret = fixture.materialize(&ctx).await.unwrap().unwrap();
+        assert_eq!(secret.expose_secret(), "remote-token", "{kind:?}");
+        assert_eq!(fixture.secrets.reads() - reads_before, 1, "{kind:?}");
+        assert_eq!(recorder.receipts(), 1, "{kind:?}");
+    }
+}
+
+struct AwaitedRecorder {
+    committed: CountingRecorder,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::CredentialRealizationRecorder for AwaitedRecorder {
+    async fn record(
+        &self,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
+        // This receipt commits while ownership is current. The gate models
+        // awaiting its response, not a new write after revocation.
+        awaken_credential_contract::CredentialRealizationRecorder::record(&self.committed, receipt)
+            .await?;
+        self.entered.notify_one();
+        self.release
+            .acquire()
+            .await
+            .expect("owned response gate")
+            .forget();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect() {
+    for kind in KINDS {
+        for change in [
+            None,
+            Some(Change::Revoke),
+            Some(Change::SwapOwner),
+            Some(Change::Unavailable),
+        ] {
+            let fixture = fixture(kind).await;
+            let authority = Arc::new(OwnerAuthority::new("worker-a"));
+            let recorder = Arc::new(AwaitedRecorder {
+                committed: CountingRecorder::default(),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Semaphore::new(0),
+            });
+            let ctx = context(&fixture, authority.clone(), recorder.clone());
+            let reads_before = fixture.secrets.reads();
+            let completed_before = fixture.secrets.completed_reads();
+            let finished = AtomicBool::new(false);
+            let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(
+                    async {
+                        let result = fixture.materialize(&ctx).await;
+                        finished.store(true, Ordering::SeqCst);
+                        result
+                    },
+                    async {
+                        recorder.entered.notified().await;
+                        assert_eq!(
+                            recorder.committed.receipts(),
+                            1,
+                            "receipt predates ownership change"
+                        );
+                        if let Some(change) = change {
+                            apply(&authority, change);
+                        }
+                        assert!(
+                            !finished.load(Ordering::SeqCst),
+                            "must observe the original recorder response"
+                        );
+                        recorder.release.add_permits(1);
+                    }
+                )
+            })
+            .await
+            .expect("owned recorder response settles");
+            if let Some(change) = change {
+                assert_eq!(
+                    outcome.unwrap_err(),
+                    expected_ownership_error(change),
+                    "{kind:?}/{change:?}"
+                );
+            } else {
+                assert_eq!(
+                    outcome.unwrap().unwrap().expose_secret(),
+                    "remote-token",
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(
+                recorder.committed.receipts(),
+                1,
+                "retain the one pre-revocation commit"
+            );
+            assert_eq!(
+                fixture.secrets.reads() - reads_before,
+                1,
+                "no repeated materialization"
+            );
+            assert_eq!(
+                fixture.secrets.completed_reads() - completed_before,
+                1,
+                "original read completed"
             );
         }
     }

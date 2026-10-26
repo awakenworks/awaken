@@ -230,11 +230,14 @@
         "slices": {
           "executed": [
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features",
-            "E42 native Linux x86_64: claimed Provider/A2A; ownership changes before resolution, during the single secret read, and after receipt commit while acknowledgement remains owned; real Vault local authority with barrier-controlled collaborators"
+            "E42 native Linux x86_64: claimed Provider/A2A; ownership changes before resolution, during the single secret read, and after receipt commit while acknowledgement remains owned; real Vault local authority with barrier-controlled collaborators",
+            "E43: local Windows/MSVC, production claimed remote/provider materialization, real Vault authority with controlled read/owner/receipt barriers; original read once, no late plaintext or newly recorded receipt after read-time loss; valid pre-loss receipt retained after response-time loss."
           ],
           "unaccepted": [
             "Model invocation and every refresh/provision transport facet are outside E42.",
-            "Full T00/T34/T35/T36 common-gate closure and whole-scenario acceptance remain pending."
+            "Full T00/T34/T35/T36 common-gate closure and whole-scenario acceptance remain pending.",
+            "Other refresh/provision modes and their actual enabled executor compositions require separate evidence.",
+            "T00/T34/T35/T36 and full Windows/service/scale/cold-cache gates remain independently open; Linux is prohibited by user policy."
           ]
         }
       },

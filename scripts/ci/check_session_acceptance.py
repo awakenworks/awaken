@@ -25,6 +25,7 @@ refusal against a mutated copy of a minimal ledger):
 | L10  | a platform-pending case has no written reason              | refuse  |
 | L11  | an evidence entry changed after it was registered          | refuse  |
 | L12  | a product gap has no reason, follow-up or ignored reproducer | refuse |
+| L13  | group, binding or evidence identities collide               | refuse |
 """
 
 from __future__ import annotations
@@ -221,6 +222,13 @@ def _case_errors(case: dict, bindings: dict, gates_closed: bool) -> list[str]:
 
 
 def ledger_errors(data: dict, root: Path = ROOT, frozen: dict | None = None) -> list[str]:
+    # Refuse ambiguous identity before any dictionary can silently hide it.
+    collisions = [f"L13 {kind} has duplicate identity {identity}"
+                  for kind in ("groups", "bindings", "evidence_registry")
+                  for identity, count in Counter(row["id"] for row in data[kind]).items()
+                  if count > 1]
+    if collisions:
+        return sorted(collisions)
     bindings = {b["id"]: b for b in data["bindings"]}
     registry = {e["id"]: e for e in data["evidence_registry"]}
     cache: dict = {}

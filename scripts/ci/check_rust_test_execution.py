@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # source/deadline owners and production entrypoints, rather than a fixed list.
 # Variables a rustup Cargo proxy injects into every child it starts.
 PROXY_INJECTED = ("CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RUSTUP_TOOLCHAIN_SOURCE", "RUST_RECURSION_COUNT")
-INPUT_GLOBS = ("scripts/ci/**", "scripts/e2e/sandbox_capability_suite.sh")
+INPUT_GLOBS = ("scripts/ci/**", "scripts/e2e/sandbox_capability_suite.sh",
+               "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "lefthook.yml", ".cargo/**", ".config/**")
 
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
 EXECUTED = re.compile(r"^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
@@ -74,6 +75,11 @@ def required_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]
     """The existing focused libtest argv, with frontend-only floors removed."""
     if os.environ.get("RUST_TEST_NOCAPTURE") not in (None, "0"):
         raise ValueError("required test execution owns captured output; unset RUST_TEST_NOCAPTURE")
+    return selection_commands(arguments)
+
+
+def selection_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]:
+    """Pure canonical argv/floor projection, independent of the caller's environment."""
     required, cargo_arguments = [], []
     frontend = True
     for argument in arguments:
@@ -96,6 +102,22 @@ def required_commands(arguments: list[str]) -> tuple[list[list[str]], list[str]]
     if boundary == len(cargo_arguments):
         base.append("--")
     return [[*base, "--list"], [*base, "--show-output"]], required
+
+
+def execution_inputs() -> dict:
+    """Safe runtime identity, separate from the graph prepared before services start."""
+    kind = os.environ.get("AWAKEN_TEST_FIXTURE_KIND")
+    owner = os.environ.get("AWAKEN_TEST_FIXTURE_OWNER")
+    if (kind is None) != (owner is None):
+        raise ValueError("native fixture kind and owner must be supplied together")
+    if kind is not None and (kind not in ("postgres", "nats", "s3")
+                             or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", owner or "")):
+        raise ValueError("native fixture subject is malformed")
+    backend = os.environ.get("AWAKEN_CRASH_BACKEND") or None
+    if backend not in (None, "postgres", "sqlite"):
+        raise ValueError("unsupported crash-test backend selector")
+    return {"fixture": {"kind": kind, "owner": owner} if kind is not None else None,
+            "crash_backend": backend}
 
 
 def _write_receipt(path: Path, document: dict) -> None:
@@ -179,7 +201,7 @@ def verify_preparation(path: Path, arguments: list[str], digest: str) -> dict:
     from _required_build_context import build_context
     build_context(ROOT, arguments, document.get("compile_context", {}))
     log = Path(document["build_log"])
-    if log.parent != path.parent:
+    if log.resolve(strict=True).parent != path.resolve(strict=True).parent:
         raise ValueError("Required build log must share its evidence directory")
     if hashlib.sha256(log.read_bytes()).hexdigest() != document.get("build_log_sha256"):
         raise ValueError("Required build log changed")
@@ -206,13 +228,14 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
     if source_snapshot()[0] != digest:
         raise ValueError("Source changed while binding required execution facts")
     preparation = verify_preparation(prepared, arguments, digest) if prepared is not None else None
+    runtime = execution_inputs()
     (receipt.parent / "working-tree.patch").write_bytes(facts["patch"])
     document = {"schema_version": 1, "kind": "required-libtest", "full_gate": False,
                 "source_kind": "working-tree", "revision": facts["revision"].decode().strip(),
                 "source_digest": digest, "index_tree": index,
                 "arguments": arguments, "required_cases": required, "commands": commands,
                 "list_command": commands[0], "test_command": commands[1],
-                "selected_cases": [], "executed_cases": [],
+                "selected_cases": [], "executed_cases": [], "execution_inputs": runtime,
                 "postgres_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_POSTGRES") == "1",
                 "postgres_fixture_configured": "AWAKEN_TEST_DATABASE_URL" in os.environ,
                 "s3_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_S3") == "1",
@@ -223,6 +246,8 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
         document["preparation"] = preparation
     _write_receipt(receipt, document)
     def verify():
+        if execution_inputs() != runtime:
+            raise ValueError("Execution fixture or backend changed during required execution")
         if source_snapshot()[0] != digest:
             raise ValueError("Source changed before or during required execution")
         if preparation is not None and verify_preparation(prepared, arguments, digest) != preparation:
@@ -319,6 +344,73 @@ class ExecutionTests(unittest.TestCase):
             for selected in (real/"rustup", exposed/"rustup"):
                 with self.subTest(selected=selected), mock.patch.object(shutil, "which", return_value=str(selected)):
                     self.assertEqual(self.rustup_cargo_proxy(), real/"cargo")
+
+    def test_execution_subject_is_runtime_input_and_contains_no_fixture_secrets(self):
+        with mock.patch.dict(os.environ,{},clear=True):
+            self.assertEqual(execution_inputs(),{"fixture":None,"crash_backend":None})
+            os.environ.update(AWAKEN_TEST_FIXTURE_KIND="postgres",AWAKEN_TEST_FIXTURE_OWNER="owned-pg",
+                              AWAKEN_TEST_DATABASE_URL="postgresql://secret-user:secret-password@localhost/db",
+                              AWAKEN_CRASH_BACKEND="postgres")
+            subject=execution_inputs()
+            self.assertEqual(subject,{"fixture":{"kind":"postgres","owner":"owned-pg"},"crash_backend":"postgres"})
+            self.assertNotIn("secret",json.dumps(subject))
+            os.environ["AWAKEN_TEST_FIXTURE_OWNER"]="another-pg"
+            self.assertNotEqual(execution_inputs(),subject)
+            os.environ["AWAKEN_CRASH_BACKEND"]="sqlite"
+            self.assertNotEqual(execution_inputs(),subject)
+
+    def test_execution_subject_drift_stops_the_real_command_sequence(self):
+        # The actual sequence must fence the boundary after inventory and before
+        # execution. Only Cargo transport/source acquisition are controlled.
+        for variable, replacement in (("AWAKEN_TEST_FIXTURE_OWNER", "another-owner"),
+                                      ("AWAKEN_CRASH_BACKEND", "sqlite"), (None, None)):
+            with self.subTest(variable=variable), tempfile.TemporaryDirectory() as temporary:
+                directory=Path(temporary)
+                facts={"index_tree":b"index", "revision":b"revision", "patch":b""}
+                calls=[]
+                def cargo(command, **kwargs):
+                    calls.append(command)
+                    if "--list" in command:
+                        kwargs["stdout"].write("critical: test\n")
+                        if variable: os.environ[variable]=replacement
+                    else:
+                        kwargs["stdout"].write("test critical ... ok\n"
+                            "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
+                    return subprocess.CompletedProcess(command,0)
+                environment={"AWAKEN_TEST_FIXTURE_KIND":"postgres",
+                    "AWAKEN_TEST_FIXTURE_OWNER":"owned-fixture", "AWAKEN_CRASH_BACKEND":"postgres"}
+                with mock.patch.dict(os.environ,environment,clear=True), \
+                     mock.patch("rust_test_plan.working_subject",return_value=("digest",facts)), \
+                     mock.patch("rust_test_plan.source_snapshot",return_value=("digest",{})), \
+                     mock.patch("crate_test.native_command",side_effect=lambda command,env:command), \
+                     mock.patch.object(subprocess,"run",side_effect=cargo), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    status=run_required(["-p","critical","--lib"],directory/"list.log",
+                                        directory/"results.log",directory/"results.json")
+                receipt=json.loads((directory/"results.json").read_text(encoding="utf-8"))
+                self.assertEqual(status,1 if variable else 0)
+                self.assertEqual(len(calls),1 if variable else 2)
+                if variable:
+                    self.assertIn("Execution fixture or backend changed",receipt["rows"][0]["subject_error"])
+                else:
+                    self.assertEqual(receipt["selected_cases"],["critical"])
+                    self.assertEqual(receipt["executed_cases"],[["critical","ok"]])
+
+    def test_execution_subject_refuses_partial_unknown_or_malformed_identity(self):
+        for environment in ({"AWAKEN_TEST_FIXTURE_KIND":"postgres"},
+                            {"AWAKEN_TEST_FIXTURE_OWNER":"owned-pg"},
+                            {"AWAKEN_TEST_FIXTURE_KIND":"unknown","AWAKEN_TEST_FIXTURE_OWNER":"owned"},
+                            {"AWAKEN_TEST_FIXTURE_KIND":"postgres","AWAKEN_TEST_FIXTURE_OWNER":"secret\nline"},
+                            {"AWAKEN_CRASH_BACKEND":"unknown"}):
+            with self.subTest(environment=environment),mock.patch.dict(os.environ,environment,clear=True):
+                with self.assertRaises(ValueError):execution_inputs()
+
+    def test_selection_projection_is_pure_but_execution_still_owns_capture(self):
+        arguments=["-p","package","--require-case=case","--","--test-threads=1"]
+        with mock.patch.dict(os.environ,{"RUST_TEST_NOCAPTURE":"1"}):
+            self.assertEqual(selection_commands(arguments)[1],["case"])
+            with self.assertRaisesRegex(ValueError,"owns captured output"):
+                required_commands(arguments)
 
     @staticmethod
     def runner_fixture(fixture: Path, *entrypoint_inputs: str) -> Path:
@@ -963,6 +1055,14 @@ exit "$RESULT_STATUS"
         inventory="critical: test\n"
         interleaved="test critical ... metric=10\nok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
         self.assertTrue(execution_evidence(inventory,interleaved,0,["critical"])["errors"])
+        # Direct tracing writers can interleave even with libtest capture on.
+        # A successes list/summary cannot repair that missing terminal record.
+        # The HTTP fixture must use a span-only subscriber; keep this strict.
+        traced=("test critical ... 2026-10-26T22:18:05Z  INFO opentelemetry: "
+                "name=\"MeterProvider.GlobalSet\" provider installed\n"
+                "ok\nsuccesses:\n    critical\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
+        self.assertTrue(execution_evidence(inventory,traced,0,["critical"])["errors"])
         captured="test critical ... ok\nsuccesses:\nmetric=10\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
         self.assertEqual(execution_evidence(inventory,captured,0,["critical"])["errors"],[])
 
@@ -1601,6 +1701,74 @@ echo 'test result: ok. 2 passed; 0 failed; 0 ignored;'
                         else:
                             self.assertEqual(receipt.read_bytes(), before)
 
+
+
+    @unittest.skipUnless(os.name == "nt", "real directory junctions require Windows")
+    def test_prepared_build_log_uses_physical_evidence_directory_and_rejects_escapes(self) -> None:
+        # Both directions through a cache-root junction must identify the same
+        # evidence directory. Equal bytes in a sibling/outside directory, or a
+        # nested junction escaping that directory, must never satisfy ownership.
+        # Only receipt/path validation runs here; this is not a Cargo build fact.
+        from _required_build_context import build_context
+        arguments = ["-p", "critical", "--lib"]
+        command = required_build_command(arguments)
+        context = build_context(ROOT, arguments)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            physical = root / "physical"; physical.mkdir()
+            evidence = physical / "evidence"; evidence.mkdir()
+            sibling = physical / "sibling"; sibling.mkdir()
+            outside = root / "outside"; outside.mkdir()
+            alias = root / "alias"
+            escape = evidence / "escape"
+            links = []
+            try:
+                for link, target in ((alias, physical), (escape, outside)):
+                    subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                                   check=True, capture_output=True)
+                    links.append(link)
+                    self.assertTrue(link.is_junction())
+                    self.assertEqual(link.resolve(strict=True), target.resolve(strict=True))
+                content = b"retained build output\n"
+                for directory in (evidence, sibling, outside):
+                    (directory / "build.log").write_bytes(content)
+                build = evidence / "build.json"
+                document = {"kind": "required-libtest-build", "status": "built", "exit_code": 0,
+                            "source_unchanged": True, "context_unchanged": True,
+                            "source_digest": "path-fixture", "arguments": arguments,
+                            "command": command, "compile_context": context,
+                            "rows": [{"command": command, "exit_code": 0}],
+                            "build_log_sha256": hashlib.sha256(content).hexdigest()}
+                rows = (
+                    ("physical", build, evidence / "build.log", True),
+                    ("alias-log", build, alias / "evidence/build.log", True),
+                    ("alias-receipt", alias / "evidence/build.json", evidence / "build.log", True),
+                    ("both-aliases", alias / "evidence/build.json", alias / "evidence/build.log", True),
+                    ("sibling", build, sibling / "build.log", False),
+                    ("outside", build, outside / "build.log", False),
+                    ("nested-junction-escape", build, escape / "build.log", False),
+                )
+                for name, receipt, log, admitted in rows:
+                    with self.subTest(row=name):
+                        build.write_text(json.dumps(dict(document, build_log=str(log))), encoding="utf-8")
+                        if admitted:
+                            result = verify_preparation(receipt, arguments, "path-fixture")
+                            self.assertEqual(result["sha256"], hashlib.sha256(build.read_bytes()).hexdigest())
+                        else:
+                            with self.assertRaisesRegex(ValueError, "share its evidence directory"):
+                                verify_preparation(receipt, arguments, "path-fixture")
+                build.write_text(json.dumps(dict(document, build_log=str(alias / "evidence/build.log"))), encoding="utf-8")
+                (evidence / "build.log").write_bytes(b"changed output\n")
+                with self.assertRaisesRegex(ValueError, "Required build log changed"):
+                    verify_preparation(build, arguments, "path-fixture")
+                (evidence / "build.log").unlink()
+                with self.assertRaises(FileNotFoundError):
+                    verify_preparation(build, arguments, "path-fixture")
+            finally:
+                # Remove only the links this fixture created, never their targets.
+                for link in reversed(links):
+                    if link.is_junction():
+                        link.rmdir()
 
 
 def main() -> int:

@@ -1046,7 +1046,11 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
     // root Run may release Session Work.
     // D: R1=(C1,C2)=>503+Leased+0 releases+0 successes+E3;
     // R2=(C1,C3,C4)=>200+Done+0 releases+1 success+E3+E4.
-    awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
+    // This observer asserts the active span's identity, not exporter output.
+    // A registry retains span metadata without installing a global stdout
+    // formatter or meter provider that can interleave libtest result records.
+    tracing::subscriber::set_global_default(tracing_subscriber::registry())
+        .expect("this test binary installs its one span subscriber");
     let (store, claim, session_thread_id, thread_id) =
         claimed_terminal_dispatch("observer-retry", TerminalThread::Child).await;
     let run_id = claim.run_id.clone();

@@ -12,9 +12,11 @@ the invariant makes the matching test fail.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from collections import Counter, deque
 from functools import lru_cache
@@ -29,14 +31,17 @@ import _crate_dependency_fitness  # noqa: E402
 import _session_state_ownership_fitness  # noqa: E402
 import check_rust_test_execution  # noqa: E402
 import check_session_acceptance  # noqa: E402
+import formal_sources  # noqa: E402
 import rust_test_plan  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 # What these gate tests read: the workspace sources and manifests the guards
 # measure, the ledger, and the guards themselves.
 INPUT_GLOBS: tuple[str, ...] = (
+    ".gitattributes",
     "Cargo.toml", "Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml",
     "docs/design/session-execution-test-acceptance/**", "scripts/ci/*.py", "scripts/ci/*.json",
+    "examples/**", "e2e/**", "rust-toolchain.toml",
 )
 SHARED_CONTRACT = "crates/contract/awaken-provisioning-contract/src/lib.rs"
 OWNED_STATE_FILE = "crates/server/awaken-protocol-managed/src/lib.rs"
@@ -304,11 +309,124 @@ class EvidenceValidityTests(unittest.TestCase):
         self.refused("L11", edit_in_place)
         self.refused("L06", inherit_unreviewed)
 
+    def test_duplicate_identities_are_refused_before_dictionary_lookup(self) -> None:
+        for collection in ("groups", "bindings", "evidence_registry"):
+            for changed in (False, True):
+                with self.subTest(collection=collection, changed=changed):
+                    def collide(data):
+                        duplicate = copy.deepcopy(data[collection][0])
+                        if changed:
+                            duplicate["collision_control"] = "independent registration"
+                        data[collection].append(duplicate)
+                    errors = self.refused("L13", collide)
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn(collection, errors[0])
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            independent = copy.deepcopy(data["evidence_registry"][0])
+            independent["id"] = "E91"
+            independent["entry_sha256"] = check_session_acceptance.entry_digest(independent)
+            data["evidence_registry"].append(independent)
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+
     def test_committed_ledger_satisfies_every_rule(self) -> None:
         data = check_session_acceptance._load(ROOT)
         frozen = check_session_acceptance.committed_registry(ROOT)
         self.assertEqual(check_session_acceptance.ledger_errors(data, ROOT, frozen), [])
         self.assertEqual(check_session_acceptance.self_test(), 0)
+
+
+class EvidenceArtifactByteTests(unittest.TestCase):
+    """Native Git must store the same raw evidence bytes the registry hashes."""
+
+    def git(self, root: Path, *arguments: str) -> bytes:
+        return subprocess.check_output(
+            ["git", *arguments], cwd=root,
+            env=formal_sources.detached_git_environment(), stderr=subprocess.PIPE,
+        )
+
+    def assert_raw_round_trip(self, attributes: bytes, payload: bytes, automatic: str) -> None:
+        with tempfile.TemporaryDirectory(prefix="acceptance-evidence-bytes-") as raw:
+            root = Path(raw)
+            self.git(root, "init", "--quiet")
+            self.git(root, "config", "core.autocrlf", automatic)
+            (root / ".gitattributes").write_bytes(attributes.replace(b"\r\n", b"\n"))
+            relative = "docs/design/session-execution-test-acceptance/evidence/fixture/receipt.json"
+            receipt = root / relative
+            receipt.parent.mkdir(parents=True)
+            receipt.write_bytes(payload)
+            self.git(root, "add", "--", ".gitattributes", relative)
+            self.assertEqual(self.git(root, "show", ":" + relative), payload,
+                             "staged evidence must retain the hashed bytes")
+            self.git(root, "diff", "--cached", "--check", "--", relative)
+            for checkout_policy in ("false", "true"):
+                self.git(root, "config", "core.autocrlf", checkout_policy)
+                self.git(root, "checkout-index", "--force", "--", relative)
+                self.assertEqual(receipt.read_bytes(), payload,
+                                 "checkout policy must not rewrite registered evidence")
+            # CRLF is valid raw data; ordinary trailing spaces still fail the
+            # unchanged whitespace gate instead of acquiring a broad waiver.
+            receipt.write_bytes(payload.rstrip(b"\r\n") + b" \r\n")
+            self.git(root, "add", "--", relative)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.git(root, "diff", "--cached", "--check", "--", relative)
+
+    def test_raw_evidence_survives_native_git_staging_and_both_checkout_policies(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_bytes()
+        for automatic in ("false", "true"):
+            for newline in (b"\n", b"\r\n"):
+                with self.subTest(staging=automatic, newline=newline):
+                    self.assert_raw_round_trip(
+                        attributes, newline.join((b"{", b'  "passed": true', b"}", b"")), automatic,
+                    )
+
+    def test_removing_raw_evidence_policy_reproduces_the_hash_failure(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_bytes()
+        rule = b"docs/design/session-execution-test-acceptance/evidence/** -text whitespace=cr-at-eol"
+        self.assertEqual(attributes.count(rule), 1)
+        # The same staging/checkout oracle must detect real Git rewriting, not
+        # a fabricated digest or an unrelated missing-file/configuration fault.
+        with self.assertRaisesRegex(AssertionError, "staged evidence must retain"):
+            self.assert_raw_round_trip(attributes.replace(rule, b""), b'{\r\n  "passed": true\r\n}\r\n', "true")
+
+    def test_independent_e42_registration_keeps_its_original_source_and_receipt(self) -> None:
+        entries = {entry["id"]: entry for entry in check_session_acceptance._load(ROOT)["evidence_registry"]}
+        directory = ROOT / "docs/design/session-execution-test-acceptance/evidence/E42-materializer-revocation-windows"
+        original = json.loads((directory / "original-registry-entry.json").read_text(encoding="utf-8"))
+        resolution = json.loads((directory / "registry-name-resolution.json").read_text(encoding="utf-8"))
+        self.assertEqual(original["id"], "E42")
+        self.assertEqual(original["entry_sha256"], check_session_acceptance.entry_digest(original))
+        self.assertEqual(resolution["original_entry_sha256"], original["entry_sha256"])
+        self.assertEqual(resolution["catalog_entry_sha256"], entries["E42W"]["entry_sha256"])
+        self.assertEqual(resolution["receipt_sha256"], original["receipt_sha256"])
+        self.assertEqual({k: v for k, v in original.items() if k not in ("id", "entry_sha256")},
+                         {k: v for k, v in entries["E42W"].items() if k not in ("id", "entry_sha256")})
+        self.assertNotEqual(entries["E42"]["receipt_sha256"], entries["E42W"]["receipt_sha256"])
+        self.assertEqual(entries["E42W"]["platform"], "local Windows x86_64-pc-windows-msvc")
+
+    def test_registered_portable_artifacts_are_stored_with_their_declared_hashes(self) -> None:
+        entries = check_session_acceptance._load(ROOT)["evidence_registry"]
+        portable = [entry for entry in entries if entry.get("receipt", "").startswith(
+            "docs/design/session-execution-test-acceptance/evidence/")]
+        self.assertTrue(portable, "portable evidence must have an indexed byte check")
+        for entry in portable:
+            receipt = entry["receipt"]
+            with self.subTest(evidence=entry["id"], artifact=receipt):
+                indexed = formal_sources.git_output(ROOT, "show", ":" + receipt)
+                self.assertEqual(hashlib.sha256(indexed).hexdigest(), entry["receipt_sha256"])
+                self.assertEqual(indexed, (ROOT / receipt).read_bytes())
+            proof = json.loads(indexed)
+            directory = Path(receipt).parent
+            for name, digest in proof.get("raw_sha256", {}).items():
+                self.assertEqual(Path(name).name, name, "raw artifact names must stay within their receipt")
+                relative = (directory / name).as_posix()
+                with self.subTest(evidence=entry["id"], artifact=relative):
+                    indexed = formal_sources.git_output(ROOT, "show", ":" + relative)
+                    self.assertEqual(hashlib.sha256(indexed).hexdigest(), digest)
+                    self.assertEqual(indexed, (ROOT / relative).read_bytes())
 
 
 if __name__ == "__main__":

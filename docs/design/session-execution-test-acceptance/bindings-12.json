@@ -155,50 +155,42 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 435,
-        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
+        "line": 440,
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 446
+        "line": 453
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 447
+        "line": 454
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 448
+        "line": 455
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 449
+        "line": 472
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 450
+        "line": 473
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 466
+        "line": 487
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 467
+        "line": 500
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 480
-      },
-      {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 492
-      },
-      {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 493
+        "line": 501
       }
     ],
     "execution_witnesses": [
@@ -212,6 +204,17 @@
         "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
         "historical": false,
         "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
+      },
+      {
+        "evidence": "E43",
+        "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+        "package": "awaken-credential-materializer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "365606709d19819fde31221c6eef5b655addc30a",
+        "historical": false,
+        "log_sha256": "17901576599f4769360e2abd11b183ed938f75de62df204eb5e80fd8093c2dd7"
       }
     ],
     "relation": "covers_case_clauses",
@@ -223,7 +226,7 @@
         "negative_control": true
       }
     },
-    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets. Additional original Windows E43 witnesses retain their exact source/receipt identity; this merge is not a new execution receipt. Fresh merged-source Windows validation remains separately required.",
     "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt.",
     "id": "B224"
   },
@@ -232,14 +235,14 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 501,
-        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
+        "line": 509,
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 509
+        "line": 517
       }
     ],
     "execution_witnesses": [
@@ -253,6 +256,17 @@
         "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
         "historical": false,
         "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
+      },
+      {
+        "evidence": "E43",
+        "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+        "package": "awaken-credential-materializer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "365606709d19819fde31221c6eef5b655addc30a",
+        "historical": false,
+        "log_sha256": "17901576599f4769360e2abd11b183ed938f75de62df204eb5e80fd8093c2dd7"
       }
     ],
     "relation": "covers_case_clauses",
@@ -264,7 +278,7 @@
         "negative_control": false
       }
     },
-    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets. Additional original Windows E43 witnesses retain their exact source/receipt identity; this merge is not a new execution receipt. Fresh merged-source Windows validation remains separately required.",
     "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt.",
     "id": "B225"
   },

@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "kind": "required-libtest",
+  "full_gate": false,
+  "source_kind": "working-tree",
+  "revision": "365606709d19819fde31221c6eef5b655addc30a",
+  "source_digest": "9d259dd423521de4d92570a39ae386a656255563261b210dbc11efead18d1aa3",
+  "index_tree": "3529fb51bfcec99326adde7e20fc86aac9879504",
+  "arguments": [
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--all-features",
+    "--lib",
+    "--require-case=tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+    "--require-case=tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+    "--require-case=tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "--require-case=tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once",
+    "--require-case=tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect",
+    "--",
+    "--test-threads=1"
+  ],
+  "required_cases": [
+    "tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+    "tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+    "tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once",
+    "tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect"
+  ],
+  "commands": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--all-features",
+      "--lib",
+      "--",
+      "--test-threads=1",
+      "--list"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--all-features",
+      "--lib",
+      "--",
+      "--test-threads=1",
+      "--show-output"
+    ]
+  ],
+  "list_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--list"
+  ],
+  "test_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "awaken-credential-materializer",
+    "--all-features",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--show-output"
+  ],
+  "selected_cases": [
+    "attempt_delivery_tests::tests::redelivery_revalidates_exact_revision_and_changes_only_the_envelope",
+    "credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table",
+    "http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape",
+    "inference::tests::brokered_mode_and_candidate_routing_share_one_decision_table",
+    "inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access",
+    "inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes",
+    "inference::tests::pinned_materialization_preserves_journal_identity_in_both_model_modes",
+    "inference::tests::published_reasoning_policy_survives_candidate_materialization",
+    "platform_relay::tests::platform_relay_resolves_only_an_exact_holder_and_workspace",
+    "secret_broker::tests::local_source_has_one_injected_broker_and_absence_never_falls_back",
+    "tests::binding_matrix::binding_matrix_holder_dimension_has_its_recipient_classification",
+    "tests::binding_matrix::binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+    "tests::claimed_remote_materialization_is_fenced_before_secret_read",
+    "tests::exact_control_reference_resolves_one_oauth_bundle_for_the_provider_driver",
+    "tests::exact_resolution_tests_are_generated_from_the_decision_table",
+    "tests::extension_registry_drives_discovery_resolution_consumption_and_receipt",
+    "tests::extension_registry_rejects_duplicates_and_forged_receipts",
+    "tests::external_resolution_tests_are_generated_from_the_decision_table",
+    "tests::materialization_revalidates_the_source_owned_exact_target",
+    "tests::native_capabilities::native_manifest_admission_uses_installed_materializer_evidence",
+    "tests::provider_adapter_capabilities_match_the_decision_table",
+    "tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once",
+    "tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect",
+    "tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+    "tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+    "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt"
+  ],
+  "executed_cases": [
+    [
+      "attempt_delivery_tests::tests::redelivery_revalidates_exact_revision_and_changes_only_the_envelope",
+      "ok"
+    ],
+    [
+      "credential_artifact::tests::provider_codecs_follow_the_material_kind_decision_table",
+      "ok"
+    ],
+    [
+      "http_credential::tests::materialized_http_credential_has_one_usage_owned_wire_shape",
+      "ok"
+    ],
+    [
+      "inference::tests::brokered_mode_and_candidate_routing_share_one_decision_table",
+      "ok"
+    ],
+    [
+      "inference::tests::pinned_candidate_preserves_qualified_effect_scope_for_direct_and_brokered_access",
+      "ok"
+    ],
+    [
+      "inference::tests::pinned_executor_preserves_inner_execution_evidence_for_both_modes",
+      "ok"
+    ],
+    [
+      "inference::tests::pinned_materialization_preserves_journal_identity_in_both_model_modes",
+      "ok"
+    ],
+    [
+      "inference::tests::published_reasoning_policy_survives_candidate_materialization",
+      "ok"
+    ],
+    [
+      "platform_relay::tests::platform_relay_resolves_only_an_exact_holder_and_workspace",
+      "ok"
+    ],
+    [
+      "secret_broker::tests::local_source_has_one_injected_broker_and_absence_never_falls_back",
+      "ok"
+    ],
+    [
+      "tests::binding_matrix::binding_matrix_holder_dimension_has_its_recipient_classification",
+      "ok"
+    ],
+    [
+      "tests::binding_matrix::binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+      "ok"
+    ],
+    [
+      "tests::claimed_remote_materialization_is_fenced_before_secret_read",
+      "ok"
+    ],
+    [
+      "tests::exact_control_reference_resolves_one_oauth_bundle_for_the_provider_driver",
+      "ok"
+    ],
+    [
+      "tests::exact_resolution_tests_are_generated_from_the_decision_table",
+      "ok"
+    ],
+    [
+      "tests::extension_registry_drives_discovery_resolution_consumption_and_receipt",
+      "ok"
+    ],
+    [
+      "tests::extension_registry_rejects_duplicates_and_forged_receipts",
+      "ok"
+    ],
+    [
+      "tests::external_resolution_tests_are_generated_from_the_decision_table",
+      "ok"
+    ],
+    [
+      "tests::materialization_revalidates_the_source_owned_exact_target",
+      "ok"
+    ],
+    [
+      "tests::native_capabilities::native_manifest_admission_uses_installed_materializer_evidence",
+      "ok"
+    ],
+    [
+      "tests::provider_adapter_capabilities_match_the_decision_table",
+      "ok"
+    ],
+    [
+      "tests::revocation_wait::current_authority_materializes_each_claimed_route_exactly_once",
+      "ok"
+    ],
+    [
+      "tests::revocation_wait::ownership_loss_during_receipt_response_never_releases_plaintext_or_repeats_the_effect",
+      "ok"
+    ],
+    [
+      "tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
+      "ok"
+    ],
+    [
+      "tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
+      "ok"
+    ],
+    [
+      "tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+      "ok"
+    ]
+  ],
+  "execution_inputs": {
+    "fixture": null,
+    "crash_backend": null
+  },
+  "postgres_fixture_required": false,
+  "postgres_fixture_configured": false,
+  "s3_fixture_required": false,
+  "s3_fixture_configured": false,
+  "status": "passed",
+  "rows": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--all-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--list"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 2.7286461000330746
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "awaken-credential-materializer",
+        "--all-features",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--show-output"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 1.4316155000124127
+    }
+  ],
+  "errors": [],
+  "preparation": {
+    "path": "C:\\t\\sa26\\materializer-fix-v5\\all-features\\build.json",
+    "sha256": "b4d0db117f494aab5b9baa88ad0279e957eb93ce016be52d5f78466b4f662329"
+  },
+  "command_exit_code": 0,
+  "duration_seconds": 4.160261600045487,
+  "source_unchanged": true,
+  "exit_code": 0
+}
