@@ -55,7 +55,10 @@ impl InstalledCommitSource {
         {
             return Ok(commit);
         }
-        self.authority.open_commit(thread).await.map(Arc::new)
+        self.authority
+            .open_for_read(thread)
+            .await
+            .map_err(SessionExecutionError::from)
     }
 
     /// Continuation-only read that reuses the lifecycle guard the caller holds,
@@ -122,10 +125,7 @@ impl awaken_session_run_delivery::SessionCommitSource for InstalledCommitSource 
     }
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RunError> {
-        self.authority
-            .durable_thread_exists(thread)
-            .await
-            .map_err(to_run_error)
+        self.authority.durable_thread_exists(thread).await
     }
 }
 

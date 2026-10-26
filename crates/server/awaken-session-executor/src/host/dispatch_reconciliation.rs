@@ -812,11 +812,11 @@ mod tests {
                     let commit = host
                         .run_assembly
                         .authority
-                        .open_commit("orphan-thread")
+                        .open_for_read("orphan-thread")
                         .await
                         .unwrap();
                     commit_run(
-                        &commit,
+                        commit.as_ref(),
                         &ThreadId("orphan-thread".into()),
                         RunDisposition::ended(old.run_id.clone(), EndCause::NaturalEnd),
                         Vec::new(),
@@ -1073,11 +1073,11 @@ mod tests {
         let commit = host
             .run_assembly
             .authority
-            .open_commit("thread-terminal")
+            .open_for_read("thread-terminal")
             .await
             .expect("terminal Thread commit");
         commit_run(
-            &commit,
+            commit.as_ref(),
             &ThreadId("thread-terminal".to_string()),
             RunDisposition::ended(RunId("run-terminal".to_string()), EndCause::NaturalEnd),
             Vec::new(),
@@ -1522,11 +1522,11 @@ mod tests {
         let parent_commit = host
             .run_assembly
             .authority
-            .open_commit(&parent.0)
+            .open_for_read(&parent.0)
             .await
             .expect("parent physical commit");
         commit_run(
-            &parent_commit,
+            parent_commit.as_ref(),
             &child,
             RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
             Vec::new(),

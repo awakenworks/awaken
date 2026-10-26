@@ -280,7 +280,8 @@ mod tests {
     fn run_and_host_error_projection_preserves_fault_and_code() {
         // Cause/effect table: C1 Run fault is BadRequest/Internal/Unavailable/
         // Conflict; C2 its code is default/custom. Every row must preserve both
-        // fields through Run -> Host -> Run so lifecycle adapters cannot turn a
+        // fields and the original diagnostic through Run -> Host -> Run so
+        // lifecycle adapters cannot turn a
         // stale lease into an absorbing Internal error, flatten a conflict into
         // a request fault or erase a stable diagnosis.
         for original in [
@@ -295,9 +296,11 @@ mod tests {
         ] {
             let expected_kind = original.kind;
             let expected_code = original.code.clone();
+            let expected_message = original.message.clone();
             let projected = to_run_error(from_run_error(original));
             assert_eq!(projected.kind, expected_kind);
             assert_eq!(projected.code, expected_code);
+            assert_eq!(projected.message, expected_message);
         }
     }
 

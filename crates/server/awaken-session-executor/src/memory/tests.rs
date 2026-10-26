@@ -1353,13 +1353,12 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             .is_none(),
         "R4/C5 no automatic Memory binding is selected"
     );
-    let commit = Arc::new(
-        host.run_assembly
-            .authority
-            .open_commit(session)
-            .await
-            .expect("R4 Worker commit"),
-    );
+    let commit = host
+        .run_assembly
+        .authority
+        .open_for_read(session)
+        .await
+        .expect("R4 Worker commit");
 
     assert_eq!(
         host.run_assembly

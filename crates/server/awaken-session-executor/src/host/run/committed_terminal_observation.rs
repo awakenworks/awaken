@@ -545,11 +545,11 @@ mod tests {
         let commit = host
             .run_assembly
             .authority
-            .open_commit("direct-terminal-observer-failure")
+            .open_for_read("direct-terminal-observer-failure")
             .await
             .expect("commit authority");
         commit_run(
-            &commit,
+            commit.as_ref(),
             &ThreadId("direct-terminal-observer-failure".into()),
             RunDisposition::ended(
                 RunId("direct-terminal-observer-failure-run".into()),

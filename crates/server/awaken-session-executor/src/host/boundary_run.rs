@@ -7,11 +7,13 @@ use awaken_dispatch_execution::session_execution::{CommitBoundaryWorkers, Thread
 
 /// Assembles environment-free commit-boundary Workers from immutable views of
 /// the owners they use. Both resolver constructions select it; it holds no
-/// Session context, claimed-execution factory, queue or recovery state, so a
-/// Coordinator-only resolver retains no Run assembly (and no realization).
+/// Session context or claimed-execution factory, and owns no queue or recovery
+/// state. A Coordinator-only resolver retains no Run assembly.
 #[derive(Clone)]
 pub(crate) struct CommitBoundaryAssembly {
-    authority: Arc<dyn crate::SessionAuthority>,
+    commits: Arc<dyn awaken_session_run_delivery::SessionCommitSource>,
+    dispatch_binding: Option<awaken_dispatch_erasure::DispatchBinding>,
+    observes_terminal_memory_locally: bool,
     clock: Arc<dyn awaken_time::WallClock>,
     capabilities: Arc<crate::RunCapabilities>,
     memory_terminal_observers: Arc<crate::memory::MemoryTerminalObservers>,
@@ -21,7 +23,9 @@ pub(crate) struct CommitBoundaryAssembly {
 impl CommitBoundaryAssembly {
     pub(crate) fn new(assembly: &crate::RunAssembly) -> Self {
         Self {
-            authority: assembly.authority.clone(),
+            commits: assembly.authority.clone(),
+            dispatch_binding: assembly.authority.dispatch_binding(),
+            observes_terminal_memory_locally: assembly.authority.observes_terminal_memory_locally(),
             clock: assembly.clock.clone(),
             capabilities: assembly.capabilities.clone(),
             memory_terminal_observers: assembly.resources.memory_terminal_observers.clone(),
@@ -34,12 +38,11 @@ impl CommitBoundaryAssembly {
         thread: &ThreadId,
     ) -> Result<Arc<awaken_session_run_delivery::SessionCommit>, awaken_dispatch_execution::Error>
     {
-        self.authority
-            .open_commit(&thread.0)
+        self.commits
+            .open_for_read(&thread.0)
             .await
-            .map(Arc::new)
             .map_err(|error| {
-                awaken_dispatch_execution::session_execution::execution_error(error.to_string())
+                awaken_dispatch_execution::session_execution::execution_error(error.message)
             })
     }
 }
@@ -110,7 +113,7 @@ pub(crate) async fn construct_boundary_worker(
     awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>,
     awaken_dispatch_execution::Error,
 > {
-    let binding = boundaries.authority.dispatch_binding().ok_or_else(|| {
+    let binding = boundaries.dispatch_binding.clone().ok_or_else(|| {
         awaken_dispatch_execution::session_execution::execution_error(
             "claimed recovery requires a dispatch binding",
         )
@@ -128,7 +131,7 @@ pub(crate) async fn construct_boundary_worker(
             .with_settlement_observer(observer.clone())
             .with_session_run_admission_observer(observer);
     }
-    if boundaries.authority.observes_terminal_memory_locally()
+    if boundaries.observes_terminal_memory_locally
         && let Some(observer) = boundaries
             .memory_terminal_observers
             .for_dispatch(&claimed.request, commit.clone())

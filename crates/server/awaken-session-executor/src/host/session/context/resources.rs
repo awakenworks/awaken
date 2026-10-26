@@ -201,7 +201,7 @@ pub(super) async fn acquire(
         None => None,
     };
     let thread_id = ThreadId(thread.to_string());
-    let commit = Arc::new(host.authority.open_commit(thread).await?);
+    let commit = host.authority.open_for_read(thread).await?;
     // Durable interrupted-stream checkpoints follow the commit's durability
     // (Phase 3): a mid-recovery crash resumes from the flushed partial.
     let stream_checkpoint = host.authority.stream_checkpoint(thread)?;

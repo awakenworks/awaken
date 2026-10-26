@@ -749,7 +749,12 @@ mod startup_tests {
         .expect("validated Host dependencies");
         assert!(
             matches!(
-                worker.run_assembly.authority.open_commit("role").await,
+                worker
+                    .run_assembly
+                    .authority
+                    .open_for_read("role")
+                    .await
+                    .as_deref(),
                 Ok(awaken_session_run_delivery::SessionCommit::Remote(_))
             ),
             "R1 remote commit boundary"
@@ -767,7 +772,7 @@ mod startup_tests {
             coordinator
                 .run_assembly
                 .authority
-                .open_commit("role")
+                .open_for_read("role")
                 .await
                 .is_ok(),
             "R2 selected local commit boundary"
