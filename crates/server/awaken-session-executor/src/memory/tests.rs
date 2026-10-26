@@ -84,6 +84,16 @@ fn extractor_run_error_classification_never_replays_unknown_execution() {
 /// the tool result, it replies done.
 struct ExtractorModel;
 
+struct CountingExtractorModel(Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait]
+impl LlmExecutor for CountingExtractorModel {
+    async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        ExtractorModel.infer(request).await
+    }
+}
+
 #[async_trait]
 impl LlmExecutor for ExtractorModel {
     async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
@@ -256,6 +266,91 @@ async fn bound_test_memory(
         ))))
         .expect("healthy Memory context");
     (runtime, bound, repository, extractions)
+}
+
+#[tokio::test]
+async fn host_extractor_checks_the_same_durable_claim_before_model_effects() {
+    // Cause/effect table: H1 the original owner+epoch still has a live row =>
+    // the real extractor makes its two model requests and proposes one write.
+    // H2 expired lease; H3 another owner; H4 same owner at a newer epoch;
+    // H5 missing intent => zero model requests and no proposal batch. All rows
+    // leave the durable claim and Memory content untouched: this adapter only
+    // executes extraction, while the controller still owns transitions/CAS.
+    // Error classification remains with the existing SDK and Run classifier;
+    // these cases test that HostExecutor actually installs their ownership port.
+    use awaken_time::WallClockExt as _;
+    for case in ["live", "expired", "other-owner", "new-epoch", "missing"] {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (_runtime, bound, content, intents) = bound_test_memory(
+            Arc::new(CountingExtractorModel(calls.clone())),
+            case,
+            root.path(),
+            root.path(),
+        )
+        .await;
+        let mut intent = MemoryExtractionIntent::new_range(
+            format!("claim-fence-{case}"),
+            format!("{case}:terminal"),
+            "ws-test",
+            case,
+            "terminal",
+            "test-store",
+            1,
+            0,
+            1,
+            vec![user("I like rust")],
+            extractor(None, None),
+        )
+        .unwrap();
+        let now = awaken_time::system_clock().now_ms();
+        if case == "live" || case == "missing" {
+            intent.claim("owner", now, 60_000).unwrap();
+        } else {
+            intent.claim("owner", now - 10_000, 1).unwrap();
+        }
+        let admitted = intent.clone();
+        if matches!(case, "other-owner" | "new-epoch") {
+            let owner = if case == "other-owner" {
+                "successor"
+            } else {
+                "owner"
+            };
+            intent.claim(owner, now, 60_000).unwrap();
+        }
+        if case != "missing" {
+            intents
+                .put_extraction_if_absent(intent.clone())
+                .await
+                .unwrap();
+        }
+        let outcome = bound.extract_mutations(&admitted).await;
+        if case == "live" {
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "H1");
+            assert!(
+                matches!(outcome, MemoryExtractionOutcome::Mutations(ref writes) if writes.len() == 1),
+                "H1"
+            );
+        } else {
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "{case}");
+            assert!(
+                !matches!(outcome, MemoryExtractionOutcome::Mutations(_)),
+                "{case}"
+            );
+        }
+        assert_eq!(
+            intents.get_extraction(&intent.intent_id).await.unwrap(),
+            (case != "missing").then_some(intent),
+            "the caller's current claim is never changed by a stale extractor"
+        );
+        assert!(
+            content
+                .list_versions("test-store")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[test]

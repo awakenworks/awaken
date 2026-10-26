@@ -204,34 +204,50 @@ impl MemoryRuntime {
         intent: &MemoryExtractionIntent,
     ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
         let snapshot = &intent.extractor;
-        if let Some(materializer) = self.inference_materializer.as_ref() {
+        let materializer = self.inference_materializer.as_ref();
+        let bindings = if let Some(materializer) = materializer {
             let holder = CredentialRealizationProfile::self_hosted_native().inference_holder;
             let model = &snapshot.agent.resolved_spec.model_binding;
-            let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
+            awaken_credential_contract::compile_candidate_credential_bindings(
                 &[model],
                 Some(&holder),
                 &materializer.credential_realization_capabilities(),
                 intent.claim_generation,
                 awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
             )
-            .map_err(|error| error.to_string())?;
-            let owner = intent
-                .claim_owner
-                .clone()
-                .ok_or_else(|| "Memory extractor has no durable claim owner".to_string())?;
-            let authority = Arc::new(MemoryExtractionCredentialAuthority {
-                repository: self.extraction_repository(),
-                clock: self.clock.clone(),
-                intent_id: intent.intent_id.clone(),
-                owner,
-                generation: intent.claim_generation,
-                bindings: bindings.clone(),
-            });
-            let context = RuntimeRunContext::new()
-                .with_ownership(authority.clone())
-                .with_credential_realization(AttemptCredentialRealization::new(
-                    bindings, authority,
-                ));
+            .map_err(|error| error.to_string())?
+        } else {
+            if !matches!(
+                snapshot.agent.resolved_spec.model_binding.provisioning(),
+                awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+            ) {
+                return Err(
+                    "published model candidate requires an installed credential materializer"
+                        .into(),
+                );
+            }
+            Vec::new()
+        };
+        let owner = intent
+            .claim_owner
+            .clone()
+            .ok_or_else(|| "Memory extractor has no durable claim owner".to_string())?;
+        let authority = Arc::new(MemoryExtractionCredentialAuthority {
+            repository: self.extraction_repository(),
+            clock: self.clock.clone(),
+            intent_id: intent.intent_id.clone(),
+            owner,
+            generation: intent.claim_generation,
+            bindings: bindings.clone(),
+        });
+        // Host-executor extraction has the same durable claim as a materialized
+        // model. The SDK checks this existing verifier before either model effect.
+        let context = RuntimeRunContext::new().with_ownership(authority.clone());
+        if let Some(materializer) = materializer {
+            let model = &snapshot.agent.resolved_spec.model_binding;
+            let context = context.with_credential_realization(AttemptCredentialRealization::new(
+                bindings, authority,
+            ));
             return materializer
                 .materialize_pinned(model, &context)
                 .map(|executor| (executor, context))
@@ -242,14 +258,7 @@ impl MemoryRuntime {
                     )
                 });
         }
-        matches!(
-            snapshot.agent.resolved_spec.model_binding.provisioning(),
-            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
-        )
-        .then(|| (self.llm.clone(), RuntimeRunContext::new()))
-        .ok_or_else(|| {
-            "published model candidate requires an installed credential materializer".into()
-        })
+        Ok((self.llm.clone(), context))
     }
 
     pub(crate) fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
