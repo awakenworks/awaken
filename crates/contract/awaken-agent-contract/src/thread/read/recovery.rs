@@ -10,6 +10,8 @@
 //! under one backend consistency boundary. The snapshot is read-only; commit
 //! authority remains with the coordinator.
 
+mod committed_view;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
