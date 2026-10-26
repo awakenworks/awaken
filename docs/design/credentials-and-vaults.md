@@ -483,6 +483,18 @@ waits/retries while adoption is pending; it never starts a Run with a
 not-yet-adopted revision. Hosted clients never persist a local Vault/source
 mirror and never fall back to an embedded credential when this command fails.
 
+Split Control and AllInOne compose the same two adoption responsibilities:
+Coordinator Session adoption and any hosted infrastructure target. A hosted
+target extends the canonical target; it never replaces it. Both receive the
+same durable event, and the existing conjunction acknowledges it only when
+both converge. In particular, an empty Kubernetes Deployment snapshot says
+nothing about a Session's pinned MCP credential revision. Busy or unavailable
+Session adoption leaves the original outbox event pending even when the
+infrastructure target has no consumers. Exact replay continues that event
+without another credential rotation. The split-Control HTTP regression tests
+the production startup wiring as well as the pure conjunction; passing the
+latter alone cannot establish that startup actually installed both consumers.
+
 When the application must bind the bearer before Session create, it predicts
 the opaque address through the Managed adapter's one exported pure Session-ID
 helper. The public create path reuses that helper, while the Session repository

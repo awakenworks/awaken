@@ -848,18 +848,15 @@ fn install_credential_rollout_target(
                 session_application,
                 managed_state,
             );
-        let rollout_target = match base
-            .process
-            .managed_services
-            .credential_rollout_target
-            .clone()
-        {
-            Some(external) => {
-                managed_platform::conjunctive_credential_rollout_target(local_target, external)
-            }
-            None => local_target,
-        };
-        vault_state.application().set_rollout_target(rollout_target);
+        if let Some(rollout_target) = managed_platform::credential_rollout_target(
+            Some(local_target),
+            base.process
+                .managed_services
+                .credential_rollout_target
+                .clone(),
+        ) {
+            vault_state.application().set_rollout_target(rollout_target);
+        }
     }
 }
 
