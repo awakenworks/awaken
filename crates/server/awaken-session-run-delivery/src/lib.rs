@@ -4,13 +4,16 @@
 //! A Coordinator admits a Run into dispatch, a registered Worker claims and
 //! executes it, and the Worker's settlement and live progress come back over
 //! the Worker transport. This crate owns the Coordinator half of that loop
-//! that needs no execution machinery: the per-Thread live observation point
+//! that owns no attempt execution: the per-Thread live observation point
 //! ([`ThreadEventHub`]) every protocol adapter subscribes to, and the
 //! foreground completion relay ([`CompletionRegistry`]) a caller registers
 //! with before its Run is activated. It links no Session realization, no
 //! Sandbox and no credential realization, so the Coordinator process composes
 //! it without the Worker-side executor; the executor builds on it for the
 //! Runs a co-located pool executes.
+//! Both ordinary and Environment-free Session Workers use
+//! [`session_dispatch_worker`] over the same combined commit. Callers supply
+//! the Runtime and retain model, credential and attempt-capability assembly.
 //!
 //! The same process-local [`BackgroundRuns`] registry tracks auxiliary work
 //! through drain and exact Environment-generation quiescence. Durable intent and
@@ -47,6 +50,7 @@ mod session_projections;
 mod session_run_activation;
 mod session_run_reservation;
 mod session_skills;
+mod session_worker;
 mod settled_step;
 #[cfg(test)]
 mod test_support;
@@ -114,6 +118,7 @@ pub use session_skills::{
     published_skill_ids, requires_filesystem, session_allows_agent_tool,
     session_allows_filesystem_tools,
 };
+pub use session_worker::session_dispatch_worker;
 pub use settled_step::settled_step;
 pub use thread_coordination::{
     ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,

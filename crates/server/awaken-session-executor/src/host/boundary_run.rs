@@ -110,18 +110,17 @@ pub(crate) async fn construct_boundary_worker(
     awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>,
     awaken_dispatch_execution::Error,
 > {
-    let recovery_projection = commit.recovery_projection();
     let binding = boundaries.authority.dispatch_binding().ok_or_else(|| {
         awaken_dispatch_execution::session_execution::execution_error(
             "claimed recovery requires a dispatch binding",
         )
     })?;
-    let mut worker = awaken_dispatch_execution::DispatchWorker::new_bound(
+    let mut worker = awaken_session_run_delivery::session_dispatch_worker(
         Arc::new(awaken_runtime::Runtime::new().with_clock(boundaries.clock.clone())),
         binding,
         commit.clone(),
         claimed.lease.owner().to_owned(),
-    );
+    )?;
     // Select through the original shared binding now, after Session assembly;
     // constructing the resolver must not cache an absent or expired observer.
     if let Some(observer) = boundaries.capabilities.dispatch_settlement_observer() {
@@ -174,8 +173,5 @@ pub(crate) async fn construct_boundary_worker(
         worker.install_attempt_executor(executor);
     }
 
-    if let Some(projection) = recovery_projection {
-        worker = worker.with_recovery_projection(projection)?;
-    }
     Ok(worker)
 }

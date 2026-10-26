@@ -13,9 +13,9 @@ layer = "infrastructure"
 authority = "session-run-delivery"
 separation = "coordinator-side"
 
-# The Coordinator half of Run delivery that needs no execution machinery. It
-# links no Session realization, Sandbox or credential realization, so the
-# Coordinator process composes it without the Worker-side executor.
+# The Coordinator half of Run delivery and shared Session-bound Worker
+# construction. Callers supply the Runtime and attempt capabilities; this
+# crate links no Session realization, Sandbox or credential realization.
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
@@ -29,6 +29,7 @@ awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-runtime.workspace = true
 awaken-observability.workspace = true
 awaken-tenancy.workspace = true
 awaken-time.workspace = true

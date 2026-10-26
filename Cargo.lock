@@ -3544,6 +3544,7 @@ dependencies = [
  "awaken-memory-store",
  "awaken-observability",
  "awaken-resource-contract",
+ "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
