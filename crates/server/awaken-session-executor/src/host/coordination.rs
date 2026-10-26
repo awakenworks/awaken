@@ -145,6 +145,7 @@ mod tests {
         assert_eq!(
             managed
                 .coordination
+                .threads()
                 .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
                 .await
                 .unwrap(),
@@ -186,6 +187,7 @@ mod tests {
         // message/publication/epoch cannot be projected as that accepted A.
         let receipt = managed
             .coordination
+            .threads()
             .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
             .await
             .unwrap()
@@ -206,6 +208,7 @@ mod tests {
             }
             let error = managed
                 .coordination
+                .threads()
                 .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&changed))
                 .await
                 .expect_err("R5 mismatch is unknown");
@@ -290,6 +293,7 @@ mod tests {
         assert!(
             managed
                 .coordination
+                .threads()
                 .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&scoped))
                 .await
                 .is_err(),
@@ -319,6 +323,7 @@ mod tests {
             .unwrap();
         let completed = managed
             .coordination
+            .threads()
             .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
             .await
             .expect_err("R7 insufficient tombstone");
@@ -682,6 +687,7 @@ mod tests {
             assert_eq!(
                 managed
                     .coordination
+                    .threads()
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report, &baseline
@@ -703,6 +709,7 @@ mod tests {
             assert!(
                 managed
                     .coordination
+                    .threads()
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &changed, &baseline
@@ -722,6 +729,7 @@ mod tests {
             assert!(
                 managed
                     .coordination
+                    .threads()
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report,
@@ -736,6 +744,7 @@ mod tests {
             assert!(
                 managed
                     .coordination
+                    .threads()
                     .coordinated_admission_receipt(
                         awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
                             &report,

@@ -1292,6 +1292,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         managed
             .coordination
+            .threads()
             .session_run_state(
                 &SessionId::from(thread),
                 &RunId("cold-session-reservation-run".into())

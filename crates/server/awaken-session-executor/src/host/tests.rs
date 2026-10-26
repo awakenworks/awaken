@@ -237,6 +237,7 @@ mod cold_terminal_cleanup;
 mod compaction_memory;
 mod context_construction;
 mod coordinated_thread_close;
+mod coordination_reads;
 mod environment_binding;
 mod environment_capacity;
 mod environment_installation_order;

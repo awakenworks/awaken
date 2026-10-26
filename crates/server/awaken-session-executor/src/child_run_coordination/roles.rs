@@ -1,14 +1,14 @@
 // @formal surface requirement=session.multiagent.thread_authority
-// @formal reason: Static owner: the Session application's coordination command and read roles served by
+// @formal reason: Static owner: the Session application's coordination commands served by
 // @formal reason: ChildRunCoordination: Run reservation, activation, child admission, replies, interruption,
 // @formal reason: archive and the dispatch reads they validate against; this is a product-requirement
 // @formal reason: classification, not a direct proof claim.
-//! The Session application's `CoordinationRuntime` and
-//! `SessionCoordinationReads` roles, served by [`ChildRunCoordination`].
+//! The Session application's `CoordinationRuntime` role, served by
+//! [`ChildRunCoordination`]. Coordination reads select the shared Thread component.
 
 use std::sync::Arc;
 
-use awaken_session_application_contract::{DelegatedRun, StepOutcome};
+use awaken_session_application_contract::StepOutcome;
 use awaken_session_types::RunError;
 
 use super::ChildRunCoordination;
@@ -182,74 +182,5 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
             .quiesce_terminal_delegations(thread)
             .await
             .map_err(to_run_error)
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionCoordinationReads for ChildRunCoordination {
-    async fn source_dispatch_observation(
-        &self,
-        session: &awaken_session_state_contract::PersistedSession,
-    ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
-        self.threads().source_dispatch_observation(session).await
-    }
-
-    async fn execution_recovery_observation(
-        &self,
-        session: &awaken_session_state_contract::PersistedSession,
-    ) -> awaken_session_execution_contract::SessionExecutionRecoveryObservation {
-        self.threads().execution_recovery_observation(session).await
-    }
-
-    async fn coordinated_admission_receipt(
-        &self,
-        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
-    ) -> Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError>
-    {
-        self.threads().coordinated_admission_receipt(command).await
-    }
-
-    async fn session_run_state(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
-        self.threads().session_run_state(session_id, run_id).await
-    }
-
-    async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.threads().delegated_runs(thread).await
-    }
-
-    async fn coordinated_threads(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-        self.threads()
-            .coordinated_threads(session_id, observed_root)
-            .await
-    }
-
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
-        awaken_session_execution_contract::SessionCoordinationReads::session_thread_tool_reply_fence(
-            self.threads(),
-            command,
-        )
-        .await
-    }
-
-    async fn validate_session_agent_message_source(
-        &self,
-        command: &awaken_session_execution_contract::SessionAgentMessageCommand,
-    ) -> Result<awaken_session_execution_contract::SessionAgentMessageCommand, RunError> {
-        awaken_session_execution_contract::SessionCoordinationReads::validate_session_agent_message_source(
-            self.threads(),
-            command,
-        )
-        .await
     }
 }

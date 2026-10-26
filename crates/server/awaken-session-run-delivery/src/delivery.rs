@@ -164,7 +164,7 @@ impl WorkerPlacedSessions {
     }
 
     /// The Session application's role set for the Sessions registered Workers
-    /// realize. Committed reads and budgets select their existing components.
+    /// realize. Committed reads, coordination reads and budgets select their components.
     ///
     /// Budget ownership is selected through this role set, rather than a second
     /// implementation on the placement aggregate.
@@ -173,6 +173,15 @@ impl WorkerPlacedSessions {
     /// use awaken_session_execution_contract::BudgetRuntime;
     /// use awaken_session_run_delivery::WorkerPlacedSessions;
     /// fn duplicate_budget_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn BudgetRuntime> {
+    ///     sessions
+    /// }
+    /// ```
+    /// Coordination reads also select the original Thread component directly.
+    /// ```compile_fail,E0277
+    /// use std::sync::Arc;
+    /// use awaken_session_execution_contract::SessionCoordinationReads;
+    /// use awaken_session_run_delivery::WorkerPlacedSessions;
+    /// fn duplicate_read_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn SessionCoordinationReads> {
     ///     sessions
     /// }
     /// ```
@@ -186,7 +195,7 @@ impl WorkerPlacedSessions {
                 self.clone(),
             ),
             coordination: self.clone(),
-            coordination_reads: self.clone(),
+            coordination_reads: self.threads.clone(),
             budget: self.budgets.clone(),
             streaming_runs: self.clone(),
             thread_reads: self.ports.reads.clone(),
@@ -1140,6 +1149,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn coordination_read_role_retains_the_original_threads_without_placement() {
+        // Cause/effect graph: C1 retain only the published coordination reads;
+        // C2 release all other roles and the placement; C3 drop the read role.
+        // R1=C1+C2 -> placement and unrelated Memory recovery are released,
+        // while the original Threads and committed reads answer the query.
+        // R2=R1+C3 -> those same collaborators are released. All eight read
+        // operations keep the existing CoordinatedThreads implementation;
+        // this table detects an unnecessary facade lifetime, not new policy.
+        let sessions = Arc::new(delivery(None).await);
+        let parent = Arc::downgrade(&sessions);
+        let memory = Arc::downgrade(&sessions.ports.memory_extractions);
+        let threads = Arc::downgrade(&sessions.threads);
+        let reads = Arc::downgrade(&sessions.ports.reads);
+        let roles = sessions.session_execution_roles();
+        let selected = roles.coordination_reads.clone();
+        drop(roles);
+        drop(sessions);
+        assert!(parent.upgrade().is_none(), "R1 placement released");
+        assert!(memory.upgrade().is_none(), "R1 unrelated Memory released");
+        assert!(threads.upgrade().is_some(), "R1 original Threads retained");
+        assert!(
+            reads.upgrade().is_some(),
+            "R1 original committed reads retained"
+        );
+        assert!(
+            selected
+                .delegated_runs("coordination-read-role")
+                .await
+                .expect("R1 query")
+                .is_empty()
+        );
+        drop(selected);
+        assert!(threads.upgrade().is_none(), "R2 Threads released");
+        assert!(reads.upgrade().is_none(), "R2 committed reads released");
     }
 
     #[tokio::test]
