@@ -56,52 +56,19 @@ impl DispatchSettlementObserver for MemoryDispatchSettlementObserver {
         committed_state: &awaken_agent_contract::agent::run::RunState,
         _cancellation_requested: bool,
     ) -> Result<(), DispatchSettlementError> {
-        use awaken_agent_contract::agent::run::RunState;
-
-        if dispatch.run_id() != &claim.run_id {
-            return Err(DispatchSettlementError(
-                "Memory settlement dispatch does not match the guarded Run claim".into(),
-            ));
-        }
-        let cause = match committed_state {
-            RunState::Ended(cause) => cause.clone(),
-            RunState::Awaiting => return Ok(()),
-            RunState::Running => {
-                return Err(DispatchSettlementError(
-                    "Memory settlement requires committed Awaiting or Ended truth".into(),
-                ));
-            }
-        };
-        let commit = self
-            .reads
-            .commit_for_read(&dispatch.session_thread_id().0)
-            .await
-            .map_err(|error| DispatchSettlementError(error.to_string()))?;
-        let observers = self
-            .terminal_observers
-            .for_dispatch(dispatch, commit)
-            .await
-            .map_err(|error| DispatchSettlementError(error.to_string()))?
-            .into_iter()
-            .collect::<Vec<_>>();
-        let terminal = awaken_runtime_contract::terminal::CommittedTerminalRun {
-            run_id: dispatch.run_id().clone(),
-            thread_id: dispatch.thread_id().clone(),
-            cause,
-        };
-        let failures =
-            awaken_runtime_contract::terminal::deliver_committed_terminal(&observers, &terminal)
-                .await;
-        if failures.is_empty() {
-            return Ok(());
-        }
-        Err(DispatchSettlementError(
-            failures
-                .into_iter()
-                .map(|failure| format!("{}: {}", failure.observer_id, failure.error))
-                .collect::<Vec<_>>()
-                .join("; "),
-        ))
+        awaken_session_run_delivery::observe_dispatched_memory_terminal(
+            &self.reads,
+            dispatch,
+            claim,
+            committed_state,
+            |commit| async move {
+                self.terminal_observers
+                    .for_dispatch(dispatch, commit)
+                    .await
+                    .map_err(|error| DispatchSettlementError(error.to_string()))
+            },
+        )
+        .await
     }
 }
 

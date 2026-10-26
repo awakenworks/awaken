@@ -4,6 +4,34 @@
 //! Select an auxiliary Agent from the Run's already-selected publication source.
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
+/// The Memory extractor selected by one already-frozen publication source.
+/// Embedded and ordinary Worker extraction share this same selection law.
+pub fn memory_extractor_snapshot(
+    workspace_id: &str,
+    config: awaken_ext_memory::MemoryConfig,
+    model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
+) -> Result<awaken_ext_memory::MemoryExtractorSnapshot, String> {
+    let agent_id = config
+        .agent_id
+        .as_deref()
+        .unwrap_or(awaken_ext_memory::MEMORY_AGENT_ID);
+    let agent = resolve_auxiliary_snapshot(
+        Some(publications),
+        workspace_id,
+        agent_id,
+        awaken_ext_memory::default_memory_agent(
+            model,
+            awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS,
+        ),
+        config.instructions.as_deref(),
+    )?;
+    Ok(awaken_ext_memory::MemoryExtractorSnapshot {
+        agent,
+        extraction_prompt: config.extraction_prompt,
+    })
+}
+
 /// Resolve one auxiliary Agent through the same Coordinator publication source
 /// as a foreground Session. The built-in snapshot is only the absent-publication
 /// default for the same id; it is not a second mutable catalog. A per-caller

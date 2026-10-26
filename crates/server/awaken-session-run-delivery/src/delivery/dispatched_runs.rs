@@ -47,21 +47,35 @@ impl<'a> DispatchedRuns<'a> {
         }
     }
 
-    async fn dispatch(&self, activation: RunActivation) -> Result<RunState, RunError> {
+    pub(super) async fn dispatch(&self, activation: RunActivation) -> Result<RunState, RunError> {
         if activation.thread_id != self.thread {
             return Err(RunError::internal(
                 "Run activation does not match its bound Thread",
             ));
         }
         let projections = self.projections;
-        let run_id = activation.run_id.clone();
-        let (settled, _waiter_guard) = self.completion.register(&run_id, None)?;
         let preparation = projections.prepare(activation);
         let request = if self.extension {
             preparation.extension()
         } else {
             preparation.fresh()
         }?;
+        self.deliver(request).await
+    }
+
+    /// Re-observation may supply the queue's already frozen request. Both
+    /// entry points share this sole register/enqueue/committed-truth wait.
+    pub(super) async fn deliver(
+        &self,
+        request: awaken_dispatch_contract::RunDispatch,
+    ) -> Result<RunState, RunError> {
+        if request.thread_id() != &self.thread || request.session_thread_id() != &self.thread {
+            return Err(RunError::bad_request(
+                "Run dispatch does not match its bound commit Thread",
+            ));
+        }
+        let run_id = request.run_id().clone();
+        let (settled, _waiter_guard) = self.completion.register(&run_id, None)?;
         self.owner
             .enqueue(request)
             .await
