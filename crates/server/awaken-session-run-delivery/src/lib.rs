@@ -72,8 +72,8 @@ pub use committed_step::{
     verify_committed_step,
 };
 pub use completion::{
-    CompletionRegistry, CompletionSignalClosed, WaiterGuard, activate_and_await_session_run,
-    await_completion_state,
+    CompletionRegistry, CompletionSignalClosed, SettlementWakeup, WaiterGuard,
+    activate_and_await_session_run, await_completion_state,
 };
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
 pub use hub::{ThreadEvent, ThreadEventHub};

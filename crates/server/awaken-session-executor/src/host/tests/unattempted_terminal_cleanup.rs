@@ -104,7 +104,7 @@ async fn cold_host(
     );
     deps.execution_authority = Some(Arc::new(pc::test_support::EffectAuthority::new(fence)));
     let host = deps.build().unwrap();
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     install_test_session_application(&host);
     (host, managed)
 }

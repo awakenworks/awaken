@@ -25,7 +25,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
         let host = (crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub").await)
             .build()
             .expect("validated Host dependencies");
-        let managed = install_test_dispatch_runtime(&host);
+        let managed = host.clone();
         let thread = ThreadId(format!("outcome-pure-query-cached-{cached}"));
         if cached {
             host.run_assembly

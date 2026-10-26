@@ -17,7 +17,8 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
     host.tools
         .plugin_config
         .insert(id.clone(), serde_json::json!({"keep_last": "invalid"}));
-    let (host, _managed) = dispatch_test_host((host).build().expect("validated Host dependencies"));
+    let host = (host).build().expect("validated Host dependencies");
+    let _managed = host.clone();
     let thread = "failed-context-assembly";
     let error = host
         .run_assembly
@@ -230,11 +231,10 @@ async fn acp_fixture(
         inner: host.exec.acp.as_ref().unwrap().clone(),
         fail_first: AtomicBool::new(fail_factory),
     });
-    let (host, managed) = dispatch_test_host(
-        (host.with_acp(factory))
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (host.with_acp(factory))
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     (host, managed, exporter, receiver)
 }
 

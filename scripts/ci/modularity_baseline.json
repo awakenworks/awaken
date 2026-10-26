@@ -27,7 +27,7 @@
     },
     "awaken-session-executor::ExecutorComponents": {
       "files": 5,
-      "methods": 28,
+      "methods": 27,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-executor::RunAssembly": {

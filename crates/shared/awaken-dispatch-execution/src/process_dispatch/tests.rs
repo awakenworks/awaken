@@ -217,7 +217,6 @@ fn coordinator_fixture(local: awaken_deployment_config::LocalExecution) -> Coord
             queue_depth: awaken_deployment_config::QueueDepthSource::External,
         },
         clock,
-        Arc::new(NoCompletion),
         DispatchHint::new(Arc::new(crate::LocalWakeSignal::new())),
     );
     let scans = Arc::new(AtomicUsize::new(0));
@@ -272,6 +271,7 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
         fixture.dispatch.ensure_terminal_reconciliation(
             true,
             Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
             || Some(resolver)
         ),
         "T1 start"
@@ -300,6 +300,7 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
         fixture.dispatch.ensure_terminal_reconciliation(
             true,
             Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
             || Some(resolver)
         ),
         "T3 start"
@@ -326,11 +327,12 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
         "T3/E3 the dispatch stays usable"
     );
     assert!(
-        !fixture
-            .dispatch
-            .ensure_terminal_reconciliation(true, Some(fixture.owner), || {
-                panic!("T4/E4 a stopped loop builds no second resolver")
-            }),
+        !fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner),
+            Arc::new(NoCompletion),
+            || { panic!("T4/E4 a stopped loop builds no second resolver") }
+        ),
         "T4/E4"
     );
 }
@@ -419,6 +421,7 @@ async fn concurrent_pool_start_constructs_one_pool_and_one_resolver() {
             let _runtime = runtime.enter();
             fixture.dispatch.ensure_pool(
                 Some(DispatchBinding::local(fixture.owner.clone())),
+                Arc::new(NoCompletion),
                 || {
                     race.enter_factory();
                     Ok(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
@@ -428,13 +431,14 @@ async fn concurrent_pool_start_constructs_one_pool_and_one_resolver() {
     };
     race.wait_for_first();
     let release = race.release_when_competitor_can_enter();
-    let second =
-        fixture
-            .dispatch
-            .ensure_pool(Some(DispatchBinding::local(fixture.owner.clone())), || {
-                race.enter_factory();
-                Ok(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
-            });
+    let second = fixture.dispatch.ensure_pool(
+        Some(DispatchBinding::local(fixture.owner.clone())),
+        Arc::new(NoCompletion),
+        || {
+            race.enter_factory();
+            Ok(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
+        },
+    );
     first.join().unwrap().unwrap();
     second.unwrap();
     release.join().unwrap();
@@ -442,9 +446,11 @@ async fn concurrent_pool_start_constructs_one_pool_and_one_resolver() {
     let original = fixture.dispatch.pool().unwrap().clone();
     fixture
         .dispatch
-        .ensure_pool(Some(DispatchBinding::local(fixture.owner.clone())), || {
-            panic!("I2 an existing pool cannot construct another resolver")
-        })
+        .ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || panic!("I2 an existing pool cannot construct another resolver"),
+        )
         .unwrap();
     assert!(
         Arc::ptr_eq(&original, fixture.dispatch.pool().unwrap()),
@@ -473,6 +479,7 @@ async fn concurrent_terminal_start_constructs_one_loop_and_one_resolver() {
             fixture.dispatch.ensure_terminal_reconciliation(
                 true,
                 Some(fixture.owner.clone()),
+                Arc::new(NoCompletion),
                 || {
                     race.enter_factory();
                     Some(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
@@ -482,13 +489,15 @@ async fn concurrent_terminal_start_constructs_one_loop_and_one_resolver() {
     };
     race.wait_for_first();
     let release = race.release_when_competitor_can_enter();
-    let second =
-        fixture
-            .dispatch
-            .ensure_terminal_reconciliation(true, Some(fixture.owner.clone()), || {
-                race.enter_factory();
-                Some(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
-            });
+    let second = fixture.dispatch.ensure_terminal_reconciliation(
+        true,
+        Some(fixture.owner.clone()),
+        Arc::new(NoCompletion),
+        || {
+            race.enter_factory();
+            Some(fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>)
+        },
+    );
     let first = first.join().unwrap();
     release.join().unwrap();
     let calls = race.calls.load(Ordering::SeqCst);
@@ -496,6 +505,7 @@ async fn concurrent_terminal_start_constructs_one_loop_and_one_resolver() {
     assert!(!fixture.dispatch.ensure_terminal_reconciliation(
         true,
         Some(fixture.owner.clone()),
+        Arc::new(NoCompletion),
         || panic!("I4 an existing loop cannot construct another resolver"),
     ));
     assert!(fixture.dispatch.begin_drain().await.is_none());
@@ -514,7 +524,7 @@ async fn failed_pool_initialization_preserves_refusal_and_remains_retryable() {
     ));
     fixture
         .dispatch
-        .ensure_pool(None, || {
+        .ensure_pool(None, Arc::new(NoCompletion), || {
             panic!("F1 an unbound queue cannot construct a resolver")
         })
         .unwrap();
@@ -523,37 +533,41 @@ async fn failed_pool_initialization_preserves_refusal_and_remains_retryable() {
     let expected = error.to_string();
     let refused = fixture
         .dispatch
-        .ensure_pool(Some(DispatchBinding::local(fixture.owner.clone())), || {
-            Err(error)
-        })
+        .ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || Err(error),
+        )
         .unwrap_err();
     assert_eq!(refused.to_string(), expected, "F2 unchanged error");
     assert!(fixture.dispatch.pool().is_none(), "F2 empty");
     let foreign = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
-    let mismatch = fixture
-        .dispatch
-        .ensure_pool(Some(DispatchBinding::local(fixture.owner.clone())), || {
-            Ok(foreign.resolver.clone())
-        });
+    let mismatch = fixture.dispatch.ensure_pool(
+        Some(DispatchBinding::local(fixture.owner.clone())),
+        Arc::new(NoCompletion),
+        || Ok(foreign.resolver.clone()),
+    );
     assert!(mismatch.is_err(), "F2 underlying pool-binding refusal");
     assert!(
         fixture.dispatch.pool().is_none(),
         "F2 rejected pool is not cached"
     );
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        fixture
-            .dispatch
-            .ensure_pool(Some(DispatchBinding::local(fixture.owner.clone())), || {
-                panic!("controlled pool initializer panic")
-            })
+        fixture.dispatch.ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || panic!("controlled pool initializer panic"),
+        )
     }));
     assert!(panic.is_err(), "F3 original unwind");
     assert!(fixture.dispatch.pool().is_none(), "F3 empty");
     fixture
         .dispatch
-        .ensure_pool(Some(DispatchBinding::local(fixture.owner.clone())), || {
-            Ok(fixture.resolver.clone())
-        })
+        .ensure_pool(
+            Some(DispatchBinding::local(fixture.owner.clone())),
+            Arc::new(NoCompletion),
+            || Ok(fixture.resolver.clone()),
+        )
         .unwrap();
     assert!(fixture.dispatch.pool().is_some(), "F4 successful retry");
     let _drain = fixture.dispatch.begin_drain().await;
@@ -566,17 +580,19 @@ async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
     // factory starts exactly once. The existing lifetime tests still own
     // cancellation/drain, and I3/I4 above own concurrent construction.
     let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    assert!(!fixture.dispatch.ensure_terminal_reconciliation(
+        true,
+        None,
+        Arc::new(NoCompletion),
+        || { panic!("F5 no owner means no resolver") }
+    ));
     assert!(
-        !fixture
-            .dispatch
-            .ensure_terminal_reconciliation(true, None, || {
-                panic!("F5 no owner means no resolver")
-            })
-    );
-    assert!(
-        !fixture
-            .dispatch
-            .ensure_terminal_reconciliation(true, Some(fixture.owner.clone()), || None,),
+        !fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
+            || None,
+        ),
         "F6"
     );
     assert!(
@@ -584,11 +600,12 @@ async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
         "F5/F6 empty"
     );
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        fixture
-            .dispatch
-            .ensure_terminal_reconciliation(true, Some(fixture.owner.clone()), || {
-                panic!("controlled terminal initializer panic")
-            })
+        fixture.dispatch.ensure_terminal_reconciliation(
+            true,
+            Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
+            || panic!("controlled terminal initializer panic"),
+        )
     }));
     assert!(panic.is_err(), "F7 original unwind");
     assert!(
@@ -599,6 +616,7 @@ async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
         fixture.dispatch.ensure_terminal_reconciliation(
             true,
             Some(fixture.owner.clone()),
+            Arc::new(NoCompletion),
             || Some(fixture.resolver.clone()),
         ),
         "F8 successful retry"
@@ -606,6 +624,7 @@ async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
     assert!(!fixture.dispatch.ensure_terminal_reconciliation(
         true,
         Some(fixture.owner.clone()),
+        Arc::new(NoCompletion),
         || panic!("F8 a successful initializer is immutable"),
     ));
     assert!(fixture.dispatch.begin_drain().await.is_none());

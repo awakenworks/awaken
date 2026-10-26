@@ -898,7 +898,6 @@ mod retry_hint_tests {
         let foreign = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
             host.dispatch().topology().clone(),
             host.clock(),
-            host.completion.clone(),
             awaken_dispatch_execution::DispatchHint::new(Arc::new(
                 awaken_dispatch_execution::LocalWakeSignal::new(),
             )),

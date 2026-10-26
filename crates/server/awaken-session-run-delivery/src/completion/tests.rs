@@ -380,3 +380,57 @@ async fn a_poisoned_completion_registry_refuses_new_observations_and_stops_notif
         .await
         .expect("W4 the live relay is best-effort");
 }
+
+#[test]
+fn committed_completion_wakes_the_single_installed_convergence_owner() {
+    // S1 raw SDK/Worker relay without a Session application => settle only.
+    // S2 registered foreground => receiver is already settled INSIDE wakeup.
+    // S3 no foreground => wake the same convergence owner once. S4 the exact
+    // selected relay/wakeup are immutable; the struct's compile-fail cases
+    // reject replacement or missing construction input at the public boundary.
+    // These are the former executor S1-S4 rules over the same relay owner.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let registry = Arc::new(CompletionRegistry::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    registry.settled(&RunId("completion-unbound".into()), &RunState::Awaiting);
+    assert_eq!(wakes.load(Ordering::SeqCst), 0, "S1 settle only");
+    let (observer, _guard) = registry
+        .register(&RunId("completion-observed".into()), None)
+        .expect("healthy relay");
+    let observer = Arc::new(std::sync::Mutex::new(Some(observer)));
+    let received = observer.clone();
+    let observed = wakes.clone();
+    let wakeup: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        if let Some(mut receiver) = received.lock().unwrap().take() {
+            assert!(
+                matches!(receiver.try_recv(), Ok(RunState::Ended(_))),
+                "S2/E1 the relay must settle before convergence wakes"
+            );
+        }
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
+    let relay: Arc<dyn CompletionSink> = registry;
+    let settlement = SettlementWakeup::new(relay.clone(), wakeup.clone());
+    assert!(
+        Arc::ptr_eq(&settlement.completion, &relay),
+        "S4 relay identity"
+    );
+    assert!(
+        Arc::ptr_eq(&settlement.committed_progress, &wakeup),
+        "S4 wake identity"
+    );
+    settlement.settled(
+        &RunId("completion-observed".into()),
+        &RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+    );
+    assert!(
+        observer.lock().unwrap().is_none(),
+        "S2/E1 observed completion"
+    );
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "S2/E2");
+    settlement.settled(
+        &RunId("completion-wakeup".into()),
+        &RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+    );
+    assert_eq!(wakes.load(Ordering::SeqCst), 2, "S3/E2");
+}

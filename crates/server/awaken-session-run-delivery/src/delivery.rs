@@ -510,7 +510,6 @@ mod tests {
                     queue_depth: awaken_deployment_config::QueueDepthSource::External,
                 },
                 clock.clone(),
-                completion.clone(),
                 awaken_dispatch_execution::wake::DispatchHint::new(Arc::new(
                     awaken_dispatch_execution::LocalWakeSignal::new(),
                 )),

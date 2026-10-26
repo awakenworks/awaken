@@ -14,6 +14,53 @@ use awaken_session_execution_contract::SessionRunActivation;
 
 use crate::DeliveryLock;
 
+/// A fixed completion relay followed by its committed-progress notification.
+/// Both collaborators are selected together before a pool, scan or transport
+/// can publish through this sink. Neither notification port is durable truth.
+///
+/// S4: a selected wakeup cannot be replaced.
+/// ```compile_fail,E0616
+/// use std::sync::Arc;
+/// use awaken_session_run_delivery::SettlementWakeup;
+/// fn replace(sink: &mut SettlementWakeup, other: Arc<dyn Fn() + Send + Sync>) {
+///     sink.committed_progress = other;
+/// }
+/// ```
+///
+/// A notifying composition must supply its wakeup at construction.
+/// ```compile_fail,E0061
+/// use std::sync::Arc;
+/// use awaken_dispatch_contract::CompletionSink;
+/// use awaken_session_run_delivery::SettlementWakeup;
+/// fn partial(relay: Arc<dyn CompletionSink>) {
+///     let _ = SettlementWakeup::new(relay);
+/// }
+/// ```
+pub struct SettlementWakeup {
+    completion: Arc<dyn CompletionSink>,
+    committed_progress: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl SettlementWakeup {
+    #[must_use]
+    pub fn new(
+        completion: Arc<dyn CompletionSink>,
+        committed_progress: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            completion,
+            committed_progress,
+        }
+    }
+}
+
+impl CompletionSink for SettlementWakeup {
+    fn settled(&self, run_id: &RunId, state: &RunState) {
+        self.completion.settled(run_id, state);
+        (self.committed_progress)();
+    }
+}
+
 /// Wakes foreground durable submitters when the pool settles a Run and relays
 /// that Run's best-effort live progress while each caller remains connected.
 /// Exact replays share one run-id slot and retain independent drop guards;

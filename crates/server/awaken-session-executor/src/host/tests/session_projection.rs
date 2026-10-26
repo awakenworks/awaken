@@ -32,13 +32,15 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid publication");
-        dispatch_test_host(
-            (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-                .await
-                .with_agent_publications(Arc::new(publications)))
-            .build()
-            .expect("validated Host dependencies"),
-        )
+        {
+            let prepared_host =
+                (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                    .await
+                    .with_agent_publications(Arc::new(publications)))
+                .build()
+                .expect("validated Host dependencies");
+            (prepared_host.clone(), prepared_host)
+        }
     };
 
     let (matching, _matching_managed) = published_host().await;
@@ -88,11 +90,10 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         .await
         .expect("H3 publication without redundant projection");
 
-    let (orphan, _orphan_managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let orphan = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _orphan_managed = orphan.clone();
     orphan
         .run_assembly
         .capabilities
@@ -246,13 +247,12 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_agent_publications(Arc::new(publications)))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_agent_publications(Arc::new(publications)))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     host.run_assembly
         .installed_sessions
         .replace_frozen_with("policy-session", |next| {
@@ -357,16 +357,15 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication])
             .expect("valid provider-server publication");
     let inferences = Arc::new(AtomicUsize::new(0));
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(
-            Arc::new(SessionInferenceProbe(inferences.clone())),
-            "stub",
-        )
-        .await
-        .with_agent_publications(Arc::new(publications)))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(SessionInferenceProbe(inferences.clone())),
+        "stub",
+    )
+    .await
+    .with_agent_publications(Arc::new(publications)))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
     host.run_assembly
         .installed_sessions
         .replace_frozen_with("provider-server-policy", |next| {
@@ -1002,13 +1001,12 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
             .expect("valid publication");
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
-            .await
-            .with_agent_publications(Arc::new(publications)))
-        .build()
-        .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(ClientLookupModel), "stub")
+        .await
+        .with_agent_publications(Arc::new(publications)))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = host.clone();
 
     host.run_assembly
         .installed_sessions
@@ -1141,7 +1139,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     .build()
     .expect("validated Host dependencies");
     install_test_session_application(&host);
-    install_test_dispatch_runtime(&host)
+    host.clone()
         .run_assembly
         .install_test_session_init(
             "cold-agent",
@@ -1192,7 +1190,8 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&fallback_host);
-    install_test_dispatch_runtime(&fallback_host)
+    fallback_host
+        .clone()
         .run_assembly
         .install_test_session_init(
             "cold-built-in",
@@ -1533,7 +1532,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     let direct = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let _direct_managed = install_test_dispatch_runtime(&direct);
+    let _direct_managed = direct.clone();
     let direct_ctx = direct
         .run_assembly
         .ctx_for("direct-live", None)
@@ -1623,7 +1622,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     .await)
         .build()
         .expect("validated Host dependencies");
-    let _local_managed = install_test_dispatch_runtime(&local);
+    let _local_managed = local.clone();
     let local_ctx = local
         .run_assembly
         .ctx_for("local-live", None)

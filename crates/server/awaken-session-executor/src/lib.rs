@@ -122,7 +122,6 @@ pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
 pub use crate::config::{advertised_tools, authorable_tools, block_text};
-pub(crate) use crate::host::ApplicationPortBinding;
 pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};

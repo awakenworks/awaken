@@ -674,7 +674,8 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
 
     let runtime_thread = "mcp-runtime-quiescence";
-    let (runtime_host, _runtime_managed) = dispatch_test_host(host_with_process_reaper().await);
+    let runtime_host = host_with_process_reaper().await;
+    let _runtime_managed = runtime_host.clone();
     // Physical query causes/effects (the same Runtime marker used by P2-P4):
     // RQ0 absent Session => no callback, no installed Session created; RQ1 installed/no
     // Context => (false,false); RQ2 Context/inactive => (true,false); RQ3

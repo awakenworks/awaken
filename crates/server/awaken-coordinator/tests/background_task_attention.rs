@@ -314,7 +314,7 @@ async fn exercise_background_attention(
     .await;
     let events = wait_for_completion(&app, &session, &accepted_receipt, timeout).await;
     assert!(
-        awaken_session_executor::CoordinatorRoles::of(&host)
+        awaken_session_executor::CoordinatorRoles::of(&host, host.worker_completion_sink())
             .drain(Duration::from_secs(2))
             .await,
         "BackgroundTask execution and attention publication drain"

@@ -149,7 +149,7 @@ async fn durable_child_run_scenario() {
     )))
     .build()
     .expect("validated Host dependencies");
-    awaken_session_executor::CoordinatorRoles::of(&host)
+    awaken_session_executor::CoordinatorRoles::of(&host, host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 

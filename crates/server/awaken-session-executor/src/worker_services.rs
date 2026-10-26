@@ -32,8 +32,11 @@ impl ExecutorComponents {
         })
     }
 
+    /// The original completion relay. Managed composition wraps this same
+    /// value with its lifecycle hint before starting dispatch and transport;
+    /// a standalone SDK or Worker uses the relay directly.
     pub fn worker_completion_sink(&self) -> Arc<dyn CompletionSink> {
-        self.settlement.clone()
+        self.completion.clone()
     }
 
     pub fn worker_stream_sink(&self) -> Arc<dyn StreamSink> {

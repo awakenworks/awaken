@@ -1213,7 +1213,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         "R2/R3/R4 E3,E6,E7 next wake schedules one matching writable binding"
     );
     assert!(
-        crate::CoordinatorRoles::of(&recovered_host)
+        crate::CoordinatorRoles::of(&recovered_host, recovered_host.worker_completion_sink())
             .drain(Duration::from_secs(10))
             .await,
         "R2/E3 recovery drained"

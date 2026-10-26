@@ -46,7 +46,6 @@ use awaken_dispatch_contract::CompletionSink;
 pub struct ProcessDispatch {
     topology: ExecutionTopology,
     clock: Arc<dyn WallClock>,
-    completion: Arc<dyn CompletionSink>,
     hint: DispatchHint,
     pool: OnceCell<Arc<DispatchPool<AnyDispatchStore>>>,
     /// The scan state the claimed-Run resolver shares.
@@ -117,16 +116,10 @@ pub struct ClaimedRunsDrained {
 impl ProcessDispatch {
     /// The selected topology with no pool yet: [`Self::ensure_pool`] spawns it.
     #[must_use]
-    pub fn new(
-        topology: ExecutionTopology,
-        clock: Arc<dyn WallClock>,
-        completion: Arc<dyn CompletionSink>,
-        hint: DispatchHint,
-    ) -> Self {
+    pub fn new(topology: ExecutionTopology, clock: Arc<dyn WallClock>, hint: DispatchHint) -> Self {
         Self {
             topology,
             clock,
-            completion,
             hint,
             pool: OnceCell::new(),
             terminal_reconciliation: Arc::default(),
@@ -152,6 +145,13 @@ impl ProcessDispatch {
         self.pool.get()
     }
 
+    /// Whether a service has already selected its immutable construction
+    /// ports. A stopped service still counts: its ports cannot be replaced.
+    #[must_use]
+    pub fn has_started_services(&self) -> bool {
+        self.pool.get().is_some() || self.terminal_reconciler.get().is_some()
+    }
+
     /// Spawn the one process-level pool, once, when this process executes Runs
     /// and its dispatch authority is bound. `resolver` is built only when the
     /// pool is actually spawned. Concurrent callers share one fallible
@@ -160,6 +160,7 @@ impl ProcessDispatch {
     pub fn ensure_pool(
         &self,
         binding: Option<DispatchBinding>,
+        completion: Arc<dyn CompletionSink>,
         resolver: impl FnOnce() -> Result<Arc<dyn WorkerResolver<AnyDispatchStore>>, Error>,
     ) -> Result<(), Error> {
         let sizing = self.topology.local.pool_sizing();
@@ -180,7 +181,7 @@ impl ProcessDispatch {
                     resolver()?,
                     sizing.slots().get(),
                     self.hint.wake(),
-                    Some(self.completion.clone()),
+                    Some(completion),
                 )?;
                 Ok(Arc::new(pool))
             })
@@ -195,6 +196,7 @@ impl ProcessDispatch {
         &self,
         scans_committed_terminals: bool,
         owner: Option<Arc<AnyCoordinatorDispatch>>,
+        completion: Arc<dyn CompletionSink>,
         resolver: impl FnOnce() -> Option<Arc<dyn WorkerResolver<AnyDispatchStore>>>,
     ) -> bool {
         if !starts_terminal_reconciliation(
@@ -216,7 +218,7 @@ impl ProcessDispatch {
                     self.hint.wake(),
                     crate::DispatchServiceConfig::for_topology(&self.topology),
                     resolver,
-                    Some(self.completion.clone()),
+                    Some(completion),
                 );
                 started = true;
                 Ok::<_, ()>(reconciler)

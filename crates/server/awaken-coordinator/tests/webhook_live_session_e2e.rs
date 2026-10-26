@@ -132,8 +132,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // Environment; C3 early selected Store => E1 one App/Core and the same
     // outbox Store, E2 no Fake or extra sink installed into the existing Host.
     let managed = Arc::new({
-        let session_fixture_runtime =
-            awaken_session_executor::CoordinatorRoles::of(&host).session_execution();
+        let session_fixture_runtime = host.session_execution_roles();
         let session_fixture_clock = awaken_time::system_clock();
         awaken_protocol_managed::ManagedState::from_application(
             awaken_protocol_managed_testkit::session_application_from_parts(

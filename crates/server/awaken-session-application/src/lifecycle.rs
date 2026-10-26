@@ -134,7 +134,7 @@ pub struct SessionLifecycle {
     outbox: Arc<dyn LifecycleOutbox>,
     notifier: OnceLock<Arc<dyn LifecycleFactNotifier>>,
     supervisor_started: AtomicBool,
-    wakeup: tokio::sync::Notify,
+    wakeup: Arc<tokio::sync::Notify>,
 }
 
 fn closed_runtime_facts(
@@ -170,7 +170,7 @@ impl SessionLifecycle {
             outbox,
             notifier: OnceLock::new(),
             supervisor_started: AtomicBool::new(false),
-            wakeup: tokio::sync::Notify::new(),
+            wakeup: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -181,6 +181,13 @@ impl SessionLifecycle {
     /// Ask the sole supervisor to reread durable work; this grants no authority.
     pub fn request_reconciliation(&self) {
         self.wakeup.notify_one();
+    }
+
+    /// A notification-only port over this same signal. Retaining the port
+    /// keeps no application, mutation authority, repository or clock alive.
+    pub fn reconciliation_wakeup(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let wakeup = self.wakeup.clone();
+        Arc::new(move || wakeup.notify_one())
     }
 
     pub(crate) fn notified(&self) -> tokio::sync::futures::Notified<'_> {
@@ -646,6 +653,63 @@ impl SessionLifecycle {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[tokio::test]
+    async fn retained_reconciliation_hint_keeps_only_the_original_signal() {
+        // L1 live lifecycle + retained hint => the original Notify receives its
+        // permit. L2 lifecycle/mutations/store/clock dropped + retained hint =>
+        // only that signal survives, with no retained command authority.
+        // L3 hint dropped => signal released. This is one process-local signal,
+        // not another scheduler, channel or durable lifecycle decision.
+        use std::sync::Arc;
+        let store = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let mutations = Arc::new(crate::SessionMutations::new(store.clone(), clock.clone()));
+        let lifecycle = Arc::new(super::SessionLifecycle::new(
+            mutations.clone(),
+            clock.clone(),
+            store.clone(),
+        ));
+        let weak_lifecycle = Arc::downgrade(&lifecycle);
+        let weak_mutations = Arc::downgrade(&mutations);
+        let weak_store = Arc::downgrade(&store);
+        let weak_clock = Arc::downgrade(&clock);
+        let signal = Arc::downgrade(&lifecycle.wakeup);
+        let hint = lifecycle.reconciliation_wakeup();
+        hint();
+        tokio::time::timeout(std::time::Duration::from_secs(1), lifecycle.notified())
+            .await
+            .expect("L1 exact original wake permit");
+        drop(lifecycle);
+        drop(mutations);
+        drop(store);
+        drop(clock);
+        assert!(
+            weak_lifecycle.upgrade().is_none(),
+            "L2 no lifecycle retention"
+        );
+        assert!(
+            weak_mutations.upgrade().is_none(),
+            "L2 no mutation retention"
+        );
+        assert!(weak_store.upgrade().is_none(), "L2 no repository retention");
+        assert!(weak_clock.upgrade().is_none(), "L2 no clock retention");
+        let retained = signal
+            .upgrade()
+            .expect("L2 only the original signal survives");
+        hint();
+        tokio::time::timeout(std::time::Duration::from_secs(1), retained.notified())
+            .await
+            .expect("L2 harmless signal after authority release");
+        drop(retained);
+        drop(hint);
+        assert!(signal.upgrade().is_none(), "L3 no leaked signal");
+    }
+
     /// B9 identity causes on the original construction test: command
     /// holders must share one Core/Clock and drain. A wake issued through the
     /// selected service must reach that original Notify, never another channel.

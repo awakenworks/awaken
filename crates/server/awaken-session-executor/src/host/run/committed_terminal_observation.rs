@@ -535,7 +535,7 @@ mod tests {
             .with_memory_extraction_repository(Arc::new(FailingTerminalExtractionRepository)))
         .build()
         .expect("validated Host dependencies");
-        let _managed = crate::host::tests::install_test_dispatch_runtime(&host);
+        let _managed = host.clone();
         crate::host::tests::bind_test_memory(
             &host,
             "direct-terminal-observer-failure",

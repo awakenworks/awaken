@@ -1009,7 +1009,8 @@ mod tests {
         local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
         assert!(
-            !crate::CoordinatorRoles::of(&local_pool).start_terminal_reconciliation(),
+            !crate::CoordinatorRoles::of(&local_pool, local_pool.worker_completion_sink())
+                .start_terminal_reconciliation(),
             "R0"
         );
 
@@ -1085,9 +1086,13 @@ mod tests {
         .await
         .expect("record exact terminal truth");
 
-        assert!(crate::CoordinatorRoles::of(&host).start_terminal_reconciliation());
         assert!(
-            !crate::CoordinatorRoles::of(&host).start_terminal_reconciliation(),
+            crate::CoordinatorRoles::of(&host, host.worker_completion_sink())
+                .start_terminal_reconciliation()
+        );
+        assert!(
+            !crate::CoordinatorRoles::of(&host, host.worker_completion_sink())
+                .start_terminal_reconciliation(),
             "one coordinator daemon"
         );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1179,7 +1184,7 @@ mod tests {
     async fn terminal_reconciliation_ends_with_the_executor_or_its_drain() {
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::CoordinatorRoles::of(&host);
+        let roles = crate::CoordinatorRoles::of(&host, host.worker_completion_sink());
         assert!(roles.start_terminal_reconciliation(), "L1 start");
         let scan_state = Arc::downgrade(host.dispatch().terminal_reconciliation());
         let dispatch = Arc::downgrade(host.dispatch());
@@ -1201,7 +1206,7 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::CoordinatorRoles::of(&host);
+        let roles = crate::CoordinatorRoles::of(&host, host.worker_completion_sink());
         assert!(roles.start_terminal_reconciliation(), "L3 start");
         let scan_state = host.dispatch().terminal_reconciliation().clone();
         assert!(

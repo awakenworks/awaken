@@ -11,11 +11,10 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
     // A durable run is driven by whichever pool node claims it (ADR-0019). Its
     // session config is already the complete execution authority and resolves
     // without manufacturing a second node-local catalog object.
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = host.clone();
     let ctx = host
         .run_assembly
         .ctx_for("t-catalog", None)
@@ -38,11 +37,10 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
     )
     .expect("literal model reference");
-    let (host, _managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = host.clone();
     let thread = "claim-inference-only-judge";
     host.capabilities
         .register_thread_workspace(thread, "workspace-judge")
@@ -110,14 +108,13 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
         )])
         .build();
     let roots = ManagedSessionRootFixture::new().await;
-    let (host, managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     // P1 also requires actual Managed Root/lease authority before physical I/O;
     // the explicit publication remains byte-exact, not resolved from a catalog.
@@ -168,11 +165,10 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         )])
         .build();
 
-    let (local, _local_managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let local = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _local_managed = local.clone();
     local
         .capabilities
         .register_thread_agent_projection("background-local", "background-agent")
@@ -244,14 +240,13 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         ))
         .build();
     let roots = ManagedSessionRootFixture::new().await;
-    let (host, managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "host-default").await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     let mut projection =
         crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
@@ -1016,17 +1011,16 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     // Root and its first receipt survive, not a foreign Worker reassignment.
     let roots = ManagedSessionRootFixture::new().await;
 
-    let (first, first_managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-                    .await
-                    .with_store_dir(storage.path())
-                    .await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let first = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let first_managed = first.clone();
     install_test_session_application(&first);
     let original_projection = roots
         .install_complete_test_session(
@@ -1057,17 +1051,16 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     drop(first_managed);
     drop(first);
 
-    let (replacement, replacement_managed) = dispatch_test_host(
-        roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-                    .await
-                    .with_store_dir(storage.path())
-                    .await,
-            )
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let replacement = roots
+        .configure(
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
+        )
+        .build()
+        .expect("validated Host dependencies");
+    let replacement_managed = replacement.clone();
     install_test_session_application(&replacement);
     // Recovery reads the existing authoritative Root. The replacement Host's
     // defaults are not a new creation request or an idempotency replay input.
@@ -1117,14 +1110,13 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 #[tokio::test]
 async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
-    let (host, managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
         &managed,
@@ -1224,14 +1216,13 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 #[tokio::test]
 async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
-    let (host, managed) = dispatch_test_host(
-        (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
-            .build()
-            .expect("validated Host dependencies"),
-    );
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
+    let managed = host.clone();
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
         &managed,

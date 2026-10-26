@@ -12,15 +12,16 @@
 
 use std::sync::Arc;
 
+use awaken_dispatch_contract::CompletionSink;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_dispatch_execution::{ProcessDispatch, WorkerResolver};
 use awaken_session_realization::peers::EnvironmentPeer as _;
 
-/// The executor roles a Coordinator process composes. Consumers: the
-/// Coordinator and server composition roots.
+/// The dispatch lifecycle roles a Coordinator process composes. Its complete
+/// completion sink is supplied before work starts; Session execution roles
+/// are selected directly from their owning components.
 #[derive(Clone)]
 pub struct CoordinatorRoles {
-    session_execution: awaken_session_execution_contract::SessionExecutionRoles,
     process: ProcessOperations,
 }
 
@@ -40,15 +41,17 @@ struct ProcessOperations {
     assembly: Arc<crate::RunAssembly>,
     runs: Arc<crate::SessionRuns>,
     resources: Arc<crate::host::capability::ResourcePorts>,
+    completion: Arc<dyn CompletionSink>,
 }
 
 impl ProcessOperations {
-    fn of(host: &crate::ExecutorComponents) -> Self {
+    fn of(host: &crate::ExecutorComponents, completion: Arc<dyn CompletionSink>) -> Self {
         Self {
             dispatch: host.dispatch.clone(),
             assembly: host.run_assembly.clone(),
             runs: host.session_runs.clone(),
             resources: host.resources.clone(),
+            completion,
         }
     }
 
@@ -62,12 +65,15 @@ impl ProcessOperations {
     /// Spawn the process dispatch pool, once, when this process executes Runs
     /// and its dispatch authority is bound. Idempotent.
     fn start_local_pool(&self) -> Result<(), awaken_dispatch_execution::Error> {
-        self.dispatch
-            .ensure_pool(self.assembly.authority.dispatch_binding(), || {
+        self.dispatch.ensure_pool(
+            self.assembly.authority.dispatch_binding(),
+            self.completion.clone(),
+            || {
                 self.resolver().map_err(|error| {
                     awaken_dispatch_execution::session_execution::execution_error(error.message)
                 })
-            })
+            },
+        )
     }
 
     /// Stop local durable admission, await every already-claimed Run, then join
@@ -87,17 +93,10 @@ impl ProcessOperations {
 impl CoordinatorRoles {
     /// The Coordinator role set over `host`'s components.
     #[must_use]
-    pub fn of(host: &crate::ExecutorComponents) -> Self {
+    pub fn of(host: &crate::ExecutorComponents, completion: Arc<dyn CompletionSink>) -> Self {
         Self {
-            session_execution: host.session_execution_roles(),
-            process: ProcessOperations::of(host),
+            process: ProcessOperations::of(host, completion),
         }
-    }
-
-    /// The Session application's executor roles, each served by its owner.
-    #[must_use]
-    pub fn session_execution(&self) -> awaken_session_execution_contract::SessionExecutionRoles {
-        self.session_execution.clone()
     }
 
     /// This process's dispatch: admission, co-located pool, reconciliation.
@@ -120,6 +119,7 @@ impl CoordinatorRoles {
         self.process.dispatch.ensure_terminal_reconciliation(
             authority.scans_committed_terminals(),
             crate::host::capability::local_dispatch_owner(authority),
+            self.process.completion.clone(),
             || self.process.resolver().ok(),
         )
     }
@@ -150,7 +150,7 @@ impl WorkerRoles {
     #[must_use]
     pub fn of(host: &crate::ExecutorComponents) -> Self {
         Self {
-            process: ProcessOperations::of(host),
+            process: ProcessOperations::of(host, host.worker_completion_sink()),
         }
     }
 

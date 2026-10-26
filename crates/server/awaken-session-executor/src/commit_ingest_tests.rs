@@ -267,7 +267,7 @@ async fn assert_completed_memory(
 ) {
     let (host, versions) = memory;
     assert!(
-        crate::CoordinatorRoles::of(host)
+        crate::CoordinatorRoles::of(host, host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await,
         "{rule}: Memory extraction did not drain"

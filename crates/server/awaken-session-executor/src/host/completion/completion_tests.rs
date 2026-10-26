@@ -1,7 +1,6 @@
 use super::{
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId, remote_worker_placement,
 };
-use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::CompletionSink;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedModelCandidate};
@@ -438,14 +437,16 @@ fn hand_recovery_policy_compiles_into_the_existing_worker_requirement() {
 
 #[tokio::test]
 async fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
-    // Cause graph: one ExecutorComponents owns one settlement sink over its
-    // completion relay; an embedding requests the Worker-settle projection;
+    // Cause graph: one ExecutorComponents owns one raw completion relay; an embedding requests the Worker-settle projection;
     // cloning must preserve that exact sink rather than constructing a peer
     // notification path.
     // Decision table:
     // | host mode | exported sink | effect |
-    // | local pool | exact host settlement sink | local settle and export converge |
-    // | coordinator-only | exact host settlement sink | remote settle wakes Session |
+    // | local pool | exact host completion relay | local settle and export converge |
+    // | coordinator-only | exact host completion relay | remote settle signals its foreground observer |
+    // Source-equivalence rule: the removed alias getter and clone-only fixture
+    // wrappers add no decisions; the canonical getter keeps the exact selected
+    // allocation, and direct Arc clones retain the same test lifetimes.
     // Mode does not alter sink identity, so pointer identity covers both rules
     // without manufacturing two deployment configurations in this unit test.
     let host = (crate::SessionExecutorBuilder::ephemeral(
@@ -455,8 +456,8 @@ async fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    let expected = host.settlement.clone() as Arc<dyn CompletionSink>;
-    let exported = host.dispatch_completion_sink();
+    let expected = host.completion.clone() as Arc<dyn CompletionSink>;
+    let exported = host.worker_completion_sink();
 
     assert!(Arc::ptr_eq(&expected, &exported));
 }
@@ -496,60 +497,6 @@ async fn unconfigured_model_is_rejected_before_durable_enqueue() {
         .expect_err("an unconfigured model must never enter durable dispatch");
     assert!(error.to_string().contains("No model is configured"));
     assert!(error.to_string().contains("Author > Quickstart"));
-}
-
-#[test]
-fn committed_completion_wakes_the_single_installed_convergence_owner() {
-    // Cause/effect graph: C1 a foreground observer is or is not registered;
-    // C2 an internal or foreground Run settles; C3 the convergence owner is
-    // installed or not yet. Effects: E1 C2 settles the observer through the
-    // completion relay; E2 C2 wakes an installed owner exactly once, with or
-    // without an observer; E3 an unbound wakeup only settles; E4 a parallel
-    // owner cannot replace the installed one. Both local and remote Workers
-    // publish through this same sink, so deployment mode is not another cause.
-    //
-    // | Rule | C1 observer | C3 owner | Effect |
-    // | S1 | none | unbound | E3 |
-    // | S2 | registered | bound | E1 + E2 |
-    // | S3 | none | bound | E2 |
-    // | S4 | - | bound | E4 |
-    let port = crate::ApplicationPortBinding::default();
-    let settlement =
-        super::SettlementWakeup::over(&Arc::new(crate::ThreadEventHub::new()), port.clone());
-    let settle = |run: &str| {
-        awaken_dispatch_contract::CompletionSink::settled(
-            settlement.as_ref(),
-            &RunId(run.into()),
-            &RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
-        )
-    };
-    settle("completion-unbound");
-    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let observed = wakes.clone();
-    port.bind(std::sync::Arc::new(move || {
-        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }) as Arc<dyn Fn() + Send + Sync>)
-        .expect("C3 installs the sole wakeup");
-    assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0, "S1/E3");
-
-    let (mut observer, _guard) = settlement
-        .completion()
-        .register(&RunId("completion-observed".into()), None)
-        .expect("healthy relay");
-    settle("completion-observed");
-    assert!(
-        matches!(observer.try_recv(), Ok(RunState::Ended(_))),
-        "S2/E1"
-    );
-    assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1, "S2/E2");
-
-    settle("completion-wakeup");
-    assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 2, "S3/E2");
-    assert!(
-        port.bind(std::sync::Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>)
-            .is_err(),
-        "S4/E4"
-    );
 }
 
 #[test]

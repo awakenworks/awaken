@@ -58,7 +58,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .await)
         .build()
         .expect("validated Host dependencies");
-    let managed = install_test_dispatch_runtime(&host);
+    let managed = host.clone();
     install_test_session_application(&host);
 
     let mut terminal_projection = remote_terminal_cleanup_projection();
@@ -606,7 +606,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         host.execution_authority = Some(worker.clone());
         let host = (host).build().expect("validated Host dependencies");
 
-        let managed = install_test_dispatch_runtime(&host);
+        let managed = host.clone();
         install_test_session_application(&host);
         let projection =
             install_terminal_recovery_projection(&host, &managed, thread, lease.clone(), restoring)
