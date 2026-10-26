@@ -1131,8 +1131,11 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         # With a live finalizer, timeout124 gets a failed terminal record. Killing
         # that exact parent shell prevents finalization: retain running/partial,
         # never claim it completed. The independent deadline still terminates
-        # its owned children; no new signal/cleanup mechanism is installed.
-        from test_deadline import GROUP_CODE
+        # its owned children. GROUP_CODE publishes one complete readiness
+        # document; failed observation/assertion still retires this fixture's
+        # inherited group through its shared cleanup. Production deadlines
+        # and their cleanup policy remain unchanged.
+        from test_deadline import GROUP_CODE, cleanup_fixture_group
         for dead_parent in (False, True):
             with self.subTest(dead_parent=dead_parent), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
@@ -1144,32 +1147,36 @@ exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$
                 values.update(AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="2",
                               DEADLINE_COORDINATE=str(fixture / "target/deadline.pid"))
                 process = subprocess.Popen(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
-                                           cwd=fixture, env=values, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                ready = fixture / "target/group.ready"
-                until = time.monotonic() + 5
-                # awaken-wait: the actual inherited child group publishes PIDs.
-                while not ready.exists() and process.poll() is None and time.monotonic() < until:
-                    time.sleep(.01)
-                self.assertTrue(ready.exists(), "owned command did not become ready")
-                owned = json.loads(ready.read_text())
-                if dead_parent:
-                    deadline_pid = int((fixture / "target/deadline.pid").read_text())
-                    def parent(pid):
-                        return int(next(line.split()[1] for line in Path(f"/proc/{pid}/status").read_text().splitlines() if line.startswith("PPid:")))
-                    finalizer = parent(parent(deadline_pid))
-                    self.assertEqual(Path(f"/proc/{finalizer}/cwd").resolve(), fixture)
-                    os.kill(finalizer, signal.SIGTERM)
-                output = process.communicate(timeout=12)
-                self.assertEqual(process.returncode, 143 if dead_parent else 124, output)
-                data = json.loads(next((fixture / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
-                self.assertEqual(data["status"], "running" if dead_parent else "failed")
-                if not dead_parent:
-                    self.assertEqual(data["exit_code"], 124)
-                self.assertIn("ready", next((fixture / "target/test-timings").glob("rust-execution.*/results.log")).read_text())
-                for pid in owned.values():
-                    state = Path(f"/proc/{pid}/stat")
-                    self.assertTrue(not state.exists() or state.read_text().split()[2] == "Z",
-                                    "owned child remained live after its deadline")
+                                           cwd=fixture, env=values, stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    ready = fixture / "target/group.ready"
+                    until = time.monotonic() + 5
+                    # awaken-wait: the actual inherited child group publishes PIDs.
+                    while not ready.exists() and process.poll() is None and time.monotonic() < until:
+                        time.sleep(.01)
+                    self.assertTrue(ready.exists(), "owned command did not become ready")
+                    owned = json.loads(ready.read_text())
+                    if dead_parent:
+                        deadline_pid = int((fixture / "target/deadline.pid").read_text())
+                        def parent(pid):
+                            return int(next(line.split()[1] for line in Path(f"/proc/{pid}/status").read_text().splitlines() if line.startswith("PPid:")))
+                        finalizer = parent(parent(deadline_pid))
+                        self.assertEqual(Path(f"/proc/{finalizer}/cwd").resolve(), fixture)
+                        os.kill(finalizer, signal.SIGTERM)
+                    output = process.communicate(timeout=12)
+                    self.assertEqual(process.returncode, 143 if dead_parent else 124, output)
+                    data = json.loads(next((fixture / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
+                    self.assertEqual(data["status"], "running" if dead_parent else "failed")
+                    if not dead_parent:
+                        self.assertEqual(data["exit_code"], 124)
+                    self.assertIn("ready", next((fixture / "target/test-timings").glob("rust-execution.*/results.log")).read_text())
+                    for pid in owned.values():
+                        state = Path(f"/proc/{pid}/stat")
+                        self.assertTrue(not state.exists() or state.read_text().split()[2] == "Z",
+                                        "owned child remained live after its deadline")
+                finally:
+                    cleanup_fixture_group(fixture / "target/group", process)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell status/admission fixture")
     def test_required_shell_keeps_execution_status(self) -> None:
