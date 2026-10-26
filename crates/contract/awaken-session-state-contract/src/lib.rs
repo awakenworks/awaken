@@ -104,8 +104,9 @@ pub use session_repo::{
     SessionPlacementClass, SessionPublicStatus, SessionRepositoryConflict, SessionRepositoryError,
     SessionRepositoryRecoveryAction, SessionRunActivityAdmissionRecord, SessionScan,
     SessionScanCursor, SessionScanQuery, SessionTombstone, SessionWorkerObligation,
-    session_activity_settlement_plan, session_is_budget_paused, session_is_terminal,
-    session_is_unattempted_profiled_preparation, validate_complete_run_activity,
+    session_activity_settlement_plan, session_can_adopt_mcp_credential_lifecycle,
+    session_is_budget_paused, session_is_terminal, session_is_unattempted_profiled_preparation,
+    validate_complete_run_activity,
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,

@@ -6,6 +6,65 @@ fn credential_bundle_lints() {
     awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn receipt_delivery_tail_preserves_legacy_pending_and_malformed_rows() {
+    use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+    // Causes: C1 V9 exact pending payload; C2 undecodable SQLite payload; C3
+    // apply V10 then replay migration. Effects: E1 both rows and their raw
+    // payloads survive byte-for-byte; E2 default delivery is pending; E3 the
+    // new indexed lifecycle is idempotent. A malformed row cannot make index
+    // construction fail or silently vanish from supervised inspection.
+    let pool = awaken_sqlite_pool::EmbeddedSqlite::memory()
+        .open()
+        .await
+        .unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), "credential").unwrap();
+    runner
+        .run_bundle(&credential_bundle_through(9).unwrap())
+        .await
+        .unwrap();
+    let payloads = [
+        (
+            "legacy",
+            r#"{"id":"legacy","workspace_id":"w","vault_id":"v","credential_id":"c","source_id":"s","source_version":2,"credential_revision":2,"operation":"update"}"#,
+        ),
+        ("poison", "{"),
+    ];
+    for (id, data) in payloads {
+        sqlx::query(
+            "INSERT INTO credential_managed_credential_rollout(event_id,data) VALUES(?1,?2)",
+        )
+        .bind(id)
+        .bind(data)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    runner
+        .run_bundle(&credential_bundle().unwrap())
+        .await
+        .unwrap();
+    runner
+        .run_bundle(&credential_bundle().unwrap())
+        .await
+        .unwrap();
+    for (id, data) in payloads {
+        let actual = sqlx::query_as::<_, (String, bool)>(
+            "SELECT data,delivered FROM credential_managed_credential_rollout WHERE event_id=?1",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            actual,
+            (data.into(), false),
+            "{id}: raw evidence retained, pending"
+        );
+    }
+}
+
 /// Cause/effect table for the V9 timestamp backfill, shared by both dialects.
 /// C1 a legacy Vault/credential row lacks `created_at`/`updated_at`;
 /// C2 a row already carries them; C3 a pending mutation snapshot describes an
@@ -321,6 +380,26 @@ async fn postgres_backfills_legacy_managed_timestamps_from_insert_time() {
         .run_bundle(&credential_bundle_through(SPECS.len()).unwrap())
         .await
         .unwrap();
+    // V10 receipt-tail causes: one legacy pending event and one future-shaped
+    // JSONB record exist before the tail. Both raw semantic payloads survive,
+    // default Pending, and the new indexes tolerate unsupported record shapes.
+    let receipt_rows = [
+        (
+            "receipt-legacy",
+            serde_json::json!({"id":"receipt-legacy","workspace_id":"w","vault_id":"v","credential_id":"c","source_id":"s","source_version":2,"credential_revision":2,"operation":"update"}),
+        ),
+        ("receipt-future", serde_json::json!({"format_version":2})),
+    ];
+    for (id, data) in &receipt_rows {
+        sqlx::query(
+            "INSERT INTO credential_managed_credential_rollout(event_id,data) VALUES($1,$2)",
+        )
+        .bind(id)
+        .bind(sqlx::types::Json(data))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     for (id, data) in vault_rows() {
         sqlx::query(
             "INSERT INTO credential_managed_vault (id, workspace_id, data, created_at) \
@@ -364,6 +443,28 @@ async fn postgres_backfills_legacy_managed_timestamps_from_insert_time() {
         .run_bundle(&credential_bundle().unwrap())
         .await
         .unwrap();
+
+    runner
+        .run_bundle(&credential_bundle().unwrap())
+        .await
+        .unwrap();
+    for (id, data) in &receipt_rows {
+        let (sqlx::types::Json(actual), delivered) = sqlx::query_as::<
+            _,
+            (sqlx::types::Json<serde_json::Value>, bool),
+        >(
+            "SELECT data,delivered FROM credential_managed_credential_rollout WHERE event_id=$1",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (&actual, delivered),
+            (data, false),
+            "{id}: receipt evidence retained across idempotent V10 migration"
+        );
+    }
 
     let rows = |sql: &'static str| {
         let pool = pool.clone();

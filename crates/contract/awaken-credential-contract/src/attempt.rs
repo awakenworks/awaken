@@ -230,20 +230,30 @@ pub fn candidate_provider_expectation(
     else {
         return Ok(None);
     };
-    let provider_id = provider_ref
-        .split_once('@')
-        .map(|(id, _)| id)
-        .filter(|id| !id.is_empty())
+    provider_expectation_from_pins(provider_ref, route_ref).map(Some)
+}
+
+/// Project the same source authorization coordinate after an adapter has
+/// retained the original versioned Provider/endpoint pins but no full model
+/// candidate. This is reference interpretation, never Vault discovery or
+/// material authorization; source, revision, holder and target are rechecked
+/// by the existing exact material resolver.
+pub fn provider_expectation_from_pins(
+    provider_ref: &str,
+    route_ref: &str,
+) -> Result<CredentialProviderExpectationOwned, &'static str> {
+    fn original_id(reference: &str) -> Option<&str> {
+        let (id, version) = reference.rsplit_once('@')?;
+        (!id.is_empty() && version.parse::<u64>().ok().is_some_and(|value| value > 0)).then_some(id)
+    }
+    let provider_id = original_id(provider_ref)
         .ok_or("published model candidate has no versioned provider pin")?;
-    let protocol_endpoint_id = route_ref
-        .split_once('@')
-        .map(|(id, _)| id)
-        .filter(|id| !id.is_empty())
-        .ok_or("published model candidate has no versioned route pin")?;
-    Ok(Some(CredentialProviderExpectationOwned {
+    let protocol_endpoint_id =
+        original_id(route_ref).ok_or("published model candidate has no versioned route pin")?;
+    Ok(CredentialProviderExpectationOwned {
         provider_id: provider_id.to_string(),
         protocol_endpoint_id: Some(protocol_endpoint_id.to_string()),
-    }))
+    })
 }
 
 #[async_trait]
@@ -838,6 +848,41 @@ mod tests {
         SELF_HOSTED_ACP_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef,
     };
     use awaken_runtime_contract::resolved::{BackendModelSelection, ModelBinding};
+
+    #[test]
+    fn provider_coordinate_projection_preserves_original_ids_and_refuses_missing_pins() {
+        // Cause/effect table: R1 exact positive versioned pins => original
+        // Provider + Endpoint; R2 an Endpoint id itself contains @ => split
+        // only its final version; R3 absent/empty/zero/non-numeric version on
+        // either pin => error, never an unscoped Provider expectation. The
+        // candidate adapter above shares this one projection; no credential
+        // material, holder or execution permission is derived here.
+        for (provider, endpoint, expected_endpoint) in [
+            ("provider@3", "endpoint@5", "endpoint"),
+            (
+                "provider@3",
+                "workspace:author@example:endpoint@7",
+                "workspace:author@example:endpoint",
+            ),
+        ] {
+            let expected = provider_expectation_from_pins(provider, endpoint).unwrap();
+            assert_eq!(expected.provider_id, "provider");
+            assert_eq!(
+                expected.protocol_endpoint_id.as_deref(),
+                Some(expected_endpoint)
+            );
+        }
+        for malformed in [
+            "provider",
+            "@1",
+            "provider@",
+            "provider@0",
+            "provider@unknown",
+        ] {
+            assert!(provider_expectation_from_pins(malformed, "endpoint@1").is_err());
+            assert!(provider_expectation_from_pins("provider@1", malformed).is_err());
+        }
+    }
 
     /// The one door through which this module's fixtures build a model binding.
     ///

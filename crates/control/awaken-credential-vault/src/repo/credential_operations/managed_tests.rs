@@ -616,8 +616,8 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
     assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
     assert_eq!(
         repo.managed_rollout(&events[0].id).await.unwrap(),
-        None,
-        "R3"
+        Some(events[0].clone()),
+        "R3 acknowledged delivery is not pending; its exact receipt remains verifiable"
     );
     let attempts = target.events.lock().unwrap();
     assert_eq!(attempts.len(), 2);
@@ -654,7 +654,7 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
         .lock()
         .unwrap()
         .managed_rollouts
-        .insert(conflicting.id.clone(), conflicting.clone());
+        .insert(conflicting.id.clone(), conflicting.clone().into());
 
     let result = update_managed_credential(
         before.clone(),

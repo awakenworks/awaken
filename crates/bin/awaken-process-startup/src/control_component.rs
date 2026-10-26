@@ -316,14 +316,12 @@ pub(super) async fn prepare_control_routers(
         cloud_login,
     )
     .await;
-    // Hosted compositions may replace the transport/target mechanism while
-    // preserving Control's sole durable outbox and acknowledgement authority.
-    // Self-hosted split deployments keep the canonical Coordinator target.
-    let credential_rollout_target = process
-        .managed_services
-        .credential_rollout_target
-        .clone()
-        .or(credential_rollout_target);
+    // Hosted infrastructure adoption extends the canonical Coordinator target.
+    // An empty infrastructure snapshot cannot acknowledge stale Session pins.
+    let credential_rollout_target = managed_platform::credential_rollout_target(
+        credential_rollout_target,
+        process.managed_services.credential_rollout_target.clone(),
+    );
     if let Some(target) = credential_rollout_target {
         VaultApplication::set_rollout_target(component.vault_state.application(), target);
     }

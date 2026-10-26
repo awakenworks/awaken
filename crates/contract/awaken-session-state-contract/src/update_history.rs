@@ -84,7 +84,7 @@ impl SessionUpdateChanges {
             title: previous.title != replacement.title,
             metadata: previous.metadata != replacement.metadata,
             tools: previous.tools != replacement.tools,
-            mcp: previous.mcp != replacement.mcp,
+            mcp: previous.configured_mcp_servers() != replacement.configured_mcp_servers(),
             budget: previous.budget != replacement.budget,
         }
     }
@@ -92,7 +92,7 @@ impl SessionUpdateChanges {
     /// Authoring changes cannot disappear from retained history. Runtime MCP
     /// phases/retry generations and budget accounting remain separate state
     /// transitions; only their desired configuration/limit requires a fact.
-    /// An explicit MCP retry update may still record its existing command delta.
+    /// MCP retries and credential pins do not change the Agent presentation.
     fn requires_fact(self, previous: &PersistedSession, replacement: &PersistedSession) -> bool {
         self.title
             || self.metadata

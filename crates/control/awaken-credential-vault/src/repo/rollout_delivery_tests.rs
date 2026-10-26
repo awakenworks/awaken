@@ -503,6 +503,17 @@ impl ManagedCredentialRepository for RejectRepository {
     {
         panic!("repository accessed without convergence");
     }
+    fn rearm_managed_rollout<'call0, 'call1, 'async_trait>(
+        &'call0 self,
+        rollout: &'call1 ManagedCredentialRollout,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), CredentialError>> + Send + 'async_trait>>
+    where
+        'call0: 'async_trait,
+        'call1: 'async_trait,
+        Self: 'async_trait,
+    {
+        panic!("repository accessed without convergence");
+    }
     fn complete_managed_rollout<'call0, 'call1, 'async_trait>(
         &'call0 self,
         rollout: &'call1 ManagedCredentialRollout,

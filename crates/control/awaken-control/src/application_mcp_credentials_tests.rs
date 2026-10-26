@@ -71,6 +71,114 @@ async fn call(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+#[tokio::test]
+async fn application_bearer_replay_revalidates_acknowledged_delivery_without_rotation() {
+    // Cause/effect graph: C1 a generation-2 event was exactly acknowledged;
+    // C2 its target later reports Pending, unavailable, or Converged; C3 the
+    // exact material command replays; C4 generation 3 supersedes it. Effects:
+    // E1 retain the exact acknowledged event for bounded primary-key reads;
+    // E2 C2=Pending/unavailable re-arms that event, never returns false usable
+    // access; E3 Converged exactly acknowledges without a source rotation;
+    // E4 retain only the newer acknowledgement for the same actual source.
+    // Rules: A1 C1 -> E1; A2 C1+C2=P+C3 -> E2; A3 C2=unavailable+C3 -> E2;
+    // A4 C2=C+C3 -> E3; A5 C4 -> E4. This is the real HTTP/Vault/WAL path,
+    // with only target availability controlled; no model or bearer echo.
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
+    let state = Arc::new(VaultState::new(
+        Arc::new(InMemorySecretStore::new()),
+        credentials.clone(),
+        awaken_time::system_clock(),
+        None,
+    ));
+    let target = Arc::new(AdoptionTarget::default());
+    state.application().set_rollout_target(target.clone());
+    let app = application_mcp_credentials_router(state);
+    let body = |generation| {
+        json!({
+            "application_authority_id":"retained-session",
+            "mcp_server_url":"https://flow.example.test/mcp",
+            "credential_generation":generation,
+            "token":format!("synthetic-bearer-{generation}") // awaken-allow(secret):
+        })
+    };
+    for generation in [1, 2] {
+        let (status, receipt) = call(
+            &app,
+            "workspace-a",
+            Some(&format!("bearer-{generation}")),
+            body(generation),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(receipt["adoption"], "converged");
+    }
+    let event = target.events.lock().unwrap()[0].clone();
+    assert_eq!(
+        credentials.managed_rollout(&event.id).await.unwrap(),
+        Some(event.clone()),
+        "A1 exact receipt is retained after acknowledgement"
+    );
+    assert!(
+        credentials
+            .pending_managed_rollouts()
+            .await
+            .unwrap()
+            .is_empty(),
+        "A1 acknowledged is not background-pending"
+    );
+    for (rule, pending, failed) in [("A2", true, false), ("A3", false, true)] {
+        target.pending.store(pending, Ordering::SeqCst);
+        target.fail.store(failed, Ordering::SeqCst);
+        let (status, receipt) = call(&app, "workspace-a", Some("bearer-2"), body(2)).await;
+        assert_eq!(status, StatusCode::OK, "{rule}");
+        assert_eq!(receipt["revision"], 2, "{rule} no rotation");
+        assert_eq!(
+            receipt["adoption"], "pending",
+            "{rule} historical ack is not current adoption"
+        );
+        assert_eq!(
+            credentials.pending_managed_rollouts().await.unwrap(),
+            vec![event.clone()],
+            "{rule} same event rearmed"
+        );
+    }
+    target.pending.store(false, Ordering::SeqCst);
+    target.fail.store(false, Ordering::SeqCst);
+    let (_, recovered) = call(&app, "workspace-a", Some("bearer-2"), body(2)).await;
+    assert_eq!(recovered["revision"], 2, "A4");
+    assert_eq!(recovered["adoption"], "converged", "A4");
+    assert!(
+        credentials
+            .pending_managed_rollouts()
+            .await
+            .unwrap()
+            .is_empty(),
+        "A4"
+    );
+    assert_eq!(
+        credentials.managed_rollout(&event.id).await.unwrap(),
+        Some(event.clone()),
+        "A4 stable receipt"
+    );
+    let (_, newer) = call(&app, "workspace-a", Some("bearer-3"), body(3)).await;
+    assert_eq!(newer["revision"], 3, "A5");
+    assert_eq!(newer["adoption"], "converged", "A5");
+    assert!(
+        credentials
+            .managed_rollout(&event.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "A5 old acknowledged receipt pruned"
+    );
+    let latest = target.events.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        credentials.managed_rollout(&latest.id).await.unwrap(),
+        Some(latest),
+        "A5 current exact receipt retained"
+    );
+}
+
 /// Hosted application command cause/effect graph: C1 trusted Workspace is
 /// stamped, C2 authority/target are valid, C3 replay key exists, C4 positive
 /// generation and key match the current material, C5 generation is newer, C6
@@ -286,7 +394,7 @@ async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
             .await
             .unwrap()
             .is_empty(),
-        "M7 exact convergence leaves no event"
+        "M7 exact convergence leaves no pending event"
     );
     let target_attempts_before_stale = target.events.lock().unwrap().len();
     assert_eq!(
