@@ -172,21 +172,72 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 439,
-        "file_sha256": "76aca1c1805203b33e62a06ec0974a809bf2f30bca6a805afafb81e132abaa51"
+        "line": 462,
+        "file_sha256": "f3745a00f6775c09473599250ac4b9704ab429735b389ae2619e9290b15e7283"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E-MCP-ALLOCATION-20261027",
+        "case": "awaken-session-executor host::tests::mcp_preparation_fence::t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner",
+        "package": "awaken-session-executor",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "f42a6b5702b2664231451f5718f394113aa438a3",
+        "historical": false,
+        "log_sha256": "b2c62493c48a00cd21bbce5ef0a45f5ded73a79bd8dace7268a609f9ce15be2e",
+        "input_review": "Frozen staged tree 558d56d7a5fd305e8ca1e7250cc9ad1f89bd41e3; all qualified Rust bytes remain unchanged. E16 and E17 keep their original identities."
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T16-C01": {
-        "oracles": [],
+        "oracles": [
+          0,
+          1,
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a PlatformRelay route minted in the window has no cleanup owner (no revoke, expiry discarded)",
-    "limitation": "Not execution evidence. Follow-up: credential-materializer platform egress and session-mcp attachment (M)",
-    "id": "B258"
+    "review": "The former ignored route-allocation regression now runs: the original allocation retains route and expiry while draining; replacement waits for compensation acknowledgement without publishing into its successor. The original failed E17 is unchanged.",
+    "limitation": "Host/component scope with an injected Platform allocation capability. Real hosted gateway, process death, sandbox/ACP stdio and Linux enforcement remain unaccepted.",
+    "id": "B258",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 466
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 472
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 479
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 485
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 498
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 503
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 517
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "line": 518
+      }
+    ]
   },
   {
     "name": "t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives",

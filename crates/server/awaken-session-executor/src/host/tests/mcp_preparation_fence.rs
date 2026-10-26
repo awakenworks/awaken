@@ -20,8 +20,8 @@
 //! at-gate staging oracle. (The "only check the root at final insert" mutant
 //! is covered against the replacement allocation by session-mcp's
 //! `a_late_native_connection_never_publishes_into_the_same_named_replacement_allocation`.)
-//! Known gap (ignored reproducer): a PlatformRelay route minted during the
-//! window has no cleanup owner once publication is refused.
+//! A PlatformRelay route refused after provision belongs only to its original
+//! cleanup allocation, never to the material available for execution.
 //! Native Worker-held and ACP WorkerRelay rows live in `credential_branches`.
 //! Not covered here: the sandbox-stdio branch (needs a gated SessionEnvironment).
 
@@ -283,22 +283,37 @@ async fn t16_c01_io_before_staging_reservation_is_detected() {
 }
 
 /// Platform egress provisioner gated inside `provision`.
+#[derive(Clone)]
 struct GatedMediator {
     url: String,
-    calls: std::sync::atomic::AtomicUsize,
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Semaphore,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Semaphore>,
+    released: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl awaken_credential_materializer::PlatformMcpEgressProvisioner for GatedMediator {
+    fn prepare(
+        &self,
+        request: awaken_credential_materializer::PlatformMcpEgressRequest<'_>,
+    ) -> Arc<dyn awaken_credential_materializer::PlatformMcpEgressAllocation> {
+        assert_eq!(request.realization_id, "realize-platform");
+        assert_eq!(request.stage_idempotency_key, "stage-platform");
+        Arc::new(self.clone())
+    }
 }
 
 #[async_trait::async_trait]
-impl awaken_credential_materializer::PlatformMcpEgressProvisioner for GatedMediator {
+impl awaken_credential_materializer::PlatformMcpEgressAllocation for GatedMediator {
     async fn provision(
         &self,
-        _request: awaken_credential_materializer::PlatformMcpEgressRequest<'_>,
     ) -> Result<
         awaken_credential_materializer::MediatedMcpRoute,
         awaken_credential_contract::CredentialMaterialError,
     > {
+        if self.released.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(awaken_credential_contract::CredentialMaterialError::Unavailable);
+        }
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.entered.notify_one();
         self.release.acquire().await.expect("gate open").forget();
@@ -306,6 +321,14 @@ impl awaken_credential_materializer::PlatformMcpEgressProvisioner for GatedMedia
             url: self.url.clone(),
             expires_at_unix_ms: u64::MAX,
         })
+    }
+
+    async fn revoke_and_wait(
+        &self,
+    ) -> Result<(), awaken_credential_contract::CredentialMaterialError> {
+        self.released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -378,9 +401,10 @@ async fn platform_row(event: Event) -> PlatformRow {
     let (mediated_url, _seen) = crate::test_mcp::start(None).await;
     let mediator = Arc::new(GatedMediator {
         url: mediated_url.clone(),
-        calls: std::sync::atomic::AtomicUsize::new(0),
-        entered: tokio::sync::Notify::new(),
-        release: tokio::sync::Semaphore::new(0),
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Semaphore::new(0)),
+        released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
@@ -435,10 +459,34 @@ async fn t16_c01_platform_relay_provision_is_staged_before_io_and_never_publishe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "product gap: a PlatformRelay route minted during the preparation window has no cleanup owner after publication is refused (port has no revoke and the route expiry is discarded)"]
 async fn t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner() {
     for event in EVENTS {
         let row = platform_row(event).await;
+        if event == Event::ReinstallRoot {
+            assert!(
+                row.mediator
+                    .released
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                "the original owned preparation releases its route before completing without its slot"
+            );
+            assert!(
+                row.host
+                    .run_assembly
+                    .mcp_projection(&row.generation)
+                    .is_none(),
+                "old cleanup cannot install an owner in the replacement slot"
+            );
+            assert_eq!(
+                row.mediator.calls.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            continue;
+        }
+        assert!(
+            !row.mediator
+                .released
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
         // The external route exists (one provision). Until it is revoked or
         // expires, a retained owner must still name it for cleanup instead of
         // a local `Removed` that forgets it.
@@ -454,12 +502,19 @@ async fn t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner
         );
         assert_eq!(
             retained
-                .server
+                .platform_egress
                 .as_ref()
-                .and_then(|server| server.http_url()),
+                .and_then(|owner| owner.route())
+                .map(|route| route.url.as_str()),
             Some(row.mediated_url.as_str()),
             "{event:?}: the cleanup owner names the exact minted route"
         );
+        let route = retained
+            .platform_egress
+            .as_ref()
+            .and_then(|owner| owner.route())
+            .expect("the original allocation retains its returned expiry");
+        assert_eq!(route.expires_at_unix_ms, u64::MAX);
         assert_eq!(
             row.mediator.calls.load(std::sync::atomic::Ordering::SeqCst),
             1

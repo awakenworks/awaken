@@ -144,6 +144,7 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
             server: None,
             native_wiring: None,
             mcp_process: None,
+            platform_egress: None,
             staging: Some(staging),
             drain: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             state: McpProjectionState::Staging,

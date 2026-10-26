@@ -17,6 +17,7 @@
 //! would stop being checkable.
 
 use awaken_credential_contract::{CredentialMaterialError, CredentialRef, PlaintextHolder};
+use std::sync::Arc;
 
 /// One generation-scoped request for a mediated MCP route.
 ///
@@ -32,6 +33,10 @@ pub struct PlatformMcpEgressRequest<'a> {
     pub session_id: &'a str,
     pub attachment_id: &'a str,
     pub generation: u64,
+    /// Original realization and staging operation, including when another
+    /// physical allocation later uses the same logical generation.
+    pub realization_id: &'a str,
+    pub stage_idempotency_key: &'a str,
     /// Runtime incarnation and lease epoch of the generation that asked. A
     /// mediator binds its route to these so a stale incarnation cannot keep
     /// spending a route minted for an earlier one.
@@ -53,14 +58,31 @@ pub struct MediatedMcpRoute {
     pub expires_at_unix_ms: u64,
 }
 
-/// Mints one mediated MCP route per generation.
+/// Prepares the owner of one exact mediated MCP allocation.
 ///
 /// A deployment without an installed provisioner refuses Platform-held MCP
 /// credentials; it never falls back to resolving material into the Host.
-#[async_trait::async_trait]
+/// Preparation creates an owned capability without external I/O. The caller
+/// installs it in the original Session projection before invoking provision.
 pub trait PlatformMcpEgressProvisioner: Send + Sync {
-    async fn provision(
+    fn prepare(
         &self,
         request: PlatformMcpEgressRequest<'_>,
-    ) -> Result<MediatedMcpRoute, CredentialMaterialError>;
+    ) -> Arc<dyn PlatformMcpEgressAllocation>;
+}
+
+/// Provision and release of one original physical allocation. The adapter
+/// captures the complete request and its own physical identity at preparation;
+/// a later generation lookup cannot substitute a successor for that owner.
+///
+/// Provision is idempotent for this allocation. Release seals its admission,
+/// prevents delayed provision from reopening it, and acknowledges only when
+/// accepted calls and streams are quiescent. A failure or canceled waiter may
+/// be retried against the same allocation. This process-local capability does
+/// not by itself prove hosted enforcement or recovery after process death.
+#[async_trait::async_trait]
+pub trait PlatformMcpEgressAllocation: Send + Sync {
+    async fn provision(&self) -> Result<MediatedMcpRoute, CredentialMaterialError>;
+
+    async fn revoke_and_wait(&self) -> Result<(), CredentialMaterialError>;
 }

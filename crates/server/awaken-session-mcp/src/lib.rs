@@ -16,8 +16,9 @@ pub use mcp::{
     project_mcp_session_transport,
 };
 pub use mcp_material::{
-    McpGenerationProjection, McpProjectionState, McpQuiescenceAdmissionFence, McpRefreshMaterial,
-    McpStagingActivity, McpTransportMaterial, McpTransportMaterialKind, McpWiring, SessionMcpState,
+    McpGenerationProjection, McpPlatformEgress, McpProjectionState, McpQuiescenceAdmissionFence,
+    McpRefreshMaterial, McpStagingActivity, McpTransportMaterial, McpTransportMaterialKind,
+    McpWiring, SessionMcpState,
 };
 pub use mcp_relay::{McpRelay, McpRelayOutboundProxy};
 

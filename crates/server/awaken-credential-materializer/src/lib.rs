@@ -33,7 +33,8 @@ impl awaken_runtime_contract::llm::DeltaSink for NoopDeltaSink {
 pub use http_credential::materialized_http_credential;
 pub use inference::CredentialInferenceMaterializer;
 pub use platform_egress::{
-    MediatedMcpRoute, PlatformMcpEgressProvisioner, PlatformMcpEgressRequest,
+    MediatedMcpRoute, PlatformMcpEgressAllocation, PlatformMcpEgressProvisioner,
+    PlatformMcpEgressRequest,
 };
 
 use std::collections::{BTreeMap, HashMap};

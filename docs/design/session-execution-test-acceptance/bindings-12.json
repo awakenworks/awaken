@@ -566,14 +566,14 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 430,
-        "file_sha256": "76aca1c1805203b33e62a06ec0974a809bf2f30bca6a805afafb81e132abaa51"
+        "line": 454,
+        "file_sha256": "f3745a00f6775c09473599250ac4b9704ab429735b389ae2619e9290b15e7283"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 433
+        "line": 457
       }
     ],
     "execution_witnesses": [
@@ -587,6 +587,18 @@
         "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
         "historical": false,
         "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+      },
+      {
+        "evidence": "E-MCP-ALLOCATION-20261027",
+        "case": "awaken-session-executor host::tests::mcp_preparation_fence::t16_c01_platform_relay_provision_is_staged_before_io_and_never_published_late",
+        "package": "awaken-session-executor",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "f42a6b5702b2664231451f5718f394113aa438a3",
+        "historical": false,
+        "log_sha256": "b2c62493c48a00cd21bbce5ef0a45f5ded73a79bd8dace7268a609f9ce15be2e",
+        "input_review": "Frozen staged tree 558d56d7a5fd305e8ca1e7250cc9ad1f89bd41e3; all qualified Rust bytes remain unchanged. E16 and E17 keep their original identities."
       }
     ],
     "relation": "covers_case_clauses",
@@ -600,8 +612,8 @@
         "negative_control": false
       }
     },
-    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "review": "Native Windows Host staging, barrier-controlled provisioner and real loopback transport: reserve before I/O and refuse late publication after closure, replacement or expiry. The changed allocation fixture was rerun; E16 keeps its original execution identity.",
+    "limitation": "Host/component scope with an injected Platform allocation capability. Real hosted gateway, process death, sandbox/ACP stdio and Linux enforcement remain unaccepted.",
     "id": "B232"
   },
   {
