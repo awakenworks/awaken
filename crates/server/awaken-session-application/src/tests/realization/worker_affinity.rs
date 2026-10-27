@@ -1,6 +1,224 @@
 use super::*;
 
 #[tokio::test]
+async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
+    // Cause graph: C1 exact prior Actor / replacement; C2 original source
+    // Settled/Pending/Unavailable/NotProven; C3 Resident Prepare/Dispose/no-Create.
+    // Existing affinity tests independently cover predecessor exit, Registry
+    // state/expiry/capability and CAS races. This table isolates source admission:
+    // R1 replacement+Prepare+source-dependent+Settled -> claim at higher epoch.
+    // R2 replacement+Prepare+source-dependent+anything else -> no assignment,
+    // zero root mutation; the original physical/cleanup obligations stay intact.
+    // R3 exact prior Actor -> continue its obligation even while source pending.
+    // R4 original no-Create or prepared Dispose -> retain receipt-only recovery.
+    // R5 source changes after CAS / lost CAS response -> restore only this
+    // invocation's predecessor; R6 a concurrent successor survives compensation.
+    // R7 an owned unmaterialized legacy root remains claimable without fabricating
+    // no-Create evidence. Its provider authorization remains independent.
+    // R8 a blocked first root must not starve the next eligible root in the
+    // existing cursor scan; keep the blocked root byte-for-byte unchanged.
+    // Runtime authorization still independently gates actual live source I/O.
+    use awaken_session_execution_contract::SessionSourceDispatchObservation as Source;
+    for (rule, same_owner, mode, source, admitted) in [
+        ("settled", false, "prepare", Source::Settled, true),
+        ("pending", false, "prepare", Source::Pending, false),
+        ("unavailable", false, "prepare", Source::default(), false),
+        (
+            "unproven",
+            false,
+            "prepare",
+            Source::NotProven {
+                reason:
+                    awaken_session_execution_contract::SessionExecutionRecoveryGap::IdentityMismatch,
+            },
+            false,
+        ),
+        ("owned-pending", true, "prepare", Source::Pending, true),
+        (
+            "owned-unavailable",
+            true,
+            "prepare",
+            Source::default(),
+            true,
+        ),
+        ("no-create", true, "no-create", Source::Pending, true),
+        ("prepared", false, "dispose", Source::Pending, true),
+        (
+            "legacy-unmaterialized",
+            true,
+            "legacy",
+            Source::Pending,
+            true,
+        ),
+        ("after-cas", false, "prepare", Source::Pending, false),
+        ("lost-response", false, "prepare", Source::Pending, false),
+        ("successor", false, "prepare", Source::Pending, false),
+        ("skip-blocked", false, "prepare", Source::Pending, true),
+    ] {
+        let target = registry_race_target();
+        let old_target = awaken_session_realization_contract::SessionRealizationTarget {
+            owner: "cleanup-predecessor".into(),
+            runtime_incarnation: "cleanup-predecessor:1:old-boot".into(),
+            lease_expires_at_unix_ms: 1,
+            reassign_existing_lease: false,
+        };
+        let owner = if same_owner { &target } else { &old_target };
+        let lease = crate::session_resource::SessionRealizationLease {
+            owner: owner.owner.clone(),
+            runtime_incarnation: owner.runtime_incarnation.clone(),
+            epoch: 7,
+            expires_at_unix_ms: 1,
+        };
+        let id = SessionId::from(format!("source-admission-{rule}"));
+        let mut root = registry_race_terminal_session(id.as_str(), Some(lease));
+        if mode == "no-create" {
+            let mut modern = PersistedSession::frozen_with_budget(
+                id.as_str(),
+                root.frozen_baseline().unwrap().clone(),
+                root.resources.clone(),
+                root.mcp.clone(),
+                root.title.clone(),
+                root.metadata.clone(),
+                root.tools.clone(),
+                root.budget.clone(),
+            );
+            modern.execution = root.execution;
+            modern.terminal_cleanup = root.terminal_cleanup;
+            modern.realization = root.realization;
+            root = modern;
+            assert!(awaken_session_state_contract::session_has_terminal_no_create_evidence(&root));
+        }
+        if mode != "no-create" && mode != "legacy" {
+            root.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
+                    "source-admission-fixture",
+                    id.as_str(),
+                ))
+                .unwrap(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            };
+        }
+        if mode == "dispose" {
+            source_admission::prepare_terminal_root_for_disposal(&mut root);
+        }
+        let durable = sqlite_session_repository("cold cleanup source admission").await;
+        let repo = Arc::new(FaultingSessionRepository::new(durable));
+        create(repo.as_ref(), root).await;
+        let before = repo.get(&id).await.unwrap();
+        let following = SessionId::from(format!("{id}-next"));
+        if rule == "skip-blocked" {
+            create(
+                repo.as_ref(),
+                registry_race_terminal_session(following.as_str(), None),
+            )
+            .await;
+        }
+        let runtime = Arc::new(RecordingCleanupRuntime::default());
+        *runtime.source_observation.lock().unwrap() = source;
+        let after_cas = matches!(rule, "after-cas" | "lost-response" | "successor");
+        if after_cas {
+            runtime
+                .source_observation_steps
+                .lock()
+                .unwrap()
+                .push_back(Source::Settled);
+        }
+        if rule == "lost-response" {
+            repo.commit_then_conflict_once("claim-terminal-cleanup-recovery");
+        }
+        let successor = crate::session_resource::SessionRealizationLease {
+            owner: "concurrent-cleanup-worker".into(),
+            runtime_incarnation: "concurrent-cleanup-worker:1:boot".into(),
+            epoch: 99,
+            expires_at_unix_ms: u64::MAX,
+        };
+        if rule == "successor" {
+            repo.commit_concurrent_realization_then_conflict_once(
+                "revoke-terminal-cleanup-recovery",
+                successor.clone(),
+            );
+        }
+        let app = configured_application(
+            runtime.clone(),
+            crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration {
+                execution_placement: SessionExecutionPlacement::RegisteredWorker,
+                ..Default::default()
+            },
+            None,
+        );
+        let workers = Arc::new(RecordingWorkerObservations::default());
+        let current = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
+        let mut predecessor = terminal_cleanup_worker(&old_target, terminal_cleanup_manifest());
+        predecessor.snapshot.state = awaken_worker_contract::WorkerState::Dead;
+        predecessor.process_exit = Some(
+            awaken_worker_contract::WorkerProcessExit::new(
+                "fixture",
+                "original-worker-process",
+                "independent-exit",
+            )
+            .unwrap(),
+        );
+        workers.replace(vec![current, predecessor]);
+        app.execution_admission()
+            .set_worker_observation_source(workers)
+            .unwrap();
+        let assignment = app
+            .terminal_cleanups
+            .claim_next_terminal_cleanup(target, None)
+            .await
+            .unwrap();
+        assert_eq!(assignment.is_some(), admitted, "{rule}");
+        let after = repo.get(&id).await.unwrap();
+        if rule == "skip-blocked" {
+            assert_eq!(
+                assignment.unwrap().session_id,
+                following,
+                "R8 next eligible root"
+            );
+            assert_eq!(after, before, "R8 retain blocked original root");
+        } else if admitted {
+            let assignment = assignment.unwrap();
+            assert!(assignment.authority.lease.epoch > 7, "{rule}");
+            assert_eq!(
+                assignment.environment_creation_not_attempted,
+                mode == "no-create",
+                "{rule}: original evidence only"
+            );
+        } else if after_cas {
+            assert_eq!(
+                after.realization,
+                if rule == "successor" {
+                    Some(successor)
+                } else {
+                    before.realization.clone()
+                },
+                "{rule}: exact CAS compensation"
+            );
+            assert!(after.revision > before.revision);
+        } else {
+            assert_eq!(after, before, "{rule}: no new Actor or durable effect");
+        }
+        assert_eq!(
+            after.environment, before.environment,
+            "{rule}: preserve original source"
+        );
+        assert_eq!(
+            after.terminal_cleanup, before.terminal_cleanup,
+            "{rule}: no cleanup ACK"
+        );
+        assert!(runtime.terminal_assignments.lock().unwrap().is_empty());
+        assert_eq!(
+            runtime.ordinary_resource_apply_calls.load(Ordering::SeqCst),
+            0
+        );
+    }
+}
+
+#[tokio::test]
 async fn draining_cleanup_claim_only_continues_its_owned_terminal_root() {
     // Causes C1 Ready/Draining; C2 no lease/live exact lease/expired exact lease.
     // Existing roster checks still own protocol, expiry and capabilities.
@@ -283,6 +501,10 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
             .store(rule == "read-error", Ordering::SeqCst);
         workers.replace(vec![active, exited]);
         let runtime = Arc::new(RecordingCleanupRuntime::default());
+        // Source selection is independently settled in this affinity table;
+        // the cold-source admission table above covers its negative causes.
+        *runtime.source_observation.lock().unwrap() =
+            awaken_session_execution_contract::SessionSourceDispatchObservation::Settled;
         let app = configured_application(
             runtime.clone(),
             crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),

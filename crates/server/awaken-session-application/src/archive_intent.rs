@@ -18,3 +18,16 @@ pub(crate) async fn unattempted_profiled_archive_witness(
         .await?
         .is_some_and(|receipt| expected.confirmed_by(&receipt, session.revision)))
 }
+
+/// The two original no-Create witnesses, shared by cleanup assignment and
+/// Worker retirement. Missing historical materialization is never a witness.
+pub(crate) async fn terminal_environment_creation_not_attempted(
+    repository: &dyn awaken_session_repository_contract::SessionRepository,
+    owner_scope: &str,
+    session: &PersistedSession,
+) -> Result<bool, awaken_session_state_contract::SessionRepositoryError> {
+    Ok(
+        awaken_session_state_contract::session_has_terminal_no_create_evidence(session)
+            || unattempted_profiled_archive_witness(repository, owner_scope, session).await?,
+    )
+}
