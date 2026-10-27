@@ -18,6 +18,10 @@ pub awaken_web_policy_contract::WebConfigurationCode::UnavailableClientTool
 pub awaken_web_policy_contract::WebConfigurationCode::WrongTool
 impl awaken_web_policy_contract::WebConfigurationCode
 pub const fn awaken_web_policy_contract::WebConfigurationCode::as_str(self) -> &'static str
+pub enum awaken_web_policy_contract::WebConfigurationContext<'a>
+pub awaken_web_policy_contract::WebConfigurationContext::Frozen
+pub awaken_web_policy_contract::WebConfigurationContext::Publication
+pub awaken_web_policy_contract::WebConfigurationContext::Publication::client_tools: &'a alloc::collections::btree::set::BTreeSet<&'a str>
 pub enum awaken_web_policy_contract::WebDomainFilter
 pub awaken_web_policy_contract::WebDomainFilter::Allow(alloc::vec::Vec<alloc::string::String>)
 pub awaken_web_policy_contract::WebDomainFilter::Block(alloc::vec::Vec<alloc::string::String>)
@@ -28,9 +32,13 @@ pub awaken_web_policy_contract::WebExecutionConfiguration::WebFetch(awaken_web_p
 pub awaken_web_policy_contract::WebExecutionConfiguration::WebSearch(awaken_web_policy_contract::WebSearchExecutionConfiguration)
 impl awaken_web_policy_contract::WebExecutionConfiguration
 pub fn awaken_web_policy_contract::WebExecutionConfiguration::compile(&self, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<serde_json::value::Value, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::compile_in(&self, awaken_web_policy_contract::WebConfigurationContext<'_>) -> core::result::Result<serde_json::value::Value, awaken_web_policy_contract::WebConfigurationIssue>
 pub fn awaken_web_policy_contract::WebExecutionConfiguration::compile_value(&str, &serde_json::value::Value, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<serde_json::value::Value, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::compile_value_in(&str, &serde_json::value::Value, awaken_web_policy_contract::WebConfigurationContext<'_>) -> core::result::Result<serde_json::value::Value, awaken_web_policy_contract::WebConfigurationIssue>
 pub fn awaken_web_policy_contract::WebExecutionConfiguration::parse(&str, &serde_json::value::Value, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<Self, awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::parse_in(&str, &serde_json::value::Value, awaken_web_policy_contract::WebConfigurationContext<'_>) -> core::result::Result<Self, awaken_web_policy_contract::WebConfigurationIssue>
 pub fn awaken_web_policy_contract::WebExecutionConfiguration::validate(&self, core::option::Option<&alloc::collections::btree::set::BTreeSet<&str>>) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
+pub fn awaken_web_policy_contract::WebExecutionConfiguration::validate_in(&self, awaken_web_policy_contract::WebConfigurationContext<'_>) -> core::result::Result<(), awaken_web_policy_contract::WebConfigurationIssue>
 pub enum awaken_web_policy_contract::WebUrlSourceFilter
 pub awaken_web_policy_contract::WebUrlSourceFilter::All
 pub awaken_web_policy_contract::WebUrlSourceFilter::Except
