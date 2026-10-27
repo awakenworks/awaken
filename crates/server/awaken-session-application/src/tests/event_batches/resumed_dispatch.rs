@@ -1,6 +1,179 @@
 use super::*;
 
 #[tokio::test]
+async fn completed_admission_and_activation_share_only_the_post_dispatch_settlement() {
+    // Causes: C1 the exact Run/activity was reserved before response loss;
+    // C2 completion is reported by admission or activation; C3 Thread truth
+    // still lags; C4 the same terminal Run and Dispatch-Applied callback arrive;
+    // C5 that exact callback replays. Effects: E1 admission-Completed skips
+    // activation, activation-Completed calls it once; E2 both reobserve C3,
+    // retaining the exact active epoch without processed/cursor/receipt truth;
+    // E3 only C4 records cursor 1, removes that epoch and closes Running; E4 C5
+    // changes no root field. A fixed application clock makes E3 comparable.
+    //
+    // | Rule | C2 | C3 | Activation calls | Before C4 | After C4/C5 |
+    // | D1 | admission Completed | absent | 0 | E2 | E3/E4 |
+    // | D2 | activation Completed | absent | 1 | E2 | same E3/E4 |
+    // Constraint: the prepared epoch comes from the real admission owner;
+    // completion labels grant no Dispatch receipt. The existing callback
+    // fixture supplies an already-Applied Dispatch boundary, not its transport.
+    let mut settled_frames = Vec::new();
+    for admission_completed in [true, false] {
+        let id = "shared-completed-observation";
+        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let runtime = Arc::new(EventBatchRuntime::default());
+        let session = planned_session(
+            id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("retained input")],
+            }],
+        );
+        let (operation_id, run_id, content) = match &session.event_batches[0].events[0].event {
+            SessionEventCommand::UserMessage {
+                operation_id,
+                run_id,
+                content,
+                ..
+            } => (operation_id.clone(), run_id.clone(), content.clone()),
+            _ => unreachable!("one retained User command"),
+        };
+        create(repository.as_ref(), session).await;
+        let app = application_with_persistence(
+            runtime.clone(),
+            SessionPersistence::new(
+                repository.clone(),
+                Arc::new(awaken_lease_testkit::ManualClock::new(100)),
+            ),
+        );
+        let prepared = app
+            .event_batches
+            .admit_session_user_run(SessionUserRunCommand {
+                session_id: id.into(),
+                agent_id: "agent".into(),
+                operation_id,
+                run_id: run_id.clone(),
+                content,
+                accompanying_system: None,
+                data_subject_id: None,
+                traceparent: None,
+            })
+            .await
+            .unwrap();
+        let epoch = prepared.delivery().unwrap().session_activity_epoch;
+        runtime
+            .activated
+            .lock()
+            .unwrap()
+            .insert(run_id.0.clone(), epoch);
+        if admission_completed {
+            runtime
+                .reservation_outcomes
+                .lock()
+                .unwrap()
+                .push_back(SessionRunReservation::Completed);
+        } else {
+            runtime
+                .complete_activation_once
+                .store(true, Ordering::SeqCst);
+        }
+        let reads = runtime.run_state_reads.load(Ordering::SeqCst);
+        app.event_batches
+            .drive_session_event_batches(&SessionId::from(id), None)
+            .await
+            .unwrap();
+        let activation = format!("activate:{}", run_id.0);
+        assert_eq!(
+            runtime
+                .trace
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.as_str() == activation.as_str())
+                .count(),
+            usize::from(!admission_completed),
+            "D1-D2/E1"
+        );
+        assert_eq!(
+            runtime.run_state_reads.load(Ordering::SeqCst) - reads,
+            2,
+            "D1-D2/E2 initial and shared completion observations"
+        );
+        let pending = repository.get(&SessionId::from(id)).await.unwrap();
+        let entry = &pending.event_batches[0].events[0];
+        assert!(
+            !entry.processed
+                && entry.projection_anchor.is_none()
+                && entry.dispatch_settlement.is_none()
+                && entry.processed_at_unix_ms.is_none(),
+            "D1-D2/E2 no completion authority from a label"
+        );
+        assert_eq!(
+            pending.active_activity_epochs,
+            std::collections::BTreeSet::from([epoch]),
+            "D1-D2/E2 only the original Run activity is retained"
+        );
+        assert!(
+            runtime.committed.lock().unwrap().is_empty(),
+            "D1-D2/E2 no fabricated input"
+        );
+        runtime.end(&run_id);
+        finalize_applied_user_dispatch(&app, &runtime, id, &run_id).await;
+        let settled = repository.get(&SessionId::from(id)).await.unwrap();
+        let entry = &settled.event_batches[0].events[0];
+        let receipt = entry.dispatch_settlement.unwrap();
+        assert!(entry.processed, "D1-D2/E3 callback publishes processed");
+        assert_eq!(
+            entry.projection_anchor.unwrap().source_commit_cursor,
+            1,
+            "D1-D2/E3 canonical cursor"
+        );
+        assert_eq!(
+            entry.processed_at_unix_ms,
+            Some(100),
+            "D1-D2/E3 canonical clock"
+        );
+        assert_eq!(
+            receipt.session_activity_epoch, epoch,
+            "D1-D2/E3 exact epoch"
+        );
+        assert_eq!(
+            receipt.commit_observation_anchor.source_commit_cursor, 1,
+            "D1-D2/E3 exact receipt"
+        );
+        assert!(
+            settled.active_activity_epochs.is_empty() && settled.running_interval.is_none(),
+            "D1-D2/E3 all activity settled"
+        );
+        assert_eq!(
+            settled.execution,
+            awaken_session_state_contract::SessionExecutionState::Idle,
+            "D1-D2/E3 Idle only after Dispatch"
+        );
+        settled_frames.push((
+            entry.projection_anchor,
+            entry.processed_at_unix_ms,
+            receipt,
+            settled.active_activity_epochs.clone(),
+            settled.execution,
+        ));
+        finalize_applied_user_dispatch(&app, &runtime, id, &run_id).await;
+        assert_eq!(
+            repository.get(&SessionId::from(id)).await.unwrap(),
+            settled,
+            "D1-D2/E4 exact callback replay"
+        );
+    }
+    assert_eq!(
+        settled_frames[0], settled_frames[1],
+        "D1-D2 share canonical cursor/activity effects"
+    );
+}
+
+#[tokio::test]
 async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_input() {
     // Cause/effect graph: first User+System batch -> Applied Dispatch at Awaiting
     // -> new approval activity on SAME Run -> Applied Dispatch at next Awaiting
