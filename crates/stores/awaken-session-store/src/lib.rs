@@ -75,7 +75,7 @@ struct WorkerObligationIndex {
 fn worker_obligation_index(session: &PersistedSession) -> WorkerObligationIndex {
     let mut index = WorkerObligationIndex {
         owner: None,
-        preparation_candidate: session.is_run_free_initial_preparation_candidate(),
+        preparation_candidate: session.is_run_free_preparation_candidate(),
         unbound_preparation: false,
         unbound_terminal: false,
         invalid: false,
@@ -119,6 +119,16 @@ fn referenced_mcp_credential_source_ids(session: &PersistedSession) -> BTreeSet<
         .mcp
         .desired_attachments()
         .into_iter()
+        // Desired configuration can remove a source before its old physical
+        // generation drains. Keep that same source discoverable until the
+        // canonical generation state records the terminal result.
+        .chain(
+            session
+                .mcp
+                .attachments
+                .iter()
+                .filter(|attachment| !attachment.state.is_terminal()),
+        )
         .filter_map(|attachment| {
             attachment
                 .credential

@@ -461,6 +461,21 @@ impl SessionMcpAttachmentSet {
             .any(|attachment| !attachment.state.is_terminal())
     }
 
+    /// Pending physical realization or publication. Unlike recovery discovery,
+    /// an acknowledged Active generation creates no new preparation demand.
+    #[must_use]
+    pub fn needs_realization(&self) -> bool {
+        self.attachments.iter().any(|attachment| {
+            matches!(
+                attachment.state,
+                McpAttachmentState::Requested
+                    | McpAttachmentState::Realizing
+                    | McpAttachmentState::Draining
+            ) || (attachment.state == McpAttachmentState::Active
+                && !attachment.publication_acknowledged)
+        })
+    }
+
     pub fn claim_realization(
         &mut self,
         generation: &McpGeneration,
@@ -1198,6 +1213,40 @@ mod tests {
             prompts_as_skills: false,
             credential: None,
             origin,
+        }
+    }
+
+    #[test]
+    fn preparation_demand_covers_every_mcp_state_and_publication_ack() {
+        // Causes: C1 one of all six generation states; C2 publication ACK.
+        // Effects: E1 pending preparation, E2 no new preparation demand.
+        // Decision table (without ACK / with ACK): Requested E1/E1,
+        // Realizing E1/E1, Active E1/E2, Draining E1/E1, Removed E2/E2,
+        // Failed E2/E2. Empty configuration is E2. Active+ACK remains ordinary
+        // recovery discovery, so this narrow projection cannot replace it.
+        assert!(!SessionMcpAttachmentSet::default().needs_realization());
+        for (state, without_ack, with_ack) in [
+            (McpAttachmentState::Requested, true, true),
+            (McpAttachmentState::Realizing, true, true),
+            (McpAttachmentState::Active, true, false),
+            (McpAttachmentState::Draining, true, true),
+            (McpAttachmentState::Removed, false, false),
+            (McpAttachmentState::Failed, false, false),
+        ] {
+            for (acknowledged, expected) in [(false, without_ack), (true, with_ack)] {
+                let mut set = SessionMcpAttachmentSet::from_initial(
+                    vec![draft("docs", "https://docs.example.test", None)],
+                    None,
+                )
+                .unwrap();
+                set.attachments[0].state = state;
+                set.attachments[0].publication_acknowledged = acknowledged;
+                assert_eq!(
+                    set.needs_realization(),
+                    expected,
+                    "{state:?}/{acknowledged}"
+                );
+            }
         }
     }
 

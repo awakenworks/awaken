@@ -901,7 +901,7 @@ fn run_free_worker_candidate(id: &str) -> PersistedSession {
         .unwrap();
     let pending = aggregate.into_snapshot();
     assert!(
-        pending.is_run_free_initial_preparation_candidate(),
+        pending.is_run_free_preparation_candidate(),
         "run-free fixture is a valid Worker preparation candidate"
     );
     pending
@@ -1128,7 +1128,23 @@ pub async fn credential_source_dependency_decision_table<
     // | S4 | match | A -> C | replace | E3 |
     // | S5 | match | C | archive | E4 |
     // | S6 | match | A | delete | E5 |
-    let source = |id: &str| awaken_credential_contract::CredentialSourceId(id.into());
+    // One typed SELECT adapter for every rule below; expected roots and
+    // transaction assertions stay at their original rule sites.
+    async fn references<R: awaken_session_repository_contract::SessionStore>(
+        repository: &R,
+        id: &str,
+    ) -> Vec<PersistedSession> {
+        repository
+            .scan(
+                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+                    workspace_id: "ws_a",
+                    source_id: &awaken_credential_contract::CredentialSourceId(id.into()),
+                },
+            )
+            .await
+            .unwrap()
+            .into_sessions()
+    }
     let updated = create_session(
         r,
         "ws_a",
@@ -1158,15 +1174,7 @@ pub async fn credential_source_dependency_decision_table<
     )
     .await;
     assert_eq!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                workspace_id: "ws_a",
-                source_id: &source("source-a")
-            }
-        )
-        .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
-        .unwrap(),
+        references(r, "source-a").await,
         vec![deleted.clone(), updated.clone()],
         "S1-S3/E1"
     );
@@ -1180,28 +1188,12 @@ pub async fn credential_source_dependency_decision_table<
     )
     .await;
     assert_eq!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                workspace_id: "ws_a",
-                source_id: &source("source-a")
-            }
-        )
-        .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
-        .unwrap(),
+        references(r, "source-a").await,
         vec![deleted.clone()],
         "S4/E3 old dependency removed"
     );
     assert_eq!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                workspace_id: "ws_a",
-                source_id: &source("source-c")
-            }
-        )
-        .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
-        .unwrap(),
+        references(r, "source-c").await,
         vec![updated.clone()],
         "S4/E3 new dependency added"
     );
@@ -1211,19 +1203,7 @@ pub async fn credential_source_dependency_decision_table<
         .archive(at(1_787_788_800), 1_787_788_800_000)
         .unwrap();
     replace_session(r, "ws_a", archived, "test:source:archive", Vec::new()).await;
-    assert!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                workspace_id: "ws_a",
-                source_id: &source("source-c")
-            }
-        )
-        .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
-        .unwrap()
-        .is_empty(),
-        "S5/E4"
-    );
+    assert!(references(r, "source-c").await.is_empty(), "S5/E4");
 
     let mut deleting = deleted;
     assert!(deleting.request_delete("ws_a", 0).unwrap().is_some());
@@ -1236,31 +1216,66 @@ pub async fn credential_source_dependency_decision_table<
             .unwrap(),
         SessionMutationResult::Applied { .. }
     ));
+    assert!(references(r, "source-a").await.is_empty(), "S6/E5");
+    assert_eq!(references(r, "source-b").await, vec![unrelated], "S3/E2");
+
+    // S7: removing desired configuration is not a physical drain result.
+    // Causes: same root is Idle/Worker-placed, desired source is absent, one
+    // generation is Draining, no separate initial-preparation opt-in exists.
+    // Effects: both backends retain exact-source discovery and preparation
+    // demand in the SAME transaction. S8: the canonical finish_drain receipt
+    // changes that generation to Removed -> both indexes clear atomically.
+    let mut draining = with_mcp_credential_source(
+        session("sesn_source_draining", "draining"),
+        "source-draining",
+    );
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut draining.baseline
+    else {
+        panic!("frozen conformance fixture");
+    };
+    baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
+    draining.mcp.desired_names = Some(Default::default());
+    draining.mcp.attachments[0].state =
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Draining;
+    let draining = create_session(r, "ws_a", draining, Vec::new()).await;
+    assert!(draining.mcp.desired_attachments().is_empty(), "S7");
     assert!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                workspace_id: "ws_a",
-                source_id: &source("source-a")
-            }
-        )
-        .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
-        .unwrap()
-        .is_empty(),
-        "S6/E5"
+        !draining
+            .realization_progress()
+            .run_free_initial_preparation(),
+        "S7 no new flag"
     );
     assert_eq!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                workspace_id: "ws_a",
-                source_id: &source("source-b")
-            }
-        )
-        .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
-        .unwrap(),
-        vec![unrelated],
-        "S3/E2"
+        references(r, "source-draining").await,
+        vec![draining.clone()],
+        "S7 source retained"
+    );
+    assert!(
+        r.preparation_candidates(None)
+            .await
+            .unwrap()
+            .sessions
+            .iter()
+            .any(|scoped| scoped.session.session_id == draining.session_id),
+        "S7 preparation retained"
+    );
+    let mut removed = draining;
+    let generation = removed.mcp.attachments[0].generation.clone();
+    removed.mcp.finish_drain(&generation).unwrap();
+    let removed = replace_session(r, "ws_a", removed, "test:source:drained", Vec::new()).await;
+    assert!(
+        references(r, "source-draining").await.is_empty(),
+        "S8 source removed"
+    );
+    assert!(
+        r.preparation_candidates(None)
+            .await
+            .unwrap()
+            .sessions
+            .iter()
+            .all(|scoped| scoped.session.session_id != removed.session_id),
+        "S8 preparation removed"
     );
 }
 

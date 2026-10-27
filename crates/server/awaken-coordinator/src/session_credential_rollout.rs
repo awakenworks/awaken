@@ -47,8 +47,25 @@ fn sessions_unreadable(
 /// Current active publication is adoption evidence even during another Run.
 /// A pending/failed generation or any older pin still needs the idle update.
 fn source_already_adopted(session: &PersistedSession, event: &ManagedCredentialRollout) -> bool {
-    if event.operation != ManagedCredentialOperation::Update {
-        return false;
+    if matches!(
+        event.operation,
+        ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete
+    ) {
+        let references_source =
+            |attachment: &awaken_session_configuration_contract::mcp::SessionMcpAttachment| {
+                attachment
+                    .credential
+                    .as_ref()
+                    .is_some_and(|access| access.credential.id == event.source_id.0)
+            };
+        return !session
+            .mcp
+            .desired_attachments()
+            .into_iter()
+            .any(references_source)
+            && !session.mcp.attachments.iter().any(|attachment| {
+                !attachment.state.is_terminal() && references_source(attachment)
+            });
     }
     let mut matched = false;
     for attachment in session.mcp.desired_attachments() {
@@ -229,6 +246,9 @@ impl SessionCredentialRolloutAdoption {
                 .await;
             match result {
                 Ok(outcome) => {
+                    if !source_already_adopted(&outcome.session, event) {
+                        pending = true;
+                    }
                     if !self.publication.publish_committed_session(&outcome.session) {
                         tracing::warn!(rollout_id = %event.id, session_id = %session.session_id,
                             phase = "projection_after_commit", failure = "publication",

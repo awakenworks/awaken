@@ -1029,7 +1029,7 @@ impl PostgresManagedSessionRepository {
                         .execute(&mut *tx)
                         .await
                         .map_err(storage)?;
-                    if preparation_only && !session.is_run_free_initial_preparation_candidate() {
+                    if preparation_only && !session.is_run_free_preparation_candidate() {
                         return Err(corrupt(format!(
                             "Session preparation candidate index disagrees with root {session_id}"
                         )));

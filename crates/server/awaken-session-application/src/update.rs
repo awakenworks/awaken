@@ -130,22 +130,13 @@ fn mcp_projection_requires_realization(
         lease.runtime_incarnation == runtime_incarnation
             && realization_lease_is_live_at(lease.expires_at_unix_ms, now_unix_ms)
     });
-    let projection_requires_completion = session.mcp.attachments.iter().any(|attachment| {
-        matches!(
-            attachment.state,
-            McpAttachmentState::Requested
-                | McpAttachmentState::Realizing
-                | McpAttachmentState::Draining
-        ) || (attachment.state == McpAttachmentState::Active
-            && !attachment.publication_acknowledged)
-    });
     let active_requires_new_owner = !lease_is_current
         && session
             .mcp
             .attachments
             .iter()
             .any(|attachment| attachment.state == McpAttachmentState::Active);
-    projection_requires_completion || active_requires_new_owner
+    session.mcp.needs_realization() || active_requires_new_owner
 }
 
 fn realization_failure_after_commit(
@@ -617,17 +608,24 @@ impl SessionUpdateCommands {
                 self.clock.now_ms(),
             )
         {
-            match self
-                .realizations
-                .realize_session_after_refresh(&outcome.session.session_id)
-                .await
-            {
-                Ok(session) => outcome.session = session,
-                Err(error) => {
-                    return Err(SessionUpdateError::ProjectionAfterCommit {
-                        outcome: Box::new(outcome),
-                        source: realization_failure_after_commit(error),
-                    });
+            if outcome.session.requires_external_environment_owner() {
+                // The committed root and its ordinary preparation index are
+                // the demand. A local process role cannot replace the remote
+                // Worker's lease, and a pending desired pin is not adoption.
+                self.lifecycle.request_reconciliation();
+            } else {
+                match self
+                    .realizations
+                    .realize_session_after_refresh(&outcome.session.session_id)
+                    .await
+                {
+                    Ok(session) => outcome.session = session,
+                    Err(error) => {
+                        return Err(SessionUpdateError::ProjectionAfterCommit {
+                            outcome: Box::new(outcome),
+                            source: realization_failure_after_commit(error),
+                        });
+                    }
                 }
             }
         }
