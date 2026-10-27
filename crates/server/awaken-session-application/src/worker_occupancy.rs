@@ -135,14 +135,13 @@ impl SessionWorkerOccupancy {
                 if matches!(action, SessionTerminalCleanupAction::Waiting) {
                     return Ok(None);
                 }
-                if awaken_session_state_contract::session_has_terminal_no_create_evidence(&session)
-                    || crate::archive_intent::unattempted_profiled_archive_witness(
-                        self.repository.as_ref(),
-                        &scoped.workspace_id,
-                        &session,
-                    )
-                    .await
-                    .map_err(session_repository_error)?
+                if crate::archive_intent::terminal_environment_creation_not_attempted(
+                    self.repository.as_ref(),
+                    &scoped.workspace_id,
+                    &session,
+                )
+                .await
+                .map_err(session_repository_error)?
                 {
                     continue;
                 }

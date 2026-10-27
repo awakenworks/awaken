@@ -87,37 +87,7 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
     let identity = awaken_worker_contract::WorkerIdentity::new("prepared-actor", "boot", 1);
     let id = SessionId::from("retirement-prepared");
     let mut root = retained_root(id.as_str(), &identity);
-    let lease = root.realization.clone().unwrap();
-    let commands = match root.terminal_cleanup_work_action().unwrap().unwrap() {
-        awaken_session_state_contract::SessionTerminalCleanupAction::Prepare { commands } => {
-            commands
-        }
-        other => panic!("original preparation: {other:?}"),
-    };
-    for command in commands {
-        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-            command,
-            lease.clone(),
-        );
-        let prepared = awaken_session_state_contract::SessionCleanupPreparation::try_new(
-            &effect,
-            effect.sandbox_effect_fence().unwrap(),
-            Vec::new(),
-        )
-        .unwrap();
-        let repository = awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
-            &id,
-            "workspace",
-            &root.resources,
-        )
-        .unwrap();
-        root.record_terminal_cleanup_preparation("workspace", &lease, prepared, Some(repository))
-            .unwrap();
-    }
-    assert!(matches!(
-        root.terminal_cleanup_work_action().unwrap(),
-        Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { .. })
-    ));
+    source_admission::prepare_terminal_root_for_disposal(&mut root);
     let repo = sqlite_session_repository("prepared source retirement").await;
     create(repo.as_ref(), root).await;
     let before = repo.get(&id).await.unwrap();

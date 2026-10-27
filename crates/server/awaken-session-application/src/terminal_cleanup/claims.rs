@@ -10,9 +10,7 @@ use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionRealizationLeaseReceipt,
     SessionTerminalCleanupAssignment, terminal_cleanup_worker_requirements,
 };
-use awaken_session_state_contract::{
-    PersistedSession, SessionRepositoryError, session_has_terminal_no_create_evidence,
-};
+use awaken_session_state_contract::{PersistedSession, SessionRepositoryError};
 use awaken_time::WallClockExt as _;
 
 use super::SessionTerminalCleanups;
@@ -216,14 +214,13 @@ impl SessionTerminalCleanups {
             session_id: session.session_id.clone(),
             projection,
             environment_creation_not_attempted:
-                crate::archive_intent::unattempted_profiled_archive_witness(
+                crate::archive_intent::terminal_environment_creation_not_attempted(
                     self.mutations.repository().as_ref(),
                     owner_scope,
                     session,
                 )
                 .await
-                .map_err(repository_control)?
-                    || session_has_terminal_no_create_evidence(session),
+                .map_err(repository_control)?,
             authority: SessionRealizationLeaseReceipt::issued_at(lease, self.clock.now_ms())?,
         })
     }
@@ -311,16 +308,44 @@ impl SessionTerminalCleanups {
             Some(conflict) => conflict.previous_realization.as_ref(),
             None => session.realization.as_ref(),
         };
-        let admission = match self.realizations.worker_for_target(target).await {
-            Ok(Some(worker)) if !target.admits_terminal_cleanup_generation(&worker, prior) => {
-                Ok(false)
+        // Selection cannot acquire another Actor's unprepared obligation when
+        // the very next live-source effect is already known to be inadmissible.
+        // Preserve original-owner continuation and receipt-only disposal. Read
+        // source eligibility BEFORE the Registry check so this additional I/O
+        // cannot widen the final Worker authority window. Exact compensation
+        // below also covers a source change after an uncertain/winning CAS.
+        let source_admitted = prior.is_some_and(|lease| {
+            lease.owner == target.owner && lease.runtime_incarnation == target.runtime_incarnation
+        }) || !matches!(
+            action,
+            awaken_session_state_contract::SessionTerminalCleanupAction::Prepare { .. }
+        ) || !matches!(
+            session.environment,
+            awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+        ) || matches!(
+            self.coordination_reads
+                .source_dispatch_observation(session)
+                .await,
+            awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
+        );
+        let admission = if source_admitted {
+            match self.realizations.worker_for_target(target).await {
+                Ok(Some(worker)) if !target.admits_terminal_cleanup_generation(&worker, prior) => {
+                    Ok(false)
+                }
+                Ok(Some(worker)) => {
+                    terminal_cleanup_worker_requirements(owner_scope, session, action).map(
+                        |requirements| {
+                            awaken_worker_contract::can_claim(&worker.manifest, &requirements)
+                                .is_ok()
+                        },
+                    )
+                }
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
             }
-            Ok(Some(worker)) => terminal_cleanup_worker_requirements(owner_scope, session, action)
-                .map(|requirements| {
-                    awaken_worker_contract::can_claim(&worker.manifest, &requirements).is_ok()
-                }),
-            Ok(None) => Ok(false),
-            Err(error) => Err(error),
+        } else {
+            Ok(false)
         };
         let rejected = match admission {
             Ok(true) => return TerminalCleanupWorkerRevalidation::Admitted,
@@ -527,23 +552,14 @@ impl SessionTerminalCleanups {
             // Re-read the canonical Worker registry on every root-CAS attempt.
             // A conflict never carries eligibility from the older Session or
             // Worker snapshot into the retry.
-            match self.realizations.worker_for_target(&target).await {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    if let Some(conflict) = conflicted_claim.as_deref() {
-                        self.compensate_terminal_cleanup_claim(conflict, None)
-                            .await?;
-                    }
-                    return Ok(None);
+            let worker = self.realizations.worker_for_target(&target).await;
+            if !matches!(&worker, Ok(Some(_))) {
+                if let Some(conflict) = conflicted_claim.as_deref() {
+                    self.compensate_terminal_cleanup_claim(conflict, None)
+                        .await?;
                 }
-                Err(error) => {
-                    if let Some(conflict) = conflicted_claim.as_deref() {
-                        self.compensate_terminal_cleanup_claim(conflict, None)
-                            .await?;
-                    }
-                    return Err(error);
-                }
-            };
+                return worker.map(|_| None);
+            }
             let mut first_projection_failure = None;
             let mut retry_after_conflict = false;
             let mut cursor = after_session_id.map(|session_id| {

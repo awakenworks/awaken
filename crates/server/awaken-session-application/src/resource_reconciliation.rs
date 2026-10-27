@@ -435,15 +435,18 @@ impl SessionResourceReconciliation {
                 Ok(session)
             };
         }
-        let effects_runtime = self
-            .placement
-            .realization_effects()
-            .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
         let session_id = session.session_id.clone();
         if ordinary_resource_reconciliation_allowed(
             session.is_terminal(),
             session.execution == SessionExecutionState::Idle,
         ) {
+            // Only ordinary activation needs a local effects role. Terminal
+            // roots must reach their existing cleanup owner even when this
+            // Coordinator delegates every realization to registered Workers.
+            let effects_runtime = self
+                .placement
+                .realization_effects()
+                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             if let Some(desired) = session.resources.pending.clone() {
                 let previous = session.resources.active.clone();
                 let previous_revision = session.resources.active_revision();
@@ -734,5 +737,109 @@ impl crate::SessionCredentials {
             })
             .await
             .is_ok()
+    }
+}
+
+#[cfg(test)]
+mod placement_regression_tests {
+    use super::*;
+    use awaken_session_execution_contract::{SessionInputAdmission, SessionPlacementRoles};
+    struct Inputs;
+    #[async_trait::async_trait]
+    impl SessionInputAdmission for Inputs {
+        async fn install_dispatch_projection(
+            &self,
+            _: &str,
+            _: awaken_session_realization_contract::FrozenSessionProjection,
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+        {
+            panic!("no input effect")
+        }
+        fn validate_session_sandbox_layout(
+            &self,
+            _: &str,
+            _: &awaken_session_configuration_contract::SessionSandboxLayout,
+        ) -> Result<(), awaken_session_types::RunError> {
+            panic!("no layout effect")
+        }
+        async fn resolve_session_skills(
+            &self,
+            _: &str,
+            _: &[awaken_agent_contract::AgentSkillBinding],
+        ) -> Result<
+            Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>,
+            awaken_session_types::RunError,
+        > {
+            panic!("no Skill effect")
+        }
+        async fn replace_session_tools(
+            &self,
+            _: &str,
+            _: awaken_session_configuration_contract::SessionToolConfiguration,
+        ) -> Result<(), awaken_session_types::RunError> {
+            panic!("no tool effect")
+        }
+    }
+    #[tokio::test]
+    async fn terminal_worker_resource_reconciliation_needs_no_colocated_effect_role() {
+        // C1 terminal Session, C2 Worker placement, C3 Coordinator has only frozen
+        // input admission. R1 C1+C2+C3 -> the existing external terminal-cleanup
+        // queue is fenced, no local role or input effect is requested, no false
+        // completion. Live/local activation remains covered by resource_resume.
+        // Before the fix this returns session_colocated_worker_absent before the
+        // terminal owner can fence the root at all.
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let id = "terminal-worker-without-local-effects";
+        let mut session = crate::tests::persisted(id, true, "terminated");
+        session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+            ResolvedSessionResources::try_new(
+                vec![ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
+                    binding_id: awaken_resource_contract::BindingId::from("input"),
+                    source: ResolvedInputSource::File {
+                        file_id: awaken_resource_contract::FileId::from("retained"),
+                    },
+                    mount_path: "/workspace/input".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        crate::tests::create(repository.as_ref(), session).await;
+        let app = crate::tests::application_fixture::application(
+            repository.clone(),
+            Arc::new(crate::tests::RecordingEnvironmentSource::default()),
+        );
+        let original = &app.resource_reconciliation;
+        let worker = SessionResourceReconciliation {
+            mutations: original.mutations.clone(),
+            clock: original.clock.clone(),
+            credentials: original.credentials.clone(),
+            resource_references: original.resource_references.clone(),
+            repository_participants: original.repository_participants.clone(),
+            terminal_cleanups: original.terminal_cleanups.clone(),
+            placement: SessionPlacementRoles::RegisteredWorkers(Arc::new(Inputs)),
+        };
+        let root = worker
+            .mutations
+            .session_aggregate(&awaken_session_types::SessionId::from(id))
+            .await
+            .unwrap();
+        let settled = worker
+            .reconcile_prepared_resources("workspace", root)
+            .await
+            .expect("R1 terminal queue remains reachable");
+        assert!(settled.is_terminal());
+        assert!(
+            !settled.terminal_cleanup.is_completed(),
+            "R1 Worker evidence is still required"
+        );
     }
 }
