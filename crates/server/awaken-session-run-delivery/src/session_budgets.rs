@@ -24,22 +24,16 @@ use crate::{CommittedReads, CoordinatedThreads, recovery_ticket};
 /// `BudgetRuntime` role.
 pub struct SessionBudgets {
     threads: Arc<CoordinatedThreads>,
-    dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     thread_reads: Arc<CommittedReads>,
 }
 
 impl SessionBudgets {
     /// Budgets of the Sessions `threads` coordinates, staging resumes through
-    /// `dispatch` and reading committed truth through `thread_reads`.
+    /// the same Thread publication and reading committed truth through `thread_reads`.
     #[must_use]
-    pub fn new(
-        threads: Arc<CoordinatedThreads>,
-        dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
-        thread_reads: Arc<CommittedReads>,
-    ) -> Self {
+    pub fn new(threads: Arc<CoordinatedThreads>, thread_reads: Arc<CommittedReads>) -> Self {
         Self {
             threads,
-            dispatch,
             thread_reads,
         }
     }
@@ -219,7 +213,8 @@ impl SessionBudgets {
             )
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
-        self.dispatch
+        self.threads
+            .publication()
             .publish_staged(&store)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;

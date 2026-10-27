@@ -170,6 +170,24 @@ Both use the single shared factory; no parallel open/Worker implementation remai
 the SDK. A selected source/effect may retain its original collaborators: a narrow trait
 object alone does not erase those lifetimes or close the remaining application cycle.
 
+`DispatchPublication` is the immutable durable-change publisher, selected once
+from the process topology over its original `DispatchHint`. Every publication
+first calls the original owner's idempotent Outbox relay, so a Session reply is
+runnable before publication returns even while the local pool is cold. Local
+publication then sends the same bounded hint; registered remote Worker topology
+needs no local hint. This replaces pool-handle-presence discovery and gives cold
+and warm local publication the same durable visibility/error ordering. Relay
+failure remains visible before any success hint, leaves the staged input intact,
+and retries the same identity. The existing maintenance loop may relay again;
+its canonical store transaction suppresses duplicates. No second relay or scheduler
+is implemented. Production services still start before request traffic.
+Run delivery and coordinated Threads hold this value without a `ProcessDispatch`;
+budgets reuse their original Thread publication without another injected publisher.
+A retained publisher therefore cannot keep a pool or terminal scanner alive. The
+SDK still owns dispatch for actual resident execution/lifecycle operations; the
+remaining preparation compiler, application bindings and production role selection
+are still open.
+
 The order that removes D4's transitions, each step a reviewed `--tighten`:
 the Deployment configuration (done); the Memory invalidation bus (done); the
 Coordinator process package over the extracted startup (done: removed

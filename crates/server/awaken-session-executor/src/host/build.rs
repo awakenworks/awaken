@@ -593,7 +593,6 @@ impl ExecutorComponents {
 fn session_budgets(runs: &crate::SessionRuns) -> awaken_session_run_delivery::SessionBudgets {
     awaken_session_run_delivery::SessionBudgets::new(
         runs.threads.clone(),
-        runs.dispatch.clone(),
         runs.thread_reads.clone(),
     )
 }

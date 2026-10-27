@@ -34,7 +34,7 @@ use awaken_dispatch_contract::{
     SessionRunReservations as _,
 };
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
-use awaken_dispatch_execution::ProcessDispatch;
+use awaken_dispatch_execution::DispatchPublication;
 use awaken_dispatch_execution::coordinated_run_activation;
 use awaken_dispatch_execution::durable_control::DurableRunControl;
 use awaken_dispatch_execution::session_dispatch::DispatchPreparation;
@@ -86,7 +86,7 @@ pub trait SessionLowering: Send + Sync {
 /// Consumers: the Session application's coordination command and read roles.
 pub struct CoordinatedThreads {
     owner: Option<Arc<AnyCoordinatorDispatch>>,
-    dispatch: Arc<ProcessDispatch>,
+    publication: DispatchPublication,
     reads: Arc<CommittedReads>,
     lowering: Arc<dyn SessionLowering>,
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
@@ -98,7 +98,7 @@ pub struct CoordinatedThreads {
 pub struct CoordinationAuthorities {
     /// The durable dispatch owner; a process without one admits nothing.
     pub owner: Option<Arc<AnyCoordinatorDispatch>>,
-    pub dispatch: Arc<ProcessDispatch>,
+    pub publication: DispatchPublication,
     pub reads: Arc<CommittedReads>,
     pub lowering: Arc<dyn SessionLowering>,
     pub publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
@@ -112,7 +112,7 @@ impl CoordinatedThreads {
     pub fn new(authorities: CoordinationAuthorities) -> Self {
         let CoordinationAuthorities {
             owner,
-            dispatch,
+            publication,
             reads,
             lowering,
             publications,
@@ -121,7 +121,7 @@ impl CoordinatedThreads {
         } = authorities;
         Self {
             owner,
-            dispatch,
+            publication,
             reads,
             lowering,
             publications,
@@ -137,9 +137,15 @@ impl CoordinatedThreads {
             .ok_or_else(|| RunError::internal("operation requires a Coordinator dispatch owner"))
     }
 
+    /// The same immutable publication the Session's budget and coordination use.
+    #[must_use]
+    pub fn publication(&self) -> &DispatchPublication {
+        &self.publication
+    }
+
     /// The durable Run control over the dispatch owner.
     pub fn durable_run_control(&self) -> Result<DurableRunControl, RunError> {
-        Ok(self.dispatch.durable_run_control(self.owner()?.clone()))
+        Ok(self.publication.durable_run_control(self.owner()?.clone()))
     }
 }
 
@@ -218,7 +224,7 @@ async fn finish_coordinated_child_admission(
             "Agent Thread terminated after a failed Run"
         }));
     }
-    host.dispatch.hint_local_pool().await;
+    host.publication.hint_local_pool().await;
     Ok(SessionAgentMessageReceipt { thread_id })
 }
 
@@ -479,7 +485,7 @@ impl CoordinatedThreads {
             )
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
-        self.dispatch
+        self.publication
             .publish_staged(store.as_ref())
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
@@ -700,7 +706,7 @@ impl CoordinatedThreads {
             .enqueue(request)
             .await
             .map_err(dispatch_admission_error)?;
-        self.dispatch.hint_local_pool().await;
+        self.publication.hint_local_pool().await;
         Ok(())
     }
 

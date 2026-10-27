@@ -6,6 +6,9 @@
 #[path = "tests/startup_drain.rs"]
 mod startup_drain;
 
+#[path = "tests/publication.rs"]
+mod publication;
+
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{
@@ -208,6 +211,13 @@ struct CoordinatorFixture {
 }
 
 fn coordinator_fixture(local: awaken_deployment_config::LocalExecution) -> CoordinatorFixture {
+    coordinator_fixture_with_wake(local, Arc::new(crate::LocalWakeSignal::new()))
+}
+
+fn coordinator_fixture_with_wake(
+    local: awaken_deployment_config::LocalExecution,
+    wake: Arc<dyn awaken_dispatch_contract::WakeSignal>,
+) -> CoordinatorFixture {
     let clock = awaken_time::system_clock();
     let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone()));
     let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store));
@@ -220,7 +230,7 @@ fn coordinator_fixture(local: awaken_deployment_config::LocalExecution) -> Coord
             queue_depth: awaken_deployment_config::QueueDepthSource::External,
         },
         clock,
-        DispatchHint::new(Arc::new(crate::LocalWakeSignal::new())),
+        DispatchHint::new(wake),
     );
     let scans = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicBool::new(false));

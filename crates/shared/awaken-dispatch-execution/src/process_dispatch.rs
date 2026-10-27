@@ -52,6 +52,7 @@ pub struct ProcessDispatch {
     topology: ExecutionTopology,
     clock: Arc<dyn WallClock>,
     hint: DispatchHint,
+    publication: crate::DispatchPublication,
     admission: Arc<PoolAdmission>,
     pool: OnceCell<Arc<DispatchPool<AnyDispatchStore>>>,
     /// The scan state the claimed-Run resolver shares.
@@ -126,10 +127,13 @@ impl ProcessDispatch {
         let admission = Arc::new(PoolAdmission::new(
             crate::DispatchServiceConfig::for_topology(&topology).max_attempts,
         ));
+        let publication =
+            crate::DispatchPublication::selected(topology.local.runs_local_pool(), hint.clone());
         Self {
             topology,
             clock,
             hint,
+            publication,
             admission,
             pool: OnceCell::new(),
             terminal_reconciliation: Arc::default(),
@@ -255,37 +259,11 @@ impl ProcessDispatch {
             .bind_worker_evidence(directory, source)
     }
 
-    /// Hint the local pool after a durable dispatch change, when one runs.
-    pub async fn hint_local_pool(&self) {
-        if self.pool.get().is_some() {
-            self.hint.publish().await;
-        }
-    }
-
-    /// Make a staged durable change visible to its drainer: the local pool is
-    /// hinted; without one the owner relays its outbox so a remote Worker sees it.
-    pub async fn publish_staged(
-        &self,
-        owner: &AnyCoordinatorDispatch,
-    ) -> Result<(), awaken_dispatch_contract::DispatchError> {
-        if self.pool.get().is_some() {
-            self.hint.publish().await;
-            return Ok(());
-        }
-        awaken_dispatch_contract::Outbox::relay(owner).await?;
-        Ok(())
-    }
-
-    /// The durable Run control over `owner`, hinting the local pool when one runs.
+    /// The immutable publication capability over the same original hint. Its
+    /// callers never retain this process, its service handles or resolver.
     #[must_use]
-    pub fn durable_run_control(
-        &self,
-        owner: Arc<AnyCoordinatorDispatch>,
-    ) -> crate::durable_control::DurableRunControl {
-        crate::durable_control::DurableRunControl::new(
-            owner,
-            self.pool.get().map(|_| self.hint.clone()),
-        )
+    pub fn publication(&self) -> crate::DispatchPublication {
+        self.publication.clone()
     }
 
     /// Begin a graceful drain (scale-in / SIGTERM): stop claiming while the
