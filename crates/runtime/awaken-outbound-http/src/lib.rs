@@ -22,9 +22,13 @@ pub use kubernetes::{
 
 pub use client::{
     BaseUrlRejected, DEFAULT_CONNECT_TIMEOUT, ExternalHttpClient, HttpMethod, HttpReply,
-    InternalHttpClient, JsonRequest, TransportDeadline, TransportError, normalize_http_base_url,
-    rustls_client_builder, target_is_loopback,
+    InternalHttpClient, JsonRequest, TransportDeadline, TransportError,
+    internal_http_client_builder, normalize_http_base_url, rustls_client_builder,
+    target_is_loopback,
 };
+
+#[cfg(feature = "blocking")]
+pub use client::internal_blocking_http_client_builder;
 
 /// Select the one process-wide provider before constructing a rustls-backed
 /// HTTP client. Full workspace feature unification may compile more than one
