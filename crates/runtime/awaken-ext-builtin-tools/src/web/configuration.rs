@@ -4,6 +4,7 @@
 //! Web adapter over the one pure SDK policy kernel.
 use awaken_agent_contract::toolset::InheritedToolsets;
 use awaken_agent_contract::{ToolsetPolicy, ToolsetSource};
+use awaken_web_policy_contract::WebConfigurationContext;
 pub(super) use awaken_web_policy_contract::WebExecutionConfiguration;
 pub(super) use awaken_web_policy_contract::{
     EffectiveWebFetchConfiguration, EffectiveWebSearchConfiguration, domains_permit_any_url,
@@ -50,7 +51,7 @@ pub fn web_fetch_execution_configuration(
 ) -> Result<Option<WebFetchExecutionConfiguration>, String> {
     execution_configuration(toolsets, "web_fetch")
         .map(|value| {
-            WebExecutionConfiguration::parse("web_fetch", value, None)
+            WebExecutionConfiguration::parse_in("web_fetch", value, WebConfigurationContext::Frozen)
                 .map(|value| match value {
                     WebExecutionConfiguration::WebFetch(configuration) => configuration,
                     _ => unreachable!("parser checks owner"),
@@ -64,12 +65,16 @@ pub fn web_search_execution_configuration(
 ) -> Result<Option<WebSearchExecutionConfiguration>, String> {
     execution_configuration(toolsets, "web_search")
         .map(|value| {
-            WebExecutionConfiguration::parse("web_search", value, None)
-                .map(|value| match value {
-                    WebExecutionConfiguration::WebSearch(configuration) => configuration,
-                    _ => unreachable!("parser checks owner"),
-                })
-                .map_err(|error| error.to_string())
+            WebExecutionConfiguration::parse_in(
+                "web_search",
+                value,
+                WebConfigurationContext::Frozen,
+            )
+            .map(|value| match value {
+                WebExecutionConfiguration::WebSearch(configuration) => configuration,
+                _ => unreachable!("parser checks owner"),
+            })
+            .map_err(|error| error.to_string())
         })
         .transpose()
 }

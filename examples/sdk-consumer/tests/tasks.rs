@@ -10,6 +10,7 @@ use awaken_runtime::{
 };
 use awaken_sdk_consumer::DemoModel;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
+use awaken_web_policy_contract::WebConfigurationContext;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -381,7 +382,7 @@ fn web_policy_configuration_remains_usable_through_sdk_reexports() {
     };
     let kernel_type: awaken_web_policy_contract::WebFetchExecutionConfiguration = old_path;
     let canonical = WebExecutionConfiguration::WebFetch(kernel_type.clone())
-        .compile(None)
+        .compile_in(WebConfigurationContext::Frozen)
         .unwrap();
     assert_eq!(
         canonical,
@@ -517,4 +518,39 @@ fn web_policy_configuration_remains_usable_through_sdk_reexports() {
         .unwrap_err();
     assert_eq!(error.code, "invalid_web_domain_count");
     assert_eq!(error.path, "domains.domains");
+
+    // The real injected compiler must select Publication, not Frozen. Its
+    // opaque JSON input cannot opt out of the exact client roster check.
+    let sources = json!({"type":"web_fetch","url_sources": {
+        "client_tool_results":{"type":"only","tools":[
+            {"type":"tool_reference","name":"lookup"}
+        ]}, "server_tool_results":"none", "user_input":"none"
+    }});
+    for name in [None, Some("Lookup"), Some("lookup")] {
+        let clients: Vec<_> = name
+            .into_iter()
+            .map(|name| awaken_agent_contract::ClientToolDescriptor {
+                name: name.into(),
+                description: "Client lookup".into(),
+                input_schema: json!({"type":"object"}),
+            })
+            .collect();
+        let result = compiler.compile(ToolConfigurationInput {
+            source: &ToolsetSource::Agent,
+            tool_name: "web_fetch",
+            configuration: &sources,
+            client_tools: &clients,
+        });
+        if name == Some("lookup") {
+            let compiled = result.unwrap();
+            assert_eq!(
+                compiled["url_sources"]["client_tool_results"]["type"],
+                "only"
+            );
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, "web_source_tool_unavailable");
+            assert_eq!(error.path, "url_sources.client_tool_results.tools");
+        }
+    }
 }

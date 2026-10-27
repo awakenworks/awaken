@@ -6,6 +6,7 @@
 use awaken_tool_contract::tool_configuration::{
     ToolConfigurationCompiler, ToolConfigurationError, ToolConfigurationInput,
 };
+use awaken_web_policy_contract::WebConfigurationContext;
 use awaken_web_policy_contract::WebExecutionConfiguration;
 
 /// Composition roots install this compiler in config and Session applications.
@@ -26,10 +27,12 @@ impl ToolConfigurationCompiler for WebToolConfigurationCompiler {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect();
-        WebExecutionConfiguration::compile_value(
+        WebExecutionConfiguration::compile_value_in(
             input.tool_name,
             input.configuration,
-            Some(&clients),
+            WebConfigurationContext::Publication {
+                client_tools: &clients,
+            },
         )
         .map_err(|error| ToolConfigurationError {
             path: error.path,

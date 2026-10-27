@@ -200,7 +200,17 @@ creation/update and plugin resolution all use the same kernel before credential
 or provider effects. Errors carry an owning field path and stable code (for
 example `invalid_web_domain_count`), including the original index in legacy
 HTTP tool arrays. Compilation returns the canonical value atomically and never
-publishes a partially normalized input. The compiler validates disabled and
+publishes a partially normalized input.
+The Web SDK's `WebConfigurationContext` states the boundary explicitly:
+`Publication` requires the exact client-tool roster; `Frozen` preserves that
+prior roster decision and still checks shape and intrinsic restrictions.
+The `parse_in`, `validate_in`, `compile_value_in` and `compile_in` APIs use this
+context. Legacy optional-roster entrypoints remain deprecated SDK adapters.
+The context decision tables cross publication/frozen input with exact, absent
+and case-mismatched rosters, typed/JSON values and malformed intrinsic rules.
+They separately prove that decoded configuration grants no fetch without the
+required URL evidence; a compile-fail doctest rejects a roster-less publication.
+ The compiler validates disabled and
 later duplicate entries as well as the selected entry.
 
 Web execution settings remain in the neutral

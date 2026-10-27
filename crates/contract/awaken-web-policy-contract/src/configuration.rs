@@ -67,13 +67,43 @@ fn issue(
     }
 }
 
+/// Which facts the caller must supply when decoding Web configuration.
+/// Publication checks the current client-tool roster. Frozen input keeps its
+/// original roster decision, while syntax and intrinsic restrictions are rechecked.
+/// Neither phase authorizes an individual Web request.
+///
+/// ```compile_fail
+/// use awaken_web_policy_contract::WebConfigurationContext;
+/// let _ = WebConfigurationContext::Publication {};
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub enum WebConfigurationContext<'a> {
+    Publication { client_tools: &'a BTreeSet<&'a str> },
+    Frozen,
+}
+
+impl<'a> WebConfigurationContext<'a> {
+    fn client_tools(self) -> Option<&'a BTreeSet<&'a str>> {
+        match self {
+            Self::Publication { client_tools } => Some(client_tools),
+            Self::Frozen => None,
+        }
+    }
+
+    fn from_legacy(client_tools: Option<&'a BTreeSet<&'a str>>) -> Self {
+        match client_tools {
+            Some(client_tools) => Self::Publication { client_tools },
+            None => Self::Frozen,
+        }
+    }
+}
+
 impl WebExecutionConfiguration {
-    /// Compile the opaque durable value once. `None` denotes frozen execution
-    /// input whose client roster was checked at its original authoring boundary.
-    pub fn parse(
+    /// Decode Web settings at an explicit publication or frozen-input boundary.
+    pub fn parse_in(
         tool: &str,
         value: &Value,
-        clients: Option<&BTreeSet<&str>>,
+        context: WebConfigurationContext<'_>,
     ) -> Result<Self, WebConfigurationIssue> {
         let mut object = value.as_object().cloned().ok_or_else(|| {
             issue(
@@ -118,33 +148,68 @@ impl WebExecutionConfiguration {
                 ));
             }
         };
-        configuration.validate(clients)?;
+        configuration.validate_in(context)?;
         Ok(configuration)
     }
 
-    pub fn validate(&self, clients: Option<&BTreeSet<&str>>) -> Result<(), WebConfigurationIssue> {
+    pub fn validate_in(
+        &self,
+        context: WebConfigurationContext<'_>,
+    ) -> Result<(), WebConfigurationIssue> {
         match self {
-            Self::WebFetch(configuration) => configuration.validate(clients),
+            Self::WebFetch(configuration) => configuration.validate(context.client_tools()),
             Self::WebSearch(configuration) => configuration.validate(),
         }
     }
 
     /// Parse, validate and normalize an opaque authored value atomically.
+    pub fn compile_value_in(
+        tool: &str,
+        value: &Value,
+        context: WebConfigurationContext<'_>,
+    ) -> Result<Value, WebConfigurationIssue> {
+        Self::parse_in(tool, value, context).map(|configuration| configuration.normalized_value())
+    }
+
+    /// Validate and normalize a typed wire projection in one fallible call.
+    pub fn compile_in(
+        &self,
+        context: WebConfigurationContext<'_>,
+    ) -> Result<Value, WebConfigurationIssue> {
+        self.validate_in(context)?;
+        Ok(self.normalized_value())
+    }
+
+    /// Compatibility entrypoint; new callers must state which boundary they use.
+    #[deprecated(note = "use parse_in with an explicit WebConfigurationContext")]
+    pub fn parse(
+        tool: &str,
+        value: &Value,
+        clients: Option<&BTreeSet<&str>>,
+    ) -> Result<Self, WebConfigurationIssue> {
+        Self::parse_in(tool, value, WebConfigurationContext::from_legacy(clients))
+    }
+
+    #[deprecated(note = "use validate_in with an explicit WebConfigurationContext")]
+    pub fn validate(&self, clients: Option<&BTreeSet<&str>>) -> Result<(), WebConfigurationIssue> {
+        self.validate_in(WebConfigurationContext::from_legacy(clients))
+    }
+
+    #[deprecated(note = "use compile_value_in with an explicit WebConfigurationContext")]
     pub fn compile_value(
         tool: &str,
         value: &Value,
         clients: Option<&BTreeSet<&str>>,
     ) -> Result<Value, WebConfigurationIssue> {
-        Self::parse(tool, value, clients).map(|configuration| configuration.normalized_value())
+        Self::compile_value_in(tool, value, WebConfigurationContext::from_legacy(clients))
     }
 
-    /// Validate and normalize a typed wire projection in one fallible call.
+    #[deprecated(note = "use compile_in with an explicit WebConfigurationContext")]
     pub fn compile(
         &self,
         clients: Option<&BTreeSet<&str>>,
     ) -> Result<Value, WebConfigurationIssue> {
-        self.validate(clients)?;
-        Ok(self.normalized_value())
+        self.compile_in(WebConfigurationContext::from_legacy(clients))
     }
 
     /// Preserve authored strings, list order, duplicate domains and scalar zero.
@@ -478,15 +543,28 @@ mod kernel_tests {
             ),
         ];
         for (tool, authored, expected) in rows {
-            match WebExecutionConfiguration::parse(tool, &authored, Some(&clients)) {
+            match WebExecutionConfiguration::parse_in(
+                tool,
+                &authored,
+                WebConfigurationContext::Publication {
+                    client_tools: &clients,
+                },
+            ) {
                 Ok(value) => {
                     assert_eq!(expected, None, "{authored}");
-                    assert_eq!(value.validate(Some(&clients)), Ok(()));
                     assert_eq!(
-                        WebExecutionConfiguration::parse(
+                        value.validate_in(WebConfigurationContext::Publication {
+                            client_tools: &clients
+                        }),
+                        Ok(())
+                    );
+                    assert_eq!(
+                        WebExecutionConfiguration::parse_in(
                             tool,
                             &value.normalized_value(),
-                            Some(&clients)
+                            WebConfigurationContext::Publication {
+                                client_tools: &clients
+                            }
                         )
                         .unwrap(),
                         value
@@ -511,7 +589,12 @@ mod kernel_tests {
         let opaque = WebExecutionConfiguration::WebSearch(typed.clone()).normalized_value();
         assert_eq!(
             typed.validate().unwrap_err(),
-            WebExecutionConfiguration::parse("web_search", &opaque, None).unwrap_err()
+            WebExecutionConfiguration::parse_in(
+                "web_search",
+                &opaque,
+                WebConfigurationContext::Frozen
+            )
+            .unwrap_err()
         );
         assert_eq!(typed.validate().unwrap_err().path, "user_location.country");
     }
@@ -787,5 +870,131 @@ pub fn url_matches_filter(url: &url::Url, filter: &WebDomainFilter) -> bool {
     match filter {
         WebDomainFilter::Allow(domains) => domains.iter().any(|domain| matches(domain)),
         WebDomainFilter::Block(domains) => !domains.iter().any(|domain| matches(domain)),
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn configuration_context_requires_exact_publication_roster_and_never_grants_fetch() {
+        // C1 publication/frozen; C2 exact/absent/case-different roster; C3 typed/JSON.
+        // Publication accepts only the exact reference. Frozen retains the original
+        // roster decision, but neither decoded result grants missing URL evidence.
+        let raw = json!({"type":"web_fetch", "url_sources": {
+            "client_tool_results":{"type":"only","tools":[
+                {"type":"tool_reference","name":"lookup"}
+            ]}, "server_tool_results":"none", "user_input":"none"
+        }});
+        let typed: WebExecutionConfiguration = serde_json::from_value(raw.clone()).unwrap();
+        for (roster, accepted) in [
+            (BTreeSet::from(["lookup"]), true),
+            (BTreeSet::new(), false),
+            (BTreeSet::from(["Lookup"]), false),
+        ] {
+            let context = WebConfigurationContext::Publication {
+                client_tools: &roster,
+            };
+            let opaque = WebExecutionConfiguration::compile_value_in("web_fetch", &raw, context);
+            let projected = typed.compile_in(context);
+            assert_eq!(opaque, projected);
+            assert_eq!(opaque.is_ok(), accepted);
+            if let Err(error) = opaque {
+                assert_eq!(error.code, WebConfigurationCode::UnavailableClientTool);
+                assert_eq!(error.path, "url_sources.client_tool_results.tools");
+            }
+        }
+        let decoded =
+            WebExecutionConfiguration::parse_in("web_fetch", &raw, WebConfigurationContext::Frozen)
+                .unwrap();
+        let WebExecutionConfiguration::WebFetch(fetch) = decoded else {
+            panic!("exact tool kind")
+        };
+        let sources = [fetch.url_sources.unwrap()];
+        assert_eq!(
+            admit_fetch_url("https://example.com/", &[], &sources, None),
+            Err(WebAdmissionFailure::SourceRejected)
+        );
+        let facts = [WebUrlSourceEvidence {
+            kind: WebUrlSourceKind::ClientTool,
+            name: "lookup",
+            canonical_url: "https://example.com/",
+        }];
+        assert!(admit_fetch_url("https://example.com/", &[], &sources, Some(&facts)).is_ok());
+    }
+
+    #[test]
+    fn configuration_context_rechecks_intrinsic_rules_for_frozen_and_typed_input() {
+        // C1 stage; C2 wrong owner/unknown field/invalid domains/invalid source.
+        // Intrinsic rejection and diagnostics are identical at both boundaries;
+        // typed construction cannot bypass semantic validation or canonicalization.
+        let clients = BTreeSet::from(["lookup"]);
+        for raw in [
+            json!({"type":"web_search"}),
+            json!({"type":"web_fetch","extra":true}),
+            json!({"type":"web_fetch","domains":{"type":"allow","domains":[]}}),
+            json!({"type":"web_fetch","url_sources":{"user_input":"none","server_tool_results":"none","client_tool_results":"none"}}),
+        ] {
+            let authoring = WebExecutionConfiguration::parse_in(
+                "web_fetch",
+                &raw,
+                WebConfigurationContext::Publication {
+                    client_tools: &clients,
+                },
+            );
+            let frozen = WebExecutionConfiguration::parse_in(
+                "web_fetch",
+                &raw,
+                WebConfigurationContext::Frozen,
+            );
+            assert!(authoring.is_err());
+            assert_eq!(authoring, frozen);
+        }
+        let invalid = WebExecutionConfiguration::WebFetch(WebFetchExecutionConfiguration {
+            domains: Some(WebDomainFilter::Allow(Vec::new())),
+            ..Default::default()
+        });
+        assert_eq!(
+            invalid
+                .compile_in(WebConfigurationContext::Frozen)
+                .unwrap_err()
+                .code,
+            WebConfigurationCode::InvalidDomainCount
+        );
+        let raw = json!({"type":"web_fetch","domains":{"type":"allow","domains":["Example.COM","Example.COM"]},"max_content_tokens":0});
+        assert_eq!(
+            WebExecutionConfiguration::compile_value_in(
+                "web_fetch",
+                &raw,
+                WebConfigurationContext::Frozen
+            )
+            .unwrap(),
+            raw
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)] // Intentional SDK compatibility test for the old Option API.
+    fn legacy_configuration_context_keeps_its_original_results_and_diagnostics() {
+        let clients = BTreeSet::from(["lookup"]);
+        for raw in [
+            json!({"type":"web_fetch","max_content_tokens":0}),
+            json!({"type":"web_fetch","url_sources":{"client_tool_results":{"type":"only","tools":[{"type":"tool_reference","name":"missing"}]}}}),
+            json!({"type":"web_fetch","domains":{"type":"allow","domains":[]}}),
+        ] {
+            for legacy in [Some(&clients), None] {
+                let context = WebConfigurationContext::from_legacy(legacy);
+                assert_eq!(
+                    WebExecutionConfiguration::parse("web_fetch", &raw, legacy),
+                    WebExecutionConfiguration::parse_in("web_fetch", &raw, context)
+                );
+                assert_eq!(
+                    WebExecutionConfiguration::compile_value("web_fetch", &raw, legacy),
+                    WebExecutionConfiguration::compile_value_in("web_fetch", &raw, context)
+                );
+            }
+        }
     }
 }

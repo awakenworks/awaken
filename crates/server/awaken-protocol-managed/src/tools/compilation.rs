@@ -14,6 +14,7 @@ use awaken_session_configuration_contract::{
     BuiltinToolsetMember, SessionToolConfiguration, agent_toolset_members, is_agent_toolset_member,
     toolset_default_policy,
 };
+use awaken_web_policy_contract::WebConfigurationContext;
 use awaken_web_policy_contract::{
     WebDomainFilter, WebExecutionConfiguration, WebFetchExecutionConfiguration,
     WebSearchExecutionConfiguration, WebSearchUserLocation,
@@ -143,7 +144,9 @@ fn compile_config(
         _ => unreachable!("wire fields were checked against their owner"),
     };
     let canonical = configuration
-        .compile(Some(clients))
+        .compile_in(WebConfigurationContext::Publication {
+            client_tools: clients,
+        })
         .map_err(|error| kernel_error(error, config.allowed_domains.is_some()))?;
     // Explicit null url_sources remains a wire-presence fact, not a restriction.
     if config.allowed_domains.is_none()
@@ -309,15 +312,16 @@ pub fn resolved_toolsets(
                         && matches!(entry.name.as_str(), "web_fetch" | "web_search")
                         && let Some(value) = &entry.configuration
                     {
-                        let configuration =
-                            WebExecutionConfiguration::parse(&entry.name, value, None).map_err(
-                                |error| {
-                                    let mut error = kernel_error(error, true);
-                                    error.path =
-                                        format!("toolsets[{index}].{}.{}", entry.name, error.path);
-                                    error
-                                },
-                            )?;
+                        let configuration = WebExecutionConfiguration::parse_in(
+                            &entry.name,
+                            value,
+                            WebConfigurationContext::Frozen,
+                        )
+                        .map_err(|error| {
+                            let mut error = kernel_error(error, true);
+                            error.path = format!("toolsets[{index}].{}.{}", entry.name, error.path);
+                            error
+                        })?;
                         let domains = match configuration {
                             WebExecutionConfiguration::WebFetch(value) => {
                                 config.max_content_tokens = value.max_content_tokens;
