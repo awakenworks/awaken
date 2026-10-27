@@ -13,4 +13,7 @@ mod sandbox_policies;
 
 pub use dream_policies::dream_policy_router;
 pub use live_inbox::live_inbox_router;
-pub use sandbox_policies::environment_extensions_router;
+pub use sandbox_policies::{
+    EnvironmentCreateInput, SandboxPolicyBindingInput, SandboxPolicyCreate,
+    environment_extensions_router,
+};

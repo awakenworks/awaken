@@ -194,3 +194,15 @@ for transparent authenticated relay transport. Optional live-provider tests are
 explicitly ignored in ordinary runs; selecting one for qualification requires
 its credentials and fails when they are absent. Such a test alone does not
 prove isolated ACP reachability or deployment-specific no-bypass networking.
+
+
+### Hosted Environment authoring clients
+
+Native Environment and sandbox-policy request DTOs remain owned by
+`awaken-protocol-awaken`. Their existing server decoders are also serializable
+public client contracts, so Hosted consumers reuse the exact types rather than
+maintaining another JSON schema or registry. Policy creation still chooses the
+initial version on the server; Environment creation atomically binds that exact
+policy through the existing `EnvironmentApplication` command, receipt and
+registration delivery. Workspace scope and stable command identities remain
+explicit. Making the wire values reusable adds no authoring or execution authority.
