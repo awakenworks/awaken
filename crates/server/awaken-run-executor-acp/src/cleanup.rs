@@ -46,6 +46,26 @@ pub async fn open_session(
         .await
 }
 
+/// Reap the per-Step SDK process after any business outcome. A terminal frame
+/// is not physical exit; a cleanup failure retains this same typed owner.
+pub(super) async fn finish_step(
+    session: &mut AgentSession,
+    grace: Duration,
+    outcome: std::result::Result<super::TerminationReason, AcpError>,
+) -> (
+    std::result::Result<super::TerminationReason, AcpError>,
+    bool,
+) {
+    let reaped =
+        Supervisor::reap_after_terminal(session.channel.as_mut(), session.process.as_ref(), grace)
+            .await;
+    let complete = reaped.is_ok();
+    (
+        preserve_terminal_outcome(outcome, reaped, session.process.id()),
+        complete,
+    )
+}
+
 pub(super) fn preserve_terminal_outcome<T>(
     outcome: std::result::Result<T, AcpError>,
     cleanup: std::result::Result<bool, AcpError>,
