@@ -51,17 +51,17 @@ pub fn environment_extensions_router(
         }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SandboxPolicyCreate {
-    id: String,
-    config: awaken_provisioning_contract::SandboxOverride,
+pub struct SandboxPolicyCreate {
+    pub id: String,
+    pub config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    provisioning: awaken_session_configuration_contract::SandboxProvisioning,
+    pub provisioning: awaken_session_configuration_contract::SandboxProvisioning,
     #[serde(default)]
-    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    pub idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
     #[serde(default)]
-    disabled: bool,
+    pub disabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -77,27 +77,27 @@ struct SandboxPolicyPublish {
     disabled: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SandboxPolicyBindingInput {
-    policy_id: String,
-    version: u64,
+pub struct SandboxPolicyBindingInput {
+    pub policy_id: String,
+    pub version: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct EnvironmentCreateInput {
-    command_id: String,
-    name: String,
+pub struct EnvironmentCreateInput {
+    pub command_id: String,
+    pub name: String,
     #[serde(default)]
-    description: Option<String>,
+    pub description: Option<String>,
     #[serde(default)]
-    metadata: BTreeMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
     #[serde(default)]
-    scope: Option<String>,
-    config: awaken_environment_contract::EnvironmentConfig,
+    pub scope: Option<String>,
+    pub config: awaken_environment_contract::EnvironmentConfig,
     #[serde(default)]
-    sandbox_policy: Option<SandboxPolicyBindingInput>,
+    pub sandbox_policy: Option<SandboxPolicyBindingInput>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -411,6 +411,51 @@ mod tests {
             )),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[test]
+    fn authoring_clients_serialize_the_same_closed_requests_as_server_decoders() {
+        // W1 client serializes the authoritative create values; W2 server uses
+        // those same decoders; W3 caller attempts to choose policy version.
+        // R1 W1+W2 preserves scope, command id, Cloud config and exact binding.
+        // R2 W3 rejects unknown version: policy creation always assigns INITIAL.
+        let policy = SandboxPolicyCreate {
+            id: "scoped-policy".into(),
+            config: Default::default(),
+            provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+            idle_retention: Default::default(),
+            disabled: false,
+        };
+        let mut encoded = serde_json::to_value(&policy).unwrap();
+        assert!(encoded.get("version").is_none());
+        let decoded: SandboxPolicyCreate = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.provisioning, policy.provisioning);
+        encoded["version"] = serde_json::json!(7);
+        assert!(serde_json::from_value::<SandboxPolicyCreate>(encoded).is_err());
+        let environment = EnvironmentCreateInput {
+            command_id: "same-create-command".into(),
+            name: "Managed".into(),
+            description: Some("Worker Environment".into()),
+            metadata: Default::default(),
+            scope: Some("execution-workspace".into()),
+            config: awaken_environment_contract::EnvironmentConfig::Cloud {
+                networking: Default::default(),
+                packages: Default::default(),
+            },
+            sandbox_policy: Some(SandboxPolicyBindingInput {
+                policy_id: "scoped-policy".into(),
+                version: 1,
+            }),
+        };
+        let encoded = serde_json::to_value(&environment).unwrap();
+        assert_eq!(
+            encoded["sandbox_policy"],
+            serde_json::json!({"policy_id":"scoped-policy","version":1})
+        );
+        let decoded: EnvironmentCreateInput = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.scope, environment.scope);
+        assert_eq!(decoded.command_id, environment.command_id);
+        assert_eq!(decoded.config, environment.config);
     }
 
     #[tokio::test]
