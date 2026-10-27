@@ -37,7 +37,7 @@
     },
     "awaken-session-executor::SessionRuns": {
       "files": 6,
-      "methods": 49,
+      "methods": 47,
       "reason": "executor split (plan v4 D5): SessionRuns owns Run delivery, resident Run control and the durable-ingress verbs and serves the Run roles and RunApplication directly, replacing RunApplicationHost and the ManagedHost Run forwarding"
     },
     "awaken-session-state-contract::PersistedSession": {

@@ -202,11 +202,7 @@ async fn interrupt_with_admission_suspended(
         )
         .await
         .expect("Managed Run admission");
-    let pool = host
-        .session_runs
-        .dispatch_pool_or_err()
-        .expect("pool")
-        .clone();
+    let pool = host.dispatch.pool().expect("pool").clone();
     pool.notify().await;
 
     tokio::time::timeout(
@@ -299,12 +295,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
         "L1/C5 predecessor quiescence ACK",
     )
     .await;
-    let pool = l1
-        .host
-        .session_runs
-        .dispatch_pool_or_err()
-        .expect("pool")
-        .clone();
+    let pool = l1.host.dispatch.pool().expect("pool").clone();
     assert!(pool.resume_admission().await, "L1 admission resumes");
     l1.settle_row(|row| row.is_none(), "L1/E3 cancellation settlement")
         .await;
@@ -321,12 +312,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
             .is_some_and(|row| row.cancellation_requested && row.physical_attempt_active),
         "L2/C5 the held predecessor still occupies its slot"
     );
-    let pool = l2
-        .host
-        .session_runs
-        .dispatch_pool_or_err()
-        .expect("pool")
-        .clone();
+    let pool = l2.host.dispatch.pool().expect("pool").clone();
     assert!(pool.resume_admission().await, "L2 admission resumes");
     assert_eq!(
         l2.committed_terminal("L2/E3").await,

@@ -131,19 +131,4 @@ impl SessionRuns {
             SessionExecutionError::internal("operation requires a Coordinator dispatch owner")
         })
     }
-
-    /// The process dispatch pool, or a fail-closed error when durable ingress
-    /// (and thus the pool) is not enabled.
-    pub(crate) fn dispatch_pool_or_err(
-        &self,
-    ) -> Result<
-        &Arc<awaken_dispatch_execution::DispatchPool<awaken_dispatch_erasure::AnyDispatchStore>>,
-        SessionExecutionError,
-    > {
-        self.dispatch.pool().ok_or_else(|| {
-            SessionExecutionError::bad_request(
-                "durable dispatch not enabled (set typed durable ingress to run the pool)",
-            )
-        })
-    }
 }

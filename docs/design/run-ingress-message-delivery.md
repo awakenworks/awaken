@@ -110,6 +110,19 @@ The design should care about the authority, not the private struct name:
 Application routes depend on their application service. Infrastructure adapters
 depend only on the exact Dispatch or attempt-control authority they invoke.
 
+Durable resume and approval commands use the deployment's selected durable
+capability before reading a Thread. They read its existing committed wait ticket
+through `CommittedReads`, then stage the canonical input through
+`DurableRunControl`. An absent local pool is not a refusal: the configured local
+or registered remote Worker owns later claiming and execution. These commands
+never create or adopt a Session Environment to read that ticket. Direct delivery
+refuses before reading; missing or incompatible tickets retain their original
+typed refusal, and the existing Outbox and ticket correlation own delivery.
+Embedded durable Run publication uses the immutable publication already held by
+`CoordinatedThreads`. Intent-only cancellation and input staging use that
+component's durable control over the same Outbox and hint. Pool startup and
+standalone inline cancellation retain their existing owners.
+
 ## Durable Ingress Component Catalog
 
 This catalog names the stable durable-ingress boundary roles by authority. Do

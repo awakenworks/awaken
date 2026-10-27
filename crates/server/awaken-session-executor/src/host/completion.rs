@@ -55,7 +55,7 @@ impl crate::SessionRuns {
         Ok(
             awaken_session_run_delivery::activate_session_run_reservation(
                 store.as_ref(),
-                &self.dispatch.publication(),
+                self.threads.publication(),
                 delivery,
             )
             .await?,
@@ -144,7 +144,7 @@ impl crate::SessionRuns {
             .await
             .map_err(|e| SessionExecutionError::internal(e.to_string()))?;
 
-        self.dispatch.publication().hint_local_pool().await;
+        self.threads.publication().hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, None, settled).await
     }
 
@@ -173,7 +173,7 @@ impl crate::SessionRuns {
             .append(input)
             .await
             .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
-        self.dispatch.publication().hint_local_pool().await;
+        self.threads.publication().hint_local_pool().await;
         self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
             .await
     }
