@@ -52,6 +52,7 @@ pub use managed::{
     ManagedWebRouteResolver,
 };
 mod configured_fetch;
+mod content_budget;
 use configured_fetch::{ConfiguredFetchTarget, RoutedWebFetchTool};
 mod providers;
 mod sources;
@@ -1684,15 +1685,15 @@ mod tests {
     /// | Rule | tool | domain | setting | effect |
     /// | W1 | web_fetch | allowed | max=3 | provider invoked once; text capped |
     /// | W2 | web_fetch | outside allowlist | any | reject before provider I/O |
-    /// | W3 | web_fetch | allowed `.PDF` URL | max=3 | legacy text projection is not policy-capped |
+    /// | W3 | web_fetch | allowed `.PDF` URL | max=3 | returned text uses the same estimated budget |
     /// | W4 | web_search | blocked result | location present | provider sees location; result removed |
     /// | W5 | web_fetch | unrestricted | max=0 | provider invoked; text capped to empty |
     /// | W6 | web_fetch | wrong config tag | any | reject before executor construction |
     /// | W7 | web_search | unknown config field | any | reject before provider construction |
     /// Constraints/invariants: policy is normalized once, the configured plugin
-    /// is the internal execution owner, domain rejection precedes I/O, `.pdf`
-    /// legacy text bypasses its context cap while the raw fetch retains its 1 MiB
-    /// safety ceiling, and malformed configuration never widens into an
+    /// is the internal execution owner, domain rejection precedes I/O, every returned
+    /// String uses the same estimated token budget while the raw fetch retains
+    /// its independent 1 MiB ceiling, and malformed configuration never widens into an
     /// unconfigured Web tool.
     #[tokio::test]
     async fn normalized_web_configuration_controls_existing_execution_edges() {
@@ -1798,7 +1799,11 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(allowed.text(), "abc", "W1");
+        assert_eq!(
+            allowed.text(),
+            "abcdef",
+            "W1: six ASCII characters fit three estimated tokens"
+        );
         assert_eq!(fetch_provider.seen_requests.lock().unwrap().len(), 1, "W1");
         assert!(
             fetch_tool
