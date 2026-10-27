@@ -301,7 +301,7 @@ impl Fixture {
 fn context(
     fixture: &Fixture,
     authority: Arc<OwnerAuthority>,
-    recorder: Arc<CountingRecorder>,
+    recorder: Arc<dyn awaken_credential_contract::CredentialRealizationRecorder>,
 ) -> awaken_runtime_contract::RuntimeRunContext {
     awaken_runtime_contract::RuntimeRunContext::new()
         .with_ownership(authority)

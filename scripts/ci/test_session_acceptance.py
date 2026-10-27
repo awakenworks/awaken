@@ -309,6 +309,29 @@ class EvidenceValidityTests(unittest.TestCase):
         self.refused("L11", edit_in_place)
         self.refused("L06", inherit_unreviewed)
 
+    def test_duplicate_identities_are_refused_before_dictionary_lookup(self) -> None:
+        for collection in ("groups", "bindings", "evidence_registry"):
+            for changed in (False, True):
+                with self.subTest(collection=collection, changed=changed):
+                    def collide(data):
+                        duplicate = copy.deepcopy(data[collection][0])
+                        if changed:
+                            duplicate["collision_control"] = "independent registration"
+                        data[collection].append(duplicate)
+                    errors = self.refused("L13", collide)
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn(collection, errors[0])
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            independent = copy.deepcopy(data["evidence_registry"][0])
+            independent["id"] = "E91"
+            independent["entry_sha256"] = check_session_acceptance.entry_digest(independent)
+            data["evidence_registry"].append(independent)
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+
     def test_committed_ledger_satisfies_every_rule(self) -> None:
         data = check_session_acceptance._load(ROOT)
         frozen = check_session_acceptance.committed_registry(ROOT)
@@ -368,6 +391,21 @@ class EvidenceArtifactByteTests(unittest.TestCase):
         # a fabricated digest or an unrelated missing-file/configuration fault.
         with self.assertRaisesRegex(AssertionError, "staged evidence must retain"):
             self.assert_raw_round_trip(attributes.replace(rule, b""), b'{\r\n  "passed": true\r\n}\r\n', "true")
+
+    def test_independent_e42_registration_keeps_its_original_source_and_receipt(self) -> None:
+        entries = {entry["id"]: entry for entry in check_session_acceptance._load(ROOT)["evidence_registry"]}
+        directory = ROOT / "docs/design/session-execution-test-acceptance/evidence/E42-materializer-revocation-windows"
+        original = json.loads((directory / "original-registry-entry.json").read_text(encoding="utf-8"))
+        resolution = json.loads((directory / "registry-name-resolution.json").read_text(encoding="utf-8"))
+        self.assertEqual(original["id"], "E42")
+        self.assertEqual(original["entry_sha256"], check_session_acceptance.entry_digest(original))
+        self.assertEqual(resolution["original_entry_sha256"], original["entry_sha256"])
+        self.assertEqual(resolution["catalog_entry_sha256"], entries["E42W"]["entry_sha256"])
+        self.assertEqual(resolution["receipt_sha256"], original["receipt_sha256"])
+        self.assertEqual({k: v for k, v in original.items() if k not in ("id", "entry_sha256")},
+                         {k: v for k, v in entries["E42W"].items() if k not in ("id", "entry_sha256")})
+        self.assertNotEqual(entries["E42"]["receipt_sha256"], entries["E42W"]["receipt_sha256"])
+        self.assertEqual(entries["E42W"]["platform"], "local Windows x86_64-pc-windows-msvc")
 
     def test_registered_portable_artifacts_are_stored_with_their_declared_hashes(self) -> None:
         entries = check_session_acceptance._load(ROOT)["evidence_registry"]

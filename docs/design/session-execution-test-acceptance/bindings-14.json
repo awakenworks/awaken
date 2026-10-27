@@ -136,7 +136,7 @@
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 523,
-        "file_sha256": "b2d0a5214284edcf174c9a8202fe1fac5b0061570ea91ab2996e5b4f30e5661b"
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
       }
     ],
     "execution_witnesses": [
@@ -347,7 +347,7 @@
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 536,
-        "file_sha256": "b2d0a5214284edcf174c9a8202fe1fac5b0061570ea91ab2996e5b4f30e5661b"
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
       }
     ],
     "assertion_locations": [
