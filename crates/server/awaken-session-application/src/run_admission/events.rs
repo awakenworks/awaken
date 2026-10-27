@@ -135,16 +135,10 @@ impl crate::SessionRunAdmissions {
         } else {
             None
         };
-        let response = snapshot
-            .messages
-            .iter()
-            .rev()
-            .find(|message| {
-                message.role == awaken_agent_contract::agent::message::Role::Assistant
-                    && message.id.assistant_step_of(run_id).is_some()
-            })
-            .map(|message| message.text_content())
-            .unwrap_or_default();
+        let response = awaken_session_execution_contract::session_agent_report_text(
+            &snapshot.messages,
+            run_id,
+        );
         let usage =
             awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&snapshot.state);
         Ok(SessionRunEventPage {
