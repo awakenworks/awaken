@@ -186,7 +186,7 @@ impl WorkerPlacedSessions {
         self: &Arc<Self>,
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
-            core: self.clone(),
+            default_model: self.ports.default_model.clone(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::RegisteredWorkers(
                 self.clone(),
             ),

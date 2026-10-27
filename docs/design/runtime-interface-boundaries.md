@@ -180,6 +180,15 @@ bindings. The remaining SDK coordination/background-submission bindings are stil
 Co-located construction now belongs to the CLI; closing the binary dependency
 graph does not prove that the SDK application dependency cycle is eliminated.
 
+The default model a Session creation uses is an immutable composition value in
+`SessionExecutionRoles`, copied from the SDK's existing Agent model reference or
+from `WorkerPlacement::default_model`. `SessionCreationCommands` owns that value,
+not a `SessionRuntime` port whose run/resume methods it never calls. The direct
+SDK Run API retains that execution role. Per-Session model rebinding continues
+through the existing streaming role and frozen Session baseline; it does not
+replace the composition default. This removes one unnecessary executor-owner
+edge, while the remaining coordination/background-submission bindings stay open.
+
 The commit factory's required `SessionBoundaryEffects` role configures the existing
 Worker only after its original raw commit, binding and recovery reader have been
 selected. The SDK adapter selects its late coordination observer, then its original

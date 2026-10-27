@@ -588,7 +588,7 @@ pub struct SessionCreationCommands {
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     execution_placement: crate::SessionExecutionPlacement,
-    core: Arc<dyn awaken_session_execution_contract::SessionRuntime>,
+    default_model: String,
     thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
@@ -658,7 +658,7 @@ impl SessionCreationCommands {
             model_publication_resolver,
             managed_list_prices,
             execution_placement,
-            core: runtime.core.clone(),
+            default_model: runtime.default_model.clone(),
             thread_reads: runtime.thread_reads.clone(),
             placement: runtime.placement.clone(),
         }

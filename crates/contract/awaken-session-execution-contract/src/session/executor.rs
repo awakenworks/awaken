@@ -9,11 +9,13 @@
 //! either from one complete runtime or from the executor components that each
 //! own one role; the binding owns no execution state or durable truth.
 
+#[cfg(test)]
+use crate::SessionRuntime;
 use crate::{
     BudgetRuntime, CapabilityRuntime, ColocatedRealizationRoles, CommittedSessionProjection,
     CompleteSessionRuntime, CoordinationRuntime, LiveInboxRuntime, OutcomeRuntime,
-    SessionCoordinationReads, SessionPlacementRoles, SessionProjectionSource, SessionRuntime,
-    StreamingRunRuntime, ThreadReadRuntime,
+    SessionCoordinationReads, SessionPlacementRoles, SessionProjectionSource, StreamingRunRuntime,
+    ThreadReadRuntime,
 };
 use std::sync::Arc;
 
@@ -52,7 +54,7 @@ pub struct SessionExecutor {
 /// `SessionExecutor` exposes this view immutably; roles cannot be replaced.
 #[derive(Clone)]
 pub struct SessionExecutionRoles {
-    pub core: Arc<dyn SessionRuntime>,
+    pub default_model: String,
     /// Where the Sessions are realized: a co-located Worker's realization
     /// roles, or the frozen-input admission of Worker-placed Sessions.
     pub placement: SessionPlacementRoles,
@@ -84,9 +86,9 @@ impl SessionExecutor {
         self.projection.clone()
     }
 
-    /// The required `SessionRuntime` selected at construction.
-    pub fn core(&self) -> &dyn SessionRuntime {
-        self.core.as_ref()
+    /// The immutable default model selected by the composition.
+    pub fn default_model(&self) -> &str {
+        &self.default_model
     }
 
     /// Where this process's Sessions are realized.
@@ -154,7 +156,7 @@ impl SessionExecutor {
         mcp: Arc<dyn crate::McpAttachmentRealizer>,
     ) -> Self {
         Self::from(SessionExecutionRoles {
-            core: runtime.clone(),
+            default_model: runtime.model(),
             placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
                 mcp,
                 realization: runtime.clone(),
@@ -185,6 +187,7 @@ mod tests {
         // projection cursors and execution fences despite valid individual ports.
         let runtime = Arc::new(crate::NeutralRuntime);
         let owner = Arc::as_ptr(&runtime).cast::<()>();
+        let default_model = runtime.model();
         // C1 the caller selects an independent MCP effect owner; C2 the
         // executor is cloned. Both views retain C1 exactly, while all runtime
         // roles retain their original owner. No optional-role discovery or
@@ -197,8 +200,8 @@ mod tests {
                 .colocated()
                 .expect("a complete runtime realizes its Sessions");
             assert!(Arc::ptr_eq(&colocated.mcp, &mcp));
+            assert_eq!(executor.default_model(), default_model);
             for role in [
-                Arc::as_ptr(&executor.core).cast::<()>(),
                 Arc::as_ptr(&colocated.realization).cast::<()>(),
                 Arc::as_ptr(&colocated.realization_effects).cast::<()>(),
                 Arc::as_ptr(&executor.coordination).cast::<()>(),
@@ -273,6 +276,48 @@ mod tests {
         result.err().expect("the named role refuses").message
     }
 
+    fn neutral_roles(neutral: Arc<crate::NeutralRuntime>) -> SessionExecutionRoles {
+        SessionExecutionRoles {
+            default_model: neutral.model(),
+            placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
+                mcp: neutral.clone(),
+                realization: neutral.clone(),
+                realization_effects: neutral.clone(),
+                environment: neutral.clone(),
+                terminal_cleanup: neutral.clone(),
+            }),
+            coordination: neutral.clone(),
+            coordination_reads: neutral.clone(),
+            budget: neutral.clone(),
+            streaming_runs: neutral.clone(),
+            thread_reads: neutral.clone(),
+            outcomes: neutral.clone(),
+            live_inbox: neutral.clone(),
+            capability: neutral,
+        }
+    }
+
+    #[test]
+    fn default_model_retains_the_selected_value_without_retaining_its_execution_owner() {
+        // Causes: M1 one model owner supplies the default; M2 all command/read
+        // roles have another selected owner; M3 the model owner is dropped;
+        // M4 the immutable executor is cloned. Rule M1+M2+M3(+M4) => the old
+        // execution owner is released and the same default remains available.
+        // This observes the former extra owner edge, not a count of role fields.
+        let model_owner = Arc::new(crate::NeutralRuntime);
+        let witness = Arc::downgrade(&model_owner);
+        let expected = model_owner.model();
+        let selected = SessionExecutor::from(SessionExecutionRoles {
+            default_model: expected.clone(),
+            ..neutral_roles(Arc::new(crate::NeutralRuntime))
+        });
+        drop(model_owner);
+        assert!(witness.upgrade().is_none());
+        for executor in [&selected, &selected.clone()] {
+            assert_eq!(executor.default_model(), expected);
+        }
+    }
+
     #[tokio::test]
     async fn projection_is_derived_from_the_selected_read_roles() {
         // Decision table: cause = the projection read; effect = the selected
@@ -287,22 +332,8 @@ mod tests {
         // | P4   | coordinated Thread links   | coordination_reads |
         let neutral = Arc::new(crate::NeutralRuntime);
         let selected = SessionExecutor::from(SessionExecutionRoles {
-            core: neutral.clone(),
-            placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
-                mcp: neutral.clone(),
-                realization: neutral.clone(),
-                realization_effects: neutral.clone(),
-                environment: neutral.clone(),
-                terminal_cleanup: neutral.clone(),
-            }),
-            coordination: neutral.clone(),
-            coordination_reads: neutral.clone(),
-            budget: neutral.clone(),
-            streaming_runs: neutral.clone(),
             thread_reads: Arc::new(NamedThreadReads),
-            outcomes: neutral.clone(),
-            live_inbox: neutral.clone(),
-            capability: neutral,
+            ..neutral_roles(neutral)
         });
         let session = crate::SessionId::from("session");
         let run = awaken_agent_contract::agent::run::Id("run".into());

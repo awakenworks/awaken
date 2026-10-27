@@ -528,7 +528,7 @@ impl ExecutorComponents {
         &self,
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
-            core: self.session_runs.clone(),
+            default_model: self.capabilities.model(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::Colocated(
                 awaken_session_execution_contract::ColocatedRealizationRoles {
                     mcp: self.run_assembly.clone(),
