@@ -201,7 +201,7 @@ def verify_preparation(path: Path, arguments: list[str], digest: str) -> dict:
     from _required_build_context import build_context
     build_context(ROOT, arguments, document.get("compile_context", {}))
     log = Path(document["build_log"])
-    if log.parent != path.parent:
+    if log.resolve(strict=True).parent != path.resolve(strict=True).parent:
         raise ValueError("Required build log must share its evidence directory")
     if hashlib.sha256(log.read_bytes()).hexdigest() != document.get("build_log_sha256"):
         raise ValueError("Required build log changed")
@@ -1681,6 +1681,74 @@ echo 'test result: ok. 2 passed; 0 failed; 0 ignored;'
                         else:
                             self.assertEqual(receipt.read_bytes(), before)
 
+
+
+    @unittest.skipUnless(os.name == "nt", "real directory junctions require Windows")
+    def test_prepared_build_log_uses_physical_evidence_directory_and_rejects_escapes(self) -> None:
+        # Both directions through a cache-root junction must identify the same
+        # evidence directory. Equal bytes in a sibling/outside directory, or a
+        # nested junction escaping that directory, must never satisfy ownership.
+        # Only receipt/path validation runs here; this is not a Cargo build fact.
+        from _required_build_context import build_context
+        arguments = ["-p", "critical", "--lib"]
+        command = required_build_command(arguments)
+        context = build_context(ROOT, arguments)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            physical = root / "physical"; physical.mkdir()
+            evidence = physical / "evidence"; evidence.mkdir()
+            sibling = physical / "sibling"; sibling.mkdir()
+            outside = root / "outside"; outside.mkdir()
+            alias = root / "alias"
+            escape = evidence / "escape"
+            links = []
+            try:
+                for link, target in ((alias, physical), (escape, outside)):
+                    subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                                   check=True, capture_output=True)
+                    links.append(link)
+                    self.assertTrue(link.is_junction())
+                    self.assertEqual(link.resolve(strict=True), target.resolve(strict=True))
+                content = b"retained build output\n"
+                for directory in (evidence, sibling, outside):
+                    (directory / "build.log").write_bytes(content)
+                build = evidence / "build.json"
+                document = {"kind": "required-libtest-build", "status": "built", "exit_code": 0,
+                            "source_unchanged": True, "context_unchanged": True,
+                            "source_digest": "path-fixture", "arguments": arguments,
+                            "command": command, "compile_context": context,
+                            "rows": [{"command": command, "exit_code": 0}],
+                            "build_log_sha256": hashlib.sha256(content).hexdigest()}
+                rows = (
+                    ("physical", build, evidence / "build.log", True),
+                    ("alias-log", build, alias / "evidence/build.log", True),
+                    ("alias-receipt", alias / "evidence/build.json", evidence / "build.log", True),
+                    ("both-aliases", alias / "evidence/build.json", alias / "evidence/build.log", True),
+                    ("sibling", build, sibling / "build.log", False),
+                    ("outside", build, outside / "build.log", False),
+                    ("nested-junction-escape", build, escape / "build.log", False),
+                )
+                for name, receipt, log, admitted in rows:
+                    with self.subTest(row=name):
+                        build.write_text(json.dumps(dict(document, build_log=str(log))), encoding="utf-8")
+                        if admitted:
+                            result = verify_preparation(receipt, arguments, "path-fixture")
+                            self.assertEqual(result["sha256"], hashlib.sha256(build.read_bytes()).hexdigest())
+                        else:
+                            with self.assertRaisesRegex(ValueError, "share its evidence directory"):
+                                verify_preparation(receipt, arguments, "path-fixture")
+                build.write_text(json.dumps(dict(document, build_log=str(alias / "evidence/build.log"))), encoding="utf-8")
+                (evidence / "build.log").write_bytes(b"changed output\n")
+                with self.assertRaisesRegex(ValueError, "Required build log changed"):
+                    verify_preparation(build, arguments, "path-fixture")
+                (evidence / "build.log").unlink()
+                with self.assertRaises(FileNotFoundError):
+                    verify_preparation(build, arguments, "path-fixture")
+            finally:
+                # Remove only the links this fixture created, never their targets.
+                for link in reversed(links):
+                    if link.is_junction():
+                        link.rmdir()
 
 
 def main() -> int:
