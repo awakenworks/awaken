@@ -59,6 +59,7 @@ pub struct ProcessDispatch {
     terminal_reconciliation: Arc<TerminalReconciliationState>,
     /// The coordinator-side maintenance loop (rules T1-T4 above).
     terminal_reconciler: OnceCell<DispatchReconciler>,
+    preparation: Arc<crate::PreparationPlacement>,
 }
 
 /// What starting the local pool does for one topology and pool state.
@@ -138,6 +139,7 @@ impl ProcessDispatch {
             pool: OnceCell::new(),
             terminal_reconciliation: Arc::default(),
             terminal_reconciler: OnceCell::new(),
+            preparation: Arc::new(crate::PreparationPlacement),
         }
     }
 
@@ -145,6 +147,22 @@ impl ProcessDispatch {
     #[must_use]
     pub fn topology(&self) -> &ExecutionTopology {
         &self.topology
+    }
+
+    /// The same pure preparation compiler supplied to application admission
+    /// and Worker transport. Retaining this value never retains the services.
+    ///
+    /// ```compile_fail,E0277
+    /// use std::sync::Arc;
+    /// use awaken_dispatch_execution::ProcessDispatch;
+    /// use awaken_session_realization_contract::SessionPreparationPlacement;
+    /// fn service_is_not_a_compiler(process: Arc<ProcessDispatch>) -> Arc<dyn SessionPreparationPlacement> {
+    ///     process
+    /// }
+    /// ```
+    #[must_use]
+    pub fn preparation_placement(&self) -> Arc<crate::PreparationPlacement> {
+        self.preparation.clone()
     }
 
     /// The terminal reconciliation state the claimed-Run resolver scans with.
@@ -333,18 +351,6 @@ impl ProcessDispatch {
     #[must_use]
     pub fn in_flight(&self) -> u32 {
         self.admission.in_flight()
-    }
-}
-
-impl awaken_session_realization_contract::SessionPreparationPlacement for ProcessDispatch {
-    fn requirements(
-        &self,
-        session: &awaken_session_state_contract::PersistedSession,
-    ) -> Result<
-        awaken_dispatch_contract::PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
-    > {
-        crate::placement::session_preparation_requirements(session)
     }
 }
 

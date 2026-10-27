@@ -702,7 +702,7 @@ fn assemble_session_plane(
                 .dispatch_observation_source()
                 .map_err(|error| error.to_string())?,
             base.worker_directory.clone(),
-            host.host.dispatch().clone(),
+            host.host.dispatch().preparation_placement(),
         ),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )

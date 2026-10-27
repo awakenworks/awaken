@@ -642,3 +642,41 @@ async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
     ));
     assert!(fixture.dispatch.begin_drain().await.is_none());
 }
+
+#[test]
+fn preparation_role_retains_one_pure_compiler_without_process_services() {
+    // C1 application and Worker transport select their preparation role from
+    // the same process; C2 an unrelated root has equal stateless behavior;
+    // C3 the process owner drops while its compiler remains retained.
+    // R1=C1 -> exact Arc identity shared; R2=C2 -> different identity, so the
+    // existing mount validator still refuses foreign instances; R3=C3 ->
+    // process services released, original compiler retained without replacement.
+    let process = Arc::new(
+        coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly).dispatch,
+    );
+    let weak = Arc::downgrade(&process);
+    let application: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        process.preparation_placement();
+    let transport: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        process.preparation_placement();
+    assert!(
+        Arc::ptr_eq(&application, &transport),
+        "R1 one original pure compiler"
+    );
+    let other = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let foreign: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        other.dispatch.preparation_placement();
+    assert!(
+        !Arc::ptr_eq(&application, &foreign),
+        "R2 independent root remains distinguishable"
+    );
+    drop(process);
+    assert!(
+        weak.upgrade().is_none(),
+        "R3 preparation role retains no service owner"
+    );
+    assert!(
+        Arc::ptr_eq(&application, &transport),
+        "R3 original compiler identity survives"
+    );
+}

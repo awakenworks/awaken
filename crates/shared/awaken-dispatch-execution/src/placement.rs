@@ -345,6 +345,23 @@ pub fn bind_root_tool_configuration_format(
     }
 }
 
+/// Pure preparation-placement compiler over the original frozen Session law.
+/// It holds no dispatch service, registry, provider or execution capability.
+#[derive(Default)]
+pub struct PreparationPlacement;
+
+impl awaken_session_realization_contract::SessionPreparationPlacement for PreparationPlacement {
+    fn requirements(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+    ) -> Result<
+        PlacementRequirements,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        session_preparation_requirements(session)
+    }
+}
+
 /// Run-free preparation requirements from the existing frozen aggregate.
 pub fn session_preparation_requirements(
     session: &awaken_session_state_contract::PersistedSession,

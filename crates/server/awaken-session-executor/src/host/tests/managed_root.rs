@@ -867,7 +867,8 @@ mod retry_hint_tests {
         root: &awaken_session_state_contract::PersistedSession,
     ) {
         use awaken_session_realization_contract::SessionPreparationPlacement;
-        let selected: Arc<dyn SessionPreparationPlacement> = host.dispatch().clone();
+        let selected: Arc<dyn SessionPreparationPlacement> =
+            host.dispatch().preparation_placement();
         let canonical =
             awaken_dispatch_execution::placement::session_preparation_requirements(root)
                 .expect("M1 this real committed Root has a frozen baseline");
@@ -907,7 +908,7 @@ mod retry_hint_tests {
             host.dispatch().topology(),
             "M3 same topology values"
         );
-        let foreign: Arc<dyn SessionPreparationPlacement> = foreign;
+        let foreign: Arc<dyn SessionPreparationPlacement> = foreign.preparation_placement();
         assert_eq!(
             foreign.requirements(root).unwrap(),
             canonical,
