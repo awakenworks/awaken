@@ -9,6 +9,7 @@ pub(super) use awaken_web_policy_contract::{
     EffectiveWebFetchConfiguration, EffectiveWebSearchConfiguration, domains_permit_any_url,
     url_matches_filters,
 };
+use awaken_web_policy_contract::{WebConfigurationContext, WebConfigurationIssue};
 pub use awaken_web_policy_contract::{
     WebDomainFilter, WebFetchExecutionConfiguration, WebSearchExecutionConfiguration,
     WebSearchUserLocation,
@@ -18,26 +19,24 @@ use serde_json::Value;
 pub(super) fn effective_fetch_configuration(
     own: Option<WebFetchExecutionConfiguration>,
     inherited: &InheritedToolsets,
-) -> Result<Option<EffectiveWebFetchConfiguration>, String> {
+) -> Result<Option<EffectiveWebFetchConfiguration>, WebConfigurationIssue> {
     let layers = inherited
         .sources()
         .iter()
-        .map(|toolsets| web_fetch_execution_configuration(toolsets))
+        .map(|toolsets| decode_fetch_configuration(toolsets))
         .collect::<Result<Vec<_>, _>>()?;
     EffectiveWebFetchConfiguration::compose(own, layers.into_iter().flatten())
-        .map_err(|error| error.to_string())
 }
 pub(super) fn effective_search_configuration(
     own: Option<WebSearchExecutionConfiguration>,
     inherited: &InheritedToolsets,
-) -> Result<Option<EffectiveWebSearchConfiguration>, String> {
+) -> Result<Option<EffectiveWebSearchConfiguration>, WebConfigurationIssue> {
     let layers = inherited
         .sources()
         .iter()
-        .map(|toolsets| web_search_execution_configuration(toolsets))
+        .map(|toolsets| decode_search_configuration(toolsets))
         .collect::<Result<Vec<_>, _>>()?;
     EffectiveWebSearchConfiguration::compose(own, layers.into_iter().flatten())
-        .map_err(|error| error.to_string())
 }
 fn execution_configuration<'a>(toolsets: &'a [ToolsetPolicy], name: &str) -> Option<&'a Value> {
     toolsets
@@ -48,28 +47,42 @@ fn execution_configuration<'a>(toolsets: &'a [ToolsetPolicy], name: &str) -> Opt
 pub fn web_fetch_execution_configuration(
     toolsets: &[ToolsetPolicy],
 ) -> Result<Option<WebFetchExecutionConfiguration>, String> {
+    decode_fetch_configuration(toolsets).map_err(|error| error.to_string())
+}
+
+fn decode_fetch_configuration(
+    toolsets: &[ToolsetPolicy],
+) -> Result<Option<WebFetchExecutionConfiguration>, WebConfigurationIssue> {
     execution_configuration(toolsets, "web_fetch")
         .map(|value| {
-            WebExecutionConfiguration::parse("web_fetch", value, None)
+            WebExecutionConfiguration::parse_in("web_fetch", value, WebConfigurationContext::Frozen)
                 .map(|value| match value {
                     WebExecutionConfiguration::WebFetch(configuration) => configuration,
                     _ => unreachable!("parser checks owner"),
                 })
-                .map_err(|error| error.to_string())
         })
         .transpose()
 }
 pub fn web_search_execution_configuration(
     toolsets: &[ToolsetPolicy],
 ) -> Result<Option<WebSearchExecutionConfiguration>, String> {
+    decode_search_configuration(toolsets).map_err(|error| error.to_string())
+}
+
+fn decode_search_configuration(
+    toolsets: &[ToolsetPolicy],
+) -> Result<Option<WebSearchExecutionConfiguration>, WebConfigurationIssue> {
     execution_configuration(toolsets, "web_search")
         .map(|value| {
-            WebExecutionConfiguration::parse("web_search", value, None)
-                .map(|value| match value {
-                    WebExecutionConfiguration::WebSearch(configuration) => configuration,
-                    _ => unreachable!("parser checks owner"),
-                })
-                .map_err(|error| error.to_string())
+            WebExecutionConfiguration::parse_in(
+                "web_search",
+                value,
+                WebConfigurationContext::Frozen,
+            )
+            .map(|value| match value {
+                WebExecutionConfiguration::WebSearch(configuration) => configuration,
+                _ => unreachable!("parser checks owner"),
+            })
         })
         .transpose()
 }
@@ -96,6 +109,119 @@ mod tests {
 
     fn block(domains: &[&str]) -> WebDomainFilter {
         WebDomainFilter::Block(domains.iter().map(|value| (*value).to_string()).collect())
+    }
+
+    #[test]
+    fn frozen_decoding_preserves_structured_diagnostics_until_compatibility_boundary() {
+        // C1 absent/valid/wrong owner; C2 fetch/search; C3 invalid nested field.
+        // Absence is not an error. Malformed input retains code and field path;
+        // the existing SDK String adapter is exactly the final Display projection.
+        use awaken_web_policy_contract::WebConfigurationCode;
+        assert!(decode_fetch_configuration(&[]).unwrap().is_none());
+        assert!(decode_search_configuration(&[]).unwrap().is_none());
+        for (name, raw, code, path) in [
+            (
+                "web_fetch",
+                serde_json::json!({"type":"web_search"}),
+                WebConfigurationCode::WrongTool,
+                "type",
+            ),
+            (
+                "web_fetch",
+                serde_json::json!({"type":"web_fetch","domains":{"type":"allow","domains":[]}}),
+                WebConfigurationCode::InvalidDomainCount,
+                "domains.domains",
+            ),
+            (
+                "web_search",
+                serde_json::json!({"type":"web_fetch"}),
+                WebConfigurationCode::WrongTool,
+                "type",
+            ),
+            (
+                "web_search",
+                serde_json::json!({"type":"web_search","user_location":{"country":"sg"}}),
+                WebConfigurationCode::InvalidLocation,
+                "user_location.country",
+            ),
+        ] {
+            let toolsets = source(raw, name);
+            let (issue, legacy) = if name == "web_fetch" {
+                (
+                    decode_fetch_configuration(&toolsets).unwrap_err(),
+                    web_fetch_execution_configuration(&toolsets).unwrap_err(),
+                )
+            } else {
+                (
+                    decode_search_configuration(&toolsets).unwrap_err(),
+                    web_search_execution_configuration(&toolsets).unwrap_err(),
+                )
+            };
+            assert_eq!(issue.code, code, "{name}");
+            assert_eq!(issue.path, path, "{name}");
+            assert!(!issue.message.is_empty());
+            assert_eq!(legacy, issue.to_string(), "compatibility projection");
+        }
+        assert!(
+            decode_fetch_configuration(&source(
+                serde_json::json!({"type":"web_fetch"}),
+                "web_fetch"
+            ))
+            .unwrap()
+            .is_some()
+        );
+        assert!(
+            decode_search_configuration(&source(
+                serde_json::json!({"type":"web_search"}),
+                "web_search"
+            ))
+            .unwrap()
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn inherited_composition_keeps_typed_failures_for_own_and_shadowed_sources() {
+        // C1 malformed own typed value; C2 malformed inherited value even when
+        // a nearer scalar would shadow it. Both paths retain the kernel issue;
+        // no fallback to None or successful nearest-value selection is allowed.
+        use awaken_web_policy_contract::WebConfigurationCode;
+        let empty = InheritedToolsets::with_caller(Vec::new(), None);
+        let issue = effective_fetch_configuration(
+            Some(WebFetchExecutionConfiguration {
+                domains: Some(allow(&[])),
+                ..Default::default()
+            }),
+            &empty,
+        )
+        .unwrap_err();
+        assert_eq!(issue.code, WebConfigurationCode::InvalidDomainCount);
+        assert_eq!(issue.path, "domains.domains");
+        let inherited = InheritedToolsets::with_caller(
+            source(
+                serde_json::json!({"type":"web_search","user_location":{"country":"bad"}}),
+                "web_search",
+            ),
+            None,
+        );
+        let own = Some(WebSearchExecutionConfiguration {
+            user_location: Some(WebSearchUserLocation {
+                country: Some("SG".into()),
+                city: None,
+                region: None,
+                timezone: None,
+            }),
+            ..Default::default()
+        });
+        let issue = effective_search_configuration(own.clone(), &inherited).unwrap_err();
+        assert_eq!(issue.code, WebConfigurationCode::InvalidLocation);
+        assert_eq!(issue.path, "user_location.country");
+        assert!(
+            effective_search_configuration(own, &empty)
+                .unwrap()
+                .is_some(),
+            "valid positive control"
+        );
     }
 
     #[test]
