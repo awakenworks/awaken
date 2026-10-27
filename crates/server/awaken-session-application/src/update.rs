@@ -322,7 +322,14 @@ fn compile_update_tool_settings(
     command: &SessionUpdateCommand,
     session: &awaken_session_state_contract::SessionAggregate,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
-    if session.execution != SessionExecutionState::Idle {
+    if session.execution != SessionExecutionState::Idle
+        && !(matches!(
+            command.mcp_update,
+            Some(SessionMcpUpdate::CredentialLifecycle { .. })
+        ) && awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(
+            session,
+        ))
+    {
         return Err(SessionUpdateError::NotIdle);
     }
     if command.if_match.unwrap_or(session.revision) != session.revision {
@@ -406,12 +413,11 @@ impl SessionUpdateCommands {
         stable_fingerprint(&(session_id, idempotency_key))
     }
 
-    /// An idle post-create realization failure terminalizes only the failed MCP
-    /// generation, not the Session or its already committed update receipt. An
-    /// exact command replay therefore retries the durable desired set through
-    /// the MCP aggregate's existing Failed -> generation N+1 rule. No public
-    /// field is re-lowered or re-authored by this recovery mutation.
-    async fn retry_failed_mcp_update_realization(
+    /// Reconcile the current desired set through its one aggregate law: a
+    /// failed generation allocates N+1, while obsolete never-started requests
+    /// retire without replacing the current head. Exact command replay retains
+    /// the original update receipt and never re-authors public fields.
+    async fn reconcile_mcp_update_intent(
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionUpdateError> {
@@ -427,12 +433,6 @@ impl SessionUpdateCommands {
                 .map_err(repository_failure)
                 .map_err(SessionUpdateError::mutation)?;
             let desired = session.mcp.desired_attachments();
-            if !desired
-                .iter()
-                .any(|attachment| attachment.state == McpAttachmentState::Failed)
-            {
-                return Ok(session.into_snapshot());
-            }
             let drafts = desired
                 .into_iter()
                 .map(|attachment| crate::session_mcp::McpAttachmentDraft {
@@ -459,9 +459,7 @@ impl SessionUpdateCommands {
                     ))
                 })?;
             if !plan.changed {
-                return Err(SessionUpdateError::Unavailable(
-                    "committed failed MCP generation produced no retry intent".into(),
-                ));
+                return Ok(session.into_snapshot());
             }
             match mutations
                 .commit_session_snapshot_with_outcome(
@@ -526,7 +524,7 @@ impl SessionUpdateCommands {
                 admission
                     .as_ref()
                     .expect("MCP retry acquired executable admission")
-                    .enter(|| self.retry_failed_mcp_update_realization(session_id))
+                    .enter(|| self.reconcile_mcp_update_intent(session_id))
                     .await?
             } else {
                 self.mutations
@@ -542,14 +540,7 @@ impl SessionUpdateCommands {
                 command_applied: false,
                 changes: SessionUpdateChanges::default(),
             };
-            return self
-                .reconcile_update_runtime(
-                    outcome,
-                    command.tools.is_some(),
-                    command.mcp_update.is_some(),
-                    command.budget.is_some(),
-                )
-                .await;
+            return self.reconcile_update_runtime(outcome, &command).await;
         }
 
         let persisted = self
@@ -606,14 +597,7 @@ impl SessionUpdateCommands {
                     continue;
                 }
                 Ok(outcome) => {
-                    return self
-                        .reconcile_update_runtime(
-                            outcome,
-                            command.tools.is_some(),
-                            command.mcp_update.is_some(),
-                            command.budget.is_some(),
-                        )
-                        .await;
+                    return self.reconcile_update_runtime(outcome, &command).await;
                 }
                 result => return result,
             }
@@ -624,11 +608,9 @@ impl SessionUpdateCommands {
     async fn reconcile_update_runtime(
         &self,
         mut outcome: SessionUpdateOutcome,
-        tools_in_request: bool,
-        mcp_in_request: bool,
-        budget_in_request: bool,
+        command: &SessionUpdateCommand,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
-        if mcp_in_request
+        if command.mcp_update.is_some()
             && mcp_projection_requires_realization(
                 &outcome.session,
                 self.realizations.runtime_incarnation(),
@@ -649,7 +631,7 @@ impl SessionUpdateCommands {
                 }
             }
         }
-        if tools_in_request
+        if command.tools.is_some()
             && (outcome.changes.tools() || !outcome.command_applied)
             && let Err(source) = self
                 .placement
@@ -664,7 +646,7 @@ impl SessionUpdateCommands {
                 source,
             });
         }
-        if budget_in_request && outcome.session.budget.can_admit_model_request() {
+        if command.budget.is_some() && outcome.session.budget.can_admit_model_request() {
             outcome = self.resume_budget_pauses(outcome).await?;
         }
         Ok(outcome)
@@ -855,7 +837,7 @@ impl SessionUpdateCommands {
             }
             if command.mcp_update.is_some() {
                 session = crate::mutation::aggregate_from_snapshot(
-                    self.retry_failed_mcp_update_realization(session_id).await?,
+                    self.reconcile_mcp_update_intent(session_id).await?,
                 )
                 .map_err(repository_failure)
                 .map_err(SessionUpdateError::mutation)?;

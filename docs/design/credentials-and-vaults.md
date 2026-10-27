@@ -512,7 +512,8 @@ Replaced or pruned proof requires republication rather than inferred adoption.
 An exact application replay reads that retained event by its primary identity
 and rechecks both configured consumers without rotating material. A Session
 already holding the event's active, acknowledged MCP revision can acknowledge a
-replay while a Run is busy; an older busy Session remains Pending. Current
+replay while a Run is busy; an older already-realizing or running Session remains
+Pending. Proven unattempted preparations follow the state-owned exception below. Current
 receipt retention is introduced by the Credential schema's additive V10 tail.
 For legacy revisions whose acknowledged event was already deleted, exact
 authority/key/generation/material validation precedes one ordinary WAL/CAS
@@ -527,6 +528,27 @@ Modified: the existing repository settlement and current-event lookup, store
 adapters, application replay and already-adopted Session handling. Added: the
 delivery-state migration and regression cases. No new aggregate, table, queue,
 scheduler, or authorization authority is introduced.
+
+#### Credential adoption before the first realization
+
+A reserved Run may already own a Session activity while the Session is still
+Preparing. Its first Environment/MCP realization can need a newer application
+credential; requiring Idle would make that preparation wait for the Run that
+cannot yet start. The Session state contract owns this admission query. It
+reuses the existing unattempted preparation facts and requires explicit empty
+materialization history, a frozen nonterminal preparation, no realization owner
+or attempts, and only unattempted, unacknowledged Requested MCP generations.
+Reserved activities and their intervals remain unchanged. Missing historical
+materialization evidence, an admitted effect or a begun realization stays fenced.
+
+The existing credential-lifecycle update still validates unchanged topology and
+monotonic same-source pins, commits through the original root CAS, and requests
+the existing realization/reconciliation path. Coordinator adoption and Session
+updates consume the same state-owned admission query; public replacement and
+other configuration edits retain their Idle rule. A racing realization changes
+the root revision, so the ordinary CAS retry rechecks the query. Publication
+acknowledgement still determines convergence; changing a pin alone is not proof
+that a Worker adopted it. No new state, queue, timer or recovery authority is added.
 
 When the application must bind the bearer before Session create, it predicts
 the opaque address through the Managed adapter's one exported pure Session-ID
@@ -1041,3 +1063,14 @@ Cause-effect tables live with domain, repository, HTTP, browser and SDK E2E test
 They cover account ambiguity, target/Workspace mismatch, retirement without
 fallback, exact publication pins, denied effects, CAS races, cloud replay and
 corruption, offline restart, mixed Vault auth types and real Namespace stdio.
+
+
+Credential replacement also uses the MCP set's existing desired-generation
+selection. A superseded Requested generation with zero attempts, no realization
+claim and no publication acknowledgement is retired before initial Stage, so
+an obsolete credential cannot block its successor. Claimed, attempted and
+published generations retain their existing recovery/drain boundary. The set's
+existing draft equivalence owns all replacement matching; replay retains the
+same desired head and retired identities. Preparing credential admission accepts
+those never-started retired records as history, while archive admission retains
+its original no-activity and all-Requested preparation rule.

@@ -435,6 +435,92 @@ mod tests {
     use super::*;
     use awaken_resource_contract::CompleteGeneration;
 
+    #[test]
+    fn superseded_unattempted_generations_do_not_stage_obsolete_credentials() {
+        // C1 newer desired generation for the same logical attachment; C2 old
+        // Requested has zero attempts, no claim and no publication ACK. R1=C1+C2
+        // -> Removed before Stage; only the new desired generation is requested.
+        // R2 each attempted/claimed/acknowledged/Active old generation -> retained
+        // under its original drain/receipt law. R3 same desired replay -> stutter,
+        // preserving both complete identities; no second generation is allocated.
+        for fault in ["pristine", "attempted", "claimed", "acknowledged", "active"] {
+            let mut set = SessionMcpAttachmentSet::from_initial(
+                vec![draft("a", "https://old.test/mcp", None)],
+                None,
+            )
+            .unwrap();
+            let old = set.attachments[0].generation.clone();
+            match fault {
+                "attempted" => set.attachments[0].attempts = 1,
+                "acknowledged" => set.attachments[0].publication_acknowledged = true,
+                "claimed" | "active" => {
+                    set.claim_realization(
+                        &old,
+                        McpRealizationClaim {
+                            realization_id: "first".into(),
+                            runtime_incarnation: "worker:boot".into(),
+                            lease_epoch: 1,
+                            lease_expires_at_unix_ms: 100,
+                            stage_idempotency_key: "first-stage".into(),
+                        },
+                    )
+                    .unwrap();
+                    if fault == "active" {
+                        set.activate(&old, "first").unwrap();
+                    }
+                }
+                _ => {}
+            }
+            let prior = set.attachments[0].clone();
+            let replacement = draft("a", "https://current.test/mcp", None);
+            let plan = set
+                .request_full_replacement(vec![replacement.clone()], None)
+                .unwrap();
+            assert_eq!(plan.requested.len(), 1);
+            assert_eq!(set.attachments[0].generation, old);
+            if fault == "pristine" {
+                assert_eq!(
+                    set.attachments[0].state,
+                    McpAttachmentState::Removed,
+                    "R1 obsolete credential must never enter initial Stage"
+                );
+            } else {
+                assert_eq!(set.attachments[0], prior, "R2 {fault}");
+            }
+            if fault == "pristine" {
+                let mut historical = set.clone();
+                historical.attachments[0].state = McpAttachmentState::Requested;
+                let head = historical.desired_attachments()[0].generation.clone();
+                let repair = historical
+                    .request_full_replacement(vec![replacement.clone()], None)
+                    .unwrap();
+                assert!(
+                    repair.changed,
+                    "R4 exact replay retires historical obsolete requests"
+                );
+                assert!(repair.requested.is_empty(), "R4 no new head");
+                assert_eq!(historical.desired_attachments()[0].generation, head);
+                assert_eq!(historical.attachments[0].state, McpAttachmentState::Removed);
+                let next = historical
+                    .request_full_replacement(vec![draft("a", "https://old.test/mcp", None)], None)
+                    .unwrap();
+                assert_eq!(
+                    next.requested[0].version(),
+                    3,
+                    "R5 content returning to A never resurrects generation1"
+                );
+            }
+            let before = set.clone();
+            assert!(
+                !set.request_full_replacement(vec![replacement], None)
+                    .unwrap()
+                    .changed
+            );
+            assert_eq!(set, before, "R3 exact replay {fault}");
+            assert_eq!(set.desired_attachments()[0].generation, plan.requested[0]);
+        }
+    }
+
     /// The reason `McpGeneration` is a triple and not a counter.
     ///
     /// Cause graph: C1 the observed witness is the durable head on all three

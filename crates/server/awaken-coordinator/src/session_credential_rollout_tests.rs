@@ -14,6 +14,8 @@ use awaken_session_types::SessionId;
 
 use crate::SessionCredentialRolloutAdoption;
 
+mod preparation_tests;
+
 fn rollout_event(
     id: &str,
     version: u64,

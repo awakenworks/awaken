@@ -518,28 +518,49 @@ impl SessionMcpAttachmentSet {
     ) -> Result<McpReplacementPlan, McpAttachmentError> {
         validate_drafts(&drafts, selected_holder.as_ref())?;
         let fingerprint = desired_fingerprint(&drafts);
+        // Retire only never-started generations outside the canonical current
+        // desired heads. This also normalizes retained pre-upgrade requests
+        // before exact replay, without allocating a replacement for a good head.
+        let retained: Vec<_> = self
+            .desired_attachments()
+            .into_iter()
+            .filter(|attachment| {
+                drafts
+                    .iter()
+                    .any(|draft| attachment_satisfies_draft(attachment, draft))
+            })
+            .map(|attachment| attachment.generation.clone())
+            .collect();
+        let mut retired = false;
+        for attachment in &mut self.attachments {
+            if attachment.state == McpAttachmentState::Requested
+                && attachment.attempts == 0
+                && attachment.realization.is_none()
+                && !attachment.publication_acknowledged
+                && !retained.contains(&attachment.generation)
+            {
+                attachment.state = McpAttachmentState::Removed;
+                retired = true;
+            }
+        }
         // A matching fingerprint is idempotent only while every desired exact
         // generation is still recoverable. A Failed generation is terminal;
         // replaying the same desired set must allocate N+1 so an operator can
         // retry without first manufacturing a different target.
         if fingerprint == self.desired_fingerprint
             && drafts.iter().all(|draft| {
-                self.attachments.iter().any(|attachment| {
-                    attachment.name == draft.name
-                        && matches!(
-                            attachment.state,
-                            McpAttachmentState::Requested
-                                | McpAttachmentState::Realizing
-                                | McpAttachmentState::Active
-                        )
-                        && attachment.target == draft.target
-                        && attachment.prompts_as_skills == draft.prompts_as_skills
-                        && attachment.credential == draft.credential
-                        && attachment.origin == draft.origin
-                })
+                self.attachments
+                    .iter()
+                    .any(|attachment| attachment_satisfies_draft(attachment, draft))
             })
         {
-            return Ok(McpReplacementPlan::default());
+            if retired {
+                self.bump_revision()?;
+            }
+            return Ok(McpReplacementPlan {
+                changed: retired,
+                ..Default::default()
+            });
         }
 
         let desired_names = drafts
@@ -568,15 +589,10 @@ impl SessionMcpAttachmentSet {
         }
 
         for draft in drafts {
-            let matching_nonterminal = self.attachments.iter().any(|attachment| {
-                attachment.name == draft.name
-                    && !attachment.state.is_terminal()
-                    && attachment.state != McpAttachmentState::Draining
-                    && attachment.target == draft.target
-                    && attachment.prompts_as_skills == draft.prompts_as_skills
-                    && attachment.credential == draft.credential
-                    && attachment.origin == draft.origin
-            });
+            let matching_nonterminal = self
+                .attachments
+                .iter()
+                .any(|attachment| attachment_satisfies_draft(attachment, &draft));
             if matching_nonterminal {
                 continue;
             }
@@ -845,6 +861,21 @@ fn validate_drafts(
         }
     }
     Ok(())
+}
+
+/// One draft equivalence for exact replay, allocation and unattempted retirement.
+fn attachment_satisfies_draft(
+    attachment: &SessionMcpAttachment,
+    draft: &McpAttachmentDraft,
+) -> bool {
+    matches!(
+        attachment.state,
+        McpAttachmentState::Requested | McpAttachmentState::Realizing | McpAttachmentState::Active
+    ) && attachment.name == draft.name
+        && attachment.target == draft.target
+        && attachment.prompts_as_skills == draft.prompts_as_skills
+        && attachment.credential == draft.credential
+        && attachment.origin == draft.origin
 }
 
 fn desired_fingerprint(drafts: &[McpAttachmentDraft]) -> McpDesiredSetFingerprint {

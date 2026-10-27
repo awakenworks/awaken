@@ -18,7 +18,7 @@ use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication, SessionMcpUpdate,
     SessionRootReads, SessionUpdateCommand, SessionUpdateError, SessionUpdates,
 };
-use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_state_contract::PersistedSession;
 
 /// The disposable protocol projection a committed Session root is published
 /// into (the Managed wire cache). Durable truth is already committed when it
@@ -187,7 +187,8 @@ impl SessionCredentialRolloutAdoption {
                 }
                 continue;
             }
-            if session.execution != SessionExecutionState::Idle {
+            if !awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(&session)
+            {
                 tracing::info!(rollout_id = %event.id, session_id = %session.session_id,
                     phase = "session_adoption", failure = "not_idle",
                     "Managed credential rollout remains pending");
