@@ -123,7 +123,8 @@ impl crate::SessionRuns {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
                 // the claim-fenced Runtime commit and settlement.
-                self.durable_run_control()?
+                self.threads
+                    .durable_run_control()?
                     .persist_cancellation(run_id, Some(ctx.live_control()))
                     .await?;
             } else {
@@ -164,7 +165,8 @@ impl crate::SessionRuns {
                 .executable_session_dispatch_runs(thread, &logical_thread_id, &commit)
                 .await?;
             for run_id in executable {
-                self.durable_run_control()?
+                self.threads
+                    .durable_run_control()?
                     .persist_recoverable_cancellation(
                         &run_id,
                         resident.as_ref().map(|ctx| {

@@ -201,14 +201,6 @@ impl crate::SessionRuns {
             .flatten())
     }
 
-    /// The canonical durable control owner over this process's dispatch queue and pool.
-    pub(crate) fn durable_run_control(&self) -> Result<DurableRunControl, SessionExecutionError> {
-        Ok(self
-            .dispatch
-            .publication()
-            .durable_run_control(self.coordinator_dispatch()?))
-    }
-
     pub async fn cancel_durable(
         &self,
         thread: &str,
@@ -278,16 +270,16 @@ impl crate::SessionRuns {
         thread: &str,
         allow: bool,
     ) -> Result<String, SessionExecutionError> {
-        let ctx = self.run_assembly.ctx_for(thread, None).await?;
-        self.dispatch_pool_or_err()?;
+        self.require_durable_delivery()?;
+        let commit = self.thread_reads.commit_for_read(thread).await?;
         let thread = ThreadId(thread.to_owned());
-        let awaiting = ctx
-            .commit
+        let awaiting = commit
             .open_wait_for_thread(&thread)
             .await
             .map_err(SessionExecutionError::internal)?;
         let input = awaken_session_run_delivery::decision_input(thread, awaiting, allow)?;
-        self.durable_run_control()?
+        self.threads
+            .durable_run_control()?
             .stage_input(input)
             .await
             .map_err(SessionExecutionError::from)
@@ -298,16 +290,16 @@ impl crate::SessionRuns {
         thread: &str,
         text: String,
     ) -> Result<String, SessionExecutionError> {
-        let ctx = self.run_assembly.ctx_for(thread, None).await?;
-        self.dispatch_pool_or_err()?;
+        self.require_durable_delivery()?;
+        let commit = self.thread_reads.commit_for_read(thread).await?;
         let thread = ThreadId(thread.to_owned());
-        let awaiting = ctx
-            .commit
+        let awaiting = commit
             .open_wait_for_thread(&thread)
             .await
             .map_err(SessionExecutionError::internal)?;
         let input = awaken_session_run_delivery::manual_resume_input(thread, awaiting, text)?;
-        self.durable_run_control()?
+        self.threads
+            .durable_run_control()?
             .stage_input(input)
             .await
             .map_err(SessionExecutionError::from)
