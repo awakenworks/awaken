@@ -112,7 +112,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         let app = build_durable_all_in_one_router(
             dir.path(),
             &KEY,
-            std::sync::Arc::new(awaken_cli::LocalExecution),
+            Box::new(awaken_cli::LocalExecution::default()),
         )
         .await;
 
@@ -255,7 +255,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let app = build_durable_all_in_one_router(
         dir.path(),
         &KEY,
-        std::sync::Arc::new(awaken_cli::LocalExecution),
+        Box::new(awaken_cli::LocalExecution::default()),
     )
     .await;
 
@@ -357,7 +357,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let app = build_durable_all_in_one_router(
         dir.path(),
         &WRONG_KEY,
-        std::sync::Arc::new(awaken_cli::LocalExecution),
+        Box::new(awaken_cli::LocalExecution::default()),
     )
     .await;
 

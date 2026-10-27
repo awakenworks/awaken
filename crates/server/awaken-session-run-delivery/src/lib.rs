@@ -105,7 +105,8 @@ pub use session_activation::{
 };
 pub use session_budgets::SessionBudgets;
 pub use session_capabilities::{
-    builtin_hand_tools, hand_tool_descriptors, supports_mid_conversation_system,
+    authorable_tools, builtin_hand_tools, delegation_descriptor, hand_tool_descriptors,
+    supports_mid_conversation_system,
 };
 pub use session_commit_workers::{SessionBoundaryEffects, SessionCommitWorkers};
 pub use session_inputs::{

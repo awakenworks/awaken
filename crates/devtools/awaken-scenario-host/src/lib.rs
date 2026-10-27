@@ -1212,7 +1212,7 @@ pub async fn build_remote_delegation_router() -> Router {
     // Both parent and child are ordinary immutable publications. The child's
     // resolved backend selects the shared A2A attempt executor; delegation owns
     // no transport registry or protocol-specific execution path.
-    let mut tools = awaken_session_executor::authorable_tools();
+    let mut tools = awaken_session_run_delivery::authorable_tools();
     tools.retain(|tool| tool.kind == ToolKind::AgentDelegation);
     let assistant = ExecutableAgentSnapshot::builder("assistant")
         .model(
@@ -1261,7 +1261,7 @@ pub async fn build_remote_delegation_router() -> Router {
         .await
         .map_dependencies(|host| {
             host.with_agent_publications(publication.clone())
-                .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(None))
+                .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
         });
     mount_with_agent_source(host, publication).await
 }
@@ -1426,7 +1426,7 @@ pub async fn build_config_router() -> Router {
     // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
     // (global) tools; only the reserved admin scope additionally sees the four
     // management descriptors, so a config naming an `admin_*` tool compiles only there.
-    let global = awaken_session_executor::authorable_tools();
+    let global = awaken_session_run_delivery::authorable_tools();
     let tools = Arc::new(awaken_config_service::ScopedToolCatalog::new(
         global.clone(),
         awaken_config_service::RESERVED_ADMIN_SCOPE,
@@ -1492,7 +1492,7 @@ pub async fn build_config_router() -> Router {
             host.with_local_workspace(platform_workspace.clone())
                 .with_agent_publications(executable_agent_catalog.clone())
                 .with_admin_tools(admin_execs)
-                .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(None))
+                .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
         });
     let (host, resources) = host.into_dependencies();
     // Rebuild the disposable executable catalog through the same registration

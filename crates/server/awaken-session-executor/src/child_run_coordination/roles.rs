@@ -107,22 +107,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordina
         Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
         RunError,
     > {
-        if thread_id == session_id {
-            return Ok(Some(self.hub.live_subscription(thread_id)?));
-        }
-        let links = self
-            .thread_reads
-            .coordinated_threads(session_id.as_str(), None)
-            .await?;
-        if !links
-            .iter()
-            .any(|link| link.session_id == session_id && link.thread_id.0.as_str() == thread_id)
-        {
-            return Err(RunError::bad_request(
-                "live observer target is not a coordinated Session Thread",
-            ));
-        }
-        Ok(Some(self.hub.live_subscription(thread_id)?))
+        self.thread_reads
+            .subscribe_session_thread_live(&self.hub, session_id, thread_id)
+            .await
     }
 
     async fn continue_session_agent_report(

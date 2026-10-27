@@ -464,22 +464,6 @@ impl ExecutorComponents {
         self.realization_executor.environments().providers()
     }
 
-    /// Mint a fresh process-unique platform Workspace coordinate. This Host
-    /// owns the coordinate's format; it never persists one. A durable
-    /// installation publishes the minted value once through its installation
-    /// marker (`awaken-installation-workspace`) and passes the resolved
-    /// coordinate to the constructor, so the Host never touches that file.
-    ///
-    /// Renamed from `provision_local_workspace` when the durable marker moved
-    /// out: without a root this only ever minted a volatile value.
-    #[must_use]
-    pub fn mint_local_workspace() -> String {
-        // Uniqueness, not a time fact: a random nonce keeps two mints in one
-        // process distinct without reading a clock.
-        let nonce = uuid::Uuid::new_v4().simple();
-        format!("workspace_local_{:x}_{nonce}", std::process::id())
-    }
-
     /// The process wall clock this Host drives its Workers on.
     #[must_use]
     pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {
@@ -544,7 +528,7 @@ impl ExecutorComponents {
         &self,
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
-            core: self.session_runs.clone(),
+            default_model: self.capabilities.model(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::Colocated(
                 awaken_session_execution_contract::ColocatedRealizationRoles {
                     mcp: self.run_assembly.clone(),
@@ -641,13 +625,15 @@ mod startup_tests {
             expected.clone(),
             crate::SessionExecutionProcess::from_deployment(
                 &awaken_deployment_config::DeploymentConfig::ephemeral(),
-                ExecutorComponents::mint_local_workspace(),
+                awaken_deployment_config::mint_local_workspace(),
                 awaken_time::system_clock(),
             )
             .expect("ephemeral process"),
-            Arc::new(crate::EphemeralRuntimeAuthority::new(
-                awaken_time::system_clock(),
-            )),
+            Arc::new(
+                awaken_session_executor_testkit::volatile_reference_authority(
+                    awaken_time::system_clock(),
+                ),
+            ),
         ))
         .build()
         .expect("validated Host dependencies");
@@ -682,7 +668,7 @@ mod startup_tests {
         let process = || {
             crate::SessionExecutionProcess::from_deployment(
                 &awaken_deployment_config::DeploymentConfig::ephemeral(),
-                ExecutorComponents::mint_local_workspace(),
+                awaken_deployment_config::mint_local_workspace(),
                 awaken_time::system_clock(),
             )
             .expect("ephemeral process")
@@ -740,9 +726,11 @@ mod startup_tests {
             },
             extraction,
             process(),
-            Arc::new(crate::EphemeralRuntimeAuthority::new(
-                awaken_time::system_clock(),
-            )),
+            Arc::new(
+                awaken_session_executor_testkit::volatile_reference_authority(
+                    awaken_time::system_clock(),
+                ),
+            ),
         ))
         .build()
         .expect("validated Host dependencies");
@@ -809,9 +797,11 @@ mod startup_tests {
         .expect("complete Worker connections");
         assert!(
             worker_dependencies
-                .with_runtime_authority(Arc::new(crate::EphemeralRuntimeAuthority::new(
-                    awaken_time::system_clock()
-                ),))
+                .with_runtime_authority(Arc::new(
+                    awaken_session_executor_testkit::volatile_reference_authority(
+                        awaken_time::system_clock()
+                    ),
+                ))
                 .is_err(),
             "R3 Worker authority cannot become local",
         );

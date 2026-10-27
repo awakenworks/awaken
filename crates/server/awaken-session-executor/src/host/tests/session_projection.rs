@@ -2027,7 +2027,7 @@ async fn executor_components_supply_every_session_role() {
         &roles.live_inbox
     ));
     let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
-    assert_eq!(bindings.core().model(), host.capabilities.model());
+    assert_eq!(bindings.default_model(), host.capabilities.model());
 }
 
 #[test]

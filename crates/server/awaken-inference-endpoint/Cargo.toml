@@ -19,6 +19,7 @@ isolates = ["reqwest"]
 # Control and Coordinator processes link it without the Worker-side
 # credential materializer.
 [dependencies]
+awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-provider-genai.workspace = true

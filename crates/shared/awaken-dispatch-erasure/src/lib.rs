@@ -18,7 +18,12 @@
 
 mod binding;
 mod bundle;
+mod execution_observation;
 mod local_commit;
+#[cfg(feature = "test-support")]
+mod reference_authority;
+#[cfg(feature = "test-support")]
+pub use reference_authority::ReferenceAuthority;
 mod runtime_authority;
 pub use binding::{DispatchBinding, DispatchTopology};
 pub use bundle::{Dispatch, DurableDispatch, RemoteDispatch};

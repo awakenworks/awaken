@@ -1,3 +1,6 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Defines required execution roles and selects only the already-resolved inference variant.
+// @formal reason: Concrete model and credential construction remains with the supplying composition callbacks.
 //! [`ExecutionPorts`] — the Session execution the Coordinator composes.
 //!
 //! The process composition root that builds the Session executor (a
@@ -18,8 +21,9 @@
 //! | Child-Run coordination binding, committed-progress wakeup | `SessionApplicationBindings` | bound once by the root before the Coordinator exists |
 //! | Worker observation reads | coordinator dispatch, looked up per request | `coordinator_dispatch`, given at construction |
 //! | Persistence selection | `DeploymentConfig` | `CoordinatorStorage` (dispatch-execution) |
-//! | Scenario executor, Session application and reference authority | `SessionExecutorBuilder`, `EphemeralRuntimeAuthority` | the scenario host and `awaken-cli` roots |
+//! | Scenario executor, Session application and reference authority | `SessionExecutorBuilder`, `ReferenceAuthority` | the scenario host and `awaken-cli` roots |
 
+use awaken_tool_contract::tool::RawTool;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -66,4 +70,191 @@ pub struct ExecutionPorts {
     pub worker_file_content: Arc<dyn FileContentSource<ResourceOperationFence>>,
     /// The durable local root, when this process persists.
     pub storage_dir: Option<PathBuf>,
+}
+
+/// The runtime selection already resolved with publication policy. A process
+/// with registered Workers uses only its default model label; the co-located
+/// launcher constructs executors from the exact same selection.
+#[derive(Clone)]
+pub enum InferenceSelection {
+    PublishedProviders,
+    NoModelConfigured,
+    #[cfg(any(test, feature = "test-support"))]
+    Host {
+        executor: Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+        model_ref: String,
+    },
+}
+
+impl InferenceSelection {
+    /// Resolve the selected realization at the enum owner. A dependency's
+    /// test-support feature may be unified on without enabling its consumer's
+    /// same-named feature; consumers must not repeat this enum's cfg branches.
+    /// Host construction stays gated, while every consumer supplies its exact
+    /// Host realization without gaining another publication or routing policy.
+    pub fn resolve_with<T>(
+        self,
+        published: impl FnOnce() -> T,
+        missing: impl FnOnce() -> T,
+        host: impl FnOnce(Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, String) -> T,
+    ) -> T {
+        #[cfg(not(any(test, feature = "test-support")))]
+        drop(host);
+        match self {
+            Self::PublishedProviders => published(),
+            Self::NoModelConfigured => missing(),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Host {
+                executor,
+                model_ref,
+            } => host(executor, model_ref),
+        }
+    }
+
+    #[must_use]
+    pub fn default_model_ref(&self) -> &str {
+        match self {
+            Self::PublishedProviders | Self::NoModelConfigured => {
+                awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Host { model_ref, .. } => model_ref,
+        }
+    }
+}
+
+/// Required selected inputs of the existing co-located execution composition.
+/// They are original ports/values, not another Resource or credential owner.
+pub struct ColocatedExecutionInputs {
+    pub deployment: awaken_deployment_config::DeploymentConfig,
+    pub local_workspace: String,
+    pub clock: Arc<dyn awaken_time::WallClock>,
+    pub namespace_hand_path: Option<std::path::PathBuf>,
+    pub runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
+    pub environment_bindings:
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    pub model_selection: InferenceSelection,
+    pub cloud_models_enabled: bool,
+    pub brokered_client:
+        Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
+    pub local_credential_roles: Option<(
+        Arc<dyn awaken_credential_contract::CredentialMaterialResolver>,
+        Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    )>,
+    pub external_credentials:
+        Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>,
+    pub inference_override:
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+    pub credential_refresh: Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
+    pub file_content: Arc<
+        dyn awaken_resource_contract::FileContentSource<
+                awaken_session_realization_contract::ResourceOperationFence,
+            >,
+    >,
+    pub memory_content: awaken_resource_contract::MemoryExecutionContent,
+    pub memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+    pub artifact_publisher: Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<
+                awaken_session_realization_contract::ResourceOperationFence,
+            >,
+    >,
+    pub skill_bundles: Arc<
+        dyn awaken_session_configuration_contract::SkillBundleSource<
+                awaken_session_realization_contract::ResourceOperationFence,
+            >,
+    >,
+    pub skill_catalog: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
+    pub resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
+    pub repository_bindings: Arc<
+        dyn awaken_resource_contract::RepositoryBindingVerifier<
+                awaken_session_realization_contract::ResourceOperationFence,
+            >,
+    >,
+    pub memory_source: awaken_resource_contract::MemoryMountSource,
+    pub memory_invalidator: Arc<awaken_resource_contract::LocalInvalidator>,
+    pub web_search: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    pub agent_publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    pub capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
+    pub capture_policy: awaken_data_governance_contract::CapturePolicySources,
+    pub admin_tools: Vec<Arc<dyn RawTool>>,
+}
+
+/// Once-created roles followed by the one completion that connects them to the
+/// Session application. The launcher owns the captured executor; shared startup
+/// sees only the existing role contracts and original process components.
+pub struct PreparedColocatedExecution {
+    pub roles: awaken_session_execution_contract::SessionExecutionRoles,
+    pub dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
+    pub dispatch_observation: Arc<dyn awaken_dispatch::DispatchOperationalFeed>,
+    pub capture_policy: awaken_data_governance_contract::CapturePolicy,
+    pub artifact_fence: Arc<crate::ClaimFencedArtifactPublisher>,
+    pub finish: Box<
+        dyn FnOnce(
+                Arc<awaken_session_application::SessionApplication>,
+            ) -> Result<ExecutionPorts, String>
+            + Send,
+    >,
+}
+
+/// A move-only construction role supplied by the launcher that co-locates
+/// execution. It consumes the selected inputs once, prepares roles, then hands
+/// shared startup its completion. No SDK or concrete materializer crosses it.
+#[async_trait::async_trait]
+pub trait ColocatedExecution: Send {
+    async fn prepare(
+        self: Box<Self>,
+        inputs: ColocatedExecutionInputs,
+    ) -> Result<PreparedColocatedExecution, String>;
+}
+
+#[cfg(test)]
+mod inference_selection_tests {
+    use super::InferenceSelection;
+    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result};
+    use std::sync::Arc;
+
+    struct NeverInvoked;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for NeverInvoked {
+        async fn infer(&self, _: ChatRequest) -> Result<ChatResponse> {
+            panic!("selection must not execute the selected model")
+        }
+    }
+
+    #[test]
+    fn inference_selection_resolves_only_the_selected_production_branch() {
+        assert_eq!(
+            InferenceSelection::PublishedProviders.resolve_with(
+                || "published",
+                || panic!("must not fall back to missing"),
+                |_, _| panic!("must not construct a Host")
+            ),
+            "published"
+        );
+        assert_eq!(
+            InferenceSelection::NoModelConfigured.resolve_with(
+                || panic!("must not select a publication"),
+                || "missing",
+                |_, _| panic!("must not construct a Host")
+            ),
+            "missing"
+        );
+    }
+
+    #[test]
+    fn inference_selection_retains_the_exact_host_executor_and_model_ref() {
+        let executor: Arc<dyn LlmExecutor> = Arc::new(NeverInvoked);
+        let (selected, model_ref) = InferenceSelection::Host {
+            executor: executor.clone(),
+            model_ref: "frozen-host-model".to_owned(),
+        }
+        .resolve_with(
+            || panic!("must not select a publication"),
+            || panic!("must not replace Host with missing"),
+            |executor, model_ref| (executor, model_ref),
+        );
+        assert!(Arc::ptr_eq(&selected, &executor));
+        assert_eq!(model_ref, "frozen-host-model");
+    }
 }

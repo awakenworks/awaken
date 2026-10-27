@@ -105,8 +105,6 @@ mod worker_services;
 
 pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 
-#[cfg(any(test, feature = "test-support"))]
-pub use crate::authority::EphemeralRuntimeAuthority;
 pub use crate::authority::UpstreamAuthority;
 pub(crate) use crate::authority::{LocalAuthority, SessionAuthority};
 // Internal use of the canonical adapter owner; these are not public compatibility exports.
@@ -114,14 +112,14 @@ pub(crate) use crate::host::HostOutcomeIteration;
 pub use crate::host::{HostOutcomeDrive, HostOutcomeReport};
 pub(crate) use crate::installed_session::InstalledSessions;
 use awaken_dispatch_erasure::LocalCommit;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use awaken_dispatch_erasure::LocalCommitAdapter;
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
-pub use crate::config::{advertised_tools, authorable_tools, block_text};
+pub use crate::config::{advertised_tools, block_text};
 pub use crate::host::capability::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};

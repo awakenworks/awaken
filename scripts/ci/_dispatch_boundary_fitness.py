@@ -326,6 +326,14 @@ def selftest() -> None:
         "Coordinator composes dispatch and consumes the executor through the "
         "execution ports its composition root selects (D3)"
     ], "B14"
+    # D4 completion table: C1 an existing single binary owner; C2 zero or
+    # one Worker-side reach; C3 an empty transition map. E1=C1+!C2+C3 accepts
+    # a closed composition. E2=C1+C2+C3 refuses the exact crate: empty means
+    # no Worker implementation, never an uninitialized/disabled guard.
+    assert coordinator_binary_errors("awaken-coordinator-process", [], {}) == [], "B15 closed empty baseline"
+    for name in ["awaken-session-executor", "awaken-session-realization", "awaken-credential-materializer"]:
+        errors = coordinator_binary_errors("awaken-coordinator-process", [name], {})
+        assert len(errors) == 1 and name in errors[0] and "no reviewed transition" in errors[0], "B16 no reopened reach"
     record = {"reason": "fixture", "approved_by": "fixture-reviewer", "date": "2026-10-24",
               "remove_when": "fixture completes"}
     product = _specs(base + [("awaken-cli", "apps", "bootstrap", {"awaken-coordinator", "awaken-worker"})])

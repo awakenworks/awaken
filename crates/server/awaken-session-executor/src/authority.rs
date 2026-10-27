@@ -10,10 +10,6 @@
 use crate::memory_references::SessionMemoryReferenceEncoder;
 use std::sync::Arc;
 
-#[cfg(any(test, feature = "test-support"))]
-use crate::LocalCommit;
-#[cfg(any(test, feature = "test-support"))]
-use crate::LocalCommitAdapter;
 #[cfg(test)]
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 #[cfg(test)]
@@ -30,8 +26,6 @@ use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeedError, RunLifecyclePage,
 };
 use awaken_dispatch_erasure::RuntimeAuthority;
-#[cfg(any(test, feature = "test-support"))]
-use awaken_dispatch_erasure::RuntimeAuthorityError;
 #[cfg(test)]
 use awaken_dispatch_erasure::{LocalCommitQueries, ProjectedQueries};
 use awaken_session_run_delivery::SessionCommitSource;
@@ -128,121 +122,6 @@ impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for Scripte
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         ProjectedQueries.events_after(store, cursor, limit).await
-    }
-}
-
-/// Process-local authority used only by unit tests and scenario fixtures.
-///
-/// This is the sole non-durable reference adapter for the runtime boundary. It
-/// keeps product construction fail-closed while allowing tests to exercise the
-/// same injected contract without opening SQL or filesystem stores here.
-#[cfg(any(test, feature = "test-support"))]
-pub struct EphemeralRuntimeAuthority {
-    /// One clock for the dispatch store and every Thread's commit store.
-    clock: Arc<dyn awaken_time::WallClock>,
-    commits: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
-    checkpoints:
-        std::sync::Mutex<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
-    dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl EphemeralRuntimeAuthority {
-    /// Seed the existing test authority with a deliberately stale query adapter.
-    #[cfg(test)]
-    pub(crate) fn with_commit(self, thread: &str, commit: Arc<dyn LocalCommit>) -> Self {
-        self.commits
-            .lock()
-            .unwrap()
-            .insert(thread.to_owned(), commit);
-        self
-    }
-
-    /// The scenario composition supplies the exact backend-erased Dispatch
-    /// authority, including its continuation role; this shared Host selects no
-    /// concrete Coordinator queue implementation.
-    #[must_use]
-    pub fn with_dispatch(
-        clock: Arc<dyn awaken_time::WallClock>,
-        dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
-    ) -> Self {
-        Self {
-            clock,
-            commits: std::sync::Mutex::new(std::collections::HashMap::new()),
-            checkpoints: std::sync::Mutex::new(std::collections::HashMap::new()),
-            dispatch,
-        }
-    }
-
-    /// Host-local unit tests compose the same Ingress reference backend through
-    /// a dev dependency. External test-support callers inject that backend at
-    /// their composition root through `with_dispatch`.
-    #[cfg(test)]
-    #[must_use]
-    pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
-        let dispatch = awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_store(
-            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
-            None,
-        );
-        Self::with_dispatch(clock, Arc::new(dispatch))
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[async_trait::async_trait]
-impl RuntimeAuthority for EphemeralRuntimeAuthority {
-    async fn open_commit(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
-        let mut commits = self.commits.lock().map_err(|_| {
-            RuntimeAuthorityError::Corrupt("ephemeral commit authority lock poisoned".to_owned())
-        })?;
-        Ok(commits
-            .entry(thread.to_owned())
-            .or_insert_with(|| {
-                Arc::new(LocalCommitAdapter::projected(
-                    awaken_store_inmem::MemoryCommitCoordinator::new(self.clock.clone()),
-                )) as Arc<dyn LocalCommit>
-            })
-            .clone())
-    }
-
-    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
-        self.commits
-            .lock()
-            .map(|commits| commits.contains_key(thread))
-            .map_err(|_| {
-                RuntimeAuthorityError::Corrupt(
-                    "ephemeral commit authority lock poisoned".to_owned(),
-                )
-            })
-    }
-
-    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch> {
-        self.dispatch.clone()
-    }
-
-    fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
-        None
-    }
-
-    fn stream_checkpoint(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {
-        let mut checkpoints = self.checkpoints.lock().map_err(|_| {
-            RuntimeAuthorityError::Corrupt(
-                "ephemeral checkpoint authority lock poisoned".to_owned(),
-            )
-        })?;
-        Ok(checkpoints
-            .entry(thread.to_owned())
-            .or_insert_with(|| {
-                Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new())
-                    as Arc<dyn StreamCheckpointStore>
-            })
-            .clone())
     }
 }
 

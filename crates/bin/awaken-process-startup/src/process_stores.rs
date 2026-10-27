@@ -15,7 +15,6 @@ use awaken_service_lifecycle::StartupComponent;
 
 use crate::config;
 use crate::postgres_pools;
-use awaken_session_executor::ExecutorComponents;
 
 mod resource_backend;
 
@@ -714,7 +713,7 @@ pub(super) async fn open_process_stores(
         Some(workspace) => workspace,
         None => awaken_installation_workspace::provision_at(
             &workspace_root,
-            ExecutorComponents::mint_local_workspace,
+            awaken_deployment_config::mint_local_workspace,
         ),
     };
     Ok(ProcessStores {

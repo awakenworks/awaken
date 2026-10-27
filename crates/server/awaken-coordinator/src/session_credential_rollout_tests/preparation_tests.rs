@@ -1,51 +1,7 @@
 //! Credential rotation must not deadlock an unattempted, reserved Session.
 use super::*;
 use awaken_credential_contract::ManagedCredentialRolloutTarget as _;
-use awaken_session_state_contract::{PersistedSession, SessionAggregate};
-
-fn preparing_session(with_activity: bool) -> PersistedSession {
-    let old = persisted_with_mcp_source("preparing", "source-a", "vault-event");
-    let mut baseline = old.frozen_baseline().unwrap().clone();
-    baseline.mutation_policy =
-        awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen;
-    baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
-    let mut mcp = old.mcp;
-    mcp.attachments[0].state =
-        awaken_session_configuration_contract::mcp::McpAttachmentState::Requested;
-    mcp.attachments[0].publication_acknowledged = false;
-    mcp.attachments[0].realization = None;
-    let mut root = PersistedSession::frozen_with_budget(
-        "preparing",
-        baseline,
-        Default::default(),
-        mcp,
-        None,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-    );
-    root.created_at_unix_ms = Some(1);
-    if with_activity {
-        let mut aggregate = SessionAggregate::try_from(root).unwrap();
-        assert_eq!(
-            aggregate.activity().open(
-                None,
-                true,
-                false,
-                1,
-                0,
-                Some((
-                    "reserved-operation",
-                    &awaken_agent_contract::ThreadId("preparing".into()),
-                    &awaken_agent_contract::RunId("reserved-run".into())
-                )),
-            ),
-            awaken_session_state_contract::SessionActivityAdmissionPlan::Open(1)
-        );
-        root = aggregate.into_snapshot();
-    }
-    root
-}
+use awaken_protocol_managed_testkit::preparing_session_with_mcp_source;
 
 #[tokio::test]
 async fn worker_rollout_waits_for_actual_adoption_and_keeps_draining_sources_discoverable() {
@@ -195,7 +151,7 @@ async fn unattempted_preparation_rotates_credentials_without_losing_reserved_act
         create_session_fixture(
             repo.as_ref(),
             "workspace-a",
-            preparing_session(with_activity),
+            preparing_session_with_mcp_source(with_activity),
         )
         .await;
         let id = SessionId::from("preparing");

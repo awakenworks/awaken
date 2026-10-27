@@ -173,7 +173,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 model,
                 model_ref,
                 management_scenario_adapters(mode == "management-rate-limit"),
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await
         }
@@ -182,7 +182,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await
         }
@@ -194,7 +194,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::ProbeModel),
                 "management-probe".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await
         }
@@ -205,8 +205,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => {
-            awaken_process_startup::build_all_in_one_router(std::sync::Arc::new(
-                awaken_cli::LocalExecution,
+            awaken_process_startup::build_all_in_one_router(Box::new(
+                awaken_cli::LocalExecution::default(),
             ))
             .await
         }
@@ -219,7 +219,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await
         }

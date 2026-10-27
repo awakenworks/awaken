@@ -61,7 +61,7 @@ pub type RegisteredAttemptDecoratorFactory =
 #[derive(Default)]
 pub struct WorkerApplicationDependencies {
     pub attempt_decorator: Option<AttemptExecutorDecorator>,
-    pub inference: Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+    pub inference: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
     pub web_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     pub checkpoint_store: Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
 }

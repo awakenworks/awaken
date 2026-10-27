@@ -60,7 +60,7 @@ async fn build_all_in_one_router() -> Router {
     build_all_in_one_router_with_model(
         Arc::new(McpToolModel),
         "management",
-        std::sync::Arc::new(awaken_cli::LocalExecution),
+        Box::new(awaken_cli::LocalExecution::default()),
     )
     .await
 }

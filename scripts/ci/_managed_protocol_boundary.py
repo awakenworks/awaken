@@ -24,6 +24,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("POST", "/v1/awaken/sessions/{}/release"),
         ("POST", "/v1/awaken/sessions/{}/runs"),
         ("GET", "/v1/awaken/sessions/{}/runs/{}/events"),
+        ("GET", "/v1/awaken/sessions/{}/runs/{}/dispatch"),
         ("POST", "/v1/awaken/sessions/{}/runs/{}/resume"),
         ("POST", "/v1/awaken/sessions/{}/event-admissions/close"),
         ("POST", "/v1/awaken/sessions/{}/live-inbox"),
@@ -49,9 +50,8 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
 # call does not compile.
 
 
-# The co-located root that selects the Coordinator's execution ports, and the
-# ports themselves.
-COORDINATOR_EXECUTION_ROOT = "crates/bin/awaken-process-startup/src/coordinator_execution.rs"
+# Construction sites are discovered from the production module graph, not
+# enumerated per placement. The port declaration remains one authoritative API.
 COORDINATOR_EXECUTION_PORTS = "crates/server/awaken-coordinator/src/execution_ports.rs"
 
 
@@ -83,9 +83,18 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
     # receives that adapter typed as SessionRunApplication, so every public Run
     # protocol it mounts admits through the application. The Managed adapter
     # holds only narrowed roles and is never the source of that application.
-    root = sources.get(COORDINATOR_EXECUTION_ROOT, "")
     ports = sources.get(COORDINATOR_EXECUTION_PORTS, "")
-    if "SessionRunApplication::new(" not in _crate_boundary_workspace.production_rust(root) or (
+    execution_roots = {
+        path: production
+        for path, source in sources.items()
+        if path != COORDINATOR_EXECUTION_PORTS
+        for production in [_crate_boundary_workspace.production_rust(source)]
+        if re.search(r"\bExecutionPorts\s*\{", production)
+    }
+    if not execution_roots or any(
+        "SessionRunApplication::new(" not in production
+        for production in execution_roots.values()
+    ) or (
         not re.search(r"pub session_runs:\s*Arc<SessionRunApplication>", ports)
     ):
         errors.append(
@@ -103,12 +112,8 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
 
 
 def check_session_admission_ownership(repo_root: Path) -> list[str]:
-    paths = (
-        repo_root / "crates/server/awaken-protocol-managed/src/state/sessions.rs",
-        repo_root / "crates/server/awaken-coordinator/src/lib.rs",
-        repo_root / "crates/server/awaken-session-application/src/run_admission.rs",
-        repo_root / COORDINATOR_EXECUTION_ROOT,
-        repo_root / COORDINATOR_EXECUTION_PORTS,
+    paths = _crate_boundary_workspace.production_module_files(
+        _crate_boundary_workspace.crate_manifests(repo_root / "crates")
     )
     return session_admission_ownership_violations(
         {
@@ -430,7 +435,10 @@ def selftest() -> None:
             "pub struct SessionRunApplication; "
             "impl RunApplication for SessionRunApplication {}",
         "crates/server/awaken-coordinator/src/lib.rs": "let session_runs = execution.session_runs;",
-        COORDINATOR_EXECUTION_ROOT: "let runs = Arc::new(SessionRunApplication::new(runs, sessions));",
+        **{f"crates/fixture-{placement}/src/lib.rs":
+               "let runs = Arc::new(SessionRunApplication::new(runs, sessions)); "
+               "let ports = ExecutionPorts { session_runs: runs };"
+           for placement in ("local", "registered")},
         COORDINATOR_EXECUTION_PORTS: "pub session_runs: Arc<SessionRunApplication>,",
         "crates/server/awaken-protocol-managed/src/state/sessions.rs": "",
     }
@@ -438,9 +446,44 @@ def selftest() -> None:
     missing = dict(valid)
     missing["crates/server/awaken-session-application/src/run_admission.rs"] = ""
     assert session_admission_ownership_violations(missing), "A2/E10"
-    unwired = dict(valid)
-    unwired[COORDINATOR_EXECUTION_ROOT] = ""
-    assert session_admission_ownership_violations(unwired), "A4/!E9"
+    # A4 covers each production placement: neither may bypass the one Session
+    # admission adapter after the co-located constructor moves into the CLI.
+    for path, source in valid.items():
+        if "let ports = ExecutionPorts" not in source:
+            continue
+        unwired = dict(valid)
+        unwired[path] = source.replace("SessionRunApplication::new(", "OtherRuns::new(")
+        assert session_admission_ownership_violations(unwired), f"A4/!E9 {path}"
+    # A7 a new constructor in a newly nested production module is covered
+    # without changing a scope list; A8 the same test-only module is not an
+    # owner. Reuse Cargo/module discovery so the witness checks acquisition,
+    # not just an already supplied dictionary. Missing all constructors must
+    # also reject (A9), rather than pass vacuously.
+    without_roots = {path: source for path, source in valid.items()
+                     if "let ports = ExecutionPorts" not in source}
+    assert session_admission_ownership_violations(without_roots), "A9 no constructors"
+    with tempfile.TemporaryDirectory() as directory:
+        repository = Path(directory)
+        for relative, source in valid.items():
+            target = repository / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source, encoding="utf-8")
+            _crate_boundary_workspace.ensure_fixture_manifest(target)
+        application = repository / "crates/server/awaken-session-application/src/lib.rs"
+        application.write_text("mod run_admission;", encoding="utf-8")
+        coordinator = repository / "crates/server/awaken-coordinator/src/lib.rs"
+        coordinator.write_text(coordinator.read_text() + "mod execution_ports;", encoding="utf-8")
+        assert check_session_admission_ownership(repository) == [], "A7 existing constructors"
+        extra = repository / "crates/fixture-new/src/nested/factory.rs"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        _crate_boundary_workspace.ensure_fixture_manifest(extra)
+        entry = extra.parents[1] / "lib.rs"
+        entry.write_text("mod nested;", encoding="utf-8")
+        (extra.parent / "mod.rs").write_text("mod factory;", encoding="utf-8")
+        extra.write_text("fn build() { let ports = ExecutionPorts { session_runs: bypass }; }", encoding="utf-8")
+        assert check_session_admission_ownership(repository), "A7 new unadmitted constructor"
+        entry.write_text("#[cfg(test)] mod nested;", encoding="utf-8")
+        assert check_session_admission_ownership(repository) == [], "A8 test-only module"
     erased = dict(valid)
     erased[COORDINATOR_EXECUTION_PORTS] = "pub session_runs: Arc<dyn RunApplication>,"
     assert session_admission_ownership_violations(erased), "A6/!E9 erased port type"

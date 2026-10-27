@@ -20,7 +20,7 @@ pub(super) struct ProcessStartup {
     /// The Session execution a `LocalWorker` placement installs, supplied by
     /// the composition that co-locates execution. A Coordinator process,
     /// whose Sessions run on registered Workers, supplies none.
-    pub(super) colocated_execution: Option<Arc<dyn crate::ColocatedExecution>>,
+    pub(super) colocated_execution: Option<Box<dyn crate::ColocatedExecution>>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub(super) org_id: Option<String>,
     /// Domain-separated from the durable Control seal key by the Data Subject
@@ -49,7 +49,7 @@ pub(super) struct ProcessStartup {
     pub(super) repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub(super) inference_materializer:
-        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
     pub(super) worker_directory: Option<awaken_coordinator::WorkerDirectoryHandle>,
     pub(super) runtime_authority: Option<Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
     pub(super) worker_observations: Option<worker_observation_wiring::WorkerObservationWiring>,

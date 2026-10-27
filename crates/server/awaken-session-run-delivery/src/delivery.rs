@@ -186,7 +186,7 @@ impl WorkerPlacedSessions {
         self: &Arc<Self>,
     ) -> awaken_session_execution_contract::SessionExecutionRoles {
         awaken_session_execution_contract::SessionExecutionRoles {
-            core: self.clone(),
+            default_model: self.ports.default_model.clone(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::RegisteredWorkers(
                 self.clone(),
             ),
@@ -374,7 +374,9 @@ mod tests {
     use awaken_session_configuration_contract::resource::{
         ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
     };
-    use awaken_session_execution_contract::SessionRunExecutionRequirements;
+    use awaken_session_execution_contract::{
+        CoordinationRuntime as _, SessionRunExecutionRequirements,
+    };
 
     fn skill() -> SkillVersion {
         let files = vec![SkillBundleFile {
@@ -468,9 +470,11 @@ mod tests {
 
     /// Every Thread's committed truth, in memory.
     #[derive(Default)]
-    struct MemoryCommits(
-        std::sync::Mutex<HashMap<String, Arc<dyn awaken_dispatch_erasure::LocalCommit>>>,
-    );
+    struct MemoryCommits {
+        commits: std::sync::Mutex<HashMap<String, Arc<dyn awaken_dispatch_erasure::LocalCommit>>>,
+        read_error: Option<fn() -> RunError>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
 
     #[async_trait::async_trait]
     impl crate::SessionCommitSource for MemoryCommits {
@@ -478,8 +482,12 @@ mod tests {
             &self,
             session: &str,
         ) -> Result<Arc<crate::SessionCommit>, RunError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(error) = &self.read_error {
+                return Err(error());
+            }
             let commit = self
-                .0
+                .commits
                 .lock()
                 .expect("commit map")
                 .entry(session.to_owned())
@@ -495,7 +503,11 @@ mod tests {
         }
 
         async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RunError> {
-            Ok(self.0.lock().expect("commit map").contains_key(thread))
+            Ok(self
+                .commits
+                .lock()
+                .expect("commit map")
+                .contains_key(thread))
         }
     }
 
@@ -571,6 +583,167 @@ mod tests {
             default_model: "provider/default".into(),
         });
         (sessions, process)
+    }
+
+    #[tokio::test]
+    async fn live_subscription_uses_committed_membership_and_the_original_hub() {
+        // Causes: C1 target=root, committed advisor child, unknown child, or
+        // the same child under a different physical Session; C2 observation
+        // enters the shared reader or the Worker-placement role. R1 root and
+        // exact child => both observers receive the same original live event;
+        // R2 unknown/cross-Session child => InvalidRequest and no observer.
+        // The child relationship is committed through the real Memory store,
+        // not supplied as a match Boolean or a dispatch row. This extraction
+        // adds no state transition; commit atomicity and hub delivery remain
+        // their original owners' guarantees, covered separately.
+        use awaken_agent_contract::agent::content::ContentBlock;
+        use awaken_agent_contract::agent::delegation::DelegationId;
+        use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+        let sessions = delivery(None).await;
+        let session = awaken_session_types::SessionId::from("live-session");
+        let run = RunId("live-root-run".into());
+        let child = DelegationId::for_parent_call(&run, "advisor").child_run_id();
+        let commit = sessions
+            .ports
+            .reads
+            .commit_for_read(session.as_str())
+            .await
+            .unwrap();
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                ThreadId(session.to_string()),
+                awaken_agent_contract::thread::commit::RunDisposition::running(run.clone()),
+                true,
+                vec![Message::new(
+                    MessageId::assistant(&run, 0),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "advisor",
+                        awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+                        serde_json::json!({}),
+                    )],
+                )],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        for (physical, target, allowed) in [
+            (session.clone(), session.to_string(), true),
+            (session.clone(), child.0.clone(), true),
+            (session.clone(), "unknown-child".into(), false),
+            (
+                awaken_session_types::SessionId::from("other-session"),
+                child.0.clone(),
+                false,
+            ),
+        ] {
+            let direct = sessions
+                .ports
+                .reads
+                .subscribe_session_thread_live(&sessions.ports.hub, &physical, &target)
+                .await;
+            let adapter = sessions
+                .subscribe_session_thread_live(&physical, &target)
+                .await;
+            if !allowed {
+                for result in [direct, adapter] {
+                    let error = result.err().expect("R2 refuses an observer");
+                    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+                    assert_eq!(error.code, "invalid_request");
+                    assert_eq!(
+                        error.message,
+                        "live observer target is not a coordinated Session Thread"
+                    );
+                }
+                continue;
+            }
+            let observation = awaken_agent_contract::stream::event::Observation::from(
+                awaken_agent_contract::stream::event::Event {
+                    run_id: run.clone(),
+                    kind: awaken_agent_contract::event::AgentEvent::Delta(
+                        awaken_agent_contract::event::Delta::TextDelta {
+                            delta: target.clone(),
+                        },
+                    ),
+                },
+            );
+            sessions
+                .ports
+                .hub
+                .publish(&target, crate::ThreadEvent::StepEnded { awaiting: false });
+            sessions
+                .ports
+                .hub
+                .publish(&target, crate::ThreadEvent::Live(observation.clone()));
+            for result in [direct, adapter] {
+                let mut observer = result.unwrap().expect("R1 original hub observer");
+                assert_eq!(
+                    tokio::time::timeout(std::time::Duration::from_secs(30), observer.recv())
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    Some(observation.clone()),
+                    "R1 preserves live filtering and fan-out on the exact channel",
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn live_subscription_preserves_source_refusal_but_root_never_reads_it() {
+        // Causes: C1 root/child; C2 original source refuses as Unavailable or
+        // classified Internal; C3 direct reader/Worker-placement adapter.
+        // R3 root => live subscription and zero source opens for both C2/C3;
+        // R4 child => exact kind/code/message and one original source open.
+        // Root equality, not a fallback after a failed read, selects R3.
+        let failures: [fn() -> RunError; 2] = [
+            || RunError::unavailable("original source is unavailable"),
+            || RunError::classified("original_source_corrupt", "original source is corrupt"),
+        ];
+        for failure in failures {
+            let mut sessions = delivery(None).await;
+            let source = Arc::new(MemoryCommits {
+                read_error: Some(failure),
+                ..Default::default()
+            });
+            sessions.ports.reads = Arc::new(CommittedReads::new(
+                source.clone(),
+                sessions.ports.projections.clone(),
+            ));
+            for adapter in [false, true] {
+                for root in [true, false] {
+                    let session = awaken_session_types::SessionId::from("live-source");
+                    let target = if root { "live-source" } else { "child" };
+                    let before = source.reads.load(std::sync::atomic::Ordering::SeqCst);
+                    let result = if adapter {
+                        sessions
+                            .subscribe_session_thread_live(&session, target)
+                            .await
+                    } else {
+                        sessions
+                            .ports
+                            .reads
+                            .subscribe_session_thread_live(&sessions.ports.hub, &session, target)
+                            .await
+                    };
+                    if root {
+                        assert!(result.unwrap().is_some(), "R3 root is read-free");
+                    } else {
+                        let actual = result.err().expect("R4 original read failure");
+                        let expected = failure();
+                        assert_eq!(
+                            (actual.kind, actual.code, actual.message),
+                            (expected.kind, expected.code, expected.message)
+                        );
+                    }
+                    assert_eq!(
+                        source.reads.load(std::sync::atomic::Ordering::SeqCst) - before,
+                        usize::from(!root)
+                    );
+                }
+            }
+        }
     }
 
     fn command(session: &str, text: &str) -> AdmitSessionRun {

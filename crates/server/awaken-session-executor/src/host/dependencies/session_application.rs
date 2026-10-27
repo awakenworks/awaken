@@ -21,25 +21,25 @@ pub enum SessionApplicationBindingError {
 
 /// Shared single-assignment storage, private to Host composition.
 struct ApplicationPortBinding<T> {
-    slot: Arc<OnceLock<T>>,
+    value: Arc<OnceLock<T>>,
 }
 
 impl<T> ApplicationPortBinding<T> {
     fn bind(&self, value: T) -> Result<(), SessionApplicationBindingError> {
-        self.slot
+        self.value
             .set(value)
             .map_err(|_| SessionApplicationBindingError::AlreadyBound)
     }
 
     fn get(&self) -> Option<&T> {
-        self.slot.get()
+        self.value.get()
     }
 }
 
 impl<T> Clone for ApplicationPortBinding<T> {
     fn clone(&self) -> Self {
         Self {
-            slot: self.slot.clone(),
+            value: self.value.clone(),
         }
     }
 }
@@ -47,7 +47,7 @@ impl<T> Clone for ApplicationPortBinding<T> {
 impl<T> Default for ApplicationPortBinding<T> {
     fn default() -> Self {
         Self {
-            slot: Arc::new(OnceLock::new()),
+            value: Arc::new(OnceLock::new()),
         }
     }
 }

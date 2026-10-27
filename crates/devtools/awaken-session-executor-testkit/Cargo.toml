@@ -15,7 +15,7 @@ separation = "test-support"
 
 [dependencies]
 awaken-deployment-config.workspace = true
-awaken-dispatch-erasure.workspace = true
+awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 # The sandbox-backed Session environment volatile and durable fixtures run in.

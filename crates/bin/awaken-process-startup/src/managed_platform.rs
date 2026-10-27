@@ -235,7 +235,7 @@ pub(super) fn credential_rollout_target(
 /// Infrastructure adapters for the one canonical Coordinator composition.
 /// Hosted products may replace transport authentication, but cannot replace or
 /// add a Coordinator router.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct CoordinatorServiceAdapters {
     pub relay_destination_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
@@ -251,18 +251,18 @@ pub struct CoordinatorServiceAdapters {
     /// composition may replace it without replacing Coordinator or Worker
     /// lifecycle ownership.
     pub inference_materializer:
-        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
     /// The Session execution a process that runs its Sessions on its own
     /// local claim pool installs. A Coordinator whose Sessions run on
     /// registered Workers leaves it absent.
-    pub colocated_execution: Option<Arc<dyn crate::ColocatedExecution>>,
+    pub colocated_execution: Option<Box<dyn crate::ColocatedExecution>>,
 }
 
 impl CoordinatorServiceAdapters {
     #[must_use]
     pub fn with_colocated_execution(
         mut self,
-        execution: Arc<dyn crate::ColocatedExecution>,
+        execution: Box<dyn crate::ColocatedExecution>,
     ) -> Self {
         self.colocated_execution = Some(execution);
         self
@@ -318,7 +318,7 @@ impl CoordinatorServiceAdapters {
     #[must_use]
     pub fn with_inference_materializer(
         mut self,
-        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>,
     ) -> Self {
         self.inference_materializer = Some(materializer);
         self

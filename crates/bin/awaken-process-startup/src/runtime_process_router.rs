@@ -8,8 +8,8 @@ use super::*;
 use cloud_plane::{CloudPlane, assemble_cloud_plane};
 
 mod cloud_plane;
-mod local_execution;
 mod reclamation;
+mod registered_execution;
 mod startup;
 mod surfaces;
 
@@ -55,14 +55,6 @@ pub(super) async fn prepare_runtime_routers(
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     model_supply: PublicationModelSupply,
     process: ProcessStartup,
-    // An optional last-mile hook on the prepared data-plane host, applied before it is
-    // shared. The process startup uses it to supply a runtime backend the standard process
-    // does not own (e.g. an ACP executor for `acp:*` threads) without this
-    // module naming that backend's crate. `None` in production; `Some` in a scenario that
-    // serves external-CLI sessions.
-    customize_host: Option<
-        Box<dyn FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send>,
-    >,
 ) -> Result<ProcessRouters, String> {
     let mut base = open_process_base(stores, iam, remote_iam, process).await?;
     let resources = assemble_deployment_and_resources(&mut base).await?;
@@ -71,22 +63,15 @@ pub(super) async fn prepare_runtime_routers(
         assemble_control_component(&base, &resources, &cloud, local_browser_auth).await;
     let execution = assemble_execution_stores(&mut base, &resources).await?;
     let mut control = assemble_control_surface(&mut base, control_component)?;
-    let mut host = assemble_execution_host(
-        &mut base,
-        &resources,
-        &mut cloud,
-        &control,
-        &execution,
-        customize_host,
-    )
-    .await?;
+    let host =
+        assemble_execution_host(&mut base, &resources, &mut cloud, &control, &execution).await?;
     let session = assemble_session_plane(
         &mut base,
         &resources,
         &cloud,
         &mut control,
         &execution,
-        &mut host,
+        host,
     )?;
     let event_batch_cutover_validation = session.event_batch_cutover_validation.clone();
     let coordinator = assemble_coordinator(
@@ -515,29 +500,26 @@ fn assemble_control_surface(
     }
 }
 
-/// The execution Host and the Session persistence it records Environment
-/// bindings through.
+/// The placement-selected execution and its original Session persistence.
 struct ExecutionHost {
-    host: Arc<awaken_session_executor::ExecutorComponents>,
-    /// Consumed once by the Session application that shares these exact handles.
-    session_persistence: Option<awaken_session_application::SessionPersistence>,
-    artifact_fence: Option<Arc<awaken_coordinator::ClaimFencedArtifactPublisher>>,
+    selected: SelectedExecution,
+    session_persistence: awaken_session_application::SessionPersistence,
 }
 
-/// The data plane: the host runs the server model, resolves a session's agent to its
-/// installed config, and carries the management tool executables so the reserved-scope
-/// assistant can call them. It shares the SAME skill store and Resource Registry the
-/// capability inventory reads, so a skill or memory store the host serves is exactly
-/// what the assistant enumerates, and identity survives a restart.
+enum SelectedExecution {
+    Colocated(crate::PreparedColocatedExecution),
+    Registered(registered_execution::RegisteredExecution),
+}
+
+/// Select Session execution from the process placement. Registered Workers use
+/// frozen delivery/committed-read components; the local placement builds its
+/// original execution context over the same Resource authorities.
 async fn assemble_execution_host(
     base: &mut ProcessBase,
     resources: &DeploymentAndResources,
     cloud: &mut CloudPlane,
     control: &ControlSurface,
     execution: &ExecutionStores,
-    customize_host: Option<
-        Box<dyn FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send>,
-    >,
 ) -> Result<ExecutionHost, String> {
     let clock = base.stores.clock.clone();
     let runtime_authority = base
@@ -555,99 +537,80 @@ async fn assemble_execution_host(
         .deployment
         .take()
         .ok_or_else(|| "runtime process requires a resolved deployment".to_string())?;
-    let host_builder = SessionExecutorBuilder::for_coordinator(
-        cloud.model_wiring.executor.clone(),
-        cloud.model_wiring.model_ref.clone(),
-        awaken_session_executor::WorkerContentAdapters {
-            file_content_source: resources.resource_application.file_content_source(),
-            memory: resources.resource_authorities.memory_execution_content(),
-        },
-        execution.memory_extractions.clone(),
-        awaken_session_executor::SessionExecutionProcess::from_deployment(
+    if base.placement == awaken_session_application::SessionExecutionPlacement::RegisteredWorker {
+        if cloud.inference_override.is_some() {
+            return Err("registered-Worker inference materialization must be supplied to the Worker composition".into());
+        }
+
+        let selected = registered_execution::RegisteredExecution::prepare(
+            base,
+            resources,
+            control,
+            execution,
             &deployment,
-            base.stores.platform_workspace.clone(),
-            clock.clone(),
-        )?,
-        runtime_authority.clone(),
-    );
-    let host_builder =
-        host_builder.with_environment_binding_sink(session_persistence.environment_binding_sink());
-    let local_dispatch = Some(runtime_authority.dispatch_store());
-    let artifact_publisher = resources.resource_application.artifact_publisher();
-    let artifact_fence = local_dispatch.map(|dispatch| {
-        Arc::new(awaken_coordinator::ClaimFencedArtifactPublisher::new(
-            artifact_publisher.clone(),
-            dispatch,
-            clock.clone(),
-        ))
-    });
-    let artifact_publisher = artifact_fence
-        .as_ref()
-        .map_or(artifact_publisher, |publisher| {
-            publisher.clone()
-                as Arc<
-                    dyn awaken_resource_contract::ArtifactPublisher<
-                            awaken_session_realization_contract::ResourceOperationFence,
-                        >,
-                >
+            runtime_authority,
+            cloud.model_selection.default_model_ref().to_owned(),
+        )?;
+        return Ok(ExecutionHost {
+            selected: SelectedExecution::Registered(selected),
+            session_persistence,
         });
-    let mut host_builder = host_builder
-        .with_artifact_publisher(artifact_publisher)
-        .with_skill_bundle_source(resources.resource_application.skill_bundle_source())
-        .with_skill_catalog_application(resources.resource_application.skill_catalog_application())
-        .with_web_search_provider_registry(cloud.web_search_providers.clone())
-        .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
-        .with_remote_attempt_executor(crate::a2a_attempt_executor(
-            cloud.credential_materializer.clone(),
-        ))
-        .with_agent_publications(base.agents.catalog.clone())
-        .with_capture_sink(execution.capture_sink.clone())
-        .with_capture_policy_sources(control.capture_policy.clone())
-        .with_admin_tools(control.admin_execs.clone());
-    if let Some(credentials) = cloud.credential_materializer.clone() {
-        host_builder = host_builder.with_credential_materializer(credentials);
     }
-    if let Some(materializer) = cloud.model_wiring.materializer.take() {
-        host_builder = host_builder.with_inference_materializer(materializer);
-    }
-    let host_builder = local_execution::prepare(
-        host_builder,
-        base.placement,
-        base.process.colocated_execution.take(),
-        crate::ColocatedExecutionInputs {
-            deployment: deployment.clone(),
+    let constructor = base.process.colocated_execution.take().ok_or_else(|| {
+        "a local claim pool runs Sessions on this process and needs the composition \
+         that co-locates their execution; start the AllInOne service with the `awaken` launcher"
+            .to_owned()
+    })?;
+    let selected = constructor
+        .prepare(crate::ColocatedExecutionInputs {
+            deployment,
+            local_workspace: base.stores.platform_workspace.clone(),
+            clock,
             namespace_hand_path: base.process.namespace_hand_path.take(),
-            credentials: cloud.credential_materializer.clone(),
+            runtime_authority,
+            environment_bindings: session_persistence.environment_binding_sink(),
+            model_selection: cloud.model_selection.clone(),
+            cloud_models_enabled: base.process.model_supply.cloud_models_enabled,
+            brokered_client: cloud.brokered_client.as_ref().map(|client| {
+                client.clone()
+                    as Arc<
+                        dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient,
+                    >
+            }),
+            local_credential_roles: cloud.credential_authority.as_ref().map(|authority| {
+                (
+                    authority.clone()
+                        as Arc<dyn awaken_credential_contract::CredentialMaterialResolver>,
+                    authority.clone() as Arc<dyn awaken_provisioning_contract::SecretBroker>,
+                )
+            }),
+            external_credentials: cloud.external_credentials.clone(),
+            inference_override: cloud.inference_override.take(),
+            credential_refresh: cloud.credential_refresh_factory.take(),
+            file_content: resources.resource_application.file_content_source(),
+            memory_content: resources.resource_authorities.memory_execution_content(),
+            memory_extractions: execution.memory_extractions.clone(),
+            artifact_publisher: resources.resource_application.artifact_publisher(),
+            skill_bundles: resources.resource_application.skill_bundle_source(),
+            skill_catalog: resources.resource_application.skill_catalog_application(),
+            resource_validator: resources.resource_registry.clone(),
+            repository_bindings: Arc::new(
+                awaken_resource_application::RegistryRepositoryBindingVerifier::new(
+                    resources.resource_registry.clone(),
+                ),
+            ),
             memory_source: resources.resource_authorities.memory_mount_source(),
             memory_invalidator: resources.memory_invalidator.clone(),
-        },
-    )
-    .await?;
-    // Last-mile backend wiring the standard process does not own, supplied
-    // by the process startup (a scenario that serves external-CLI sessions).
-    let host_builder = match customize_host {
-        Some(customize) => customize(host_builder),
-        None => host_builder,
-    };
-    let repository_bindings = Arc::new(
-        awaken_resource_application::RegistryRepositoryBindingVerifier::new(
-            resources.resource_registry.clone(),
-        ),
-    );
-    let mut session_execution = awaken_session_executor::SessionExecutionDependencies::default()
-        .with_resource_validator(resources.resource_registry.clone())
-        .with_repository_binding_verifier(repository_bindings);
-    if let Some(factory) = cloud.credential_refresh_factory.take() {
-        session_execution = session_execution.with_credential_refresh_factory(factory);
-    }
-    let host = host_builder
-        .with_session_execution(session_execution)
-        .build()
-        .map_err(|error| format!("construct execution Host: {error}"))?;
+            web_search: cloud.web_search_providers.clone(),
+            agent_publications: base.agents.catalog.clone(),
+            capture_sink: execution.capture_sink.clone(),
+            capture_policy: control.capture_policy.clone(),
+            admin_tools: control.admin_execs.clone(),
+        })
+        .await?;
     Ok(ExecutionHost {
-        host,
-        session_persistence: Some(session_persistence),
-        artifact_fence,
+        selected: SelectedExecution::Colocated(selected),
+        session_persistence,
     })
 }
 
@@ -670,8 +633,26 @@ fn assemble_session_plane(
     cloud: &CloudPlane,
     control: &mut ControlSurface,
     execution: &ExecutionStores,
-    host: &mut ExecutionHost,
+    host: ExecutionHost,
 ) -> Result<SessionPlane, String> {
+    let ExecutionHost {
+        selected,
+        session_persistence,
+    } = host;
+    let (roles, dispatch, feed, capture_policy) = match &selected {
+        SelectedExecution::Colocated(execution) => (
+            execution.roles.clone(),
+            execution.dispatch.clone(),
+            execution.dispatch_observation.clone(),
+            execution.capture_policy.clone(),
+        ),
+        SelectedExecution::Registered(execution) => (
+            execution.sessions.session_execution_roles(),
+            execution.dispatch.clone(),
+            execution.owner.clone() as Arc<dyn awaken_dispatch::DispatchOperationalFeed>,
+            execution.capture_policy.clone(),
+        ),
+    };
     let webhook_delivery = lifecycle_webhook_delivery(base, control.webhook_stores.take());
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
@@ -691,31 +672,20 @@ fn assemble_session_plane(
                 resources.resource_application.purge_scheduler(),
             );
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
-        host.host.session_execution_roles(),
-        host.session_persistence
-            .take()
-            .ok_or("Session persistence was already consumed")?,
+        roles,
+        session_persistence,
         execution.environment_execution.clone(),
         awaken_session_application::SessionExecutionAdmission::new(
-            host.host
-                .coordination()
-                .dispatch_observation_source()
-                .map_err(|error| error.to_string())?,
+            feed,
             base.worker_directory.clone(),
-            host.host.dispatch().preparation_placement(),
+            dispatch.preparation_placement(),
         ),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement: base.placement,
-            local_realization_owner: host
-                .host
-                .dispatch()
-                .topology()
-                .lease_owner
-                .as_str()
-                .to_owned(),
+            local_realization_owner: dispatch.topology().lease_owner.as_str().to_owned(),
             ..Default::default()
         },
     )
@@ -737,18 +707,30 @@ fn assemble_session_plane(
     }
     let session_application = builder.build().map_err(|error| error.to_string())?;
     let session_application = Arc::new(session_application);
-    bind_session_lifecycle_hooks(base, host, &session_application)?;
+    let coordinator_execution = match selected {
+        SelectedExecution::Colocated(execution) => {
+            bind_session_lifecycle_hooks(
+                base,
+                Some(&execution.artifact_fence),
+                &session_application,
+            )?;
+            (execution.finish)(session_application.clone())
+        }
+        SelectedExecution::Registered(execution) => {
+            bind_session_lifecycle_hooks(base, None, &session_application)?;
+            execution
+                .finish(&session_application)
+                .map_err(|error| error.to_string())
+        }
+    }?;
     let event_batch_cutover_validation = session_application
         .recovery()
         .session_event_batch_cutover_validation_source();
-    let coordinator_execution = crate::coordinator_execution(&host.host, &session_application)
-        .map_err(|error| error.to_string())?;
+
     // The Session `content_capture` projection decides with the Host's own
     // ceiling and the very policy sources its Run boundary reads.
-    let mut managed_state = ManagedState::from_application(
-        session_application.clone(),
-        host.host.content_capture_policy(),
-    );
+    let mut managed_state =
+        ManagedState::from_application(session_application.clone(), capture_policy);
     if let Some(policy) = base.process.managed_services.inference_geo_policy.clone() {
         managed_state = managed_state.with_inference_geo_policy(policy);
     }
@@ -806,7 +788,7 @@ fn lifecycle_webhook_delivery(
 /// authority to the shared Session application.
 fn bind_session_lifecycle_hooks(
     base: &ProcessBase,
-    host: &ExecutionHost,
+    artifact_fence: Option<&Arc<awaken_coordinator::ClaimFencedArtifactPublisher>>,
     session_application: &Arc<awaken_session_application::SessionApplication>,
 ) -> Result<(), String> {
     if let Some(builds) = base.environments.image_builds.as_ref() {
@@ -821,7 +803,7 @@ fn bind_session_lifecycle_hooks(
         // one permit until the lifecycle supervisor begins waiting.
         session_application.lifecycle().request_reconciliation();
     }
-    if let Some(publisher) = host.artifact_fence.as_ref() {
+    if let Some(publisher) = artifact_fence {
         publisher
             .install_session_control(
                 session_application.terminal_cleanups(),

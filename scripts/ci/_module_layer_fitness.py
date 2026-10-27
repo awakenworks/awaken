@@ -84,7 +84,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "host::session::content_delivery",
         "host::session::context",
         "host::session::input_projection",
-        "host::session::run_ingress",
+        "host::session::dispatch_worker",
     )),
     (HOST, "run execution, agent runs and auxiliary runs consume the whole host", (
         "agent_runner",

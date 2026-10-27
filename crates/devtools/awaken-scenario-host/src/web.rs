@@ -95,12 +95,11 @@ pub async fn build_management_web_router() -> Router {
     registry
         .register(Arc::new(ScenarioWebSearchProvider))
         .expect("the scenario Web provider descriptor is valid and unique");
-    awaken_process_startup::build_all_in_one_router_with_host_customizer(
+    awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(WebToolDrivingModel),
         ModelBinding::new("default", "management-web", "default"),
         crate::scenario_deployment(),
         Some(registry),
-        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await

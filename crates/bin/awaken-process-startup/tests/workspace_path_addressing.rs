@@ -16,7 +16,7 @@ async fn build_all_in_one_router() -> axum::Router {
     build_all_in_one_router_with_model(
         Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
         "kimi",
-        std::sync::Arc::new(awaken_cli::LocalExecution),
+        Box::new(awaken_cli::LocalExecution::default()),
     )
     .await
 }

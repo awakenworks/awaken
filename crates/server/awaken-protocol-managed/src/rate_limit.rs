@@ -274,6 +274,11 @@ mod tests {
             assert_eq!(
                 classify(&method, "/v1/awaken/sessions/ses_1/execution-evidence"),
                 Some((OrgOperation::Read, "awaken_sessions")),
+                "X1 existing execution evidence",
+            );
+            assert_eq!(
+                classify(&method, "/v1/awaken/sessions/ses_1/runs/run_1/dispatch"),
+                Some((OrgOperation::Read, "awaken_sessions")),
                 "X1"
             );
             assert_eq!(

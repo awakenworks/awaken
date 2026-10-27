@@ -12,12 +12,20 @@ layer = "infrastructure"
 authority = "dispatch-role-erasure"
 
 [dependencies]
+awaken-session-application-contract.workspace = true
 thiserror.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
+
+awaken-time = { workspace = true, optional = true }
+awaken-store-inmem = { workspace = true, optional = true }
+
+[features]
+default = []
+test-support = ["dep:awaken-time", "dep:awaken-store-inmem"]
 
 [dev-dependencies]
 awaken-time.workspace = true

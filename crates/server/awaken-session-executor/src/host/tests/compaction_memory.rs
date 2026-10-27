@@ -741,7 +741,8 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .as_nanos();
     let dir = std::env::temp_dir().join(format!("awaken-memory-outbox-{stamp}"));
     let thread = "memory-outbox-thread";
-    let authority = Arc::new(crate::EphemeralRuntimeAuthority::new(system_clock()));
+    let authority =
+        Arc::new(awaken_session_executor_testkit::volatile_reference_authority(system_clock()));
 
     // Cause/effect graph: C1 committed terminal truth exists; C2 its extraction
     // intent is absent; C3 the direct deployment materializes its canonical

@@ -22,6 +22,8 @@ WORKER_SOURCE = "crates/bin/awaken-worker/src"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-process-startup/src"
 CLI_LIB_SOURCE = "crates/bin/awaken-process-startup/src/lib.rs"
+CLI_COMPOSITION_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
+SCENARIO_PROCESS_SOURCE = "crates/bin/awaken-cli/src/scenario_process.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
 SERVICE_BOUNDARY = "crates/bin/awaken-process-startup/src/config/service_boundary.rs"
 RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authorities.rs"
@@ -203,11 +205,27 @@ NON_PRODUCT_APIS = (
         for name in (
             "build_ephemeral_all_in_one_router",
             "build_all_in_one_router_with_scenario_model",
-            "build_all_in_one_router_with_host_customizer",
-            "build_durable_all_in_one_router_with_host_customizer",
             "build_all_in_one_router_with_model",
             "build_durable_all_in_one_router",
             "build_secured_all_in_one_router",
+        )
+    ),
+    (
+        "awaken_cli::scenario_process",
+        CLI_COMPOSITION_LIB_SOURCE,
+        r"\bmod\s+scenario_process\b",
+        FEATURE_TEST_SUPPORT_GATE,
+    ),
+    *(
+        (
+            f"awaken_cli::{name}",
+            SCENARIO_PROCESS_SOURCE,
+            rf"\bpub\s+async\s+fn\s+{name}\b",
+            FEATURE_TEST_SUPPORT_GATE,
+        )
+        for name in (
+            "build_all_in_one_router_with_host_customizer",
+            "build_durable_all_in_one_router_with_host_customizer",
         )
     ),
     (
