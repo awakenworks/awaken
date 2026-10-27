@@ -312,8 +312,7 @@ impl SessionEventBatchCommands {
             .mutations
             .session_aggregate(session_id)
             .await
-            .map_err(repository_failure)
-            .map_err(mutation_run_error)?;
+            .map_err(repository_run_error)?;
         Ok(classify_event_batch_idempotency(
             &session.event_batches,
             key,
@@ -569,8 +568,7 @@ impl SessionEventBatchCommands {
             .repository()
             .deleted_event_admissions(owner_scope, session_id)
             .await
-            .map_err(repository_failure)
-            .map_err(mutation_run_error)?
+            .map_err(repository_run_error)?
         {
             return awaken_session_application_contract::resolve_deleted_event_admission(
                 &deleted,
@@ -599,8 +597,7 @@ impl SessionEventBatchCommands {
                     .repository()
                     .deleted_event_admissions(owner_scope, session_id)
                     .await
-                    .map_err(repository_failure)
-                    .map_err(mutation_run_error)?
+                    .map_err(repository_run_error)?
                 {
                     Some(deleted) => {
                         awaken_session_application_contract::resolve_deleted_event_admission(
@@ -615,6 +612,25 @@ impl SessionEventBatchCommands {
         }
     }
 
+    /// Read through the one mutation owner on each caller's CAS attempt.
+    /// These remain two ordered reads, not an atomic owner/root snapshot.
+    async fn load_event_root(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(String, awaken_session_state_contract::SessionAggregate), RunError> {
+        let owner = self
+            .mutations
+            .owner(session_id)
+            .await
+            .map_err(mutation_run_error)?;
+        let session = self
+            .mutations
+            .session_aggregate(session_id)
+            .await
+            .map_err(repository_run_error)?;
+        Ok((owner, session))
+    }
+
     async fn resolve_session_event_batch(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -625,15 +641,7 @@ impl SessionEventBatchCommands {
         let (thread_reads, coordination) = (self.thread_reads.as_ref(), &*self.coordination_reads);
 
         for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let owner = mutations
-                .owner(session_id)
-                .await
-                .map_err(mutation_run_error)?;
-            let mut session = mutations
-                .session_aggregate(session_id)
-                .await
-                .map_err(repository_failure)
-                .map_err(mutation_run_error)?;
+            let (owner, mut session) = self.load_event_root(session_id).await?;
             let retained = admission.idempotency().map(|(key, request_fingerprint)| {
                 retained_event_batch_admission(&session.event_batches, key, request_fingerprint)
             });
@@ -881,8 +889,7 @@ impl SessionEventBatchCommands {
                     .repository()
                     .get(session_id)
                     .await
-                    .map_err(repository_failure)
-                    .map_err(mutation_run_error)?,
+                    .map_err(repository_run_error)?,
             };
             if session.is_terminal() {
                 return self.resolve_terminal_event_batches(session_id).await;
@@ -919,8 +926,7 @@ impl SessionEventBatchCommands {
                         .repository()
                         .get(session_id)
                         .await
-                        .map_err(repository_failure)
-                        .map_err(mutation_run_error)?;
+                        .map_err(repository_run_error)?;
                     if fresh.is_terminal() {
                         let _ = self.resolve_terminal_event_batches(session_id).await?;
                         return Err(reply_error);
@@ -963,15 +969,7 @@ impl SessionEventBatchCommands {
     ) -> Result<bool, RunError> {
         let mutations = &self.mutations;
         for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let owner_scope = mutations
-                .owner(session_id)
-                .await
-                .map_err(mutation_run_error)?;
-            let mut session = mutations
-                .session_aggregate(session_id)
-                .await
-                .map_err(repository_failure)
-                .map_err(mutation_run_error)?;
+            let (owner_scope, mut session) = self.load_event_root(session_id).await?;
             if !session.is_terminal() {
                 return Ok(false);
             }
@@ -1098,21 +1096,18 @@ impl SessionEventBatchCommands {
                     .await?;
                 self.settle_event_batch_wake(session, &batch_id).await?;
 
-                let delivery = match admission {
+                let activation = match admission {
                     AdmittedSessionRun::Reserved(delivery)
                     | AdmittedSessionRun::AlreadyReserved(delivery)
-                    | AdmittedSessionRun::AlreadyActivated(delivery) => delivery,
+                    | AdmittedSessionRun::AlreadyActivated(delivery) => {
+                        coordination_runtime.activate_session_run(delivery).await?
+                    }
                     AdmittedSessionRun::RecoveryClaimed { .. } => {
                         return Ok(EventBatchProgress::Pending);
                     }
-                    AdmittedSessionRun::Completed { .. } => {
-                        return Ok(self
-                            .observe_user_run(session, &batch_id, &operation_id, &run_id, &content)
-                            .await?
-                            .unwrap_or(EventBatchProgress::Pending));
-                    }
+                    AdmittedSessionRun::Completed { .. } => SessionRunActivation::Completed,
                 };
-                match coordination_runtime.activate_session_run(delivery).await? {
+                match activation {
                     SessionRunActivation::Activated
                     | SessionRunActivation::AlreadyActivated {
                         session_activity_epoch: _,
@@ -1158,16 +1153,8 @@ impl SessionEventBatchCommands {
                         &message_id,
                     )
                     .await?;
-                self.settle_event_batch_wake(session, &batch_id).await?;
-                self.observe_session_event(
-                    &session.session_id,
-                    &batch_id,
-                    &operation_id,
-                    EventObservation::Processed(anchor),
-                    None,
-                )
-                .await?;
-                Ok(EventBatchProgress::Advanced)
+                self.observe_processed_event_after_wake(session, &batch_id, &operation_id, anchor)
+                    .await
             }),
             SessionEventCommand::DefineOutcome {
                 operation_id,
@@ -1193,18 +1180,15 @@ impl SessionEventBatchCommands {
                     }
                     Err(error) => return Err(error),
                 };
-                self.settle_event_batch_wake(session, &batch_id).await?;
-                self.observe_session_event(
-                    &session.session_id,
+                self.observe_processed_event_after_wake(
+                    session,
                     &batch_id,
                     &operation_id,
-                    EventObservation::Processed(SessionEventProjectionAnchor {
+                    SessionEventProjectionAnchor {
                         source_commit_cursor,
-                    }),
-                    None,
+                    },
                 )
-                .await?;
-                Ok(EventBatchProgress::Advanced)
+                .await
             }),
             SessionEventCommand::ToolReply {
                 operation_id,
@@ -1237,16 +1221,8 @@ impl SessionEventBatchCommands {
                         .await?
                     }
                 };
-                self.settle_event_batch_wake(session, &batch_id).await?;
-                self.observe_session_event(
-                    &session.session_id,
-                    &batch_id,
-                    &operation_id,
-                    EventObservation::Processed(anchor),
-                    None,
-                )
-                .await?;
-                Ok(EventBatchProgress::Advanced)
+                self.observe_processed_event_after_wake(session, &batch_id, &operation_id, anchor)
+                    .await
             }),
             SessionEventCommand::Interrupt {
                 operation_id,
@@ -1314,6 +1290,27 @@ impl SessionEventBatchCommands {
                 Ok(EventBatchProgress::Advanced)
             }),
         }
+    }
+
+    /// Complete only the shared System/Outcome/ToolReply suffix. Interrupt
+    /// supersession and already-processed recovery retain their distinct order.
+    async fn observe_processed_event_after_wake(
+        &self,
+        session: &PersistedSession,
+        batch_id: &str,
+        operation_id: &str,
+        anchor: SessionEventProjectionAnchor,
+    ) -> Result<EventBatchProgress, RunError> {
+        self.settle_event_batch_wake(session, batch_id).await?;
+        self.observe_session_event(
+            &session.session_id,
+            batch_id,
+            operation_id,
+            EventObservation::Processed(anchor),
+            None,
+        )
+        .await?;
+        Ok(EventBatchProgress::Advanced)
     }
 
     /// Close the sole activity receipt opened by the exact failed ToolReply.
@@ -1445,15 +1442,7 @@ impl SessionEventBatchCommands {
         let mutations = &self.mutations;
         let projection_anchor = observation.anchor();
         for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let owner = mutations
-                .owner(session_id)
-                .await
-                .map_err(mutation_run_error)?;
-            let mut session = mutations
-                .session_aggregate(session_id)
-                .await
-                .map_err(repository_failure)
-                .map_err(mutation_run_error)?;
+            let (owner, mut session) = self.load_event_root(session_id).await?;
             let changed = session
                 .events()
                 .observe(
@@ -1570,6 +1559,10 @@ impl SessionEventBatchCommands {
             RunState::Running | RunState::Awaiting
         ))
     }
+}
+
+fn repository_run_error(error: awaken_session_state_contract::SessionRepositoryError) -> RunError {
+    mutation_run_error(repository_failure(error))
 }
 
 fn mutation_run_error(error: SessionMutationError) -> RunError {

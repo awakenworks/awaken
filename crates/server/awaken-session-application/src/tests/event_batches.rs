@@ -45,6 +45,7 @@ struct EventBatchRuntime {
     reservation_outcomes: Mutex<VecDeque<SessionRunReservation>>,
     fail_reservation: AtomicBool,
     fail_activation_once: AtomicBool,
+    complete_activation_once: AtomicBool,
     activated: Mutex<BTreeMap<String, u64>>,
     states: Mutex<HashMap<String, RunState>>,
     run_state_reads: AtomicUsize,
@@ -331,6 +332,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
         if self.fail_activation_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("scripted activation interruption"));
         }
+        if self.complete_activation_once.swap(false, Ordering::SeqCst) {
+            return Ok(SessionRunActivation::Completed);
+        }
         let prior = self
             .activated
             .lock()
@@ -385,11 +389,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
             .await
     }
 
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
+    // This role retains its original NeutralRuntime refusal.
     /// Admit one ordinary child Run after the Session application has validated
     /// the frozen roster and lifecycle. Implementations must use their canonical
     /// durable Run ingress; the default fails closed rather than spawning a
@@ -2077,11 +2077,11 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
 
 #[tokio::test]
 async fn event_batch_lost_cas_ack_reloads_the_retained_admission_plan() {
-    // Cause/effect decision table: C1 the sole root CAS commits an absent key;
-    // C2 its acknowledgement is reported as Conflict; C3 retry reload sees the
-    // exact accepted receipt. R1 C1+C2+C3=>return the retained batch, keep one
-    // append, and advance the root exactly once. This exercises the production
-    // retry loop; database atomicity/durability remains repository TCB.
+    // load_event_root decision table: C1 the root CAS commits an absent key;
+    // C2 its acknowledgement is Conflict; C3 the next attempt reloads the exact
+    // accepted receipt. R1 C1+C2+C3=>one batch and one root advance. Every retry
+    // must reread owner then aggregate, with the original error conversions;
+    // no helper caches either read. Database atomicity/durability remains TCB.
     let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -2994,10 +2994,10 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
 
 #[tokio::test]
 async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_narrow() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
+    // Shared suffix: observe_processed_event_after_wake preserves wake
+    // settlement before the existing processed-observation CAS in P1-P3.
+    // System/Outcome/ToolReply keep their preceding evidence/effect gates;
+    // Interrupt and processed-anchor recovery retain their distinct sequence.
     // Cause/effect graph: C1 a current Run is Awaiting; C2 an earlier accepted
     // User is queued; C3 later retained commands are ToolReply+System,
     // Interrupt(all frozen targets), and DefineOutcome; C4 the reply's System
@@ -5106,10 +5106,10 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
 
 #[tokio::test]
 async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
+    // Completion-path reuse relies on A5 retaining identity-only/no delivery.
+    // This table owns admission, not the driver's shared completion observer.
+    // The observer still waits for the original Runtime/Dispatch authorities;
+    // A1-A5 freeze the exact admission values consumed by the Event driver.
     // Cause/effect graph: C1 reservation is new/exact replay/already activated/
     // recovery-claimed/completed; C2 the stable Run operation is same/different.
     // Effects: E1 Reserved and AlreadyReserved carry the same exact activity

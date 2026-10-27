@@ -375,10 +375,10 @@ async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it
 
 #[tokio::test]
 async fn outcome_busy_is_retryable_and_cannot_mark_the_root_entry_processed() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
+    // Shared suffix boundary: B1 must return Pending before entering
+    // observe_processed_event_after_wake. B2 alone supplies the stable prepare
+    // cursor, then settles wake before the existing processed-observation CAS.
+    // This helper grants no Outcome ownership or independent retry policy.
     // Cause/effect graph: C1 the stable DefineOutcome command is unprocessed;
     // C2 another Outcome owns the Thread aggregate; C3 that owner later clears.
     // Effects: E1 Busy is retryable rather than a reconciliation failure; E2
