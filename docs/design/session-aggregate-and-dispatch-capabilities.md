@@ -164,6 +164,23 @@ existing CAS and replay boundaries. Work remains responsible for original
 business-effect reconciliation and successor admission; this Native slice
 does not certify an indeterminate tool result as successful.
 
+Cold terminal cleanup must not move an unprepared Resident-source obligation
+to another Actor while its frozen Dispatch scope remains unsettled. The existing
+`SessionTerminalCleanups` claim revalidation reads `SessionCoordinationReads`
+before checking Registry authority and before/after the root CAS. A pending,
+unavailable or unproven source read skips the new assignment; an uncertain CAS
+uses the existing exact-predecessor compensation. It neither closes the old
+attempt nor acknowledges cleanup. Exact prior owners may continue their own
+obligation. Unmaterialized/continued sources and already-prepared disposal retain
+their existing provider-verified recovery paths; no absent historical binding is
+promoted to no-Create evidence. The existing archive-receipt reader supplies the
+same no-Create qualification for assignment and occupancy.
+
+This reuses Session roots, Dispatch reads, Registry fencing and compensation
+unchanged; only the existing external cleanup selection is narrowed. No queue,
+retirement authority, persisted state or wire contract is added. Runtime still
+checks source safety immediately before live I/O, independently of selection.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses

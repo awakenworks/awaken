@@ -2,6 +2,41 @@
 
 use super::*;
 
+/// Original source-free test receipts, shared by retirement and cold admission.
+pub(super) fn prepare_terminal_root_for_disposal(root: &mut PersistedSession) {
+    let lease = root.realization.clone().unwrap();
+    let commands = match root.terminal_cleanup_work_action().unwrap().unwrap() {
+        awaken_session_state_contract::SessionTerminalCleanupAction::Prepare { commands } => {
+            commands
+        }
+        other => panic!("original preparation: {other:?}"),
+    };
+    for command in commands {
+        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+            command,
+            lease.clone(),
+        );
+        let prepared = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+            &effect,
+            effect.sandbox_effect_fence().unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let repository = awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+            &root.session_id,
+            "workspace",
+            &root.resources,
+        )
+        .unwrap();
+        root.record_terminal_cleanup_preparation("workspace", &lease, prepared, Some(repository))
+            .unwrap();
+    }
+    assert!(matches!(
+        root.terminal_cleanup_work_action().unwrap(),
+        Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { .. })
+    ));
+}
+
 pub(super) fn terminal_disposal_action(
     session_id: &str,
 ) -> awaken_session_state_contract::SessionTerminalCleanupAction {

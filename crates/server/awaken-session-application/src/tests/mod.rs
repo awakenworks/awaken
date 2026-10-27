@@ -592,6 +592,8 @@ impl RecordingReplyRuntime {
 #[derive(Default)]
 struct RecordingCleanupRuntime {
     source_observation: Mutex<awaken_session_execution_contract::SessionSourceDispatchObservation>,
+    source_observation_steps:
+        Mutex<VecDeque<awaken_session_execution_contract::SessionSourceDispatchObservation>>,
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
@@ -3379,7 +3381,11 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RecordingCl
         &self,
         _session: &awaken_session_state_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
-        self.source_observation.lock().unwrap().clone()
+        self.source_observation_steps
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| self.source_observation.lock().unwrap().clone())
     }
 
     async fn coordinated_admission_receipt(
