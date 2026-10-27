@@ -573,7 +573,8 @@ impl WebSearchPlugin {
         inherited: &awaken_agent_contract::toolset::InheritedToolsets,
     ) -> Result<Self, String> {
         self.execution_configuration =
-            configuration::effective_search_configuration(own, inherited)?;
+            configuration::effective_search_configuration(own, inherited)
+                .map_err(|error| error.to_string())?;
         Ok(self)
     }
 
@@ -909,8 +910,8 @@ impl WebFetchPlugin {
         own: Option<WebFetchExecutionConfiguration>,
         inherited: &awaken_agent_contract::toolset::InheritedToolsets,
     ) -> Result<Self, String> {
-        self.execution_configuration =
-            configuration::effective_fetch_configuration(own, inherited)?;
+        self.execution_configuration = configuration::effective_fetch_configuration(own, inherited)
+            .map_err(|error| error.to_string())?;
         Ok(self)
     }
 

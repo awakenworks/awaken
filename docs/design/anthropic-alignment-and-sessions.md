@@ -213,6 +213,11 @@ required URL evidence; a compile-fail doctest rejects a roster-less publication.
  The compiler validates disabled and
 later duplicate entries as well as the selected entry.
 
+The extension retains `WebConfigurationIssue` (field path, stable code and
+message) through frozen decoding and inherited composition. Existing SDK
+String-returning helpers and plugin builders format it only at their compatibility
+boundary; they do not maintain a second parser or silently drop invalid sources.
+
 Web execution settings remain in the neutral
 `ToolPolicyOverride.configuration` value, separately from provider bindings and
 options in `plugin_config`. Installed provider capabilities and prepared
