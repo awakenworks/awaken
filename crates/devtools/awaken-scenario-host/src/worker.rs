@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use awaken_credential_materializer::InferenceExecutorMaterializer;
+use awaken_inference_endpoint::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::LlmExecutor;
 
 use crate::EchoModel;
@@ -74,7 +74,7 @@ fn echo_worker_builder(
         // recovery scenarios cannot advertise an endpoint-specific capability
         // through a parallel environment-variable path without being able to
         // execute it.
-        .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(None))
+        .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
         // Managed Session placement requires the standard per-kind Resource clients.
         // This is the same registered HTTP Memory adapter factory used by production;
         // File, Skill, and Repository clients are installed by WorkerNode itself.

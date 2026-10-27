@@ -14,6 +14,9 @@
 //! linking the Worker's credential realization.
 #![warn(unreachable_pub)]
 
+mod inference_executor;
+pub use inference_executor::InferenceExecutorMaterializer;
+
 use std::sync::Arc;
 
 use awaken_runtime_contract::UnspecifiedReasoning;

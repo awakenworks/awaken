@@ -82,7 +82,10 @@ pub use coordinator_persistence::{
     migrate_postgres_schema_with_pool as migrate_postgres_coordinator_schema_with_pool,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
-pub use execution_ports::ExecutionPorts;
+pub use execution_ports::{
+    ColocatedExecution, ColocatedExecutionInputs, ExecutionPorts, InferenceSelection,
+    PreparedColocatedExecution,
+};
 pub use extraction_references::ReferenceIndexedMemoryExtractions;
 pub use runtime_authority::postgres_local_commit;
 

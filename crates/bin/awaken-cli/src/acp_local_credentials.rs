@@ -33,6 +33,7 @@ pub struct PreparedLocalWorker {
     resolver: Option<Arc<AcpLocalCredentialResolver>>,
     stores: awaken_control::InferenceMaterializationStores,
     admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
 }
 
 /// Prepare the embedded Worker selected by an AllInOne deployment. Host ACP
@@ -60,6 +61,7 @@ pub(crate) async fn prepare_local_worker_with_workspace(
             resolver: Some(prepared.resolver),
             stores: prepared.stores,
             admin_tools: Vec::new(),
+            inference_override: None,
         },
         None => PreparedLocalWorker {
             resolver: None,
@@ -69,6 +71,7 @@ pub(crate) async fn prepare_local_worker_with_workspace(
             )
             .await,
             admin_tools: Vec::new(),
+            inference_override: None,
         },
     };
     // One registered Worker claims Native, ACP, and outbound A2A attempts. The
@@ -163,6 +166,7 @@ fn configured_worker_builder(
     deployment: &awaken_process_startup::config::ResolvedDeployment,
     credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     clock: Arc<dyn awaken_time::WallClock>,
+    inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
 ) -> Result<awaken_worker::WorkerNodeBuilder, String> {
     let worker = &deployment.worker;
     let upstream = configured_worker_upstream(upstream, deployment, clock.clone())?;
@@ -182,14 +186,14 @@ fn configured_worker_builder(
     let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream, clock)
         .with_deployment_config(deployment.runtime.clone())
         .with_standard_manifest_config(manifest)
-        .with_inference_materializer(Arc::new(
-            awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
-                credentials.clone(),
-            ),
-        ))
-        .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(Some(
-            credentials.clone(),
-        )))
+        .with_inference_materializer(inference_override.unwrap_or_else(|| {
+            Arc::new(
+                awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
+                    credentials.clone(),
+                ),
+            )
+        }))
+        .with_remote_attempt_executor(crate::a2a_attempt_executor(Some(credentials.clone())))
         .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_credential_materializer(credentials)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
@@ -276,7 +280,7 @@ impl PreparedLocalAcp {
             )),
             clock.clone(),
         );
-        configured_worker_builder(upstream, deployment, credentials, clock)?
+        configured_worker_builder(upstream, deployment, credentials, clock, None)?
             .with_worker_local_credential_resolver(resolver.clone())
             .with_acp_capability_observation_source(resolver)
             .without_admin_surface()
@@ -289,6 +293,16 @@ impl PreparedLocalAcp {
 }
 
 impl PreparedLocalWorker {
+    /// The composing product supplies the existing inference port to the Worker
+    /// that executes it; Coordinator startup does not materialize a model.
+    pub fn with_inference_materializer(
+        mut self,
+        selected: Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>,
+    ) -> Self {
+        self.inference_override = Some(selected);
+        self
+    }
+
     pub fn with_admin_tools(
         mut self,
         tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
@@ -312,9 +326,15 @@ impl PreparedLocalWorker {
             )),
             clock.clone(),
         );
-        let mut builder = configured_worker_builder(upstream, deployment, credentials, clock)?
-            .with_admin_tools(self.admin_tools.clone())
-            .without_admin_surface();
+        let mut builder = configured_worker_builder(
+            upstream,
+            deployment,
+            credentials,
+            clock,
+            self.inference_override.clone(),
+        )?
+        .with_admin_tools(self.admin_tools.clone())
+        .without_admin_surface();
         if let Some(resolver) = &self.resolver {
             builder = builder
                 .with_worker_local_credential_resolver(resolver.clone())
@@ -918,6 +938,20 @@ mod tests {
         );
     }
 
+    struct CompositionInference;
+    impl awaken_inference_endpoint::InferenceExecutorMaterializer for CompositionInference {
+        fn supported_access_schemes(&self) -> &'static [&'static str] {
+            &["composition-probe"]
+        }
+        fn materialize_pinned(
+            &self,
+            _: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+            _: &awaken_runtime_contract::RuntimeRunContext,
+        ) -> Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>> {
+            panic!("a Worker constructor must not execute inference")
+        }
+    }
+
     #[tokio::test]
     async fn all_in_one_worker_exists_without_an_acp_capability() {
         // Cause/effect graph: C1=AllInOne; C2=local ACP resolver present.
@@ -926,55 +960,71 @@ mod tests {
         // E4=the canonical registration-bound Session Resource adapter is installed.
         // Decision table: W1 C1&&!C2 -> E1+E2+E3+E4. The C1+C2 row is owned by the
         // startup-discovery test below and adds exact ACP observations to this base.
-        let directory = tempfile::tempdir().unwrap();
-        let mut deployment = awaken_process_startup::config::local_test_deployment_at(
-            directory.path().into(),
-            awaken_time::system_clock(),
-        );
-        deployment.runtime.disable_local_pool = true;
-        deployment.run_local_pool = false;
-        let prepared = PreparedLocalWorker {
-            resolver: None,
-            stores: awaken_control::InferenceMaterializationStores {
-                credentials: Arc::new(InMemoryCredentialRepo::new()),
-                secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            },
-            admin_tools: Vec::new(),
-        };
-        let worker = prepared
-            .build_worker(
-                "http://127.0.0.1:1",
-                &deployment,
+        // W2 C1&&!C2 + product inference provided => E1-E4 still hold and
+        // exactly that port's supported scheme is advertised by the real Worker.
+        // No constructor may call materialize_pinned or execute a model.
+        for supplied_inference in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+                directory.path().into(),
                 awaken_time::system_clock(),
-            )
-            .await
-            .expect("W1 WorkerNode");
-        assert!(
-            worker
-                .manifest()
-                .capabilities
-                .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
-            "W1/E4 Native composition retains the standard Resource adapter"
-        );
-        assert!(
-            worker.manifest().capabilities.contains("native-runtime"),
-            "W1"
-        );
-        assert!(
-            worker
-                .manifest()
-                .capabilities
-                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY),
-            "W1"
-        );
-        assert!(
-            worker
-                .manifest()
-                .capabilities
-                .iter()
-                .all(|capability| !capability.starts_with("acp:")),
-            "W1"
-        );
+            );
+            deployment.runtime.disable_local_pool = true;
+            deployment.run_local_pool = false;
+            let prepared = PreparedLocalWorker {
+                resolver: None,
+                stores: awaken_control::InferenceMaterializationStores {
+                    credentials: Arc::new(InMemoryCredentialRepo::new()),
+                    secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+                },
+                admin_tools: Vec::new(),
+                inference_override: None,
+            };
+            let prepared = if supplied_inference {
+                prepared.with_inference_materializer(Arc::new(CompositionInference))
+            } else {
+                prepared
+            };
+            let worker = prepared
+                .build_worker(
+                    "http://127.0.0.1:1",
+                    &deployment,
+                    awaken_time::system_clock(),
+                )
+                .await
+                .expect("W1 WorkerNode");
+            assert!(
+                worker
+                    .manifest()
+                    .capabilities
+                    .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+                "W1/E4 Native composition retains the standard Resource adapter"
+            );
+            assert!(
+                worker.manifest().capabilities.contains("native-runtime"),
+                "W1"
+            );
+            assert!(
+                worker
+                    .manifest()
+                    .capabilities
+                    .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY),
+                "W1"
+            );
+            assert!(
+                worker
+                    .manifest()
+                    .capabilities
+                    .iter()
+                    .all(|capability| !capability.starts_with("acp:")),
+                "W1"
+            );
+            assert_eq!(
+                worker.manifest().capabilities.contains("composition-probe"),
+                supplied_inference,
+                "W2 product-selected inference reaches the actual registered Worker, not a discarded Coordinator context"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1034,7 +1084,7 @@ mod tests {
 
         let workspace = awaken_installation_workspace::provision_at(
             &deployment.data_dir,
-            awaken_session_executor::ExecutorComponents::mint_local_workspace,
+            awaken_deployment_config::mint_local_workspace,
         );
         let prepared = prepare_local_acp_with(
             &mut deployment,
@@ -1251,7 +1301,7 @@ mod tests {
 
         let workspace = awaken_installation_workspace::provision_at(
             &deployment.data_dir,
-            awaken_session_executor::ExecutorComponents::mint_local_workspace,
+            awaken_deployment_config::mint_local_workspace,
         );
         let prepared = prepare_local_acp_with(
             &mut deployment,

@@ -306,10 +306,9 @@ count at zero.
    Session executor or any Worker-side crate in the crate's normal closure;
    rule `D4` checks the closure of the package that declares the Coordinator
    binary (`awaken-coordinator-process`), because Cargo links every target of
-   a package with that package's closure. The crates that closure still
-   reaches are reviewed transitions in
-   `scripts/ci/coordinator_binary_closure_baseline.json` (9 today); a new
-   reach is refused and a transition leaves with `--tighten`. The co-located
+   a package with that package's closure. The reviewed transitions in
+   `scripts/ci/coordinator_binary_closure_baseline.json` have been tightened to
+   empty; D4 refuses any new Worker-side reach. The co-located
    root (`awaken-cli`) is the root meant to link executor and realization
    together ([Coordinator-only composition](../design/runtime-interface-boundaries.md#coordinator-only-composition)).
 

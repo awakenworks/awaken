@@ -134,7 +134,7 @@ pub(super) async fn control_component_for_process(
             stores.clock.clone(),
         ))),
         assistant_model_selection,
-        global_tools: awaken_session_executor::authorable_tools(),
+        global_tools: awaken_session_run_delivery::authorable_tools(),
         platform_plugins,
         runtimes,
         resource_inventory,

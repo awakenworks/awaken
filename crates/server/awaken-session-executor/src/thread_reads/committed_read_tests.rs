@@ -32,13 +32,14 @@ async fn coordination_query_reuses_only_the_supplied_root_prefix() {
     ));
     let queries = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
     let authority = Arc::new(
-        crate::EphemeralRuntimeAuthority::new(awaken_time::system_clock()).with_commit(
-            session,
-            Arc::new(crate::LocalCommitAdapter::with_queries(
-                store.clone(),
-                queries.clone(),
-            )),
-        ),
+        awaken_session_executor_testkit::volatile_reference_authority(awaken_time::system_clock())
+            .with_commit(
+                session,
+                Arc::new(crate::LocalCommitAdapter::with_queries(
+                    store.clone(),
+                    queries.clone(),
+                )),
+            ),
     );
     let host =
         (crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
@@ -250,7 +251,10 @@ async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {
         let queries =
             crate::authority::ScriptedStateQueries::new(Err("usage State unavailable".into()));
         let authority = Arc::new(
-            crate::EphemeralRuntimeAuthority::new(awaken_time::system_clock()).with_commit(
+            awaken_session_executor_testkit::volatile_reference_authority(
+                awaken_time::system_clock(),
+            )
+            .with_commit(
                 session_id,
                 Arc::new(crate::LocalCommitAdapter::with_queries(
                     store.clone(),

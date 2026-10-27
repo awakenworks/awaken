@@ -19,16 +19,32 @@ async fn fixture(role: Role) -> (ProcessStores, ProcessStartup, Arc<dyn SessionS
     let sessions = stores.coordinator.as_ref().unwrap().sessions.clone();
     let mut process = crate::exact_host_model::local_test_process_options(
         &stores,
-        std::sync::Arc::new(crate::colocated_worker::WorkdirExecution),
+        Box::new(awaken_cli::LocalExecution::workdir()),
     );
     process.role = role;
     process.control_service = control_service;
     (stores, process, sessions)
 }
 
+struct ObservedExecution {
+    invoked: Arc<AtomicBool>,
+    delegate: Box<dyn crate::ColocatedExecution>,
+}
+
+#[async_trait::async_trait]
+impl crate::ColocatedExecution for ObservedExecution {
+    async fn prepare(
+        self: Box<Self>,
+        inputs: crate::ColocatedExecutionInputs,
+    ) -> Result<crate::PreparedColocatedExecution, String> {
+        self.invoked.store(true, Ordering::SeqCst);
+        self.delegate.prepare(inputs).await
+    }
+}
+
 async fn assert_rejected_before_assembly(
     mut stores: ProcessStores,
-    process: ProcessStartup,
+    mut process: ProcessStartup,
     sessions: Arc<dyn SessionStore>,
     expected: &str,
 ) {
@@ -39,6 +55,12 @@ async fn assert_rejected_before_assembly(
     let lifecycle = process.service_lifecycle.clone();
     let assembled_host = Arc::new(AtomicBool::new(false));
     let observed = assembled_host.clone();
+    process.colocated_execution = process.colocated_execution.take().map(|delegate| {
+        Box::new(ObservedExecution {
+            invoked: observed,
+            delegate,
+        }) as Box<dyn crate::ColocatedExecution>
+    });
     let result = super::prepare_runtime_routers(
         stores,
         None,
@@ -46,17 +68,13 @@ async fn assert_rejected_before_assembly(
         None,
         PublicationModelSupply::PublishedProviders,
         process,
-        Some(Box::new(move |host| {
-            observed.store(true, Ordering::SeqCst);
-            host
-        })),
     )
     .await;
     let error = result.err().expect("invalid startup must return an error");
     assert!(error.contains(expected), "expected {expected:?}: {error}");
     assert!(
         !assembled_host.load(Ordering::SeqCst),
-        "Host customization was not reached"
+        "co-located execution construction was not reached"
     );
     assert_eq!(
         recovery_calls.load(Ordering::SeqCst),
@@ -314,7 +332,6 @@ fn process_placement_selects_shared_worker_delivery_and_releases_process_service
                     &mut f.cloud,
                     &f.control,
                     &f.execution,
-                    None,
                 )
                 .await
                 .unwrap();
@@ -324,7 +341,7 @@ fn process_placement_selects_shared_worker_delivery_and_releases_process_service
                     "P1/P2 role={role:?}"
                 );
                 let dispatch = match &prepared.selected {
-                    super::SelectedExecution::Colocated { host, .. } => host.dispatch().clone(),
+                    super::SelectedExecution::Colocated(execution) => execution.dispatch.clone(),
                     super::SelectedExecution::Registered(execution) => execution.dispatch.clone(),
                 };
                 let process = Arc::downgrade(&dispatch);
@@ -380,46 +397,6 @@ fn process_placement_selects_shared_worker_delivery_and_releases_process_service
                 drop(application);
                 lifecycle.shutdown(Duration::from_secs(2)).await.unwrap();
             }
-        }
-    });
-}
-
-#[test]
-fn registered_process_refuses_executor_customization_before_application_or_execution() {
-    // Causes: C1 AllInOne / split Coordinator, C2 registered placement,
-    // C3 a co-located SDK customizer is supplied. Rule R1=C2+C3 => fail closed
-    // before the customizer, application construction or Session writes.
-    // Local customization remains covered by the original runtime/backend
-    // scenarios; registration cannot smuggle local execution into this root.
-    awaken_service_lifecycle::run_composed_async_test(|| async {
-        for role in [Role::AllInOne, Role::Coordinator] {
-            let mut f = execution_fixture(role, true).await;
-            let lifecycle = f.base.process.service_lifecycle.clone();
-            let invoked = Arc::new(AtomicBool::new(false));
-            let witness = invoked.clone();
-            let error = super::assemble_execution_host(
-                &mut f.base,
-                &f.resources,
-                &mut f.cloud,
-                &f.control,
-                &f.execution,
-                Some(Box::new(move |host| {
-                    witness.store(true, Ordering::SeqCst);
-                    host
-                })),
-            )
-            .await
-            .err()
-            .expect("R1 registered placement refuses co-located customization");
-            assert!(error.contains("registered-Worker Coordinator"));
-            assert!(
-                !invoked.load(Ordering::SeqCst),
-                "R1 no execution customization"
-            );
-            let page = f.sessions.reconciliation_scan(None).await.unwrap();
-            assert!(page.sessions.is_empty(), "R1 no Session side effect");
-            assert!(page.quarantined.is_empty());
-            lifecycle.shutdown(Duration::from_secs(2)).await.unwrap();
         }
     });
 }
@@ -494,7 +471,6 @@ fn registered_boundary_observation_preserves_original_memory_and_session_refusal
             &mut f.cloud,
             &f.control,
             &f.execution,
-            None,
         )
         .await
         .unwrap();
@@ -616,7 +592,6 @@ fn registered_process_adopts_initial_credentials_without_losing_reserved_activit
                 &mut f.cloud,
                 &f.control,
                 &f.execution,
-                None,
             )
             .await
             .unwrap();
@@ -695,6 +670,55 @@ fn registered_process_adopts_initial_credentials_without_losing_reserved_activit
                 "registered placement executes no local Run"
             );
             drop(plane);
+            lifecycle.shutdown(Duration::from_secs(2)).await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn only_a_local_placement_installs_the_colocated_execution() {
+    // Constructor decision table carried from the old SDK hook:
+    // L1 LocalWorker + supplied constructor => one installation;
+    // L2 LocalWorker + missing constructor => original refusal, zero effects;
+    // L3 RegisteredWorker + any constructor => zero local installation.
+    // The registered root's SDK-free signature and binary closure guard own
+    // backend independence; this spy observes the actual production stage.
+    awaken_service_lifecycle::run_composed_async_test(|| async {
+        for (registered, supplied) in [(false, true), (false, false), (true, true), (true, false)] {
+            let mut f = execution_fixture(Role::AllInOne, registered).await;
+            let lifecycle = f.base.process.service_lifecycle.clone();
+            let invoked = Arc::new(AtomicBool::new(false));
+            f.base.process.colocated_execution = supplied.then(|| {
+                Box::new(ObservedExecution {
+                    invoked: invoked.clone(),
+                    delegate: Box::new(awaken_cli::LocalExecution::workdir()),
+                }) as Box<dyn crate::ColocatedExecution>
+            });
+            let result = super::assemble_execution_host(
+                &mut f.base,
+                &f.resources,
+                &mut f.cloud,
+                &f.control,
+                &f.execution,
+            )
+            .await;
+            assert_eq!(invoked.load(Ordering::SeqCst), !registered && supplied);
+            if !registered && !supplied {
+                assert!(
+                    result.err().unwrap().contains("co-locates their execution"),
+                    "L2"
+                );
+            } else {
+                drop(result.unwrap());
+            }
+            assert!(
+                f.sessions
+                    .reconciliation_scan(None)
+                    .await
+                    .unwrap()
+                    .sessions
+                    .is_empty()
+            );
             lifecycle.shutdown(Duration::from_secs(2)).await.unwrap();
         }
     });

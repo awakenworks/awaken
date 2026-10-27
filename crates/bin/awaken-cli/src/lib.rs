@@ -13,8 +13,20 @@
 //! never link either.
 #![warn(unreachable_pub)]
 
+mod a2a_attempt;
 mod acp_local_credentials;
+pub use a2a_attempt::a2a_attempt_executor;
+mod coordinator_execution;
 mod local_execution;
+pub use coordinator_execution::{CoordinatorExecutionError, coordinator_execution};
+mod local_model;
+#[cfg(feature = "test-support")]
+mod scenario_process;
+#[cfg(feature = "test-support")]
+pub use scenario_process::{
+    build_all_in_one_router_with_host_customizer,
+    build_durable_all_in_one_router_with_host_customizer,
+};
 mod memory_data_plane;
 
 use std::sync::Arc;
@@ -36,7 +48,7 @@ use awaken_worker_contract::WorkerShutdown;
 
 /// Run the canonical AllInOne service with its co-located Worker.
 pub async fn run_all_in_one(args: ServiceArgs) -> Result<(), String> {
-    awaken_process_startup::run_all_in_one(args, Arc::new(LocalWorkerPreparation)).await
+    awaken_process_startup::run_all_in_one(args, Arc::new(LocalWorkerPreparation::default())).await
 }
 
 /// Run the canonical AllInOne service with product-supplied infrastructure
@@ -45,20 +57,24 @@ pub async fn run_all_in_one(args: ServiceArgs) -> Result<(), String> {
 pub async fn run_all_in_one_with_services(
     args: ServiceArgs,
     managed_services: ManagedServiceAdapters,
-    coordinator_services: CoordinatorServiceAdapters,
+    mut coordinator_services: CoordinatorServiceAdapters,
 ) -> Result<(), String> {
+    let inference = coordinator_services.inference_materializer.take();
     awaken_process_startup::run_all_in_one_with_services(
         args,
         managed_services,
         coordinator_services,
-        Arc::new(LocalWorkerPreparation),
+        Arc::new(LocalWorkerPreparation { inference }),
     )
     .await
 }
 
 /// Prepares the AllInOne process's registered Worker over its local ACP
 /// discovery and the Control credential stores it shares with the process.
-struct LocalWorkerPreparation;
+#[derive(Default)]
+struct LocalWorkerPreparation {
+    inference: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+}
 
 #[async_trait::async_trait(?Send)]
 impl ColocatedWorkerPreparation for LocalWorkerPreparation {
@@ -69,13 +85,16 @@ impl ColocatedWorkerPreparation for LocalWorkerPreparation {
         workspace: Option<String>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<(ResolvedDeployment, Arc<dyn ColocatedWorker>), String> {
-        let prepared = acp_local_credentials::prepare_local_worker_with_workspace(
+        let mut prepared = acp_local_credentials::prepare_local_worker_with_workspace(
             &mut deployment,
             &seal_key,
             workspace,
             clock,
         )
         .await?;
+        if let Some(selected) = self.inference.clone() {
+            prepared = prepared.with_inference_materializer(selected);
+        }
         Ok((deployment, Arc::new(prepared)))
     }
 }

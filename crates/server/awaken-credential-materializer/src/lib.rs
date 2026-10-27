@@ -13,8 +13,6 @@
 
 use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::CredentialEnvelopeValidation;
-mod inference_executor;
-pub use inference_executor::InferenceExecutorMaterializer;
 
 mod credential_artifact;
 mod http_credential;
@@ -92,11 +90,17 @@ impl PinnedCredentialMaterializer {
     where
         A: CredentialMaterialResolver + awaken_provisioning_contract::SecretBroker + 'static,
     {
-        // One installed authority instance implements both existing ports.
-        // The resolver and broker cannot silently point at different Vaults.
-        let local_material_resolver: Arc<dyn CredentialMaterialResolver> = local_authority.clone();
-        let local_secret_broker: Arc<dyn awaken_provisioning_contract::SecretBroker> =
-            local_authority;
+        Self::from_local_roles(local_authority.clone(), local_authority, clock)
+    }
+
+    /// Consume the resolver and broker selected together by the composition root.
+    #[cfg(feature = "authority")]
+    #[must_use]
+    pub fn from_local_roles(
+        local_material_resolver: Arc<dyn CredentialMaterialResolver>,
+        local_secret_broker: Arc<dyn awaken_provisioning_contract::SecretBroker>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Self {
         Self {
             clock,
             local_material_resolver: Some(local_material_resolver),

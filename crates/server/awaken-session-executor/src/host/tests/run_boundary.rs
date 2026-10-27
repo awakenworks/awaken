@@ -366,11 +366,11 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         awaken_session_executor_testkit::memory_extraction_repository(None).await,
         crate::SessionExecutionProcess::from_deployment(
             &awaken_deployment_config::DeploymentConfig::ephemeral(),
-            ExecutorComponents::mint_local_workspace(),
+            awaken_deployment_config::mint_local_workspace(),
             system_clock(),
         )
         .expect("ephemeral process"),
-        Arc::new(crate::EphemeralRuntimeAuthority::new(system_clock())),
+        Arc::new(awaken_session_executor_testkit::volatile_reference_authority(system_clock())),
     ))
     .build()
     .expect("validated Host dependencies");

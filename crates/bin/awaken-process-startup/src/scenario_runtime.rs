@@ -27,10 +27,7 @@ pub async fn scenario_runtime_authority(
             None,
         );
         return Ok(Arc::new(
-            awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(
-                clock,
-                Arc::new(dispatch),
-            ),
+            awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(clock, Arc::new(dispatch)),
         ));
     }
     awaken_coordinator::open_durable_runtime_authority(storage, clock).await

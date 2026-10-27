@@ -13,6 +13,7 @@ separation = "process"
 
 
 [dependencies]
+awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 awaken-dispatch-contract.workspace = true
 # The process dispatch and its lifecycle port; the executor that resolves
 # claimed Runs is selected by the composition root (ExecutionPorts).
@@ -26,6 +27,7 @@ awaken-dispatch-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-skills.workspace = true
+awaken-ext-builtin-tools.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
 # Backend-neutral commit roles delegate to the existing process-selected store.
@@ -146,10 +148,11 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
+awaken-session-run-delivery.workspace = true
+awaken-cli = { workspace = true, features = ["test-support"] }
 # Integration fixtures build the co-located Session executor the Coordinator
 # consumes through ExecutionPorts; only the composition roots link it normally.
 awaken-session-executor = { workspace = true, features = ["test-support"] }
-awaken-ext-builtin-tools.workspace = true
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-session-budget-contract.workspace = true

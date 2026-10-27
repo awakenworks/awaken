@@ -27,7 +27,7 @@
     },
     "awaken-session-executor::ExecutorComponents": {
       "files": 5,
-      "methods": 27,
+      "methods": 26,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-executor::RunAssembly": {
@@ -281,7 +281,7 @@
     "awaken-package-image::package_realization.rs::verify_k8s_package_realization": 194,
     "awaken-process-startup::config/resolve.rs::resolve_file": 500,
     "awaken-process-startup::control_component.rs::prepare_control_routers": 228,
-    "awaken-process-startup::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 208,
+    "awaken-process-startup::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 207,
     "awaken-process-startup::process_stores.rs::open_process_stores": 393,
     "awaken-process-startup::service.rs::serve_prepared_process": 232,
     "awaken-protocol-a2a::router.rs::jsonrpc": 370,

@@ -73,7 +73,7 @@ fn worker(
     commit: Arc<MemoryCommitCoordinator>,
     owner: &str,
 ) -> DispatchWorker<MemoryDispatchStore> {
-    let installation = awaken_process_startup::a2a_attempt_executor(Some(peer.materializer()));
+    let installation = awaken_cli::a2a_attempt_executor(Some(peer.materializer()));
     let worker = DispatchWorker::new(Arc::new(Runtime::new()), store, commit, owner)
         .with_local_credential_capabilities(installation.credential_realization);
     worker.install_attempt_executor(installation.executor);

@@ -43,7 +43,7 @@ pub async fn build_delegation_router_with_deployment(
     };
     let snapshot =
         |owner_id: &str, backend_ref: &str, delegates: Vec<AgentId>, recursive_self: bool| {
-            let mut tools = awaken_session_executor::authorable_tools();
+            let mut tools = awaken_session_run_delivery::authorable_tools();
             if delegates.is_empty() {
                 tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
             }
@@ -105,7 +105,7 @@ pub async fn build_delegation_router_with_deployment(
     // The production config compiler is the one owner of the reserved Advisor
     // descriptor and its frozen binding. Reusing it here keeps the real-process
     // scenario from hand-maintaining a second copy of that capability.
-    let tool_catalog = awaken_session_executor::authorable_tools();
+    let tool_catalog = awaken_session_run_delivery::authorable_tools();
     let primary = ResolvedModelCandidate::host(
         ModelBinding::parse("default", &model_ref, "default")
             .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}")),

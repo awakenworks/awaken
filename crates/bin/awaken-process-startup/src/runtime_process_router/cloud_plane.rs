@@ -14,17 +14,17 @@ use crate::hosted_model_publication::{
     PublicationModelSupply, brokered_inference_client, local_client_instance_id,
 };
 use crate::live_runtime_capabilities::LiveRuntimeCapabilities;
-use crate::{
-    ResolvedModelServices, RuntimeModelWiring, resolve_model_services, runtime_model_wiring,
-};
+use crate::{InferenceSelection, ResolvedModelServices, resolve_model_services};
 
 /// Brokered cloud inference, credential materialization, Web search and model
 /// publication: everything a model call or a model publication needs.
 pub(super) struct CloudPlane {
     pub(super) brokered_client:
         Option<Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>>,
-    pub(super) credential_materializer:
-        Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    pub(super) credential_authority:
+        Option<Arc<awaken_credential_vault::VaultLocalMaterialAuthority>>,
+    pub(super) external_credentials:
+        Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>,
     pub(super) credential_refresh_factory:
         Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     pub(super) attempt_credential_deliveries:
@@ -33,7 +33,9 @@ pub(super) struct CloudPlane {
     pub(super) web_search_publication_resolver:
         Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,
     pub(super) model_services: Option<ResolvedModelServices>,
-    pub(super) model_wiring: RuntimeModelWiring,
+    pub(super) model_selection: InferenceSelection,
+    pub(super) inference_override:
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
     pub(super) live_runtime_capabilities: Option<Arc<LiveRuntimeCapabilities>>,
 }
 
@@ -43,22 +45,18 @@ pub(super) async fn assemble_cloud_plane(
 ) -> Result<CloudPlane, String> {
     let brokered_client = brokered_cloud_client(base).await?;
     let credentials = credential_plane(base);
-    let models = model_plane(
-        base,
-        model_supply,
-        brokered_client.as_ref(),
-        credentials.materializer.as_ref(),
-    )
-    .await;
+    let models = model_plane(base, model_supply, brokered_client.as_ref()).await;
     Ok(CloudPlane {
         brokered_client,
-        credential_materializer: credentials.materializer,
+        credential_authority: credentials.authority,
+        external_credentials: base.process.credential_material_resolver.take(),
         credential_refresh_factory: credentials.refresh_factory,
         attempt_credential_deliveries: credentials.attempt_deliveries,
         web_search_providers: models.web_search_providers,
         web_search_publication_resolver: models.web_search_publication_resolver,
         model_services: models.model_services,
-        model_wiring: models.model_wiring,
+        model_selection: models.model_selection,
+        inference_override: base.process.inference_materializer.take(),
         live_runtime_capabilities: models.live_runtime_capabilities,
     })
 }
@@ -109,7 +107,7 @@ async fn brokered_cloud_client(
 }
 
 struct CredentialPlane {
-    materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    authority: Option<Arc<awaken_credential_vault::VaultLocalMaterialAuthority>>,
     refresh_factory: Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     attempt_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
@@ -129,20 +127,6 @@ fn credential_plane(base: &mut ProcessBase) -> CredentialPlane {
             })
         })
         .flatten();
-    let mut materializer = local_credential_authority.as_ref().map(|authority| {
-        awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            authority.clone(),
-            stores.clock.clone(),
-        )
-    });
-    if let (Some(materializer), Some(resolver)) = (
-        materializer.as_mut(),
-        base.process.credential_material_resolver.take(),
-    ) {
-        *materializer = materializer
-            .clone()
-            .with_external_material_resolver(resolver);
-    }
     let refresh_factory = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {
@@ -155,7 +139,7 @@ fn credential_plane(base: &mut ProcessBase) -> CredentialPlane {
         })
         .flatten();
     let attempt_deliveries = match (
-        local_credential_authority,
+        local_credential_authority.clone(),
         base.process
             .managed_services
             .credential_material_delivery
@@ -173,7 +157,7 @@ fn credential_plane(base: &mut ProcessBase) -> CredentialPlane {
         _ => None,
     };
     CredentialPlane {
-        materializer,
+        authority: local_credential_authority,
         refresh_factory,
         attempt_deliveries,
     }
@@ -184,7 +168,7 @@ struct ModelPlane {
     web_search_publication_resolver:
         Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,
     model_services: Option<ResolvedModelServices>,
-    model_wiring: RuntimeModelWiring,
+    model_selection: InferenceSelection,
     live_runtime_capabilities: Option<Arc<LiveRuntimeCapabilities>>,
 }
 
@@ -194,7 +178,6 @@ async fn model_plane(
     brokered_client: Option<
         &Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>,
     >,
-    credential_materializer: Option<&awaken_credential_materializer::PinnedCredentialMaterializer>,
 ) -> ModelPlane {
     let stores = &base.stores;
     let role = base.role;
@@ -224,24 +207,10 @@ async fn model_plane(
             worker_observations.clone(),
         )
     });
-    let mut model_wiring = match (&model_services, credential_materializer) {
-        (Some(process), Some(credentials)) => runtime_model_wiring(
-            process.runtime.clone(),
-            credentials,
-            cloud_models_enabled,
-            brokered_client,
-        ),
-        (None, None) => RuntimeModelWiring {
-            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
-                .to_string(),
-            materializer: None,
-        },
-        _ => unreachable!("Control model adapters and Control stores are configured together"),
-    };
-    if let Some(materializer) = base.process.inference_materializer.take() {
-        model_wiring.materializer = Some(materializer);
-    }
+    let model_selection = model_services
+        .as_ref()
+        .map(|services| services.runtime.clone())
+        .unwrap_or(InferenceSelection::NoModelConfigured);
     let web_search_publication_resolver = base
         .process
         .web_search_publication_resolver
@@ -270,7 +239,7 @@ async fn model_plane(
         web_search_providers,
         web_search_publication_resolver,
         model_services,
-        model_wiring,
+        model_selection,
         live_runtime_capabilities,
     }
 }

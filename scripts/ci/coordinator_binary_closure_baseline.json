@@ -1,23 +1,4 @@
 {
   "$comment": "Reviewed transitions of scripts/ci/_dispatch_boundary_fitness.py rule D4: each Worker-side crate the awaken-coordinator binary's package still links, with its D10 review record. Shrink with --tighten; a new entry needs --write-baseline --reason '<JSON review record>'.",
-  "transitions": {
-    "awaken-credential-materializer": {
-      "reason": "Reached through the shared startup's remaining co-located SDK inputs and AllInOne model/credential plane (PinnedCredentialMaterializer, CredentialInferenceMaterializer and hosted inference input). Registered-Worker Session execution and Memory extraction now use ordinary Worker dispatch; move the remaining model and co-located credential wiring into the CLI. See docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Codex), reviewing the existing transition under the user-authorized continuation of the adjusted Claude plan",
-      "date": "2026-10-27",
-      "remove_when": "the co-located execution and AllInOne model/credential composition leave shared startup and the Coordinator binary closure"
-    },
-    "awaken-session-executor": {
-      "reason": "Registered-Worker production now composes WorkerPlacedSessions, AuthorityCommits and shared commit/lifecycle components directly. The binary package still reaches the executor because awaken-process-startup compiles its LocalWorker composition, public co-located startup input types and the SDK composition error boundary; these move into awaken-cli. See docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Codex), reviewing the existing transition under the user-authorized continuation of the adjusted Claude plan",
-      "date": "2026-10-27",
-      "remove_when": "the co-located execution and AllInOne model/credential composition leave shared startup and the Coordinator binary closure"
-    },
-    "awaken-session-realization": {
-      "reason": "Reached through the Session executor still compiled for the shared startup's LocalWorker composition. Registered-Worker production installs its frozen projections in SessionProjections and constructs no realization executor. Remove the compiled co-located execution dependency from shared startup. See docs/design/runtime-interface-boundaries.md#coordinator-only-composition",
-      "approved_by": "integrator (Codex), reviewing the existing transition under the user-authorized continuation of the adjusted Claude plan",
-      "date": "2026-10-27",
-      "remove_when": "the co-located execution and AllInOne model/credential composition leave shared startup and the Coordinator binary closure"
-    }
-  }
+  "transitions": {}
 }

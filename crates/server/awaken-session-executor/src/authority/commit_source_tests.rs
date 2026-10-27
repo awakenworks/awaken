@@ -8,7 +8,9 @@ async fn raw_local_commit_selection_reuses_runtime_authority_without_session_con
     // opened. L1 before C2 -> no partition; L2 C1+C2 -> identical underlying
     // LocalCommit and committed authority, not a second store; L3 C3 -> false.
     // No resident context, Environment, model or lifecycle registry is created.
-    let runtime = Arc::new(EphemeralRuntimeAuthority::new(awaken_time::system_clock()));
+    let runtime = Arc::new(
+        awaken_session_executor_testkit::volatile_reference_authority(awaken_time::system_clock()),
+    );
     let selected: Arc<dyn SessionAuthority> = Arc::new(LocalAuthority::new(runtime.clone()));
     assert!(
         !selected.durable_thread_exists("parent").await.unwrap(),

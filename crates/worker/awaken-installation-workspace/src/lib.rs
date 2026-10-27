@@ -6,8 +6,8 @@
 //! no-replace: concurrent first startups converge on one winner, an exact
 //! replay succeeds, and a different or malformed marker fails closed without
 //! being replaced. The policy-free no-replace syscall stays owned by
-//! `awaken-fs-durability`; minting a fresh coordinate stays with the Runtime Host
-//! (`ExecutorComponents::mint_local_workspace`), which owns its format.
+//! `awaken-fs-durability`; minting a fresh coordinate stays with the pure deployment-context function
+//! `awaken_deployment_config::mint_local_workspace`, which owns its format.
 //!
 //! Consumers: the CLI's process stores and installation binding, the Worker's
 //! host and container realization namespace, and the scenario host. All pass

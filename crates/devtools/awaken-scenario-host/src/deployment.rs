@@ -233,9 +233,9 @@ pub(crate) fn installation_workspace(
     match deployment.storage_dir.as_deref() {
         Some(root) => awaken_installation_workspace::provision_at(
             root,
-            ExecutorComponents::mint_local_workspace,
+            awaken_deployment_config::mint_local_workspace,
         ),
-        None => ExecutorComponents::mint_local_workspace(),
+        None => awaken_deployment_config::mint_local_workspace(),
     }
 }
 

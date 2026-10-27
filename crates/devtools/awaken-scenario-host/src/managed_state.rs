@@ -4,7 +4,7 @@
 //! The Coordinator links no executor, so the scenario root builds it here:
 //! one executor, one Session application over it, the executor's edges bound
 //! back into that application, and the Coordinator's execution ports
-//! selected through the same [`awaken_process_startup::coordinator_execution`] the
+//! selected through the same [`awaken_cli::coordinator_execution`] the
 //! product binary uses.
 
 use std::sync::Arc;
@@ -273,7 +273,7 @@ async fn local_managed_state_over(
         .build()
         .expect("scenario Session capabilities are complete");
     let application = Arc::new(application);
-    let execution = awaken_process_startup::coordinator_execution(&host, &application)
+    let execution = awaken_cli::coordinator_execution(&host, &application)
         .expect("scenario Session application binds into its executor once");
     let managed = awaken_protocol_managed::ManagedState::from_application(
         application.clone(),

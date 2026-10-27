@@ -48,8 +48,8 @@ async fn admin_and_vault_surfaces_are_served_together() {
     // and_rotated_without_echo; its attempt-race rule covers the async CAS gap.
     // Quiesce only this fixture's own process tasks through their canonical
     // owner before creation, so R1 never relies on being faster than recovery.
-    let (process, sessions) = super::prepare_ephemeral_all_in_one_process(std::sync::Arc::new(
-        crate::colocated_worker::WorkdirExecution,
+    let (process, sessions) = super::prepare_ephemeral_all_in_one_process(Box::new(
+        awaken_cli::LocalExecution::workdir(),
     ))
     .await;
     process

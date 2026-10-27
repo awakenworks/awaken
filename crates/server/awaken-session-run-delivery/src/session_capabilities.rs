@@ -59,6 +59,27 @@ pub fn supports_mid_conversation_system(model: &str) -> bool {
     .any(|family| model == family || model.starts_with(&format!("{family}-")))
 }
 
+/// The `agent_run` delegation descriptor (advertised only when a roster is set).
+pub fn delegation_descriptor() -> ToolDescriptor {
+    builtin_tools()
+        .into_iter()
+        .find(|tool| tool.toolset() == Toolset::Delegation)
+        .map(|tool| tool.into_descriptor())
+        .expect("agent_run descriptor exists")
+}
+
+/// Complete builtin catalog available to Agent publication. Unlike one
+/// Session's advertised face, this includes delegation even before targets are
+/// known; the config compiler selects or hides it from typed `MultiagentConfig`.
+pub fn authorable_tools() -> Vec<ToolDescriptor> {
+    let mut tools = hand_tool_descriptors();
+    // Both web capabilities are owned exclusively by their configured plugins.
+    tools.push(awaken_ext_builtin_tools::web_fetch_descriptor());
+    tools.push(awaken_ext_builtin_tools::web_search_descriptor());
+    tools.push(delegation_descriptor());
+    tools
+}
+
 #[cfg(test)]
 mod tests {
     use super::supports_mid_conversation_system;

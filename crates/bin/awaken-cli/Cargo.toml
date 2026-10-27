@@ -29,6 +29,21 @@ path = "src/bin/awaken-control.rs"
 # co-locates with its Coordinator. The Coordinator executable is declared by
 # awaken-coordinator-process, whose closure links no Worker-side crate.
 [dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-dispatch.workspace = true
+awaken-dispatch-execution.workspace = true
+awaken-session-application.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-run-delivery.workspace = true
+awaken-protocol-mcp.workspace = true
+awaken-protocol-a2a.workspace = true
+awaken-run-executor-a2a.workspace = true
+awaken-ext-builtin-tools.workspace = true
+awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
+thiserror.workspace = true
+
 awaken-process-startup.workspace = true
 # The co-located Worker of an AllInOne process.
 awaken-worker = { workspace = true }
@@ -69,16 +84,18 @@ container-podman = ["awaken-process-startup/container-podman", "awaken-execution
 container-k8s = ["awaken-process-startup/container-k8s", "awaken-execution-composition/k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dev-dependencies]
+awaken-dispatch-erasure.workspace = true
+awaken-scenario-host.workspace = true
+awaken-protocol-managed-testkit.workspace = true
+awaken-session-executor-testkit.workspace = true
+
 awaken-acp-contract = { workspace = true }
-awaken-agent-contract = { workspace = true }
 awaken-installation-workspace.workspace = true
-awaken-runtime-contract = { workspace = true }
 awaken-process-startup = { workspace = true, features = ["test-support"] }
 # The off-Linux Memory copy fallback row reads a real Resources Memory store.
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-provisioning-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-dispatch.workspace = true
 awaken-observability.workspace = true
 tempfile = "3"
 

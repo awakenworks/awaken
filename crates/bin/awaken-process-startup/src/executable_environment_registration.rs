@@ -386,7 +386,7 @@ mod startup_tests {
             let stores = crate::local_process_stores::in_memory_process_stores().await;
             let mut process = crate::exact_host_model::local_test_process_options(
                 &stores,
-                std::sync::Arc::new(crate::colocated_worker::WorkdirExecution),
+                Box::new(awaken_cli::LocalExecution::workdir()),
             );
             process.executable_environment_wiring = None;
             let result = crate::prepare_runtime_routers(
@@ -396,7 +396,6 @@ mod startup_tests {
                 None,
                 crate::PublicationModelSupply::PublishedProviders,
                 process,
-                None,
             )
             .await;
             assert!(

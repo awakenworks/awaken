@@ -289,12 +289,12 @@ impl SessionExecutorBuilder {
             },
             crate::SessionExecutionProcess::from_deployment(
                 &deployment,
-                ExecutorComponents::mint_local_workspace(),
+                awaken_deployment_config::mint_local_workspace(),
                 clock.clone(),
             )
             .expect("a unit-test fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(Arc::new(
-                crate::EphemeralRuntimeAuthority::new(clock),
+                awaken_session_executor_testkit::volatile_reference_authority(clock),
             ))),
         )
     }
@@ -486,7 +486,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_inference_materializer(
         mut self,
-        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>,
     ) -> Self {
         self.agent.inference_materializer = Some(materializer);
         self
@@ -526,7 +526,7 @@ impl SessionExecutorBuilder {
             "volatile dispatch selection requires a local fixture"
         );
         self.authority = Arc::new(crate::LocalAuthority::new(Arc::new(
-            crate::EphemeralRuntimeAuthority::with_dispatch(self.clock.clone(), store),
+            awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(self.clock.clone(), store),
         )));
         self.execution.ingress = crate::RunIngress::Durable;
         self.execution.local = crate::LocalExecution::in_process_pool();

@@ -244,7 +244,6 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             credential_material_resolver,
             managed_services,
         },
-        None,
     )
     .await?;
     managed_platform::install_background_services(

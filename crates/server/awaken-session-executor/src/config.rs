@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_ext_builtin_tools::{AGENT_RUN, Toolset, all_hand_tools, builtin_tools};
+use awaken_ext_builtin_tools::{AGENT_RUN, all_hand_tools};
+#[cfg(test)]
+use awaken_ext_builtin_tools::{Toolset, builtin_tools};
 use awaken_ext_permission::{
     PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
@@ -27,8 +29,10 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 #[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
 #[cfg(test)]
+use awaken_session_run_delivery::authorable_tools;
+#[cfg(test)]
 use awaken_session_run_delivery::builtin_hand_tools;
-use awaken_session_run_delivery::hand_tool_descriptors;
+use awaken_session_run_delivery::{delegation_descriptor, hand_tool_descriptors};
 use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
@@ -339,15 +343,6 @@ pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
     )
 }
 
-/// The `agent_run` delegation descriptor (advertised only when a roster is set).
-pub(crate) fn delegation_descriptor() -> ToolDescriptor {
-    builtin_tools()
-        .into_iter()
-        .find(|tool| tool.toolset() == Toolset::Delegation)
-        .map(|tool| tool.into_descriptor())
-        .expect("agent_run descriptor exists")
-}
-
 /// The advertised tool descriptors for a thread: hand tools, client-executed tools,
 /// the dynamically provisioned per-thread tools (the skill tools of ADR-0036 and a
 /// session's connected MCP tools, ADR-0043 Phase 3 — renamed from
@@ -367,18 +362,6 @@ pub fn advertised_tools(
     if !delegates.is_empty() {
         tools.push(delegation_descriptor());
     }
-    tools
-}
-
-/// Complete builtin catalog available to Agent publication. Unlike one
-/// Session's advertised face, this includes delegation even before targets are
-/// known; the config compiler selects or hides it from typed `MultiagentConfig`.
-pub fn authorable_tools() -> Vec<ToolDescriptor> {
-    let mut tools = hand_tool_descriptors();
-    // Both web capabilities are owned exclusively by their configured plugins.
-    tools.push(awaken_ext_builtin_tools::web_fetch_descriptor());
-    tools.push(awaken_ext_builtin_tools::web_search_descriptor());
-    tools.push(delegation_descriptor());
     tools
 }
 

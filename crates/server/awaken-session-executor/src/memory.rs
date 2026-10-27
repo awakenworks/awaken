@@ -48,7 +48,7 @@ pub struct MemoryRuntime {
     /// The Host's runtime-only inference materialization, when its
     /// composition installed one (`SessionExecutorBuilder::with_inference_materializer`).
     inference_materializer:
-        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
     /// Fresh sandboxes for extraction/selection Runs, from the process
     /// composition's `SessionExecutorBuilder::with_auxiliary_sandboxes`.
     provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
@@ -170,7 +170,7 @@ impl MemoryRuntime {
         extractions: Arc<dyn MemoryExtractionRepository>,
         clock: Arc<dyn awaken_time::WallClock>,
         inference_materializer: Option<
-            Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
+            Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>,
         >,
     ) -> Self {
         Self {

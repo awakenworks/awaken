@@ -35,14 +35,11 @@ awaken-data-governance-contract.workspace = true
 # The package-image builder the Environment image build stage builds through.
 awaken-package-image.workspace = true
 # This product root selects the original publication-pinned outbound A2A adapter.
-awaken-run-executor-a2a.workspace = true
-awaken-protocol-a2a.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
 # The Kubernetes Worker fleet: the control client that authenticates Pod
 # Workers, their Create ledger and Pod process observation and stop.
 awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"], optional = true }
-awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
 awaken-ui-artifact.workspace = true
@@ -51,7 +48,6 @@ awaken-control = { workspace = true }
 awaken-coordinator = { workspace = true }
 # The service layer: ExecutorComponents / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
-awaken-session-executor.workspace = true
 # The selected committed-read owner, independent of the execution composition.
 awaken-session-run-delivery.workspace = true
 # The container Hand residency the runtime settings select.
@@ -60,7 +56,6 @@ awaken-session-environment-contract.workspace = true
 awaken-installation-workspace.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
-awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 # The Awaken Cloud brokered grant transport Control's Cloud catalog reads.
 awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 awaken-credential-contract.workspace = true
@@ -74,6 +69,7 @@ awaken-ext-builtin-tools.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
@@ -163,6 +159,7 @@ awaken-sql-storage = { workspace = true, features = ["postgres"] }
 # Volatile startup helpers used by integration/scenario harnesses. The default
 # product library and binary cannot link the process-local WorkQueue backend.
 test-support = [
+    "awaken-dispatch-erasure/test-support",
     "awaken-admin-config-api/test-support",
     "awaken-captured-content-store/test-support",
     "awaken-config-resolver/test-support",
@@ -177,7 +174,6 @@ test-support = [
     "awaken-work-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
-    "awaken-session-executor/test-support",
     "awaken-resource-persistence/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
@@ -192,6 +188,11 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
+awaken-protocol-a2a.workspace = true
+
+awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
 # Test fixtures install container Session environments (the live Kubernetes
 # source-retention rows) and a recording container provider.
 awaken-execution-composition.workspace = true
@@ -250,7 +251,6 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-awaken-session-configuration-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 

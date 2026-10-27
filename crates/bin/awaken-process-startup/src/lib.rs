@@ -15,7 +15,6 @@
 //! through [`ColocatedWorkerPreparation`]; the Coordinator process package
 //! (`awaken-coordinator-process`) declares `awaken-coordinator` over this same
 //! startup and supplies none.
-mod a2a_attempt;
 mod assistant_selection;
 mod brokered_catalog;
 mod colocated_worker;
@@ -52,8 +51,9 @@ mod worker_observation_wiring;
 mod worker_transport;
 mod worker_transport_security;
 
-pub use a2a_attempt::a2a_attempt_executor;
-pub use coordinator_execution::{CoordinatorExecutionError, coordinator_execution};
+pub use coordinator_execution::{
+    ExecutionCompositionError, SessionCommitOwner, verify_composition,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use scenario_runtime::scenario_runtime_authority;
 pub use worker_transport::WorkerTransport;
@@ -63,10 +63,8 @@ use std::sync::Arc;
 use awaken_config_service::ManagementAuditPlane;
 use awaken_control::ExtMcpProbe;
 use awaken_protocol_managed::ManagedState;
-use awaken_runtime_contract::llm::LlmExecutor;
 #[cfg(any(test, feature = "test-support"))]
-use awaken_session_executor::ExecutorComponents;
-use awaken_session_executor::SessionExecutorBuilder;
+use awaken_runtime_contract::llm::LlmExecutor;
 use axum::Router;
 #[cfg(any(test, feature = "test-support"))]
 use exact_host_model::ExactHostModelPublicationResolver;
@@ -83,9 +81,10 @@ pub use crate::process_admin::{
     DrainController, process_admin_router, register_active_streams_gauge, with_connection_metric,
     with_process_admin,
 };
-pub use colocated_worker::{
-    ColocatedExecution, ColocatedExecutionInputs, ColocatedWorker, ColocatedWorkerPreparation,
+pub use awaken_coordinator::{
+    ColocatedExecution, ColocatedExecutionInputs, InferenceSelection, PreparedColocatedExecution,
 };
+pub use colocated_worker::{ColocatedWorker, ColocatedWorkerPreparation};
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use control::{
@@ -137,32 +136,13 @@ mod live_runtime_capabilities;
 mod managed_platform;
 use live_runtime_capabilities::LiveRuntimeCapabilities;
 
-/// Concrete wiring produced by one legal startup mode. Keeping these four
-/// values together prevents a provider resolver from being paired with a host
-/// executor or a Host publication from receiving a credential materializer.
-struct RuntimeModelWiring {
-    executor: Arc<dyn LlmExecutor>,
-    model_ref: String,
-    materializer: Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
-}
-
 /// Publication policy plus a deferred runtime choice. Standalone Control uses
 /// only the resolver; execution adapters are realized only by runtime process.
 struct ResolvedModelServices {
     publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
-    runtime: RuntimeModelServices,
+    runtime: InferenceSelection,
 }
 
-#[derive(Clone)]
-enum RuntimeModelServices {
-    PublishedProviders,
-    NoModelConfigured,
-    #[cfg(any(test, feature = "test-support"))]
-    Host {
-        executor: Arc<dyn LlmExecutor>,
-        model_ref: String,
-    },
-}
 #[derive(Clone)]
 struct ControlServices {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
@@ -194,7 +174,7 @@ pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 
 /// Build all-in-one from the standard typed deployment configuration, its
 /// local claim pool running Sessions through `execution`.
-pub async fn build_all_in_one_router(execution: Arc<dyn ColocatedExecution>) -> Router {
+pub async fn build_all_in_one_router(execution: Box<dyn ColocatedExecution>) -> Router {
     build_all_in_one_router_with_model_supply(
         PublicationModelSupply::PublishedProviders,
         ManagedServiceAdapters::default(),
@@ -206,7 +186,7 @@ pub async fn build_all_in_one_router(execution: Arc<dyn ColocatedExecution>) -> 
 /// Hermetic all-in-one startup for tests and embedders that explicitly want
 /// volatile stores. It never consults the standard deployment config path.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_ephemeral_all_in_one_router(execution: Arc<dyn ColocatedExecution>) -> Router {
+pub async fn build_ephemeral_all_in_one_router(execution: Box<dyn ColocatedExecution>) -> Router {
     prepare_ephemeral_all_in_one_process(execution)
         .await
         .0
@@ -219,7 +199,7 @@ pub async fn build_ephemeral_all_in_one_router(execution: Arc<dyn ColocatedExecu
 /// or test-only public startup API is introduced.
 #[cfg(any(test, feature = "test-support"))]
 async fn prepare_ephemeral_all_in_one_process(
-    execution: Arc<dyn ColocatedExecution>,
+    execution: Box<dyn ColocatedExecution>,
 ) -> (
     ProcessRouters,
     Arc<dyn awaken_session_repository_contract::SessionRepository>,
@@ -239,7 +219,6 @@ async fn prepare_ephemeral_all_in_one_process(
         None,
         PublicationModelSupply::PublishedProviders,
         options,
-        None,
     )
     .await
     .expect("prepare ephemeral all-in-one process");
@@ -338,7 +317,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
     managed_services: ManagedServiceAdapters,
-    execution: Arc<dyn ColocatedExecution>,
+    execution: Box<dyn ColocatedExecution>,
 ) -> Router {
     build_all_in_one_router_with_model_supply(
         PublicationModelSupply::Host {
@@ -356,7 +335,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
 async fn build_all_in_one_router_with_model_supply(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,
-    execution: Arc<dyn ColocatedExecution>,
+    execution: Box<dyn ColocatedExecution>,
 ) -> Router {
     let deployment = config::ResolvedDeployment::load(
         config::ConfigOverrides::default(),
@@ -386,18 +365,15 @@ async fn build_all_in_one_router_with_model_supply(
 /// the managed plane.
 /// `web_search_providers` is selected before Control and Host are assembled, so
 /// publication, capability discovery, and dispatch all receive the same registry.
-/// `customize_host` remains the last-mile seam for a runtime backend the standard
-/// product process does not provide, e.g. `dependencies.with_acp(executor)` so `acp:*`
-/// threads run on an external CLI while the full managed plane (vault + MCP staging +
-/// config plane) is still in play. Keeps the ACP executor's crate out of this module.
+/// The supplied constructor owns every execution-specific selection, including
+/// any scenario backend customization, before shared startup receives its roles.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_all_in_one_router_with_host_customizer(
+pub async fn build_all_in_one_router_with_execution_inputs(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
     deployment: awaken_deployment_config::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
-    execution: Arc<dyn ColocatedExecution>,
-    customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
+    execution: Box<dyn ColocatedExecution>,
 ) -> Router {
     let stores = in_memory_process_stores().await;
     let mut options = exact_host_model::local_test_process_options(&stores, execution);
@@ -413,27 +389,25 @@ pub async fn build_all_in_one_router_with_host_customizer(
             binding,
         },
         options,
-        Some(Box::new(customize_host)),
     )
     .await
     .expect("prepare test-support customized all-in-one process")
     .public_router
 }
 
-/// Durable counterpart of [`build_all_in_one_router_with_host_customizer`].
+/// Durable counterpart of [`build_all_in_one_router_with_execution_inputs`].
 ///
 /// This is an explicit-input startup seam for restart tests and embeddings
 /// that need a real external runtime while retaining the same management and
 /// resource-plane state across host lifetimes. The sealing key and storage root
 /// are supplied by the caller, avoiding process-global environment races.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_durable_all_in_one_router_with_host_customizer(
+pub async fn build_durable_all_in_one_router_with_execution_inputs(
     dir: &std::path::Path,
     key: &[u8; 32],
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
-    execution: Arc<dyn ColocatedExecution>,
-    customize_host: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
+    execution: Box<dyn ColocatedExecution>,
 ) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await
@@ -449,7 +423,6 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
             binding,
         },
         options,
-        Some(Box::new(customize_host)),
     )
     .await
     .expect("prepare durable customized all-in-one process")
@@ -464,7 +437,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
 pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    execution: Arc<dyn ColocatedExecution>,
+    execution: Box<dyn ColocatedExecution>,
 ) -> Router {
     let stores = in_memory_process_stores().await;
     let options = exact_host_model::local_test_process_options(&stores, execution);
@@ -480,7 +453,6 @@ pub async fn build_all_in_one_router_with_model(
             ),
         },
         options,
-        None,
     )
     .await
     .expect("prepare test-support modeled all-in-one process")
@@ -496,7 +468,7 @@ pub async fn build_all_in_one_router_with_model(
 pub async fn build_durable_all_in_one_router(
     dir: &std::path::Path,
     key: &[u8; 32],
-    execution: Arc<dyn ColocatedExecution>,
+    execution: Box<dyn ColocatedExecution>,
 ) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await
@@ -509,7 +481,6 @@ pub async fn build_durable_all_in_one_router(
         None,
         PublicationModelSupply::PublishedProviders,
         options,
-        None,
     )
     .await
     .expect("prepare durable all-in-one process")
@@ -524,7 +495,7 @@ pub async fn build_durable_all_in_one_router(
 pub async fn build_secured_all_in_one_router(
     dir: &std::path::Path,
     key: &[u8; 32],
-    execution: Arc<dyn ColocatedExecution>,
+    execution: Box<dyn ColocatedExecution>,
 ) -> (Router, Arc<ManagementAuthz>) {
     let stores = open_local_process_stores(dir, key)
         .await
@@ -539,7 +510,6 @@ pub async fn build_secured_all_in_one_router(
         None,
         PublicationModelSupply::PublishedProviders,
         options,
-        None,
     )
     .await
     .expect("prepare secured all-in-one process")
@@ -589,7 +559,7 @@ fn resolve_model_services(
                         ),
                     ),
             ),
-            runtime: RuntimeModelServices::PublishedProviders,
+            runtime: InferenceSelection::PublishedProviders,
         },
         PublicationModelSupply::HostedPublication {
             resolver,
@@ -609,7 +579,7 @@ fn resolve_model_services(
             };
             ResolvedModelServices {
                 publication_resolver,
-                runtime: RuntimeModelServices::NoModelConfigured,
+                runtime: InferenceSelection::NoModelConfigured,
             }
         }
         #[cfg(any(test, feature = "test-support"))]
@@ -617,55 +587,12 @@ fn resolve_model_services(
             let model_ref = binding.identity().1.to_owned();
             ResolvedModelServices {
                 publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
-                runtime: RuntimeModelServices::Host {
+                runtime: InferenceSelection::Host {
                     executor,
                     model_ref,
                 },
             }
         }
-    }
-}
-
-fn runtime_model_wiring(
-    runtime: RuntimeModelServices,
-    credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
-    cloud_models_enabled: bool,
-    brokered_client: Option<
-        &Arc<awaken_inference_endpoint::brokered_inference::HttpBrokeredInferenceClient>,
-    >,
-) -> RuntimeModelWiring {
-    match runtime {
-        RuntimeModelServices::PublishedProviders => RuntimeModelWiring {
-            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
-                .to_string(),
-            materializer: Some(Arc::new({
-                let materializer =
-                    awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
-                        credential_materializer.clone(),
-                    )
-                    .with_brokered_mode(cloud_models_enabled);
-                match brokered_client {
-                    Some(client) => materializer.with_brokered_client(client.clone()),
-                    None => materializer,
-                }
-            })),
-        },
-        RuntimeModelServices::NoModelConfigured => RuntimeModelWiring {
-            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
-                .to_string(),
-            materializer: None,
-        },
-        #[cfg(any(test, feature = "test-support"))]
-        RuntimeModelServices::Host {
-            executor,
-            model_ref,
-        } => RuntimeModelWiring {
-            executor,
-            model_ref,
-            materializer: None,
-        },
     }
 }
 
@@ -1282,9 +1209,7 @@ mod process_role_surface_tests {
                         .unwrap(),
                 ),
                 ..Default::default()
-            },
-            None,
-        )
+            })
         .await
         .expect("prepare split Coordinator test process");
         let app = coordinator_routers.public_router;

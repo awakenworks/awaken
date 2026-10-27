@@ -16,7 +16,7 @@ pub(crate) struct AgentExecution {
     /// [`InferenceExecutorMaterializer`]. Once a materializer is installed, a rejected
     /// publication pin fails closed instead of falling back to this executor.
     ///
-    /// [`InferenceExecutorMaterializer`]: awaken_credential_materializer::InferenceExecutorMaterializer
+    /// [`InferenceExecutorMaterializer`]: awaken_inference_endpoint::InferenceExecutorMaterializer
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) model_ref: String,
     /// Per-thread model→executor routing (R1/R2). See [`crate::inference_routing`].
@@ -49,7 +49,7 @@ pub(crate) struct AgentSelection {
     /// Runtime-only inference materialization shared by per-thread routing
     /// and Memory extraction.
     pub(crate) inference_materializer:
-        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
 }
 
 impl AgentSelection {

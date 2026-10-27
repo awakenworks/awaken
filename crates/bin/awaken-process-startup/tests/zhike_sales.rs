@@ -476,7 +476,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     });
     // This scenario uses only network MCP tools. Select the documented local
     // fixture substrate explicitly; it does not exercise namespace Hand tools.
-    let app = awaken_process_startup::build_all_in_one_router_with_host_customizer(
+    let app = awaken_cli::build_all_in_one_router_with_host_customizer(
         model.clone(),
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")
             .expect("complete fixture model binding"),
@@ -485,7 +485,6 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
-        std::sync::Arc::new(awaken_cli::LocalExecution),
         |host| host,
     )
     .await;

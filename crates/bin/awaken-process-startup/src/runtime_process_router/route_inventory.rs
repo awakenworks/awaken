@@ -65,7 +65,7 @@ async fn assemble(shape: Shape, iam_root: &std::path::Path) -> ProcessRouters {
         .then(|| awaken_control::embedded_iam(iam_root, stores.clock.clone()));
     let mut process = crate::exact_host_model::local_test_process_options(
         &stores,
-        std::sync::Arc::new(crate::colocated_worker::WorkdirExecution),
+        Box::new(awaken_cli::LocalExecution::workdir()),
     );
     // Physical execution placement installs Host executors, never routes; the
     // local placement would also need the release `awaken-sandbox` companion,
@@ -82,7 +82,6 @@ async fn assemble(shape: Shape, iam_root: &std::path::Path) -> ProcessRouters {
         None,
         PublicationModelSupply::PublishedProviders,
         process,
-        None,
     )
     .await
     .expect("assemble runtime process for its route inventory")

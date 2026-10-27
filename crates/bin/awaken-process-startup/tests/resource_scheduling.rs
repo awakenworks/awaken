@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_process_startup::build_all_in_one_router_with_host_customizer;
+use awaken_cli::build_all_in_one_router_with_host_customizer;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -351,7 +351,6 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
         ModelBinding::new("host", "echo", "genai"),
         deployment,
         None,
-        std::sync::Arc::new(awaken_cli::LocalExecution),
         move |host| {
             awaken_execution_composition::install_container_provider(
                 host,

@@ -86,7 +86,6 @@
     "awaken-session-execution-contract::StreamingRunRuntime": 1,
     "awaken-session-execution-contract::TerminalCleanupRuntime": 1,
     "awaken-session-execution-contract::ThreadReadRuntime": 1,
-    "awaken-session-executor::EphemeralRuntimeAuthority": 1,
     "awaken-session-executor::MemoryRuntime": 1,
     "awaken-session-types::SessionRuntimePlacement": 1
   }

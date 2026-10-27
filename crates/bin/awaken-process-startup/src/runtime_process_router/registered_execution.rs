@@ -20,7 +20,7 @@ use awaken_session_run_delivery::{
 };
 
 use super::{ControlSurface, DeploymentAndResources, ExecutionStores, ProcessBase};
-use crate::coordinator_execution::{CoordinatorExecutionError, SessionCommitOwner};
+use crate::coordinator_execution::{ExecutionCompositionError, SessionCommitOwner};
 
 /// A construction product consumed after the Session application exists.
 /// The application retains delivery roles; service tasks retain the same commit
@@ -125,7 +125,7 @@ impl RegisteredExecution {
     pub(super) fn finish(
         self,
         application: &Arc<SessionApplication>,
-    ) -> Result<awaken_coordinator::ExecutionPorts, CoordinatorExecutionError> {
+    ) -> Result<awaken_coordinator::ExecutionPorts, ExecutionCompositionError> {
         let feed: Arc<dyn awaken_dispatch::DispatchOperationalFeed> = self.owner.clone();
         crate::coordinator_execution::verify_composition(&self.dispatch, &feed, application)?;
         let projections = self.sessions.projections().clone();
