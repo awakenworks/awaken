@@ -15,8 +15,8 @@ use awaken_session_run_delivery::message_prefix_before_exact_inputs;
 use awaken_session_run_delivery::session_thread_reply_result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RunIngressScope {
-    HostCommand,
+enum RunCommandOrigin {
+    DirectCommand,
     ThreadExtension,
 }
 
@@ -29,7 +29,7 @@ struct HostRunDelivery<'a> {
     input: Vec<Message>,
     sink: Option<Arc<dyn StreamSink>>,
     data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-    ingress_scope: RunIngressScope,
+    origin: RunCommandOrigin,
 }
 
 impl<'a> HostRunDelivery<'a> {
@@ -40,14 +40,14 @@ impl<'a> HostRunDelivery<'a> {
             input,
             sink: None,
             data_subject_id: None,
-            ingress_scope: RunIngressScope::HostCommand,
+            origin: RunCommandOrigin::DirectCommand,
         }
     }
 
     #[cfg(test)]
     fn thread_extension(agent: Option<&'a str>, thread: &'a str, input: Vec<Message>) -> Self {
         Self {
-            ingress_scope: RunIngressScope::ThreadExtension,
+            origin: RunCommandOrigin::ThreadExtension,
             ..Self::command(agent, thread, input)
         }
     }
@@ -275,9 +275,9 @@ impl crate::SessionRuns {
             input,
             sink,
             data_subject_id,
-            ingress_scope,
+            origin,
         } = delivery;
-        if ingress_scope == RunIngressScope::HostCommand
+        if origin == RunCommandOrigin::DirectCommand
             && self
                 .installed_sessions
                 .read_run(thread, |run| run.session_dispatch)?
@@ -336,7 +336,7 @@ impl crate::SessionRuns {
         let executor = crate::run_exec::BoundRunExecutor::new(self, ctx.clone())
             .with_stream_sink(sink)
             .retain_active_until_settled();
-        let executor = if ingress_scope == RunIngressScope::ThreadExtension {
+        let executor = if origin == RunCommandOrigin::ThreadExtension {
             executor.for_thread_extension()
         } else {
             executor

@@ -1,5 +1,5 @@
 // @formal surface requirement=session.managed_worker.work_authority
-// @formal reason: Static owner: the Session run-ingress seam moved out of host/session.rs - the
+// @formal reason: Static owner: the Session dispatch Worker construction moved out of host/session.rs - the
 // @formal reason: foreground delivery choice (durable dispatch versus a direct attempt driver) and the
 // @formal reason: per-attempt inference materializer a database-less Worker carries. Dynamic path: the
 // @formal reason: checkpoint store, claimed commit, and live-progress publisher all come from the Host's
@@ -13,7 +13,7 @@
 //! commit, and live-progress publisher are answered by the Host's
 //! `SessionAuthority`.
 //!
-//! Split out of `session.rs`; this is the ingress seam and shares no state
+//! Split out of `session.rs`; this is the dispatch Worker construction seam and shares no state
 //! with the snapshot/context assembly that remains there.
 
 use super::*;
@@ -26,7 +26,7 @@ impl crate::RunAssembly {
     /// keeps one concrete attempt driver while retaining the Worker for pool-routed claims.
     /// Runtime, commit, executor, observers, credentials, and recovery wiring are
     /// therefore configured once regardless of delivery durability.
-    pub(super) async fn build_ingress(
+    pub(super) async fn build_dispatch_worker(
         &self,
         claimed_model_gate: Option<awaken_dispatch_execution::ClaimedModelRequestGateFactory>,
         runtime: Arc<Runtime>,

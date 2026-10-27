@@ -470,7 +470,7 @@ pub(super) async fn assemble(
         })
     });
     let (delivery, claimed_worker) = host
-        .build_ingress(
+        .build_dispatch_worker(
             claimed_model_gate,
             runtime.clone(),
             attempt_executor,

@@ -9,13 +9,13 @@
 mod child_substrate;
 mod content_delivery;
 mod context;
+mod dispatch_worker;
 #[cfg(test)]
 mod environment_lifecycle;
 #[cfg(test)]
 mod environment_realization;
 mod input_projection;
 mod quiescence;
-mod run_ingress;
 
 use super::*;
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};

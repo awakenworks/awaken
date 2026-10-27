@@ -1136,6 +1136,8 @@ mod tests {
         // admission owner and an Arc ownership cycle.
         // Startup connection rules: R11 unbound/dead Weak => typed Unavailable;
         // R12 live binding => readiness observed through every shared clone.
+        // Naming the shared cell `value` retains those same single-assignment
+        // and owner-release rules; no second cell is introduced.
         // Neither observation admits a Run or replaces its domain authority.
         let host = (crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::NoModelConfiguredExecutor),

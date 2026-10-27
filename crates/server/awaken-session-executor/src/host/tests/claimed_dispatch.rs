@@ -830,6 +830,8 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
 
 #[tokio::test]
 async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admission() {
+    // Internal naming preserves the original origin decision: the same
+    // DirectCommand/ThreadExtension causes must retain E1/E2 below.
     // Cause/effect graph: C1 a prepared Session marks its public root Runs for
     // Session admission; C2 the Outcome bounded context owns an ordinary Run on
     // that same Thread. Effects: E1 C1 uses root Session affinity; E2 C1+C2
