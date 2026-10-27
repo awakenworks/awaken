@@ -33,6 +33,7 @@ tokio = { workspace = true, features = ["net", "io-util", "time"] }
 
 [features]
 default = []
+blocking = ["reqwest/blocking"]
 kubernetes = ["dep:kube", "dep:http", "dep:http-body-util", "dep:serde_json", "dep:tower"]
 # A bounded permissive sender exists only for loopback integration tests.
 test-support = []
