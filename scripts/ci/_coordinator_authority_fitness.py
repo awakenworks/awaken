@@ -84,6 +84,12 @@ def dispatch_handoff_violations(relative: str, production: str) -> list[str]:
         errors.append(f"{relative}: dispatch execution must consume its Run factory, never Runtime Host")
     return errors
 
+# The new read projection has one production implementation and issues no
+# mutation authority; test implementations must remain behind cfg(test).
+AUTHORITY_IMPLS["DispatchExecutionReads"] = (
+    "crates/shared/awaken-dispatch-erasure/src/execution_observation.rs",
+)
+
 TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
     (
         "dispatch delivery truth",

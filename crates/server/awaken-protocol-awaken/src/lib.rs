@@ -7,9 +7,11 @@
 //! composition root. Extensions of the Anthropic Managed Agents protocol (they
 //! speak its envelope, ids and headers) live in `awaken-protocol-managed`.
 
+mod common;
 mod dream_policies;
 mod live_inbox;
 mod sandbox_policies;
+mod session_dispatch;
 
 pub use dream_policies::dream_policy_router;
 pub use live_inbox::live_inbox_router;
@@ -17,3 +19,5 @@ pub use sandbox_policies::{
     EnvironmentCreateInput, SandboxPolicyBindingInput, SandboxPolicyCreate,
     environment_extensions_router,
 };
+
+pub use session_dispatch::session_run_dispatch_router;

@@ -18,6 +18,7 @@
 
 mod binding;
 mod bundle;
+mod execution_observation;
 mod local_commit;
 mod runtime_authority;
 pub use binding::{DispatchBinding, DispatchTopology};

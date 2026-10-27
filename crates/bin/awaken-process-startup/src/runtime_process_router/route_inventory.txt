@@ -623,3 +623,5 @@
 /w/{*path} | 404 | 404 | 404 | 404 | 404
 /v1/config/agents/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
 /v1/config/agents/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/awaken/sessions/{id}/runs/{run}/dispatch | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs/{run}/dispatch @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
