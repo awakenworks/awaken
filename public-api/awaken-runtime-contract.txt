@@ -293,9 +293,9 @@ pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest
 pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::Unavailable
 pub struct awaken_runtime_contract::diagnostic::RuntimeDiagnostic
 impl awaken_runtime_contract::diagnostic::RuntimeDiagnostic
-pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::code(&self) -> &'static str
+pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::code(&self) -> &str
 pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::kind(&self) -> awaken_runtime_contract::diagnostic::RuntimeErrorKind
-pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(awaken_runtime_contract::diagnostic::RuntimeErrorKind, &'static str, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(awaken_runtime_contract::diagnostic::RuntimeErrorKind, impl core::convert::Into<alloc::borrow::Cow<'static, str>>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub mod awaken_runtime_contract::execution
 pub enum awaken_runtime_contract::execution::AttemptExecutorRegistryError
 pub awaken_runtime_contract::execution::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
@@ -315,7 +315,7 @@ pub awaken_runtime_contract::execution::Error::Indeterminate
 pub awaken_runtime_contract::execution::Error::Resolution(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::StateConflict
 impl awaken_runtime_contract::execution::Error
-pub fn awaken_runtime_contract::execution::Error::code(&self) -> &'static str
+pub fn awaken_runtime_contract::execution::Error::code(&self) -> &str
 pub fn awaken_runtime_contract::execution::Error::kind(&self) -> awaken_runtime_contract::diagnostic::RuntimeErrorKind
 impl core::convert::From<awaken_agent_contract::thread::commit::coordinator::Error> for awaken_runtime_contract::execution::Error
 pub fn awaken_runtime_contract::execution::Error::from(awaken_agent_contract::thread::commit::coordinator::Error) -> Self
