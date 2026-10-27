@@ -832,6 +832,103 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn standalone_queued_interrupt_settles_without_starting_a_pool_or_calling_the_model() {
+    // Causes: C1 durable foreground delivery has enqueued its exact Run; C2 no
+    // pool was started and no physical attempt entered; C3 interrupt; C4 replay.
+    // Effects: E1 the same Run commits Cancelled and its waiting caller returns;
+    // E2 no pool, model call or replacement Run is created; E3 replay changes no
+    // committed Thread version. Q1=C1+C2+C3 -> E1+E2; Q2=Q1+C4 -> E3.
+    // The adjacent warm-pool test owns the executing/unknown-predecessor row.
+    // This real queue/commit case locks the standalone branch before removing
+    // any service dependency; it introduces no cancellation or receipt fake.
+    let model = Arc::new(GatedModel {
+        reached: Arc::new(tokio::sync::Notify::new()),
+        gate: Arc::new(tokio::sync::Notify::new()),
+        calls: AtomicUsize::new(0),
+    });
+    let dispatch = Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
+            .unwrap(),
+    );
+    let host = crate::SessionExecutorBuilder::ephemeral(model.clone(), "scripted")
+        .await
+        .with_ephemeral_dispatch(dispatch.clone())
+        .build()
+        .unwrap();
+    let thread = "standalone-queued-cancel";
+    let driver = host.clone();
+    let mut running =
+        tokio::spawn(async move { driver.session_runs.run(None, thread, user("go")).await });
+    let rows = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                result = &mut running => match result {
+                    Ok(Ok(_)) => panic!("Q1 foreground completed before queue admission"),
+                    Ok(Err(error)) => panic!("Q1 foreground failed before queue admission: {error}"),
+                    Err(error) => panic!("Q1 foreground task failed before queue admission: {error}"),
+                },
+                rows = dispatch.list_dispatches() => {
+                    let rows = rows.unwrap();
+                    if !rows.is_empty() { return rows; }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Q1 exact foreground queue admission");
+    assert_eq!(rows.len(), 1, "Q1 one queued Run");
+    assert_eq!(
+        rows[0].state,
+        awaken_dispatch_contract::DispatchState::Pending,
+        "Q1"
+    );
+    assert!(!rows[0].physical_attempt_active, "Q1 no physical attempt");
+    assert!(host.dispatch.pool().is_none(), "C2 no pool");
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        host.session_runs.interrupt(thread),
+    )
+    .await
+    .expect("Q1 bounded standalone cancellation")
+    .expect("Q1 cancellation accepted");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), running)
+        .await
+        .expect("Q1 foreground observes its committed terminal")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.state, RunState::Ended(EndCause::Cancelled), "E1");
+    let commit = host.thread_reads.commit_for_read(thread).await.unwrap();
+    assert_eq!(
+        commit.run_state(&rows[0].run_id),
+        Some(result.state),
+        "E1 exact Run"
+    );
+    assert!(
+        dispatch.list_dispatches().await.unwrap().is_empty(),
+        "E2 no replacement"
+    );
+    assert!(host.dispatch.pool().is_none(), "E2 no pool");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0, "E2 no inference");
+    let before = commit
+        .recovery_snapshot(&ThreadId(thread.into()), &rows[0].run_id)
+        .await
+        .unwrap()
+        .thread_version;
+    host.session_runs.interrupt(thread).await.unwrap();
+    assert_eq!(
+        commit
+            .recovery_snapshot(&ThreadId(thread.into()), &rows[0].run_id)
+            .await
+            .unwrap()
+            .thread_version,
+        before,
+        "Q2/E3 replay is inert"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finishes() {
     // Causes: C0 canonical durable Dispatch composition; C1 inference entered
     // without return evidence; C2 accepted cancellation replaces the claim.
@@ -933,6 +1030,161 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
         "R1: abandoned inference publishes no reply or proposed tool call"
     );
     gate.notify_waiters();
+}
+
+#[tokio::test]
+async fn durable_resume_commands_read_committed_tickets_without_a_pool_or_environment() {
+    // Causes: C1 direct/durable deployment capability; C2 configured local
+    // claimer/remote Workers, with no process pool started; C3 text resume or
+    // allow/deny decision; C4 the original committed manual-pause ticket.
+    // Effects: E1 direct refuses before Session construction/input staging;
+    // E2 durable reads C4 and stages exactly its Run/correlation/result through
+    // the existing Outbox; E3 no installed Session, pool, or new Thread commit.
+    // R1=!C1, either C2, all C3 -> E1+E3; R2=C1+C4, either C2, all C3 -> E2+E3.
+    // The input owner's decision table retains missing/wrong-ticket refusal;
+    // the Dispatch conformance suite retains relay/replay and claim fencing.
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason};
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_dispatch_contract::{InboxRead as _, Outbox as _};
+    for durable in [false, true] {
+        for local in [false, true] {
+            for decision in [None, Some(false), Some(true)] {
+                let dispatch = Arc::new(
+                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+                        .await
+                        .unwrap(),
+                );
+                let mut builder =
+                    crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+                        .await
+                        .with_ephemeral_dispatch(dispatch.clone());
+                builder.execution.ingress = if durable {
+                    crate::RunIngress::Durable
+                } else {
+                    crate::RunIngress::Direct
+                };
+                builder.execution.local = if local {
+                    crate::LocalExecution::in_process_pool()
+                } else {
+                    crate::LocalExecution::RemoteWorkersOnly
+                };
+                let host = builder.build().unwrap();
+                let thread = ThreadId("cold-durable-control".into());
+                let run = RunId("paused-run".into());
+                let ticket = ResumeTicket::new(
+                    "paused-correlation",
+                    run.clone(),
+                    thread.clone(),
+                    "snapshot",
+                    "catalog",
+                    AwaitTarget::Pause(PauseReason::Manual),
+                );
+                let commit = if durable {
+                    let commit = host.thread_reads.commit_for_read(&thread.0).await.unwrap();
+                    for disposition in [
+                        RunDisposition::running(run.clone()),
+                        RunDisposition::awaiting(ticket.clone()),
+                    ] {
+                        commit
+                            .commit(ThreadCommit::assemble(
+                                thread.clone(),
+                                disposition,
+                                true,
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    Some(commit)
+                } else {
+                    None
+                };
+                let before = match &commit {
+                    Some(commit) => Some(
+                        commit
+                            .recovery_snapshot(&thread, &run)
+                            .await
+                            .unwrap()
+                            .thread_version,
+                    ),
+                    None => None,
+                };
+                let result = match decision {
+                    Some(allow) => host.session_runs.stage_decision(&thread.0, allow).await,
+                    None => {
+                        host.session_runs
+                            .stage_manual_resume(&thread.0, "continue".into())
+                            .await
+                    }
+                };
+                if durable {
+                    assert_eq!(result.unwrap(), run.0, "R2 {local}/{decision:?}");
+                    assert_eq!(dispatch.relay().await.unwrap(), 1, "R2 one Outbox input");
+                    let pending = dispatch.list(&thread).await.unwrap();
+                    assert_eq!(pending.len(), 1, "R2");
+                    let input = &pending[0].input;
+                    assert_eq!(input.run_id, run, "R2 exact Run");
+                    assert_eq!(
+                        input.correlation_id, ticket.correlation_id,
+                        "R2 exact ticket"
+                    );
+                    let expected = match decision {
+                        Some(true) => ResumeResult::allow(),
+                        Some(false) => ResumeResult::deny(None),
+                        None => ResumeResult::Input("continue".into()),
+                    };
+                    assert_eq!(input.result, expected, "R2 exact result");
+                    assert_eq!(
+                        dispatch.relay().await.unwrap(),
+                        0,
+                        "R2 original relay is inert"
+                    );
+                } else {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest, "R1");
+                    assert!(
+                        error.message.contains("durable ingress not enabled"),
+                        "R1: {error}"
+                    );
+                    assert_eq!(dispatch.relay().await.unwrap(), 0, "R1 no staged input");
+                }
+                assert!(host.dispatch.pool().is_none(), "E3 no process pool");
+                assert_eq!(
+                    host.session_runs
+                        .authority
+                        .durable_thread_exists(&thread.0)
+                        .await
+                        .unwrap(),
+                    durable,
+                    "R1 cannot open even the cold commit source; R2 keeps the original Thread"
+                );
+                assert!(
+                    host.run_assembly
+                        .installed_sessions
+                        .read(&thread.0, |_| ())
+                        .unwrap()
+                        .is_none(),
+                    "E3 no Session/Environment construction"
+                );
+                if let Some(commit) = commit {
+                    assert_eq!(
+                        Some(
+                            commit
+                                .recovery_snapshot(&thread, &run)
+                                .await
+                                .unwrap()
+                                .thread_version
+                        ),
+                        before,
+                        "E3 no Thread commit"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]
