@@ -32,6 +32,7 @@ mod committed_reads;
 mod committed_step;
 mod completion;
 mod delivery;
+mod dispatch_lifecycle;
 mod hub;
 mod lock;
 mod memory_binding;
@@ -82,6 +83,7 @@ pub use completion::{
     activate_and_await_session_run, await_completion_state,
 };
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
+pub use dispatch_lifecycle::SessionDispatchLifecycle;
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use memory_binding::MemoryBinding;

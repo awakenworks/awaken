@@ -21,8 +21,7 @@ use awaken_session_application::{SessionApplication, SessionRunApplication};
 use awaken_session_application_contract::{RunApplication, SessionRunBackgroundApplication};
 use awaken_session_execution_contract::ApplicationError;
 use awaken_session_executor::{
-    AgentCoordinationInstallError, CoordinatorRoles, ExecutorComponents,
-    SessionApplicationBindingError,
+    AgentCoordinationInstallError, ExecutorComponents, SessionApplicationBindingError,
 };
 
 /// Why the Coordinator could not be composed over this executor.
@@ -89,7 +88,8 @@ pub fn coordinator_execution(
         host.worker_completion_sink(),
         sessions.lifecycle().reconciliation_wakeup(),
     ));
-    let roles = CoordinatorRoles::of(host, completion.clone());
+    let roles =
+        awaken_session_executor::session_dispatch_lifecycle(host.as_ref(), completion.clone());
     Ok(awaken_coordinator::ExecutionPorts {
         session_runs,
         durable_runs: host.session_runs().clone(),
@@ -257,7 +257,10 @@ mod tests {
                 .build()
                 .unwrap(),
             );
-            let roles = CoordinatorRoles::of(&host, host.worker_completion_sink());
+            let roles = awaken_session_executor::session_dispatch_lifecycle(
+                host.as_ref(),
+                host.worker_completion_sink(),
+            );
             if remote {
                 assert!(roles.start_terminal_reconciliation(), "C4 scanner started");
             } else {

@@ -1,7 +1,7 @@
 //! [`ExecutorComponents`] — the Session executor's components, assembled once.
 //!
 //! The composition root builds it from [`SessionExecutorBuilder`] and selects
-//! [`crate::CoordinatorRoles`] or [`crate::WorkerRoles`] from it. It holds each
+//! its shared dispatch lifecycle or [`crate::WorkerRoles`] from it. It holds each
 //! component and the process-level facts they share; behaviour lives in the
 //! components, which every protocol adapter drives on the same thread ids.
 

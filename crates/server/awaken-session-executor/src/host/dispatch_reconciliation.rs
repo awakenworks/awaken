@@ -1009,8 +1009,11 @@ mod tests {
         local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
         assert!(
-            !crate::CoordinatorRoles::of(&local_pool, local_pool.worker_completion_sink())
-                .start_terminal_reconciliation(),
+            !crate::session_dispatch_lifecycle(
+                local_pool.as_ref(),
+                local_pool.worker_completion_sink()
+            )
+            .start_terminal_reconciliation(),
             "R0"
         );
 
@@ -1087,11 +1090,11 @@ mod tests {
         .expect("record exact terminal truth");
 
         assert!(
-            crate::CoordinatorRoles::of(&host, host.worker_completion_sink())
+            crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
                 .start_terminal_reconciliation()
         );
         assert!(
-            !crate::CoordinatorRoles::of(&host, host.worker_completion_sink())
+            !crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
                 .start_terminal_reconciliation(),
             "one coordinator daemon"
         );
@@ -1184,7 +1187,7 @@ mod tests {
     async fn terminal_reconciliation_ends_with_the_executor_or_its_drain() {
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::CoordinatorRoles::of(&host, host.worker_completion_sink());
+        let roles = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink());
         assert!(roles.start_terminal_reconciliation(), "L1 start");
         let scan_state = Arc::downgrade(host.dispatch().terminal_reconciliation());
         let dispatch = Arc::downgrade(host.dispatch());
@@ -1206,7 +1209,7 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::CoordinatorRoles::of(&host, host.worker_completion_sink());
+        let roles = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink());
         assert!(roles.start_terminal_reconciliation(), "L3 start");
         let scan_state = host.dispatch().terminal_reconciliation().clone();
         assert!(

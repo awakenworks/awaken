@@ -125,6 +125,7 @@ have left the executor and the Worker-side crates.
 | Budgets and Outcomes (`BudgetRuntime`, `OutcomeRuntime`) | Shared `SessionBudgets`, selected directly by both executor and Worker-placement role sets; SDK `Outcomes` and Worker-placement Outcomes | Outcomes launch grader Runs; a grader whose snapshot is not environment-free opens an execution context, which needs an Environment provider a Coordinator does not have; a budget resume without a dispatch row opens an execution context | `awaken-session-run-delivery`, over Run admission; grader Runs are dispatched like every other Worker-placement Run |
 | Thread Workspace and Agent projection registry (`CapabilityRuntime`) | `RunCapabilities` | No | The Coordinator-side crate; tool, MCP, ACP and credential capability assembly stays in the executor |
 | Committed-terminal reconciliation resolver | `awaken-session-run-delivery::SessionCommitWorkers` is the sole `CommitBoundaryWorkers` / `ThreadCommitBoundary` implementation, over the selected raw source, dispatch binding, clock and recovery reader | The SDK supplies only `EmbeddedBoundaryObservation`, which retains its original late coordination/Memory selection; the shared factory itself links no executor, realization or provider. `SessionDispatchObserver` configures the same factory role directly for application-owned observation | Production startup still needs to select the shared factory with `AuthorityCommits` and the existing Session observer. Cancellation executor selection stays exclusively on the claiming Worker; the shared factory exposes no cancellation switch. `ProcessDispatch` stays in dispatch-execution |
+| Process dispatch lifecycle | `awaken-session-run-delivery::SessionDispatchLifecycle`, over the original `ProcessDispatch` and `BackgroundRuns` | The SDK factory supplies its original lazy resolver; the lifecycle component links no executor, realization or model | The root and Worker role set select the same implementation. The SDK `CoordinatorRoles` / `ProcessOperations` implementation is deleted. Service topology, fallible initialization and absorbing drain stay with `ProcessDispatch`; claimed Runs finish before auxiliary drain, within one original deadline. The Coordinator production resolver/role selection remains open |
 | Deployment configuration (`DeploymentConfig`, `SandboxSettings`, `ExecutionTopology`, `CoordinatorStorage`) | *done*: `awaken-deployment-config`, the execution context's domain crate | No | Every root resolves it without linking the executor; the executor projects it with `SessionExecutionProcess::from_deployment`, dispatch-execution with `DispatchServiceConfig::for_topology`; the container MCP relay exposure it carries lives in `awaken-session-environment-contract` |
 | Kubernetes Worker fleet control (Pod identity authentication, Pod process observation and stop, the Worker create ledger) | *done*: [`awaken-worker-fleet-kubernetes`](../../crates/shared/awaken-worker-fleet-kubernetes/src/lib.rs), selected by the root's Worker transport; Pod identity authentication stays in `awaken-worker-transport-security` | No | The fleet crate is `shared`, not Coordinator-only: the Worker observes its own Pod process through it, and the Kubernetes Sandbox adapter creates Sandbox Pods through the same Create ledger and isolation guard and reuses its Kubernetes API boundary (status classification, the Pod metadata CAS loop, API-default normalization, managed Pod/claim names) instead of a second copy |
 | Environment package image provisioning (`EnvironmentImageBuildCoordinator`) | *done*: the Docker, Podman and Kubernetes builders of [`awaken-package-image`](../../crates/worker/awaken-package-image/src/selection.rs), constructed from the deployment's `SandboxSettings::package_image_build_settings` (`PackageImageBuildSettings` in `awaken-container-contract`) for the builder `SandboxSettings::package_image_builder_for` selects, and consumed by the Environment image build context (`awaken-environment-package-image-builder`) over the `PackageImageProvisioner` port | No: no Sandbox adapter builds images any more | Destination changed from "a port the container engines implement". A Worker's container provider receives the same builder through `with_package_provisioner`, and without one package requirements fail closed. Each root matches the selected builder to the engine it links: the Coordinator has no Environment image builder for an unlinked engine, a Worker refuses the deployment by name. The Podman builder and the Podman Sandbox adapter share one child-process environment (`awaken_local_process::podman`) |
@@ -196,6 +197,26 @@ component Arc is created with each process and selected by both application admi
 and transport; constructing a fresh equal compiler at either call site would still
 fail their original identity check. An application that retains this role therefore
 cannot keep the pool/scanner alive through a narrow trait cast of the process.
+
+The process lifecycle now has one implementation in Run delivery. The SDK's
+`session_dispatch_lifecycle` selects its existing immutable authority,
+completion sink, lazy resolver and original auxiliary registry; its Worker role set
+uses that same component. The root retains it directly through
+`ProcessDispatchLifecycle`, rather than an SDK Coordinator role wrapper. A
+Coordinator-only root can construct the same component over the shared commit
+factory and observer. The resolver remains lazy: disabled/unbound services do not
+construct it, original construction errors remain retryable, and a cold drained
+process refuses construction. Drain still closes the original gate, waits for
+claimed work, then joins the same background registry using the remaining budget;
+a timeout neither aborts that work nor fabricates quiescence. Drain now observes
+completion of the original pool/scanner task handles as well as physical capacity:
+a claim still resolving or a terminal scan still settling can register auxiliary
+work while the heartbeat's physical execution count is zero. That count keeps its
+original placement meaning. Native held-resolution/scan cases witness the ordering
+and timeout retention; Kani exercises the same production completion fold
+over zero through six task-return observations, not task scheduling. This consolidation adds no queue, registry, state machine or second
+lifecycle implementation.
+Production startup still needs to select the executor-free resolver and roles.
 
 The order that removes D4's transitions, each step a reviewed `--tighten`:
 the Deployment configuration (done); the Memory invalidation bus (done); the

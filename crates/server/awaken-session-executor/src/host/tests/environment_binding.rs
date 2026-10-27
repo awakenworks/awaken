@@ -664,7 +664,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !ephemeral.dispatch.topology().ingress.is_durable(),
         "T1 precondition"
     );
-    crate::CoordinatorRoles::of(&ephemeral, ephemeral.worker_completion_sink())
+    crate::session_dispatch_lifecycle(ephemeral.as_ref(), ephemeral.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(ephemeral.dispatch.pool().is_some(), "T1/E1");
@@ -694,7 +694,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         "T2 Host reads the sole authority"
     );
     assert!(local.run_assembly.runs_local_dispatch_pool(), "local");
-    crate::CoordinatorRoles::of(&local, local.worker_completion_sink())
+    crate::session_dispatch_lifecycle(local.as_ref(), local.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(local.dispatch.pool().is_some(), "T2/E1");
@@ -720,7 +720,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         !coordinator.run_assembly.runs_local_dispatch_pool(),
         "coordinator"
     );
-    crate::CoordinatorRoles::of(&coordinator, coordinator.worker_completion_sink())
+    crate::session_dispatch_lifecycle(coordinator.as_ref(), coordinator.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(coordinator.dispatch.pool().is_none(), "T3/E2");

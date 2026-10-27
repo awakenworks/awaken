@@ -13,7 +13,6 @@ use awaken_credential_contract::{
     CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -188,11 +187,6 @@ impl MemoryRuntime {
             runtime: self.clone(),
             binding,
         }
-    }
-
-    /// Await every in-flight extraction started by any bound Session.
-    pub async fn drain(&self, timeout: Duration) -> bool {
-        self.extractions.background().drain(timeout).await
     }
 
     pub(crate) fn background(&self) -> Arc<BackgroundRuns> {

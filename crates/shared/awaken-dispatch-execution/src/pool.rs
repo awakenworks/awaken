@@ -293,6 +293,15 @@ impl DispatchReconciler {
         self.shutdown.cancel();
     }
 
+    /// Observe the original owned tasks after their shutdown signal. A scan
+    /// can still publish settlement effects while physical capacity is zero.
+    pub(crate) fn task_completions(&self) -> impl Iterator<Item = bool> + '_ {
+        self.task
+            .iter()
+            .chain(self.depth_sampler.iter())
+            .map(JoinHandle::is_finished)
+    }
+
     pub async fn shutdown(mut self) {
         self.shutdown.cancel();
         if let Some(task) = self.task.take() {
@@ -913,6 +922,18 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     #[must_use]
     pub fn in_flight(&self) -> u32 {
         self.admission.in_flight()
+    }
+
+    /// Completion of the same tasks `shutdown` joins. Claim resolution and
+    /// terminal observation may still run before/after physical admission;
+    /// they must return before process drain can move to auxiliary work.
+    pub(crate) fn task_completions(&self) -> impl Iterator<Item = bool> + '_ {
+        self.drains
+            .iter()
+            .chain(std::iter::once(&self.wake_coordinator))
+            .chain(self.reconciler.iter())
+            .chain(self.depth_sampler.iter())
+            .map(JoinHandle::is_finished)
     }
 
     /// Stop every task and wait for the in-flight drains to finish.

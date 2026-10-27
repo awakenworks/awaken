@@ -100,8 +100,8 @@ fn starts_terminal_reconciliation(
 /// Starting and draining this process's dispatch work over the executor that
 /// resolves its claimed Runs. Consumer: the Coordinator component, which
 /// starts the work once its composition validates and drains it at shutdown,
-/// without linking the executor. Implementer: the Session executor's
-/// Coordinator role set, which hands [`ProcessDispatch`] its resolver.
+/// without linking the executor. Implementer: Run delivery's shared Session
+/// dispatch lifecycle, which hands [`ProcessDispatch`] its selected resolver.
 #[async_trait::async_trait]
 pub trait ProcessDispatchLifecycle: Send + Sync {
     /// Spawn the co-located pool when the topology runs one, and the
@@ -114,8 +114,8 @@ pub trait ProcessDispatchLifecycle: Send + Sync {
     async fn drain(&self, timeout: std::time::Duration) -> bool;
 }
 
-/// Every claimed Run of the local pool settled while its absorbing drain fence
-/// was held; the fence stays installed while this value lives.
+/// The process's owned dispatch tasks returned after its absorbing drain fence
+/// was installed. Durable claim/attempt outcomes remain with their own owners.
 #[must_use]
 pub struct ClaimedRunsDrained {
     _fence: Option<PoolDrainFence>,
@@ -295,14 +295,28 @@ impl ProcessDispatch {
         self.topology.local.runs_local_pool().then_some(fence)
     }
 
-    /// Install the drain fence and wait until every claimed Run settled, both
-    /// before `deadline`. `None` when the deadline passed first.
+    /// Install the drain fence and await the original dispatch tasks, including
+    /// claim resolution and terminal observation, before `deadline`. Physical
+    /// execution capacity alone deliberately excludes those control tasks.
+    /// `None` when the deadline passed first; no task is aborted on timeout.
     pub async fn drain_claimed_runs(
         &self,
         deadline: &awaken_time::mono::MonoDeadline,
     ) -> Option<ClaimedRunsDrained> {
         let fence = drain_fence_before(deadline.instant(), self.begin_drain()).await?;
-        while self.in_flight() != 0 {
+        while !drain_complete(
+            self.in_flight(),
+            self.pool
+                .get()
+                .into_iter()
+                .flat_map(|pool| pool.task_completions())
+                .chain(
+                    self.terminal_reconciler
+                        .get()
+                        .into_iter()
+                        .flat_map(DispatchReconciler::task_completions),
+                ),
+        ) {
             let remaining = deadline.remaining();
             if remaining.is_zero() {
                 return None;
@@ -354,6 +368,12 @@ impl ProcessDispatch {
     }
 }
 
+/// Fold primitive completion observations from the existing owned task handles.
+/// Derive completion here, rather than accepting an already-aggregated flag.
+fn drain_complete(physical: u32, mut tasks: impl Iterator<Item = bool>) -> bool {
+    physical == 0 && tasks.all(std::convert::identity)
+}
+
 /// Retain the pool-drain fence future until the caller's absolute deadline.
 /// `Some(None)` is the valid no-local-pool case; `None` alone means the fence
 /// owner did not return before the deadline.
@@ -367,3 +387,35 @@ where
 #[cfg(test)]
 #[path = "process_dispatch/tests.rs"]
 mod tests;
+
+#[cfg(kani)]
+mod drain_completion_proofs {
+    use super::drain_complete;
+
+    /// @obligation worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+    /// @obligation worker_drain.grace_expiry_retains_cancellation_observer
+    /// @kani default-features=false
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn drain_completion_requires_owned_tasks_and_physical_quiescence() {
+        let physical: u32 = kani::any();
+        // Primitive task-return observations, before production's all-task
+        // reduction; the selected prefix includes empty/cold ownership.
+        let tasks: [bool; 6] = kani::any();
+        let selected = usize::from(kani::any::<u8>() % 7);
+        let complete = drain_complete(physical, tasks.into_iter().take(selected));
+        if physical != 0 {
+            assert!(!complete);
+        }
+        for (index, finished) in tasks.into_iter().enumerate() {
+            if index < selected && !finished {
+                assert!(!complete);
+            }
+        }
+        assert!(drain_complete(0, [].into_iter()));
+        assert!(drain_complete(0, [true; 6].into_iter().take(selected)));
+        // Native held-resolution/scan cases witness the actual Tokio handle
+        // observations. This proves the shared fold through six observations,
+        // not scheduling, eventual task return or external physical termination.
+    }
+}

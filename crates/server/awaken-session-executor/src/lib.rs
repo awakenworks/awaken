@@ -84,7 +84,7 @@ pub use child_run_coordination::ChildRunCoordination;
 mod outcomes;
 pub use outcomes::Outcomes;
 mod process_roles;
-pub use process_roles::{CoordinatorRoles, WorkerRoles};
+pub use process_roles::{WorkerRoles, session_dispatch_lifecycle};
 mod session_runs;
 pub use session_runs::SessionRuns;
 mod run_exec;
