@@ -71,7 +71,7 @@ async fn cancellation_resolution_keeps_execution_capabilities_on_the_claiming_wo
             .unwrap()
             .unwrap();
         assert!(claimed.cancellation_requested, "R2-R3/C1");
-        let boundaries = crate::host::boundary_run::CommitBoundaryAssembly::new(&host.run_assembly);
+        let boundaries = crate::host::boundary_run::commit_boundary_workers(&host.run_assembly);
         let opened = boundaries.open_commit(&parent).await.unwrap();
         opened.boundary_worker(&claimed, None).await.expect("R1/E1");
         let resolver =

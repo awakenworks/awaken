@@ -167,5 +167,31 @@ impl DispatchSettlementObserver for SessionDispatchObserver {
     }
 }
 
+/// The same selected application configures a Coordinator's commit-boundary
+/// Worker through its existing observer roles. No executor capability is added.
+#[async_trait::async_trait]
+impl crate::SessionBoundaryEffects for SessionDispatchObserver {
+    async fn configure(
+        self: Arc<Self>,
+        worker: awaken_dispatch_execution::DispatchWorker<
+            awaken_dispatch_erasure::AnyDispatchStore,
+        >,
+        _claimed: &awaken_dispatch_contract::Claimed,
+        _commit: Arc<crate::SessionCommit>,
+        context: Option<awaken_runtime_contract::RuntimeRunContext>,
+    ) -> Result<
+        awaken_dispatch_execution::DispatchWorker<awaken_dispatch_erasure::AnyDispatchStore>,
+        awaken_dispatch_execution::Error,
+    > {
+        let worker = worker
+            .with_settlement_observer(self.clone())
+            .with_session_run_admission_observer(self);
+        Ok(match context {
+            Some(context) => worker.with_context(context),
+            None => worker,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests;

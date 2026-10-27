@@ -141,15 +141,10 @@ impl ChildWorkerFactory {
             ),
         ));
         let has_model_request_gate = context.model_request_gate.is_some();
-        let commit_boundaries = crate::host::boundary_run::CommitBoundaryAssembly::new(host);
-        let mut worker = crate::host::boundary_run::construct_boundary_worker(
-            &commit_boundaries,
-            claimed,
-            commit,
-            Some(context),
-            false,
-        )
-        .await?;
+        let commit_boundaries = crate::host::boundary_run::commit_boundary_workers(host);
+        let mut worker = commit_boundaries
+            .worker(claimed, commit, Some(context))
+            .await?;
         // A cold/replacement child must resolve the same publication-pinned
         // model as its first attempt. The Worker's host fallback can be empty.
         if let Some(materializer) = host.worker_inference_materializer() {

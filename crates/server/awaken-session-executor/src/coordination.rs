@@ -752,8 +752,7 @@ mod tests {
             let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
                 .expect("original Coordinator resolver");
             let assembly = Arc::downgrade(&host.run_assembly);
-            let boundaries =
-                crate::host::boundary_run::CommitBoundaryAssembly::new(&host.run_assembly);
+            let boundaries = crate::host::boundary_run::commit_boundary_workers(&host.run_assembly);
             let parent = ThreadId("boundary-parent".into());
             let child = ThreadId("boundary-child".into());
             let run = RunId("boundary-child-run".into());

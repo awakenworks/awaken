@@ -45,6 +45,7 @@ mod run_publications;
 mod session_activation;
 mod session_budgets;
 mod session_capabilities;
+mod session_commit_workers;
 mod session_dispatch_observer;
 mod session_inputs;
 mod session_projections;
@@ -104,6 +105,7 @@ pub use session_budgets::SessionBudgets;
 pub use session_capabilities::{
     builtin_hand_tools, hand_tool_descriptors, supports_mid_conversation_system,
 };
+pub use session_commit_workers::{SessionBoundaryEffects, SessionCommitWorkers};
 pub use session_inputs::{
     client_result_for_ticket, resume_activation, session_system_message,
     session_thread_reply_result,

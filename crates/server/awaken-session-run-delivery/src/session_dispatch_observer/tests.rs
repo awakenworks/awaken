@@ -284,3 +284,97 @@ async fn shared_session_observer_preserves_each_original_application_failure() {
         );
     }
 }
+
+#[tokio::test]
+async fn selected_session_observer_configures_the_shared_worker_without_an_executor() {
+    use crate::SessionBoundaryEffects as _;
+    use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+    use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _, DispatchReads as _};
+    // C1 one real claimed dispatch and its committed child terminal; C2 the
+    // selected application configures both observer roles; C3 original root
+    // owners drop; C4 the same Worker recovers and settles the committed Run.
+    // W1=C1+C2+C3 -> the Worker retains the selected application, not an SDK;
+    // W2=W1+C4 -> original Before/After order and exact coordinates, row Done,
+    // no model or Environment; W3=Worker dropped -> application released.
+    let clock = awaken_time::system_clock();
+    let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone()));
+    let request = dispatch("child", Some(17));
+    store.enqueue(request.clone()).await.unwrap();
+    let claimed = store
+        .claim("original-worker", 30_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let commit = Arc::new(crate::SessionCommit::Local(Arc::new(
+        awaken_dispatch_erasure::LocalCommitAdapter::projected(
+            awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
+        ),
+    )));
+    commit_run(
+        commit.as_ref(),
+        request.thread_id(),
+        RunDisposition::ended(request.run_id().clone(), EndCause::NaturalEnd),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let app = Arc::new(RecordingApplication::default());
+    let weak = Arc::downgrade(&app);
+    let observer = Arc::new(SessionDispatchObserver::new(app.clone()));
+    let worker = crate::session_dispatch_worker(
+        Arc::new(awaken_runtime::Runtime::new().with_clock(clock)),
+        awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
+            awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_dispatch(store.clone()),
+        )),
+        commit.clone(),
+        "original-worker",
+    )
+    .unwrap();
+    let worker = observer
+        .clone()
+        .configure(worker, &claimed, commit, None)
+        .await
+        .unwrap();
+    drop(app);
+    drop(observer);
+    assert!(
+        weak.upgrade().is_some(),
+        "W1 selected roles retain the original application"
+    );
+    assert_eq!(
+        worker.settle_claimed_terminal(claimed).await.unwrap(),
+        Some((
+            request.run_id().clone(),
+            RunState::Ended(EndCause::NaturalEnd)
+        )),
+        "W2 original terminal"
+    );
+    {
+        let retained = weak.upgrade().unwrap();
+        let calls = retained.calls.lock().unwrap();
+        assert!(
+            matches!(calls.as_slice(), [Observed::Before(_), Observed::After(_)]),
+            "W2 original callback order"
+        );
+        for command in calls.iter() {
+            let (Observed::Before(command) | Observed::After(command)) = command else {
+                panic!("W2 no fresh activity");
+            };
+            assert_eq!(command.session_id, "session", "W2 physical Session");
+            assert_eq!(
+                command.source_thread_id,
+                *request.thread_id(),
+                "W2 logical child"
+            );
+            assert_eq!(command.source_run_id, *request.run_id(), "W2 original Run");
+            assert_eq!(command.session_activity_epoch, 17, "W2 original activity");
+        }
+    }
+    assert!(
+        store.list_dispatches().await.unwrap().is_empty(),
+        "W2 original Dispatch settled"
+    );
+    drop(worker);
+    assert!(weak.upgrade().is_none(), "W3 selected application released");
+}
