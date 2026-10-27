@@ -27,7 +27,7 @@ struct ParentChildModel {
 }
 
 fn test_snapshot(agent_id: &str, delegates: Vec<AgentId>) -> ExecutableAgentSnapshot {
-    let mut tools = awaken_session_executor::authorable_tools();
+    let mut tools = awaken_session_run_delivery::authorable_tools();
     if delegates.is_empty() {
         tools.retain(|tool| tool.kind != ToolKind::AgentDelegation);
     }

@@ -114,7 +114,7 @@ pub type RegisteredMemoryMounterFactory = Arc<
 >;
 
 use awaken_coordinator_client::WorkerControlClient;
-use awaken_credential_materializer::InferenceExecutorMaterializer;
+use awaken_inference_endpoint::InferenceExecutorMaterializer;
 use awaken_session_executor::ExecutorComponents;
 use awaken_worker_contract::{RegistryMutation, WorkerManifest};
 use awaken_worker_transport_security::WorkerUpstream;
@@ -295,7 +295,7 @@ pub fn worker_realization_namespace(
             })?;
             std::borrow::Cow::Owned(awaken_installation_workspace::provision_at(
                 installation_root,
-                awaken_session_executor::ExecutorComponents::mint_local_workspace,
+                awaken_deployment_config::mint_local_workspace,
             ))
         }
     };
@@ -1569,9 +1569,9 @@ impl WorkerNode {
         let local_workspace = match deployment.storage_dir.as_deref() {
             Some(root) => awaken_installation_workspace::provision_at(
                 root,
-                ExecutorComponents::mint_local_workspace,
+                awaken_deployment_config::mint_local_workspace,
             ),
-            None => ExecutorComponents::mint_local_workspace(),
+            None => awaken_deployment_config::mint_local_workspace(),
         };
         // Claimed Runs commit back to the Coordinator under this registered
         // identity; the Host holds only the neutral claim-fenced port.

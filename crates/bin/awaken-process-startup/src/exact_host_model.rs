@@ -28,7 +28,7 @@ fn cargo_test_namespace_hand_path() -> Option<std::path::PathBuf> {
 /// whose Sessions run on this process's claim pool through `execution`.
 pub(super) fn local_test_process_options(
     stores: &super::ProcessStores,
-    execution: std::sync::Arc<dyn crate::ColocatedExecution>,
+    execution: Box<dyn crate::ColocatedExecution>,
 ) -> super::ProcessStartup {
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;

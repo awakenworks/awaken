@@ -765,7 +765,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let process = || {
             crate::SessionExecutionProcess::from_deployment(
                 &awaken_deployment_config::DeploymentConfig::ephemeral(),
-                ExecutorComponents::mint_local_workspace(),
+                awaken_deployment_config::mint_local_workspace(),
                 system_clock(),
             )
             .expect("ephemeral process")

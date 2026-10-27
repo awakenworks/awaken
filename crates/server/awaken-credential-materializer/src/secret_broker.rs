@@ -313,37 +313,48 @@ mod tests {
         // E2 C3 rejects before any probe effect. Rules R1=read+C1=>E1;
         // R2=write+C1=>E1; R3=C3=>E2. The neutral materializer cannot open a
         // second Vault path or choose another source on failure.
-        let authority = Arc::new(LocalAuthorityProbe::default());
-        let pinned =
-            PinnedCredentialMaterializer::new(authority.clone(), awaken_time::system_clock());
-        assert_eq!(
-            pinned.materialize("vault-source@7").await.unwrap(),
-            b"sealed-material",
-            "R1/E1"
-        );
-        pinned
-            .write_back(
-                SecretWritebackTarget::Unattached {
-                    reference: "vault-source@7",
-                },
-                b"replacement".to_vec(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(authority.reads.load(Ordering::SeqCst), 1, "R1/E1 once");
-        assert_eq!(authority.writes.load(Ordering::SeqCst), 1, "R2/E1 once");
-        let external = PinnedCredentialMaterializer::external_only(
-            authority.clone(),
-            awaken_time::system_clock(),
-        );
-        assert!(
-            external.materialize("vault-source@7").await.is_err(),
-            "R3/E2"
-        );
-        assert_eq!(
-            authority.reads.load(Ordering::SeqCst),
-            1,
-            "R3/E2 zero fallback"
-        );
+        // R4 repeats R1-R3 for the two original role views selected from
+        // the same root-owned Arc: identical reads/writeback and no fallback.
+        for erased_roles in [false, true] {
+            let authority = Arc::new(LocalAuthorityProbe::default());
+            let pinned = if erased_roles {
+                PinnedCredentialMaterializer::from_local_roles(
+                    authority.clone(),
+                    authority.clone(),
+                    awaken_time::system_clock(),
+                )
+            } else {
+                PinnedCredentialMaterializer::new(authority.clone(), awaken_time::system_clock())
+            };
+            assert_eq!(
+                pinned.materialize("vault-source@7").await.unwrap(),
+                b"sealed-material",
+                "R1/E1"
+            );
+            pinned
+                .write_back(
+                    SecretWritebackTarget::Unattached {
+                        reference: "vault-source@7",
+                    },
+                    b"replacement".to_vec(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(authority.reads.load(Ordering::SeqCst), 1, "R1/E1 once");
+            assert_eq!(authority.writes.load(Ordering::SeqCst), 1, "R2/E1 once");
+            let external = PinnedCredentialMaterializer::external_only(
+                authority.clone(),
+                awaken_time::system_clock(),
+            );
+            assert!(
+                external.materialize("vault-source@7").await.is_err(),
+                "R3/E2"
+            );
+            assert_eq!(
+                authority.reads.load(Ordering::SeqCst),
+                1,
+                "R3/E2 zero fallback"
+            );
+        }
     }
 }

@@ -22,6 +22,15 @@
 //! because they are read from the same file by the same roots.
 #![warn(unreachable_pub)]
 
+/// Mint a fresh process-unique platform Workspace coordinate without reading
+/// a clock or persisting identity. Durable installations publish this value
+/// through their existing no-replace installation marker.
+#[must_use]
+pub fn mint_local_workspace() -> String {
+    let nonce = uuid::Uuid::new_v4().simple();
+    format!("workspace_local_{:x}_{nonce}", std::process::id())
+}
+
 mod coordinator_storage;
 mod execution_topology;
 mod process_environment;

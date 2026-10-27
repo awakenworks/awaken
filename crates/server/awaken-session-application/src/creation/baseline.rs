@@ -343,8 +343,6 @@ impl SessionCreationCommands {
 
     #[must_use]
     pub fn model(&self) -> String {
-        let execution = self.core.as_ref();
-
-        execution.model()
+        self.default_model.clone()
     }
 }

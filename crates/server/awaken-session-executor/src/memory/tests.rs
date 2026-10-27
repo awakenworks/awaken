@@ -1,5 +1,4 @@
 use super::*;
-use crate::ExecutorComponents;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -218,7 +217,7 @@ struct InspectExtractorContext {
     calls: std::sync::atomic::AtomicUsize,
 }
 
-impl awaken_credential_materializer::InferenceExecutorMaterializer for InspectExtractorContext {
+impl awaken_inference_endpoint::InferenceExecutorMaterializer for InspectExtractorContext {
     fn materialize_pinned(
         &self,
         _model: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
@@ -267,7 +266,7 @@ async fn extractor_context_retains_frozen_attribution_before_materialization() {
                 bound.runtime.clock.clone(),
                 materialized.then(|| {
                     materializer.clone()
-                        as Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>
+                        as Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>
                 }),
             );
             let mut intent = MemoryExtractionIntent::new_range(
@@ -1315,7 +1314,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         },
         crate::SessionExecutionProcess::from_deployment(
             &awaken_deployment_config::DeploymentConfig::ephemeral(),
-            ExecutorComponents::mint_local_workspace(),
+            awaken_deployment_config::mint_local_workspace(),
             awaken_time::system_clock(),
         )
         .expect("ephemeral process"),
@@ -1389,9 +1388,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
 
 struct UnavailableExtractorMaterializer(Arc<std::sync::atomic::AtomicUsize>);
 
-impl awaken_credential_materializer::InferenceExecutorMaterializer
-    for UnavailableExtractorMaterializer
-{
+impl awaken_inference_endpoint::InferenceExecutorMaterializer for UnavailableExtractorMaterializer {
     fn materialize_pinned(
         &self,
         _candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,

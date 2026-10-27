@@ -52,7 +52,7 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     let app = build_all_in_one_router_with_model(
         Arc::new(EchoModel),
         "echo",
-        std::sync::Arc::new(awaken_cli::LocalExecution),
+        Box::new(awaken_cli::LocalExecution::default()),
     )
     .await;
     let (status, agent) = call(

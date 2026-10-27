@@ -63,7 +63,7 @@ async fn shared_secured_all_in_one_router(
             let (app, iam) = build_isolated_secured_all_in_one_router(
                 directory.path(),
                 key,
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await;
             let admin_token = admin_token(directory.path());
@@ -179,7 +179,7 @@ fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
         let (app, _iam) = build_isolated_secured_all_in_one_router(
             dir.path(),
             &KEY,
-            std::sync::Arc::new(awaken_cli::LocalExecution),
+            Box::new(awaken_cli::LocalExecution::default()),
         )
         .await;
         let bootstrap = admin_token(dir.path());
@@ -432,7 +432,7 @@ fn revocation_is_immediate_and_survives_a_restart() {
             let (app, _iam) = build_isolated_secured_all_in_one_router(
                 dir.path(),
                 &KEY,
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await;
             bootstrap = admin_token(dir.path());
@@ -498,7 +498,7 @@ fn revocation_is_immediate_and_survives_a_restart() {
         let (app, _iam) = build_isolated_secured_all_in_one_router(
             dir.path(),
             &KEY,
-            std::sync::Arc::new(awaken_cli::LocalExecution),
+            Box::new(awaken_cli::LocalExecution::default()),
         )
         .await;
         let (s, _) = call(
@@ -531,7 +531,7 @@ fn the_bootstrap_token_rotates_to_a_minted_successor() {
         let (app, _iam) = build_isolated_secured_all_in_one_router(
             dir.path(),
             &KEY,
-            std::sync::Arc::new(awaken_cli::LocalExecution),
+            Box::new(awaken_cli::LocalExecution::default()),
         )
         .await;
         let bootstrap = admin_token(dir.path());

@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use awaken_credential_contract::CredentialRealizationCapabilities;
-use awaken_credential_materializer::InferenceExecutorMaterializer;
+use awaken_inference_endpoint::InferenceExecutorMaterializer;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 #[cfg(test)]

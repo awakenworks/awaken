@@ -14,6 +14,7 @@ separation = "protocol"
 protocol = "awaken-http"
 
 [dependencies]
+awaken-session-application-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-environment-contract.workspace = true

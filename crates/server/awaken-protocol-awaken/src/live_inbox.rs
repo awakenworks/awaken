@@ -5,11 +5,13 @@
 
 use std::sync::Arc;
 
+use crate::common::{ExtensionRejection, RequiredWorkspaceScope, extension_rejection};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_execution_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot,
 };
+#[cfg(test)]
 use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -29,20 +31,6 @@ struct WireLiveInboxSnapshot {
     messages: Vec<WireLiveInboxEntry>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct ExtensionErrorBody {
-    r#type: &'static str,
-    error: ExtensionError,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct ExtensionError {
-    r#type: &'static str,
-    message: String,
-}
-
-type ExtensionRejection = (StatusCode, Json<ExtensionErrorBody>);
-
 fn extension_error(error: LiveInboxApplicationError) -> ExtensionRejection {
     let (status, kind) = match &error {
         LiveInboxApplicationError::NotFound
@@ -60,45 +48,7 @@ fn extension_error(error: LiveInboxApplicationError) -> ExtensionRejection {
             (StatusCode::INTERNAL_SERVER_ERROR, "api_error")
         }
     };
-    (
-        status,
-        Json(ExtensionErrorBody {
-            r#type: "error",
-            error: ExtensionError {
-                r#type: kind,
-                message: error.to_string(),
-            },
-        }),
-    )
-}
-
-/// The Workspace the trusted ingress edge already selected. Refusing absence in
-/// the extractor leaves the handlers below with no absent case at all — missing,
-/// empty and foreign scopes stay deliberately indistinguishable from an unknown
-/// Session at this extension boundary.
-struct RequiredWorkspaceScope(String);
-
-impl<S> axum::extract::FromRequestParts<S> for RequiredWorkspaceScope
-where
-    S: Send + Sync,
-{
-    type Rejection = axum::response::Response;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        match parts
-            .extensions
-            .get::<WorkspaceScope>()
-            .and_then(WorkspaceScope::non_empty)
-        {
-            Some(scope) => Ok(Self(scope.to_owned())),
-            None => Err(axum::response::IntoResponse::into_response(
-                extension_error(LiveInboxApplicationError::NotFound),
-            )),
-        }
-    }
+    extension_rejection(status, kind, error.to_string())
 }
 
 fn project_snapshot(snapshot: LiveInboxSnapshot) -> WireLiveInboxSnapshot {

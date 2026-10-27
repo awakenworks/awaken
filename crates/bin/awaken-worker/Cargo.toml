@@ -41,6 +41,7 @@ container-k8s = [
 ]
 
 [dependencies]
+awaken-inference-endpoint.workspace = true
 awaken-deployment-config.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-erasure.workspace = true

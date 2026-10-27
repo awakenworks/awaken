@@ -1,5 +1,6 @@
 //! Current-state reads share one projection and never authorize execution.
 
+use awaken_session_application_contract::SessionRunExecutionPhase as Phase;
 mod harness;
 
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -611,3 +612,93 @@ async fn postgres_corrupt_summary_does_not_poison_identity_pages() {
 use awaken_dispatch_contract::DispatchEnqueue as _;
 
 use awaken_dispatch_testkit::ConformanceDispatch;
+
+#[tokio::test]
+async fn exact_physical_execution_observations_use_the_original_store_clock() {
+    use awaken_agent_contract::ThreadId;
+    use awaken_dispatch_contract::{DispatchExecution, DispatchExecutionReads, DispatchReads};
+    use awaken_dispatch_testkit::ConformanceClock as _;
+    // R1 no row -> Unavailable; R2 claimed without slot -> AdmissionPending,
+    // not Admitted from the Running queue label. R3 current physical -> Admitted;
+    // R4 closing -> RecoveryPending even while lease live; R5 expired lease ->
+    // RecoveryPending while the original slot remains. R6 foreign Thread rejects.
+    // Native Memory/SQLite execute the same owner query; every read preserves
+    // physical identity, row and delivery cursor. Changed-slot races are the
+    // shared pure projection table, not a timing-dependent database test.
+    for sqlite in [false, true] {
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+        let store = if sqlite {
+            AnyCoordinatorDispatch::from_durable_dispatch(std::sync::Arc::new(
+                SqliteDispatchStore::open_in_memory(clock.clock())
+                    .await
+                    .unwrap(),
+            ))
+        } else {
+            AnyCoordinatorDispatch::from_durable_dispatch(std::sync::Arc::new(
+                MemoryDispatchStore::new(clock.clock()),
+            ))
+        };
+        let run = id("physical-phase");
+        let thread = ThreadId("physical-phase".into());
+        assert_eq!(
+            store.observe_execution(&run, &thread).await.unwrap(),
+            Phase::Unavailable,
+            "R1"
+        );
+        let (claim, binding, _) =
+            harness::attempt_binding::bound_claim(&store, "physical-phase", &clock).await;
+        assert_eq!(
+            store.observe_execution(&run, &thread).await.unwrap(),
+            Phase::AdmissionPending,
+            "R2"
+        );
+        store.begin_attempt(&claim, Some(&binding)).await.unwrap();
+        let before = store.load_physical_attempt(&run).await.unwrap();
+        let rows = store.list_dispatches().await.unwrap();
+        let cursor = store
+            .events_after(DispatchCursor::default(), 128, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.observe_execution(&run, &thread).await.unwrap(),
+            Phase::Admitted,
+            "R3"
+        );
+        assert_eq!(store.load_physical_attempt(&run).await.unwrap(), before);
+        assert_eq!(store.list_dispatches().await.unwrap(), rows);
+        assert_eq!(
+            store
+                .events_after(DispatchCursor::default(), 128, None)
+                .await
+                .unwrap(),
+            cursor
+        );
+        assert!(
+            matches!(
+                store
+                    .observe_execution(&run, &ThreadId("foreign".into()))
+                    .await,
+                Err(DispatchError::Rejected(_))
+            ),
+            "R6"
+        );
+        store.close_attempt(&claim).await.unwrap();
+        assert_eq!(
+            store.observe_execution(&run, &thread).await.unwrap(),
+            Phase::RecoveryPending,
+            "R4"
+        );
+        let (other, binding, _) =
+            harness::attempt_binding::bound_claim(&store, "expired-phase", &clock).await;
+        store.begin_attempt(&other, Some(&binding)).await.unwrap();
+        clock.set(60_001);
+        assert_eq!(
+            store
+                .observe_execution(&other.run_id, &ThreadId("expired-phase".into()))
+                .await
+                .unwrap(),
+            Phase::RecoveryPending,
+            "R5"
+        );
+    }
+}

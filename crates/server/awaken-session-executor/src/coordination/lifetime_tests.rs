@@ -17,6 +17,56 @@ async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponen
         .expect("normal Host composition with the existing coordination port")
 }
 
+#[tokio::test]
+async fn local_live_subscription_reads_no_session_execution_context() {
+    // Causes: C1 original SDK coordination role; C2 root/unknown child;
+    // C3 the Session has no installed slot, Context or started pool. R1 root
+    // => original live observer; R2 child without committed membership =>
+    // InvalidRequest. Both retain C3: the shared read gate may open committed
+    // truth, but must not construct a Runtime or Environment to observe it.
+    use awaken_session_execution_contract::CoordinationRuntime as _;
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .unwrap();
+    let session = awaken_session_types::SessionId::from("live-cold");
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read(session.as_str(), |_| ())
+            .unwrap()
+            .is_none()
+    );
+    for target in [session.as_str(), "unknown-child"] {
+        let result = host
+            .coordination
+            .subscribe_session_thread_live(&session, target)
+            .await;
+        if target == session.as_str() {
+            assert!(result.unwrap().is_some(), "R1 original root observer");
+        } else {
+            let error = result.err().expect("R2 committed membership is required");
+            assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+            assert_eq!(error.code, "invalid_request");
+        }
+        assert!(
+            host.run_assembly
+                .installed_sessions
+                .read(session.as_str(), |_| ())
+                .unwrap()
+                .is_none(),
+            "R1/R2 no installed slot or Context"
+        );
+        assert!(
+            host.dispatch.pool().is_none() && host.run_assembly.mcp.relay().is_none(),
+            "R1/R2 no service or MCP startup"
+        );
+    }
+}
+
 fn claim() -> RunClaim {
     RunClaim {
         run_id: RunId("source-run".into()),

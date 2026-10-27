@@ -137,7 +137,7 @@ impl LlmExecutor for DeterministicBackgroundAttentionModel {
 }
 
 fn background_snapshot(model_ref: &str) -> ExecutableAgentSnapshot {
-    let ordinary_tools = awaken_session_executor::authorable_tools()
+    let ordinary_tools = awaken_session_run_delivery::authorable_tools()
         .into_iter()
         .filter(|tool| tool.id == "bash")
         .collect::<Vec<_>>();

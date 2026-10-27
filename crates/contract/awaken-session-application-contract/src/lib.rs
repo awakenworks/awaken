@@ -1,6 +1,10 @@
 //! Application-facing Session ports that do not own durable state.
 
 mod event_admission;
+mod execution_observation;
+pub use execution_observation::{
+    SessionRunDispatchObservation, SessionRunDispatchQueries, SessionRunExecutionPhase,
+};
 mod executable_projection;
 mod lifecycle_delivery;
 mod pending;

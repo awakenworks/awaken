@@ -7,6 +7,8 @@ from _service_data_ownership_fitness import (
     CAPTURE_SQLITE_SOURCE,
     CAPTURE_STORE_SOURCE,
     CLI_LIB_SOURCE,
+    CLI_COMPOSITION_LIB_SOURCE,
+    SCENARIO_PROCESS_SOURCE,
     COMMIT_SQLITE_SOURCE,
     CONFIG_RESOLVER_SOURCE,
     CONFIG_STORE_SQLITE_SOURCE,
@@ -391,11 +393,19 @@ def selftest() -> None:
             for name in (
                 "build_ephemeral_all_in_one_router",
                 "build_all_in_one_router_with_scenario_model",
-                "build_all_in_one_router_with_host_customizer",
-                "build_durable_all_in_one_router_with_host_customizer",
                 "build_all_in_one_router_with_model",
                 "build_durable_all_in_one_router",
                 "build_secured_all_in_one_router",
+            )
+        ),
+        # O17 also covers the moved SDK-only helpers and their outer module.
+        # The removal loop below must reject losing either gate at its owner.
+        CLI_COMPOSITION_LIB_SOURCE: feature_gate + "mod scenario_process;",
+        SCENARIO_PROCESS_SOURCE: "\n".join(
+            feature_gate + f"pub async fn {name}() {{}}"
+            for name in (
+                "build_all_in_one_router_with_host_customizer",
+                "build_durable_all_in_one_router_with_host_customizer",
             )
         ),
         FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",

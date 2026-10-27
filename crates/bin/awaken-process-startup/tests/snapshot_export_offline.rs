@@ -46,7 +46,7 @@ async fn http_export_model_edit_and_offline_runtime_form_one_path() {
     let app = build_all_in_one_router_with_model(
         Arc::new(EchoModel),
         "kimi",
-        std::sync::Arc::new(awaken_cli::LocalExecution),
+        Box::new(awaken_cli::LocalExecution::default()),
     )
     .await;
     let (status, body) = call(

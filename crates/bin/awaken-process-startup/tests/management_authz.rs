@@ -67,7 +67,7 @@ async fn shared_secured_all_in_one_router(
             let (app, iam) = build_isolated_secured_all_in_one_router(
                 directory.path(),
                 key,
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await;
             let admin_token = admin_token(directory.path());
@@ -660,7 +660,7 @@ fn minted_tokens_survive_a_restart_over_the_same_directory() {
             let (app, iam) = build_isolated_secured_all_in_one_router(
                 dir.path(),
                 &KEY,
-                std::sync::Arc::new(awaken_cli::LocalExecution),
+                Box::new(awaken_cli::LocalExecution::default()),
             )
             .await;
             bootstrap = admin_token(dir.path());
@@ -689,7 +689,7 @@ fn minted_tokens_survive_a_restart_over_the_same_directory() {
         let (app, _iam) = build_isolated_secured_all_in_one_router(
             dir.path(),
             &KEY,
-            std::sync::Arc::new(awaken_cli::LocalExecution),
+            Box::new(awaken_cli::LocalExecution::default()),
         )
         .await;
 
@@ -731,7 +731,7 @@ fn without_the_guard_the_management_plane_stays_open() {
         let app = build_durable_all_in_one_router(
             dir.path(),
             &KEY,
-            std::sync::Arc::new(awaken_cli::LocalExecution),
+            Box::new(awaken_cli::LocalExecution::default()),
         )
         .await;
 

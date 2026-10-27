@@ -39,7 +39,7 @@ pub use rehydrate_fake::{
 };
 pub use session_fixtures::{
     RecordingProjectionRefresh, RolloutCredentialSource, paired_projection_refresh,
-    persisted_with_mcp_source, sample_inputs, sample_persisted,
+    persisted_with_mcp_source, preparing_session_with_mcp_source, sample_inputs, sample_persisted,
 };
 
 use awaken_environment_application::EnvironmentApplication;

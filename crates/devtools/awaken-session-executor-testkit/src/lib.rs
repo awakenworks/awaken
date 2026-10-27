@@ -161,7 +161,7 @@ pub async fn unconfigured_dependencies_with_deployment(
     };
     let authority = volatile_runtime_authority(clock.clone());
     let extraction_repository = memory_extraction_repository(None).await;
-    let local_workspace = ExecutorComponents::mint_local_workspace();
+    let local_workspace = awaken_deployment_config::mint_local_workspace();
     let model_ref: String = model_ref.into();
     let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
         &deployment,
@@ -194,9 +194,9 @@ fn with_workdir_fallback(
 /// Select the one reference Dispatch/commit authority at a test composition
 /// root. Call only when no explicit runtime authority was already selected.
 #[must_use]
-pub fn volatile_runtime_authority(
+pub fn volatile_reference_authority(
     clock: Arc<dyn awaken_time::WallClock>,
-) -> Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
+) -> awaken_dispatch_erasure::ReferenceAuthority {
     // Cause/effect fixture rule: C1 a volatile scenario selects its authority
     // before Host construction; C2 the same clock stamps Dispatch and Thread commits.
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
@@ -206,12 +206,14 @@ pub fn volatile_runtime_authority(
         awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         None,
     );
-    Arc::new(
-        awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(
-            clock,
-            Arc::new(dispatch),
-        ),
-    )
+    awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(clock, Arc::new(dispatch))
+}
+
+/// Erase the same reference authority for callers that need only its port.
+pub fn volatile_runtime_authority(
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
+    Arc::new(volatile_reference_authority(clock))
 }
 
 /// Upgrade `dependencies` to local durable storage under `dir`, with the
@@ -312,7 +314,7 @@ mod tests {
         );
         let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
             &DeploymentConfig::ephemeral(),
-            ExecutorComponents::mint_local_workspace(),
+            awaken_deployment_config::mint_local_workspace(),
             authorities.clock(),
         )
         .expect("a local fixture selects a valid process");

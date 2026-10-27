@@ -236,7 +236,7 @@ impl LlmExecutor for NativeDelegatingModel {
 async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<ExecutorComponents> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
-        .tools(awaken_session_executor::authorable_tools())
+        .tools(awaken_session_run_delivery::authorable_tools())
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("researcher".into()),
@@ -283,7 +283,7 @@ async fn published_delegating_host(
 ) -> Arc<ExecutorComponents> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
-        .tools(awaken_session_executor::authorable_tools())
+        .tools(awaken_session_run_delivery::authorable_tools())
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("researcher".into()),
@@ -312,9 +312,7 @@ async fn published_delegating_host(
         Arc::new(publications),
     )
     .await
-    .with_remote_attempt_executor(awaken_process_startup::a2a_attempt_executor(Some(
-        materializer,
-    ))))
+    .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(Some(materializer))))
     .build()
     .expect("validated Host dependencies")
 }

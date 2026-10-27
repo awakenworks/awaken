@@ -45,7 +45,7 @@ async fn build_write_confirmation_router(
     let model_ref = model_ref.into();
     let publication = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", &model_ref, "default"))
-        .tools(awaken_session_executor::authorable_tools())
+        .tools(awaken_session_run_delivery::authorable_tools())
         .agent_bindings(AgentBindings {
             toolsets: vec![ToolsetPolicy {
                 source: ToolsetSource::Agent,

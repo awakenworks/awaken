@@ -37,6 +37,8 @@ mod credential_rollout_delivery;
 mod session_credential_rollout;
 #[cfg(test)]
 mod session_credential_rollout_tests;
+mod session_dispatch_reads;
+mod session_routes;
 pub use credential_rollout_delivery::{
     HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
 };
@@ -80,7 +82,10 @@ pub use coordinator_persistence::{
     migrate_postgres_schema_with_pool as migrate_postgres_coordinator_schema_with_pool,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
-pub use execution_ports::ExecutionPorts;
+pub use execution_ports::{
+    ColocatedExecution, ColocatedExecutionInputs, ExecutionPorts, InferenceSelection,
+    PreparedColocatedExecution,
+};
 pub use extraction_references::ReferenceIndexedMemoryExtractions;
 pub use runtime_authority::postgres_local_commit;
 
@@ -1081,23 +1086,11 @@ async fn mount_with_managed_over_and_models(
     }
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let resource_manifests = resource_manifest_routes(managed_state.clone());
-    let session_extensions = awaken_extensions::profiled_session_router(
-        awaken_protocol_managed::create_profiled_session,
-    )
-    .merge(awaken_extensions::profiled_session_run_router(
-        awaken_protocol_managed::submit_profiled_session_run,
-    ))
-    .merge(awaken_extensions::profiled_session_run_events_router(
-        awaken_protocol_managed::get_profiled_session_run_events,
-    ))
-    .merge(awaken_extensions::profiled_session_run_resume_router(
-        awaken_protocol_managed::resume_profiled_session_run,
-    ))
-    .merge(awaken_extensions::profiled_session_release_router(
-        awaken_protocol_managed::release_profiled_session,
-    ))
-    .merge(session_read_extensions())
-    .with_state(managed_state.clone());
+    let session_extensions = session_routes::session_extensions(
+        managed_state.clone(),
+        session_application.clone(),
+        execution.coordinator_dispatch.clone(),
+    )?;
     let managed = router(managed_state.clone())
         .merge(
             awaken_extensions::session_event_admission_router(

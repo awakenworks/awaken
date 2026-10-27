@@ -15,6 +15,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-inference-endpoint.workspace = true
 awaken-session-realization.workspace = true
 # The Coordinator half of Run delivery: the Thread event hub and the
 # foreground completion relay this executor builds on.
@@ -44,9 +45,6 @@ awaken-session-types.workspace = true
 awaken-session-realization-driver.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime = { workspace = true }
-# Volatile commit/checkpoint reference adapters are available only to explicit
-# test/scenario deployments. Product builds do not link this backend.
-awaken-store-inmem = { workspace = true, optional = true }
 awaken-observability = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
 awaken-ext-memory = { workspace = true }
@@ -94,7 +92,7 @@ default = []
 # Post-construction persistence overrides are restricted to tests. Product
 # startup selects every authority before constructing ExecutorComponents.
 test-support = [
-    "dep:awaken-store-inmem",
+    "awaken-dispatch-erasure/test-support",
     "awaken-session-mcp/test-support",
     "awaken-session-realization/test-support",
 ]
@@ -104,6 +102,7 @@ test-support = [
 k8s-tests = ["awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
+awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
 # Unit fixtures reuse the testkit's sole storage-dir extraction selection.
 # It returns the common MemoryExtractionRepository port, never a second Host.
 awaken-session-executor-testkit.workspace = true
