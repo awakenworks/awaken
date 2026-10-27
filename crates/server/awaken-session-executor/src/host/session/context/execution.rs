@@ -37,7 +37,7 @@ pub(super) async fn prepare(
     resources: &ContextResources,
     requested_purpose: RuntimeContextPurpose,
     config: &ExecutableAgentSnapshot,
-    runtime: Runtime,
+    mut runtime: Runtime,
     tools: AcpTools<'_>,
 ) -> Result<ExecutionWiring, SessionExecutionError> {
     let active_mcp = &resources.active_mcp;
@@ -168,6 +168,7 @@ pub(super) async fn prepare(
         // through ExternalEvent resume.
         let client_tools =
             crate::acp_tool_export::client_executed_tools(&config.resolved_spec.tool_descriptors);
+        let acp_tool_sender = client_tools.sender.clone();
         descriptors.extend(client_tools.descriptors);
         executors.extend(client_tools.executors);
         acp_client_tool_ids = client_tools.ids;
@@ -183,16 +184,14 @@ pub(super) async fn prepare(
                     .map(|descriptor| descriptor.id.clone()),
             ));
             acp_tool_grants = Some(grants.clone());
-            executors = executors
-                .into_iter()
-                .map(|tool| {
-                    Arc::new(crate::acp_tool_export::PermissionGuardedAcpTool::new(
-                        tool,
-                        permission.clone(),
-                        grants.clone(),
-                    )) as Arc<dyn awaken_tool_contract::tool::RawTool>
-                })
-                .collect();
+            (runtime, executors) = runtime_exports(
+                runtime,
+                executors,
+                &acp_client_tool_ids,
+                permission.clone(),
+                grants.clone(),
+                acp_tool_sender.clone(),
+            );
             let exporter = host.capabilities.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
                 SessionExecutionError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
             })?;
@@ -263,4 +262,31 @@ pub(super) async fn prepare(
         acp_tool_exports,
         acp_provider_server_tools,
     })
+}
+
+/// The exact exported executors also enter Runtime's one catalog. The MCP
+/// wrappers signal arrival only; client-owned tools never gain a Host executor.
+fn runtime_exports(
+    mut runtime: Runtime,
+    tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    client_ids: &std::collections::HashSet<String>,
+    policy: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
+    grants: Arc<crate::acp_tool_export::AcpToolExecutionGrants>,
+    sender: tokio::sync::mpsc::Sender<awaken_tool_contract::tool::ToolCall>,
+) -> (Runtime, Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>) {
+    let mut exported = Vec::with_capacity(tools.len());
+    for tool in tools {
+        if !client_ids.contains(tool.id()) {
+            runtime = runtime.with_tool(tool.clone());
+        }
+        exported.push(
+            Arc::new(crate::acp_tool_export::PermissionGuardedAcpTool::new(
+                tool,
+                policy.clone(),
+                grants.clone(),
+                sender.clone(),
+            )) as Arc<dyn awaken_tool_contract::tool::RawTool>,
+        );
+    }
+    (runtime, exported)
 }

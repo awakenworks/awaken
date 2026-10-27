@@ -6,6 +6,8 @@
 //! projection of its committed receipts. No transport or persistence owner lives here.
 use super::*;
 
+mod automatic;
+
 /// Client-executed tools use ACP's cancellable permission boundary to leave the
 /// opaque SDK loop. This classifies execution ownership; it never widens the
 /// Session's authorization policy for Host-executed tools.
@@ -45,6 +47,46 @@ pub(super) fn client_execution_outcome(
             }),
         }),
         None => outcome,
+    }
+}
+
+pub(super) fn take_runtime_execution(
+    pending: &std::sync::Mutex<Option<ToolCall>>,
+    continuation: Option<&dyn awaken_runtime_contract::resume::OwnedToolContinuation>,
+) -> Option<ToolCall> {
+    let mut pending = pending.lock().expect("ACP tool execution lock poisoned");
+    if pending.as_ref().is_some_and(|call| {
+        continuation.and_then(|owner| owner.tool_await_reason(&call.tool_id))
+            == Some(ToolAwaitReason::Permission)
+    }) {
+        pending.take()
+    } else {
+        None
+    }
+}
+
+/// Correlate the MCP arrival with a unique staged ACP notification. This is
+/// transcript correlation only; the committed Runtime batch owns effect identity.
+pub(super) fn bind_runtime_execution(call: &mut ToolCall, staged: &[Message]) -> Result<()> {
+    let matches = staged.iter().flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, name, input }
+                if canonical_permission_tool_id(name) == call.tool_id
+                    && (input == &call.arguments || input.as_object().is_some_and(|map| map.is_empty()))
+                    && !staged.iter().flat_map(|message| &message.content).any(|block| {
+                        matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id)
+                    }) => Some(id),
+            _ => None,
+        }).collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(()),
+        [id] => {
+            call.call_id.clone_from(id);
+            Ok(())
+        }
+        _ => Err(Error::Execution(
+            "MCP arrival has ambiguous staged ACP calls".into(),
+        )),
     }
 }
 
@@ -193,4 +235,159 @@ pub(super) fn owned_tool_result_context(
                 .map_err(|error| Error::Execution(error.to_string()))?
         ),
     )))
+}
+
+/// Both client and ordinary exported calls enter through this one cancellation
+/// edge. Owner cancellation wins; closed/inert receivers do not fabricate calls.
+pub(super) async fn wait_for_tool_execution(
+    context: &RuntimeRunContext,
+    continuation: Option<Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation>>,
+    pending: Arc<std::sync::Mutex<Option<ToolCall>>>,
+) {
+    let owner_cancel = async {
+        match &context.cancellation {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let request = async {
+        match continuation {
+            Some(owner) => owner.next_tool_execution().await,
+            None => std::future::pending::<Option<ToolCall>>().await,
+        }
+    };
+    tokio::select! {
+        biased;
+        () = owner_cancel => {},
+        call = request => {
+            if let Some(call) = call {
+                *pending.lock().expect("ACP tool execution lock poisoned") = Some(call);
+            }
+        }
+    }
+}
+
+/// Keep the existing per-Step interrupt sender alive for its full supervision
+/// lifetime. The execution edge and protocol injection share owner cancellation.
+pub(super) fn attempt_interrupt_channel(
+    context: &RuntimeRunContext,
+) -> (
+    tokio::sync::mpsc::Receiver<Injection>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Injection>(1);
+    let forwarder = context.cancellation.clone().map(|token| {
+        tokio::spawn(async move {
+            token.cancelled().await;
+            let _ = sender.send(Injection::Interrupt).await;
+        })
+    });
+    (receiver, forwarder)
+}
+
+/// Complete the pending ToolUse in this attempt before the single Await commit.
+/// Earlier committed messages are immutable: an exact replay is a no-op and a
+/// conflicting reuse of their call id fails closed. A streaming placeholder in
+/// the current staged suffix is refined to the permission request's exact input.
+pub(super) fn ensure_pending_tool_use(
+    run_id: &RunId,
+    next_assistant_step: &mut usize,
+    messages: &mut Vec<Message>,
+    first_staged_message: usize,
+    ask: &PermissionAsk,
+) -> Result<()> {
+    let name = canonical_permission_tool_id(&ask.tool);
+    for (index, message) in messages.iter_mut().enumerate() {
+        for block in &mut message.content {
+            if let ContentBlock::ToolUse {
+                id,
+                name: existing_name,
+                input,
+            } = block
+                && id == &ask.call_id
+            {
+                if index < first_staged_message {
+                    if existing_name != &name || input != &ask.arguments {
+                        return Err(Error::Execution(
+                            "ACP permission request conflicts with a committed tool call".into(),
+                        ));
+                    }
+                } else {
+                    *existing_name = name;
+                    input.clone_from(&ask.arguments);
+                }
+                return Ok(());
+            }
+        }
+    }
+    messages.push(Message {
+        id: take_assistant_message_id(run_id, next_assistant_step),
+        role: Role::Assistant,
+        content: vec![ContentBlock::tool_use(
+            ask.call_id.clone(),
+            name,
+            ask.arguments.clone(),
+        )],
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+mod arrival_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_arrival_correlates_only_one_unsettled_staged_call() {
+        // C1 exact/refinable/no staged call; C2 unique/ambiguous candidates;
+        // C3 an existing terminal result. R1 unique exact or empty-input
+        // placeholder -> reuse the notification id; R2 absent/settled -> retain
+        // the fresh MCP correlation; R3 ambiguous -> reject before commit/effect.
+        // Changed arguments cannot alias an already complete notification.
+        let make = |id: &str, input| {
+            Message::new(
+                MessageId(id.into()),
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    id,
+                    "mcp__awaken_session__read",
+                    input,
+                )],
+            )
+        };
+        let args = serde_json::json!({"file_path":"/workspace/SKILL.md"});
+        for input in [args.clone(), serde_json::json!({})] {
+            let mut call = ToolCall {
+                call_id: "mcp-fresh".into(),
+                tool_id: "read".into(),
+                arguments: args.clone(),
+            };
+            bind_runtime_execution(&mut call, &[make("observed", input)]).unwrap();
+            assert_eq!(call.call_id, "observed", "R1");
+        }
+        let mut call = ToolCall {
+            call_id: "mcp-fresh".into(),
+            tool_id: "read".into(),
+            arguments: args.clone(),
+        };
+        bind_runtime_execution(&mut call, &[]).unwrap();
+        assert_eq!(call.call_id, "mcp-fresh", "R2 absent");
+        assert!(
+            bind_runtime_execution(
+                &mut call,
+                &[make("one", args.clone()), make("two", args.clone())]
+            )
+            .is_err(),
+            "R3"
+        );
+        let settled = Message::new(
+            MessageId("result".into()),
+            Role::Tool,
+            vec![ContentBlock::tool_result(
+                "observed",
+                vec![ContentBlock::text("done")],
+            )],
+        );
+        bind_runtime_execution(&mut call, &[make("observed", args), settled]).unwrap();
+        assert_eq!(call.call_id, "mcp-fresh", "R2 settled");
+    }
 }

@@ -160,7 +160,7 @@ tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined
 # agent said through the in-memory commit boundary.
 awaken-store-inmem = { workspace = true }
-awaken-store-sqlite.workspace = true
+awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }
 awaken-lease-testkit.workspace = true
 # Drives Worker transport routers in-process through `ServiceExt::oneshot`.

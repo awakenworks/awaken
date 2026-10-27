@@ -155,6 +155,24 @@ remain the only path to physical retirement. A resident terminal stop retains
 its exact binding and unresolved request on completion, Unknown, error and
 timeout; repeating stop must not manufacture NoBinding from a retained process.
 
+#### ACP automatic tools use the same Runtime effect boundary
+
+An ACP MCP export is an arrival adapter, including when its frozen policy
+allows the call without a user decision. It does not directly invoke the
+Environment executor. The ACP owner observes its SDK process exit, correlates
+the staged call, and commits a Requested ToolBatch before asking the existing
+Runtime recovery path to execute it. Runtime supplies the operation token,
+permission/concurrency admission, effect-domain observation, and committed
+result through the same path as Native and approved tools. The existing
+request-only result projection then continues the SDK conversation.
+
+Client-executed calls keep their external-result wait; a missing/failed commit,
+ambiguous staged correlation, stale execution authority, or unobserved SDK
+exit cannot enter a Hand effect. The one exported descriptor/executor set
+also supplies Runtime's catalog for semantic Skill, Memory, and Web tools.
+No MCP transport id becomes an operation token and no second permission or
+execution owner is introduced.
+
 ### D5: This ADR introduces the seam and framing only
 
 Scope fence, to keep one decision per ADR:

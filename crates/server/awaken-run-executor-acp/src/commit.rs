@@ -45,8 +45,75 @@ pub(super) async fn commit(
     unconsumed_resume: Option<&PermissionResume>,
     thread_id: &ThreadId,
     disposition: RunDisposition,
+    messages: Vec<Message>,
+    state: Vec<StateCommand>,
+) -> Result<()> {
+    commit_with_requested_tool(
+        context,
+        audit,
+        unconsumed_resume,
+        thread_id,
+        disposition,
+        messages,
+        state,
+        None,
+    )
+    .await
+}
+
+/// Commit the automatic MCP handoff before Runtime may enter its executor.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn commit_requested_tool(
+    context: &RuntimeRunContext,
+    audit: Vec<awaken_agent_contract::audit::draft::Draft>,
+    unconsumed_resume: Option<&PermissionResume>,
+    thread_id: &ThreadId,
+    run_id: RunId,
+    call: ToolCall,
+    messages: Vec<Message>,
+    state: Vec<StateCommand>,
+) -> Result<()> {
+    commit_with_requested_tool(
+        context,
+        audit,
+        unconsumed_resume,
+        thread_id,
+        RunDisposition::running(run_id),
+        messages,
+        state,
+        Some(call),
+    )
+    .await
+}
+
+fn requested_batch(
+    run_id: &RunId,
+    messages: &[Message],
+    call: ToolCall,
+) -> Result<awaken_tool_contract::ToolBatch> {
+    // The committed Assistant coordinate, rather than the response-local wire
+    // id or a reset Vec length, namespaces every new request through Runtime.
+    awaken_tool_contract::ToolBatch::for_step(
+        run_id.clone(),
+        awaken_agent_contract::agent::message::next_assistant_step(messages, run_id),
+        [(
+            call,
+            awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
+        )],
+    )
+    .map_err(|error| Error::Commit(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_with_requested_tool(
+    context: &RuntimeRunContext,
+    audit: Vec<awaken_agent_contract::audit::draft::Draft>,
+    unconsumed_resume: Option<&PermissionResume>,
+    thread_id: &ThreadId,
+    disposition: RunDisposition,
     mut messages: Vec<Message>,
     state: Vec<StateCommand>,
+    requested: Option<ToolCall>,
 ) -> Result<()> {
     // A final/new-Await commit consumes the prior permission continuation. If
     // that exact decision never granted execution, settle its original ToolUse
@@ -100,7 +167,15 @@ pub(super) async fn commit(
         fresh,
     )
     .map_err(|error| Error::Commit(error.to_string()))?;
-    if let Some(ticket) = disposition.resume_ticket()
+    if let Some(call) = requested {
+        if disposition.state() != RunState::Running {
+            return Err(Error::Commit(
+                "automatic tool handoff requires Running".into(),
+            ));
+        }
+        let batch = requested_batch(disposition.run_id(), &messages, call)?;
+        state.push(awaken_tool_contract::ActiveToolBatch::write(&Some(batch)));
+    } else if let Some(ticket) = disposition.resume_ticket()
         && let AwaitTarget::ToolCall {
             reason,
             call_id,
@@ -112,19 +187,15 @@ pub(super) async fn commit(
             ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution
         )
     {
-        let mut batch = awaken_tool_contract::ToolBatch::for_step(
-            ticket.run_id.clone(),
-            messages.len(),
-            [(
-                ToolCall {
-                    call_id: call_id.clone(),
-                    tool_id: tool.tool_id.clone(),
-                    arguments: tool.arguments.clone(),
-                },
-                awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
-            )],
-        )
-        .map_err(|error| Error::Commit(error.to_string()))?;
+        let mut batch = requested_batch(
+            &ticket.run_id,
+            &messages,
+            ToolCall {
+                call_id: call_id.clone(),
+                tool_id: tool.tool_id.clone(),
+                arguments: tool.arguments.clone(),
+            },
+        )?;
         batch
             .mark_awaiting(
                 call_id,
@@ -173,4 +244,98 @@ pub(super) async fn commit(
         let _ = deliver_committed_terminal(&context.terminal_observers, terminal).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod requested_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn automatic_handoff_commits_requested_without_a_permission_ticket() {
+        // C1 automatic exported arrival; C2 durable commit available/missing;
+        // C3 distinct canonical Assistant steps with a reused wire id.
+        // R1 C1+C2 -> Running + Requested batch + exact ToolUse, no user ask;
+        // R2 !C2 -> reject, no dispatch; R3 C3 -> distinct Runtime operation ids.
+        // Execution/recovery is verified by the Host's token-requiring integration
+        // test; this fixture tests the producer's durable handoff boundary.
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+        let storage = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+            awaken_time::system_clock(),
+        ));
+        let context = RuntimeRunContext::new()
+            .with_commit(storage.clone())
+            .with_reader(storage.clone());
+        let run = RunId("automatic-run".into());
+        let thread = ThreadId("automatic-thread".into());
+        let call = ToolCall {
+            call_id: "wire-reset".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"file_path":"/workspace/SKILL.md"}),
+        };
+        let mut operations = Vec::new();
+        for step in [0, 1] {
+            commit_requested_tool(
+                &context,
+                Vec::new(),
+                None,
+                &thread,
+                run.clone(),
+                call.clone(),
+                vec![Message::new(
+                    MessageId::assistant(&run, step),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        &call.call_id,
+                        &call.tool_id,
+                        call.arguments.clone(),
+                    )],
+                )],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+            let store = awaken_tool_contract::tool_batch::store_from_run_commands(
+                storage.committed_state(&thread),
+                &run,
+            );
+            let batch = awaken_tool_contract::ActiveToolBatch::load(&store)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                batch.phase(),
+                awaken_tool_contract::tool_batch::ToolBatchPhase::Open,
+                "R1"
+            );
+            assert_eq!(
+                batch.calls()[0].phase,
+                awaken_tool_contract::tool_batch::ToolCallPhase::Requested,
+                "R1 call is committed before execution"
+            );
+            assert_eq!(storage.run_state(&run), Some(RunState::Running));
+            assert!(
+                storage.resume_ticket(&run).is_none(),
+                "no manufactured approval"
+            );
+            operations.push(batch.operation_id(&call.call_id));
+        }
+        assert_ne!(
+            operations[0], operations[1],
+            "R3 canonical step namespaces the wire id"
+        );
+        assert!(
+            commit_requested_tool(
+                &RuntimeRunContext::new(),
+                Vec::new(),
+                None,
+                &thread,
+                run,
+                call,
+                Vec::new(),
+                Vec::new()
+            )
+            .await
+            .is_err(),
+            "R2"
+        );
+    }
 }
