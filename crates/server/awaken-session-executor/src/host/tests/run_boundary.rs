@@ -832,6 +832,103 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn standalone_queued_interrupt_settles_without_starting_a_pool_or_calling_the_model() {
+    // Causes: C1 durable foreground delivery has enqueued its exact Run; C2 no
+    // pool was started and no physical attempt entered; C3 interrupt; C4 replay.
+    // Effects: E1 the same Run commits Cancelled and its waiting caller returns;
+    // E2 no pool, model call or replacement Run is created; E3 replay changes no
+    // committed Thread version. Q1=C1+C2+C3 -> E1+E2; Q2=Q1+C4 -> E3.
+    // The adjacent warm-pool test owns the executing/unknown-predecessor row.
+    // This real queue/commit case locks the standalone branch before removing
+    // any service dependency; it introduces no cancellation or receipt fake.
+    let model = Arc::new(GatedModel {
+        reached: Arc::new(tokio::sync::Notify::new()),
+        gate: Arc::new(tokio::sync::Notify::new()),
+        calls: AtomicUsize::new(0),
+    });
+    let dispatch = Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
+            .await
+            .unwrap(),
+    );
+    let host = crate::SessionExecutorBuilder::ephemeral(model.clone(), "scripted")
+        .await
+        .with_ephemeral_dispatch(dispatch.clone())
+        .build()
+        .unwrap();
+    let thread = "standalone-queued-cancel";
+    let driver = host.clone();
+    let mut running =
+        tokio::spawn(async move { driver.session_runs.run(None, thread, user("go")).await });
+    let rows = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                result = &mut running => match result {
+                    Ok(Ok(_)) => panic!("Q1 foreground completed before queue admission"),
+                    Ok(Err(error)) => panic!("Q1 foreground failed before queue admission: {error}"),
+                    Err(error) => panic!("Q1 foreground task failed before queue admission: {error}"),
+                },
+                rows = dispatch.list_dispatches() => {
+                    let rows = rows.unwrap();
+                    if !rows.is_empty() { return rows; }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Q1 exact foreground queue admission");
+    assert_eq!(rows.len(), 1, "Q1 one queued Run");
+    assert_eq!(
+        rows[0].state,
+        awaken_dispatch_contract::DispatchState::Pending,
+        "Q1"
+    );
+    assert!(!rows[0].physical_attempt_active, "Q1 no physical attempt");
+    assert!(host.dispatch.pool().is_none(), "C2 no pool");
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        host.session_runs.interrupt(thread),
+    )
+    .await
+    .expect("Q1 bounded standalone cancellation")
+    .expect("Q1 cancellation accepted");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), running)
+        .await
+        .expect("Q1 foreground observes its committed terminal")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.state, RunState::Ended(EndCause::Cancelled), "E1");
+    let commit = host.thread_reads.commit_for_read(thread).await.unwrap();
+    assert_eq!(
+        commit.run_state(&rows[0].run_id),
+        Some(result.state),
+        "E1 exact Run"
+    );
+    assert!(
+        dispatch.list_dispatches().await.unwrap().is_empty(),
+        "E2 no replacement"
+    );
+    assert!(host.dispatch.pool().is_none(), "E2 no pool");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0, "E2 no inference");
+    let before = commit
+        .recovery_snapshot(&ThreadId(thread.into()), &rows[0].run_id)
+        .await
+        .unwrap()
+        .thread_version;
+    host.session_runs.interrupt(thread).await.unwrap();
+    assert_eq!(
+        commit
+            .recovery_snapshot(&ThreadId(thread.into()), &rows[0].run_id)
+            .await
+            .unwrap()
+            .thread_version,
+        before,
+        "Q2/E3 replay is inert"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finishes() {
     // Causes: C0 canonical durable Dispatch composition; C1 inference entered
     // without return evidence; C2 accepted cancellation replaces the claim.
