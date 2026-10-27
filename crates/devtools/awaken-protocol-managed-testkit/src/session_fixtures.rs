@@ -188,6 +188,56 @@ pub fn persisted_with_mcp_source(
     session
 }
 
+/// Frozen, known-unattempted preparation used by both credential adoption and
+/// the real registered-Worker process composition. The reserved activity is
+/// logical admission, never evidence of a realization or MCP effect.
+pub fn preparing_session_with_mcp_source(
+    with_activity: bool,
+) -> awaken_session_state_contract::PersistedSession {
+    let old = persisted_with_mcp_source("preparing", "source-a", "vault-event");
+    let mut baseline = old.frozen_baseline().unwrap().clone();
+    baseline.mutation_policy =
+        awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen;
+    baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
+    let mut mcp = old.mcp;
+    mcp.attachments[0].state =
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Requested;
+    mcp.attachments[0].publication_acknowledged = false;
+    mcp.attachments[0].realization = None;
+    let mut root = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        "preparing",
+        baseline,
+        Default::default(),
+        mcp,
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    root.created_at_unix_ms = Some(1);
+    if with_activity {
+        let mut aggregate =
+            awaken_session_state_contract::SessionAggregate::try_from(root).unwrap();
+        assert_eq!(
+            aggregate.activity().open(
+                None,
+                true,
+                false,
+                1,
+                0,
+                Some((
+                    "reserved-operation",
+                    &awaken_agent_contract::ThreadId("preparing".into()),
+                    &awaken_agent_contract::RunId("reserved-run".into())
+                )),
+            ),
+            awaken_session_state_contract::SessionActivityAdmissionPlan::Open(1)
+        );
+        root = aggregate.into_snapshot();
+    }
+    root
+}
+
 pub struct RolloutCredentialSource;
 
 #[async_trait::async_trait]

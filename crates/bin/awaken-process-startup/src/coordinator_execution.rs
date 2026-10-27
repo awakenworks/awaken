@@ -7,10 +7,11 @@
 //!
 //! The Coordinator component links no executor: it consumes
 //! [`awaken_coordinator::ExecutionPorts`]. This root, which builds the
-//! executor, is the one place that binds the executor's edges back into the
-//! Session application and selects those ports from it. Every process that
-//! is both Coordinator and Worker (this binary, the scenario host, tests)
-//! composes through [`coordinator_execution`].
+//! executor, binds its co-located edges back into the Session application and
+//! selects those ports from it. The local-placement branch and scenario mounts
+//! compose through [`coordinator_execution`]. Registered-Worker production uses
+//! the shared delivery/commit owners in `runtime_process_router::registered_execution`
+//! directly; both compositions use this module's authority/startup guard.
 
 use std::sync::Arc;
 
@@ -58,13 +59,7 @@ pub fn coordinator_execution(
     sessions: &Arc<SessionApplication>,
 ) -> Result<awaken_coordinator::ExecutionPorts, CoordinatorExecutionError> {
     let dispatch = host.coordination().dispatch_observation_source()?;
-    sessions
-        .execution_admission()
-        .verify_dispatch(&dispatch)
-        .map_err(|_| AgentCoordinationInstallError::DispatchObservationMismatch)?;
-    if host.dispatch().has_started_services() {
-        return Err(CoordinatorExecutionError::DispatchAlreadyStarted);
-    }
+    verify_composition(host.dispatch(), &dispatch, sessions)?;
     install_managed_agent_coordination(host, sessions)?;
     let runs: Arc<dyn RunApplication> = host.session_runs().clone();
     let workspace_host = host.clone();
@@ -106,6 +101,24 @@ pub fn coordinator_execution(
     })
 }
 
+/// Both placement compositions must observe the exact authority and select
+/// completion callbacks before any process service starts. C3/C4 above are
+/// the one refusal table; neither composition owns another guard.
+pub(crate) fn verify_composition(
+    process: &awaken_dispatch_execution::ProcessDispatch,
+    dispatch: &Arc<dyn awaken_dispatch::DispatchOperationalFeed>,
+    sessions: &SessionApplication,
+) -> Result<(), CoordinatorExecutionError> {
+    sessions
+        .execution_admission()
+        .verify_dispatch(dispatch)
+        .map_err(|_| AgentCoordinationInstallError::DispatchObservationMismatch)?;
+    if process.has_started_services() {
+        return Err(CoordinatorExecutionError::DispatchAlreadyStarted);
+    }
+    Ok(())
+}
+
 /// Connect the executor's fixed coordination tools to the one canonical
 /// Session application, after verifying both observe the same dispatch.
 fn install_managed_agent_coordination(
@@ -128,7 +141,7 @@ fn install_managed_agent_coordination(
 /// existing owner; `ClaimedCommitService` remains the sole caller of its write
 /// method. The root keeps this port adapter because Dispatch owns the caller's
 /// contract and Run delivery owns `CommittedReads`.
-struct SessionCommitOwner(Arc<awaken_session_run_delivery::CommittedReads>);
+pub(crate) struct SessionCommitOwner(pub(crate) Arc<awaken_session_run_delivery::CommittedReads>);
 
 #[async_trait::async_trait]
 impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
