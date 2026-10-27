@@ -84,7 +84,33 @@ impl TransportDeadline {
 /// adapters use [`InternalHttpClient`] or [`ExternalHttpClient`] instead.
 pub fn rustls_client_builder(deadline: TransportDeadline) -> reqwest::ClientBuilder {
     crate::install_rustls_crypto_provider();
-    deadline.apply(reqwest::Client::builder())
+    deadline.apply(reqwest::Client::builder().use_rustls_tls())
+}
+
+/// The same private-channel policy as [`InternalHttpClient`], for registered
+/// adapters that add a private CA, mTLS identity, multipart body or another verb.
+/// Trust material remains caller-owned; ambient proxies and redirects never
+/// receive internal requests or their credentials.
+pub fn internal_http_client_builder(deadline: TransportDeadline) -> reqwest::ClientBuilder {
+    rustls_client_builder(deadline)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+/// Blocking counterpart of [`internal_http_client_builder`]. The explicit total
+/// deadline covers the body too. Its client must be constructed and destroyed
+/// outside an entered async runtime; lifecycle remains with the caller.
+#[cfg(feature = "blocking")]
+pub fn internal_blocking_http_client_builder(
+    timeout: Duration,
+) -> reqwest::blocking::ClientBuilder {
+    crate::install_rustls_crypto_provider();
+    reqwest::blocking::Client::builder()
+        .use_rustls_tls()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+        .timeout(timeout)
 }
 
 /// Verbs used by the JSON control-plane and admin boundaries.
@@ -266,12 +292,10 @@ impl InternalHttpClient {
     }
 
     fn build(connect_timeout: Duration, timeout: Duration) -> Result<Self, TransportError> {
-        rustls_client_builder(TransportDeadline::Total {
+        internal_http_client_builder(TransportDeadline::Total {
             connect: connect_timeout,
             total: timeout,
         })
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map(Self)
         .map_err(|error| TransportError(error.to_string()))
@@ -432,6 +456,82 @@ mod tests {
         assert!(matches!(dribbled, Ok(Err(_))), "D2");
     }
 
+    #[tokio::test]
+    async fn private_builders_share_redirect_refusal_and_body_deadlines() {
+        // C1 JSON wrapper or registered raw async/blocking adapter; C2 a 307
+        // redirects an authenticated request; C3 a peer stalls the whole reply.
+        // R1 C1+C2 -> return 307, zero redirected requests/credential disclosure.
+        // R2 C1+C3 -> bounded transport error; no unbounded private client.
+        // Native's existing streaming test covers read silence separately.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum_probe_server(seen.clone());
+        tokio::spawn(async move {
+            let _ = app(listener).await;
+        });
+        let redirect = format!("http://{address}/redirect");
+        let wrapper = InternalHttpClient::new(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            wrapper
+                .send(&JsonRequest::get(&redirect).bearer("private-probe"))
+                .await
+                .unwrap()
+                .status(),
+            307
+        );
+        let raw = internal_http_client_builder(TransportDeadline::total(Duration::from_secs(1)))
+            .build()
+            .unwrap();
+        assert_eq!(
+            raw.get(&redirect)
+                .bearer_auth("private-probe")
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            307
+        );
+        assert!(
+            internal_http_client_builder(TransportDeadline::total(Duration::from_millis(60)))
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/stall"))
+                .send()
+                .await
+                .is_err(),
+            "R2 async"
+        );
+        #[cfg(feature = "blocking")]
+        tokio::task::spawn_blocking(move || {
+            let raw = internal_blocking_http_client_builder(Duration::from_secs(1))
+                .build()
+                .unwrap();
+            assert_eq!(
+                raw.get(&redirect)
+                    .bearer_auth("private-probe")
+                    .send()
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                307
+            );
+            assert!(
+                internal_blocking_http_client_builder(Duration::from_millis(60))
+                    .build()
+                    .unwrap()
+                    .get(format!("http://{address}/stall"))
+                    .send()
+                    .is_err(),
+                "R2 blocking"
+            );
+        })
+        .await
+        .unwrap();
+        assert!(seen.lock().unwrap().is_empty(), "R1 no redirected request");
+    }
+
     #[test]
     fn every_owned_client_constructor_selects_the_process_provider() {
         // Cause/effect decision table: C1 the workspace feature graph compiles
@@ -581,6 +681,10 @@ mod tests {
             Err(_) => return,
         };
         let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        if request.starts_with("GET /redirect") {
+            let _ = stream.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nlocation: /v1/thing\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+            return;
+        }
         if request.starts_with("GET /stall") {
             tokio::time::sleep(Duration::from_secs(5)).await;
             return;

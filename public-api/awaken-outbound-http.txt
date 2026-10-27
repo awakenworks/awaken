@@ -77,6 +77,7 @@ pub fn awaken_outbound_http::HttpSender::post<'life0, 'life1, 'async_trait>(&'li
 impl awaken_outbound_http::HttpSender for awaken_outbound_http::GuardedHttpSender
 pub fn awaken_outbound_http::GuardedHttpSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_outbound_http::install_rustls_crypto_provider()
+pub fn awaken_outbound_http::internal_http_client_builder(awaken_outbound_http::TransportDeadline) -> reqwest::async_impl::client::ClientBuilder
 pub fn awaken_outbound_http::normalize_http_base_url(&str) -> core::result::Result<alloc::string::String, awaken_outbound_http::BaseUrlRejected>
 pub fn awaken_outbound_http::rustls_client_builder(awaken_outbound_http::TransportDeadline) -> reqwest::async_impl::client::ClientBuilder
 pub fn awaken_outbound_http::status_is_retryable(u16) -> bool

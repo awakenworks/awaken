@@ -262,6 +262,15 @@ the registered transport authorities may not declare `reqwest`/`rustls` or name
 a bare client constructor; `check_crate_boundaries.py` enforces both with a
 whole-repository scan against `DIRECT_TRANSPORT_EXEMPTIONS`.
 
+Registered CA/mTLS, multipart and streaming adapters reuse the same private
+channel builder from `awaken-outbound-http`; its blocking counterpart is an
+explicit optional feature. Native owns provider selection, refusal of ambient
+proxies and redirects, and bounded deadlines. A composing product adds only
+its trust roots, identity, HTTPS requirement and wire payload. Blocking-client
+construction/destruction remains with the composing plain-thread owner.
+These builders and `InternalHttpClient` share one policy implementation rather
+than synchronizing independent product factories.
+
 Static boundary: a canonical `k8s:namespace:pod-name:pod-uid` Worker ID is only a
 lookup coordinate. TokenReview against one configured API-server client,
 ServiceAccount, namespace and explicit audience authenticates that coordinate.
