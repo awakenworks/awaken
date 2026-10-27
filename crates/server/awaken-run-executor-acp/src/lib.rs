@@ -28,8 +28,10 @@ mod cleanup;
 pub mod host;
 mod session_factory;
 pub use adapter_policy::acp_adapter_policy;
+use cleanup::CleanupScope;
+#[cfg(test)]
+use cleanup::preserve_terminal_outcome;
 pub use cleanup::{ChannelOpenDoor, open_session as open_agent_session};
-use cleanup::{CleanupScope, preserve_terminal_outcome};
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -912,47 +914,14 @@ impl AcpRunExecutor {
                 permission_resume.as_ref(),
             )
             .with_tool_call_limit(activation.snapshot.resolved_spec.max_steps);
-            // ADR-0052 owner control channel. Retain the sender and forward a run
-            // cancellation into it as an `Injection::Interrupt`, so the supervisor
-            // reaps the Step through the same interrupt path a protocol interrupt
-            // uses (a dropped sender would close the channel and permanently disable
-            // the supervisor's interrupt arm). The `cancel` future below still races
-            // the Step directly; both resolve the cancellation to `Cancelled`.
-            let (tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
-            let interrupt_forwarder = context.cancellation.clone().map(|token| {
-                tokio::spawn(async move {
-                    token.cancelled().await;
-                    let _ = tx.send(Injection::Interrupt).await;
-                })
-            });
+            let (mut injections, interrupt_forwarder) =
+                tool_continuation::attempt_interrupt_channel(context);
             let client_execution = Arc::new(std::sync::Mutex::new(None));
-            let client_execution_result = client_execution.clone();
-            let owned_continuation = self.owned_tool_continuation.clone();
-            let cancel = async {
-                let owner_cancel = async {
-                    match &context.cancellation {
-                        Some(token) => token.cancelled().await,
-                        None => std::future::pending::<()>().await,
-                    }
-                };
-                let client_call = async {
-                    match owned_continuation {
-                        Some(continuation) => continuation.next_client_execution().await,
-                        None => std::future::pending::<Option<ToolCall>>().await,
-                    }
-                };
-                tokio::select! {
-                    biased;
-                    () = owner_cancel => {},
-                    call = client_call => {
-                        if let Some(call) = call {
-                            *client_execution_result
-                                .lock()
-                                .expect("ACP client execution lock poisoned") = Some(call);
-                        }
-                    }
-                }
-            };
+            let cancel = tool_continuation::wait_for_tool_execution(
+                context,
+                self.owned_tool_continuation.clone(),
+                client_execution.clone(),
+            );
 
             let process = session.process.clone();
             let mut config = TurnConfig::new(base_permission);
@@ -991,23 +960,9 @@ impl AcpRunExecutor {
                 launch_sink,
             )
             .await;
-            // ACP adapters are per-Step processes. A natural/refused/error frame ends
-            // the Step but commonly leaves the adapter waiting for another request;
-            // reap it explicitly so the next boundary really relaunches it and provider
-            // teardown hooks (including refreshed OAuth-file write-back) complete.
-            // A Cancelled/TimedOut frame can originate from the agent itself;
-            // its business reason is not evidence that the supervisor reaped it.
-            // Already reaped handles simply report their cached exit here.
-            let reaped = Supervisor::reap_after_terminal(
-                session.channel.as_mut(),
-                process.as_ref(),
-                self.policy.reap_grace,
-            )
-            .await;
-            cleanup.complete = reaped.is_ok();
-            // Keep the business fact, but do not discard this exact process
-            // on a transient cleanup error. The enclosing scope retains it.
-            let outcome = preserve_terminal_outcome(outcome, reaped, process.id());
+            let (outcome, reaped) =
+                cleanup::finish_step(session, self.policy.reap_grace, outcome).await;
+            cleanup.complete = reaped;
             // The Step is over — stop the cancellation→interrupt forwarder so it does
             // not outlive this Step's injection channel.
             if let Some(handle) = interrupt_forwarder {
@@ -1017,12 +972,57 @@ impl AcpRunExecutor {
             // Recheck before projecting any returned fact into local Run truth;
             // the replacement owner remains the only attempt allowed to commit.
             verify_attempt_ownership(context.ownership.as_deref()).await?;
+            let automatic_call = tool_continuation::take_runtime_execution(
+                &client_execution,
+                self.owned_tool_continuation.as_deref(),
+            );
             let outcome = tool_continuation::client_execution_outcome(&client_execution, outcome);
             // Keep the negotiated session id for the next relaunched Step, and fold
             // this Step's token usage into the Run total.
             acp_session_id = config.session_id.take();
             run_usage = run_usage.saturating_add(appender.usage);
             next_assistant_step = appender.next_assistant_step;
+
+            if let Some(call) = automatic_call {
+                if !cleanup.complete || !context.physical_quiescence.permits_execution() {
+                    return Err(Error::Indeterminate);
+                }
+                let first_staged_message = committed.len();
+                committed.extend(appender.messages);
+                let state = run_state(
+                    context,
+                    &activation.thread_id,
+                    &run_usage,
+                    &model_ref,
+                    &backend_ref,
+                    acp_session_id.as_deref(),
+                )?;
+                let handoff = self
+                    .handoff_runtime_tool(
+                        &activation,
+                        context,
+                        call,
+                        committed,
+                        first_staged_message,
+                        &mut next_assistant_step,
+                        audit.drain(),
+                        resumed_permission
+                            .as_ref()
+                            .and_then(ResumedPermissionResolver::unconsumed_decision),
+                        state,
+                    )
+                    .await?;
+                match handoff {
+                    (RunState::Running, Some((next_prompt, next_session))) => {
+                        prompt = next_prompt;
+                        *session = next_session;
+                        cleanup.complete = false;
+                    }
+                    (state, _) => return Ok(state),
+                }
+                committed = Vec::new();
+                continue;
+            }
 
             let reason = match outcome {
                 Ok(reason) => reason,
@@ -1076,7 +1076,7 @@ impl AcpRunExecutor {
                         &run_id,
                         &mut next_assistant_step,
                         &mut committed,
-                        first_staged_message,
+                        tool_continuation::PendingToolUseSource::Permission(first_staged_message),
                         &ask,
                     )?;
                     let tool_id = canonical_permission_tool_id(&ask.tool);
@@ -1771,53 +1771,6 @@ fn tool_use_id(run_id: &RunId, acp_id: &str, seq: u64) -> String {
     }
 }
 
-/// Complete the pending ToolUse in this attempt before the single Await commit.
-/// Earlier committed messages are immutable: an exact replay is a no-op and a
-/// conflicting reuse of their call id fails closed. A streaming placeholder in
-/// the current staged suffix is refined to the permission request's exact input.
-fn ensure_pending_tool_use(
-    run_id: &RunId,
-    next_assistant_step: &mut usize,
-    messages: &mut Vec<Message>,
-    first_staged_message: usize,
-    ask: &PermissionAsk,
-) -> Result<()> {
-    let name = canonical_permission_tool_id(&ask.tool);
-    for (index, message) in messages.iter_mut().enumerate() {
-        for block in &mut message.content {
-            if let ContentBlock::ToolUse {
-                id,
-                name: existing_name,
-                input,
-            } = block
-                && id == &ask.call_id
-            {
-                if index < first_staged_message {
-                    if existing_name != &name || input != &ask.arguments {
-                        return Err(Error::Execution(
-                            "ACP permission request conflicts with a committed tool call".into(),
-                        ));
-                    }
-                } else {
-                    *existing_name = name;
-                    input.clone_from(&ask.arguments);
-                }
-                return Ok(());
-            }
-        }
-    }
-    messages.push(Message {
-        id: take_assistant_message_id(run_id, next_assistant_step),
-        role: Role::Assistant,
-        content: vec![ContentBlock::tool_use(
-            ask.call_id.clone(),
-            name,
-            ask.arguments.clone(),
-        )],
-    });
-    Ok(())
-}
-
 mod acp_cli;
 mod commit;
 mod permission;
@@ -1861,6 +1814,7 @@ pub use subprocess::{
 };
 
 mod tool_continuation;
+use tool_continuation::ensure_pending_tool_use;
 
 #[cfg(test)]
 mod tests;

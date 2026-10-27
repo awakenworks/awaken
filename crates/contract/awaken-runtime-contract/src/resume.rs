@@ -265,9 +265,10 @@ pub trait OwnedToolContinuation: Send + Sync {
     /// vocabulary. Absence means the external ACP adapter owns the call.
     fn tool_await_reason(&self, tool_id: &str) -> Option<ToolAwaitReason>;
 
-    /// Wait for a Host-exported client tool to reach the MCP execution edge.
-    /// Implementations without client-executed tools retain an inert future.
-    async fn next_client_execution(&self) -> Option<awaken_tool_contract::tool::ToolCall> {
+    /// Wait for a Host-exported tool to reach the MCP execution edge. Runtime
+    /// executes ordinary tools; client tools retain their external-result wait.
+    /// Implementations without exported tools retain an inert future.
+    async fn next_tool_execution(&self) -> Option<awaken_tool_contract::tool::ToolCall> {
         std::future::pending().await
     }
 

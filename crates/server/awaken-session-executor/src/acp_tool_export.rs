@@ -24,27 +24,45 @@ pub(crate) fn environment_executor_tools(
         .collect()
 }
 
+/// MCP exports report arrivals without registering another Runtime catalog.
+pub(crate) fn permission_guarded_tools(
+    tools: Vec<Arc<dyn RawTool>>,
+    policy: Arc<dyn ToolPermissionPolicy>,
+    grants: Arc<AcpToolExecutionGrants>,
+    sender: tokio::sync::mpsc::Sender<ToolCall>,
+) -> Vec<Arc<dyn RawTool>> {
+    tools
+        .into_iter()
+        .map(|tool| {
+            Arc::new(PermissionGuardedAcpTool::new(
+                tool,
+                policy.clone(),
+                grants.clone(),
+                sender.clone(),
+            )) as Arc<dyn RawTool>
+        })
+        .collect()
+}
+
 /// Model-visible client tools share the Session MCP export, while their adapter
 /// only signals arrival to the existing Runtime continuation.
 pub(crate) struct ClientExecutedAcpTools {
     pub(crate) descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
     pub(crate) executors: Vec<Arc<dyn RawTool>>,
     pub(crate) ids: std::collections::HashSet<String>,
-    pub(crate) requests: Option<Arc<ClientExecutedAcpToolRequests>>,
+    pub(crate) requests: Option<Arc<AcpToolRequests>>,
+    pub(crate) sender: tokio::sync::mpsc::Sender<ToolCall>,
 }
 
 const CLIENT_EXECUTED_TOOL_ARRIVAL_CAPACITY: usize = 32;
 
-fn client_executed_tool_arrivals(
+fn acp_tool_arrivals(
     capacity: usize,
-) -> (
-    tokio::sync::mpsc::Sender<ToolCall>,
-    Arc<ClientExecutedAcpToolRequests>,
-) {
+) -> (tokio::sync::mpsc::Sender<ToolCall>, Arc<AcpToolRequests>) {
     let (sender, receiver) = tokio::sync::mpsc::channel(capacity);
     (
         sender,
-        Arc::new(ClientExecutedAcpToolRequests {
+        Arc::new(AcpToolRequests {
             receiver: tokio::sync::Mutex::new(receiver),
         }),
     )
@@ -64,19 +82,15 @@ pub(crate) fn client_executed_tools(
         .iter()
         .map(|descriptor| descriptor.id.clone())
         .collect::<std::collections::HashSet<_>>();
-    let arrivals = (!ids.is_empty())
-        .then(|| client_executed_tool_arrivals(CLIENT_EXECUTED_TOOL_ARRIVAL_CAPACITY));
-    let requests = arrivals.as_ref().map(|(_, requests)| requests.clone());
+    // One arrival edge serves both Host and client tools. No MCP task enters an
+    // Environment executor outside the Runtime-owned ToolBatch confluence.
+    let (sender, requests) = acp_tool_arrivals(CLIENT_EXECUTED_TOOL_ARRIVAL_CAPACITY);
     let executors = descriptors
         .iter()
         .map(|descriptor| {
             Arc::new(ClientExecutedAcpTool::new(
                 descriptor.id.clone(),
-                arrivals
-                    .as_ref()
-                    .expect("client descriptors require one request edge")
-                    .0
-                    .clone(),
+                sender.clone(),
             )) as Arc<dyn RawTool>
         })
         .collect();
@@ -84,7 +98,8 @@ pub(crate) fn client_executed_tools(
         descriptors,
         executors,
         ids,
-        requests,
+        requests: Some(requests),
+        sender,
     }
 }
 
@@ -97,6 +112,21 @@ pub(crate) struct AcpToolExecutionGrants {
 }
 
 impl AcpToolExecutionGrants {
+    /// The frozen export descriptors own membership; client tools never acquire
+    /// a Host grant merely because they share the MCP transport.
+    pub(crate) fn for_exports(
+        descriptors: &[awaken_runtime_contract::resolved::ToolDescriptor],
+    ) -> Self {
+        Self::new(
+            descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .map(|descriptor| descriptor.id.clone()),
+        )
+    }
+
     pub(crate) fn new(ids: impl IntoIterator<Item = String>) -> Self {
         Self {
             exported: ids.into_iter().collect(),
@@ -144,7 +174,7 @@ pub(crate) struct AcpToolContinuation {
     pub(crate) runtime: Arc<awaken_runtime::Runtime>,
     pub(crate) host_exports: Option<Arc<AcpToolExecutionGrants>>,
     pub(crate) client_tools: std::collections::HashSet<String>,
-    pub(crate) client_requests: Option<Arc<ClientExecutedAcpToolRequests>>,
+    pub(crate) client_requests: Option<Arc<AcpToolRequests>>,
 }
 
 #[async_trait::async_trait]
@@ -166,7 +196,7 @@ impl awaken_runtime_contract::resume::OwnedToolContinuation for AcpToolContinuat
         }
     }
 
-    async fn next_client_execution(&self) -> Option<ToolCall> {
+    async fn next_tool_execution(&self) -> Option<ToolCall> {
         match &self.client_requests {
             Some(requests) => requests.next().await,
             None => std::future::pending().await,
@@ -213,14 +243,28 @@ impl ClientExecutedAcpTool {
     }
 }
 
-pub(crate) struct ClientExecutedAcpToolRequests {
+pub(crate) struct AcpToolRequests {
     receiver: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ToolCall>>,
 }
 
-impl ClientExecutedAcpToolRequests {
+impl AcpToolRequests {
     async fn next(&self) -> Option<ToolCall> {
         self.receiver.lock().await.recv().await
     }
+}
+
+async fn await_owned_tool_execution(
+    sender: &tokio::sync::mpsc::Sender<ToolCall>,
+    call: ToolCall,
+) -> Result<ToolOutput, ToolError> {
+    sender.send(call).await.map_err(|_| {
+        ToolError::DefinitiveFailure(
+            "ACP_TOOL_ARRIVAL_CLOSED: the Runtime continuation is no longer available".into(),
+        )
+    })?;
+    // The owning ACP Step is stopped before Runtime commits and executes this
+    // request. Its committed result returns through the existing request context.
+    std::future::pending().await
 }
 
 #[async_trait::async_trait]
@@ -230,13 +274,7 @@ impl RawTool for ClientExecutedAcpTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        self.sender.send(call).await.map_err(|_| {
-            ToolError::DefinitiveFailure(
-                "CLIENT_TOOL_ARRIVAL_CLOSED: the Session continuation is no longer available"
-                    .into(),
-            )
-        })?;
-        std::future::pending().await
+        await_owned_tool_execution(&self.sender, call).await
     }
 }
 
@@ -248,6 +286,7 @@ pub(crate) struct PermissionGuardedAcpTool {
     inner: Arc<dyn RawTool>,
     policy: Arc<dyn ToolPermissionPolicy>,
     grants: Arc<AcpToolExecutionGrants>,
+    sender: tokio::sync::mpsc::Sender<ToolCall>,
 }
 
 impl PermissionGuardedAcpTool {
@@ -255,11 +294,13 @@ impl PermissionGuardedAcpTool {
         inner: Arc<dyn RawTool>,
         policy: Arc<dyn ToolPermissionPolicy>,
         grants: Arc<AcpToolExecutionGrants>,
+        sender: tokio::sync::mpsc::Sender<ToolCall>,
     ) -> Self {
         Self {
             inner,
             policy,
             grants,
+            sender,
         }
     }
 }
@@ -286,13 +327,18 @@ impl RawTool for PermissionGuardedAcpTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        if call.tool_id != self.inner.id() {
+            return Err(ToolError::DefinitiveFailure(
+                "ACP tool identity does not match its frozen export".into(),
+            ));
+        }
         if self.grants.consume(&call.tool_id, &call.arguments) {
-            return self.inner.invoke(call).await;
+            return await_owned_tool_execution(&self.sender, call).await;
         }
         // The exported ACP tool reports only the outcome; the basis belongs to
         // the audit fact, not to a tool error string.
         match self.policy.evaluate(&call).await.verdict {
-            ToolPermissionVerdict::Allow => self.inner.invoke(call).await,
+            ToolPermissionVerdict::Allow => await_owned_tool_execution(&self.sender, call).await,
             ToolPermissionVerdict::Deny { reason } => Err(ToolError::DefinitiveFailure(format!(
                 "TOOL_PERMISSION_BLOCKED: {reason}"
             ))),
@@ -423,6 +469,34 @@ impl AcpToolExporter for RecordingAcpToolExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_export_grants_exclude_client_and_unknown_tools() {
+        // C1 frozen Hand/client/absent descriptor; C2 exact Allow notification.
+        // G1 Hand+C2 -> one consumed grant; G2 client/absent -> no Host grant;
+        // G3 no Allow or second consume -> no grant. Shared MCP transport cannot
+        // change execution ownership or manufacture an approval.
+        use awaken_runtime_contract::permission::PermissionGrantObserver as _;
+        let hand = awaken_session_run_delivery::hand_tool_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "read")
+            .unwrap();
+        let grants = AcpToolExecutionGrants::for_exports(&[
+            hand,
+            crate::config::client_tool_descriptor("desktop_search"),
+        ]);
+        for (id, expected) in [("read", true), ("desktop_search", false), ("absent", false)] {
+            let call = ToolCall {
+                call_id: "wire".into(),
+                tool_id: id.into(),
+                arguments: serde_json::json!({}),
+            };
+            assert!(!grants.consume(id, &call.arguments), "G3");
+            grants.on_allow(&call);
+            assert_eq!(grants.consume(id, &call.arguments), expected, "G1/G2");
+            assert!(!grants.consume(id, &call.arguments), "G3");
+        }
+    }
     use awaken_runtime_contract::permission::ToolPermissionVerdict;
     use awaken_tool_contract::tool::{ToolConcurrency, ToolRecoveryCapability};
 
@@ -552,21 +626,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automatically_allowed_mcp_arrivals_never_enter_the_raw_executor() {
+        // C1 exact/mismatched export identity; C2 allow/deny policy; C3 live
+        // arrival receiver. R1 exact+allow+C3 -> one queued request, invocation
+        // remains pending (no raw effect). R2 mismatch/deny -> error and no
+        // request. The Runtime integration below owns execution and token checks.
+        struct Policy(bool);
+        #[async_trait::async_trait]
+        impl ToolPermissionPolicy for Policy {
+            async fn evaluate(&self, _: &ToolCall) -> ToolPermissionRuling {
+                ToolPermissionRuling::policy(
+                    if self.0 {
+                        ToolPermissionVerdict::Allow
+                    } else {
+                        ToolPermissionVerdict::Deny {
+                            reason: "blocked".into(),
+                        }
+                    },
+                    awaken_runtime_contract::permission::PermissionBasis::fixed(
+                        awaken_agent_contract::audit::permission::PermissionPolicy::Rule,
+                    ),
+                )
+            }
+        }
+        for (allow, id) in [(true, "read"), (false, "read"), (true, "write")] {
+            let (sender, requests) = acp_tool_arrivals(1);
+            let guarded = PermissionGuardedAcpTool::new(
+                Arc::new(Echo("read")),
+                Arc::new(Policy(allow)),
+                Arc::new(AcpToolExecutionGrants::new(["read".into()])),
+                sender,
+            );
+            let call = ToolCall {
+                call_id: "mcp-arrival".into(),
+                tool_id: id.into(),
+                arguments: serde_json::json!({}),
+            };
+            let invocation = tokio::spawn({
+                let call = call.clone();
+                async move { guarded.invoke(call).await }
+            });
+            if allow && id == "read" {
+                assert_eq!(requests.next().await.unwrap(), call, "R1");
+                assert!(!invocation.is_finished(), "R1 raw Echo must not execute");
+                invocation.abort();
+            } else {
+                assert!(invocation.await.unwrap().is_err(), "R2");
+                assert!(
+                    requests.receiver.lock().await.try_recv().is_err(),
+                    "R2 no dispatch"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn exported_tool_requires_and_consumes_one_exact_awaken_grant() {
         // Causes: C1 the neutral permission observer received an Allow for the
         // exact tool and arguments; C2 the call matches that grant; C3 it has
-        // not already been consumed. Effects: E1 only C1+C2+C3 executes the
-        // tool once; E2 missing, substituted or replayed calls fail closed.
-        // R1 no grant -> deny; R2 exact fresh grant -> one effect; R3 changed
+        // not already been consumed. Effects: E1 only C1+C2+C3 queues the
+        // request once; only Runtime may execute it. E2 missing, substituted
+        // or replayed calls fail closed. R1 no grant -> deny; R2 fresh -> queue;
+        // R3 changed
         // args or consumed grant -> deny. The observer supplies no authority.
         use awaken_runtime_contract::permission::PermissionGrantObserver;
 
         let grants = Arc::new(AcpToolExecutionGrants::new(["write".into()]));
-        let guarded = PermissionGuardedAcpTool::new(
+        let (sender, requests) = acp_tool_arrivals(2);
+        let guarded = Arc::new(PermissionGuardedAcpTool::new(
             Arc::new(Echo("write")),
             Arc::new(AskPolicy),
             grants.clone(),
-        );
+            sender,
+        ));
         let call = ToolCall {
             call_id: "wire-1".into(),
             tool_id: "write".into(),
@@ -583,7 +715,14 @@ mod tests {
             substituted.to_string().contains("TOOL_APPROVAL_REQUIRED"),
             "a grant cannot authorize substituted arguments"
         );
-        assert!(!guarded.invoke(call.clone()).await.unwrap().is_error);
+        let invocation = tokio::spawn({
+            let guarded = guarded.clone();
+            let call = call.clone();
+            async move { guarded.invoke(call).await }
+        });
+        assert_eq!(requests.next().await.unwrap(), call);
+        assert!(!invocation.is_finished(), "MCP must not perform the effect");
+        invocation.abort();
         let replay = guarded.invoke(call).await.unwrap_err();
         assert!(
             replay.to_string().contains("TOOL_APPROVAL_REQUIRED"),
@@ -603,7 +742,7 @@ mod tests {
         use awaken_agent_contract::agent::awaiting::ToolAwaitReason;
         use awaken_runtime_contract::resume::OwnedToolContinuation;
 
-        let (sender, requests) = client_executed_tool_arrivals(2);
+        let (sender, requests) = acp_tool_arrivals(2);
         let tool = ClientExecutedAcpTool::new("desktop_search".into(), sender.clone());
         assert_eq!(tool.id(), "desktop_search");
         let invocation = tokio::spawn(async move {
@@ -660,7 +799,7 @@ mod tests {
         // Decision table: R1 C1 -> E1; R2 C2 -> E2; R3 C3 -> E3. These are the
         // loss, overload, and shutdown cases that the removed VecDeque+Notify
         // implementation could not express with one canonical queue primitive.
-        let (sender, requests) = client_executed_tool_arrivals(1);
+        let (sender, requests) = acp_tool_arrivals(1);
 
         let cancelled_waiter = tokio::spawn({
             let requests = requests.clone();
@@ -757,6 +896,11 @@ mod tests {
         // => no invocation and a committed error result. Both rows: no Native
         // model is configured; finalized reclaim never re-enters the tool; the
         // Session MCP guard still requires a fresh approval for any new call.
+        // OT7 automatic Requested uses the same Runtime recovery and token
+        // scope without manufacturing a user approval. OT3-6 remain unchanged.
+        // H3 automatic MCP arrival committed as Requested -> the same recovery
+        // invokes once with a Runtime operation token and no approval ticket.
+        // Every executed row must carry that token; finalized recovery is a no-op.
         // Membership is the same export set used by grants (canonical write yes,
         // external MCP/lookalike no), not a second inferred tool catalog.
         use awaken_agent_contract::agent::awaiting::{
@@ -787,6 +931,10 @@ mod tests {
                 "write"
             }
             async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+                assert!(
+                    awaken_tool_contract::tool::current_tool_operation_token().is_some(),
+                    "all effects must enter through Runtime's token scope"
+                );
                 self.0.lock().unwrap().push(call.clone());
                 Ok(ToolOutput::ok(call.call_id, "owned-write-complete"))
             }
@@ -794,8 +942,12 @@ mod tests {
         // OT3 current NoTools permits a denial receipt, never an approved
         // effect. OT4/5 live/supplied source poison and OT6 snapshot poison
         // refuse before commits or grants. Configured OT1/2 remain unchanged.
-        for mode in 0..6 {
+        for mode in 0..7 {
             for allow in [true, false] {
+                let automatic = mode == 6;
+                if automatic && !allow {
+                    continue;
+                }
                 let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
                     awaken_time::system_clock(),
                 ));
@@ -871,17 +1023,23 @@ mod tests {
                 let mut batch =
                     ToolBatch::for_step(run_id.clone(), 0, [(call.clone(), Default::default())])
                         .unwrap();
-                batch
-                    .mark_awaiting(
-                        &call.call_id,
-                        ToolWaitKind::ToolPermission,
-                        &ticket.correlation_id,
-                    )
-                    .unwrap();
+                if !automatic {
+                    batch
+                        .mark_awaiting(
+                            &call.call_id,
+                            ToolWaitKind::ToolPermission,
+                            &ticket.correlation_id,
+                        )
+                        .unwrap();
+                }
                 commit
                     .commit(ThreadCommit::assemble(
                         thread_id.clone(),
-                        RunDisposition::awaiting(ticket.clone()),
+                        if automatic {
+                            RunDisposition::running(run_id.clone())
+                        } else {
+                            RunDisposition::awaiting(ticket.clone())
+                        },
                         true,
                         vec![Message::new(
                             MessageId::assistant(&run_id, 0),
@@ -938,13 +1096,19 @@ mod tests {
                 } else {
                     ResumeResult::deny(Some("user denied".into()))
                 };
-                let result = continuation
-                    .resume(
-                        activation.clone(),
-                        ResumeCommand::from_ticket(&ticket, decision, 0),
-                        context.clone(),
-                    )
-                    .await;
+                let result = if automatic {
+                    continuation
+                        .recover(activation.clone(), context.clone())
+                        .await
+                } else {
+                    continuation
+                        .resume(
+                            activation.clone(),
+                            ResumeCommand::from_ticket(&ticket, decision, 0),
+                            context.clone(),
+                        )
+                        .await
+                };
                 if (2..=4).contains(&mode) || (matches!(mode, 1 | 5) && allow) {
                     assert!(result.is_err(), "OT3-6 refused before entry");
                     assert_eq!(commit.commit_count(), before);
@@ -978,8 +1142,13 @@ mod tests {
                     RunState::Running
                 );
                 assert_eq!(commit.commit_count(), count);
-                let guarded =
-                    PermissionGuardedAcpTool::new(tool, Arc::new(AskPolicy), exports.clone());
+                let (sender, _requests) = acp_tool_arrivals(1);
+                let guarded = PermissionGuardedAcpTool::new(
+                    tool,
+                    Arc::new(AskPolicy),
+                    exports.clone(),
+                    sender,
+                );
                 assert!(
                     guarded
                         .invoke(call)

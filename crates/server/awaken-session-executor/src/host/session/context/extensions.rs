@@ -34,7 +34,6 @@ pub(super) async fn skills(
     let installed = &resources.plan.installed;
     let workspace = &resources.plan.workspace;
     let session_dispatch = resources.plan.session_dispatch;
-    let is_acp = resources.plan.execution_backend.is_acp();
     let env = &resources.env;
     let mcp = &resources.mcp;
     let authored_skills_subdir = &resources.authored_skills_subdir;
@@ -168,7 +167,7 @@ pub(super) async fn skills(
                 base_gate.clone(),
                 agent_tool,
             );
-            if installed.is_some() && !is_acp {
+            if installed.is_some() {
                 session_content_plugins.push(Arc::new(
                     crate::session_tools::SessionToolPlugin::new(
                         "awaken.session.skills",
@@ -178,12 +177,10 @@ pub(super) async fn skills(
                     .map_err(SessionExecutionError::internal)?,
                 ));
             }
-            if !is_acp {
-                runtime = runtime
-                    .with_gate(adapter.gate)
-                    .with_tool(adapter.list_tool.clone())
-                    .with_tool(adapter.activate_tool.clone());
-            }
+            runtime = runtime
+                .with_gate(adapter.gate)
+                .with_tool(adapter.list_tool.clone())
+                .with_tool(adapter.activate_tool.clone());
             skill_descriptors = adapter.descriptors.clone();
             semantic_skill_tools = Some((
                 adapter.descriptors,
@@ -229,9 +226,7 @@ pub(super) fn memory_tools(
     };
     let installed = &resources.plan.installed;
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings, installed.as_ref());
-    if let Some(tools) = &tools
-        && !resources.plan.execution_backend.is_acp()
-    {
+    if let Some(tools) = &tools {
         if installed.is_some() {
             session_content_plugins.push(Arc::new(
                 crate::session_tools::SessionToolPlugin::new(

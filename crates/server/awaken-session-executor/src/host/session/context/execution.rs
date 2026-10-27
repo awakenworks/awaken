@@ -2,19 +2,14 @@
 //! ACP export leases and the exact executor built from the realized Environment.
 
 use super::{SemanticSkillTools, resources::ContextResources};
-use crate::SessionExecutionError;
 use crate::host::session::input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers,
 };
 use crate::host::session_ctx::{RuntimeContextPurpose, acp_tool_export_admitted};
+use crate::{SessionExecutionError, web_search::ConfiguredWebTool};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, execution::RunAttemptExecutor};
 use std::sync::Arc;
-
-type ConfiguredTool = (
-    awaken_runtime_contract::resolved::ToolDescriptor,
-    Arc<dyn awaken_tool_contract::tool::RawTool>,
-);
 
 pub(super) struct ExecutionWiring {
     pub(super) runtime: Arc<Runtime>,
@@ -28,8 +23,8 @@ pub(super) struct ExecutionWiring {
 pub(super) struct AcpTools<'a> {
     pub(super) skills: Option<&'a SemanticSkillTools>,
     pub(super) memory: Option<&'a crate::session_memory_tools::SessionMemoryTools>,
-    pub(super) search: Option<ConfiguredTool>,
-    pub(super) fetch: Option<ConfiguredTool>,
+    pub(super) search: Option<ConfiguredWebTool>,
+    pub(super) fetch: Option<ConfiguredWebTool>,
 }
 
 pub(super) async fn prepare(
@@ -37,7 +32,7 @@ pub(super) async fn prepare(
     resources: &ContextResources,
     requested_purpose: RuntimeContextPurpose,
     config: &ExecutableAgentSnapshot,
-    runtime: Runtime,
+    mut runtime: Runtime,
     tools: AcpTools<'_>,
 ) -> Result<ExecutionWiring, SessionExecutionError> {
     let active_mcp = &resources.active_mcp;
@@ -125,6 +120,13 @@ pub(super) async fn prepare(
         acp_provider_server_tools = provider_server_tools;
 
         let (mut descriptors, mut executors): (Vec<_>, Vec<_>) = host_web_tools.into_iter().unzip();
+        // This is the one registration point for ACP's configured Host web
+        // executors. Hand tools already belong to build_runtime; Skill/Memory
+        // tools already belong to their extensions. Re-registering those ids
+        // poisons RawToolRegistry as ambiguous, even for the same implementation.
+        for tool in &executors {
+            runtime = runtime.with_tool(tool.clone());
+        }
         // Project the exact publication-selected Hand subset. The
         // Session environment supplies rooted executors; the immutable
         // snapshot supplies model-visible descriptors. Neither side may
@@ -173,26 +175,16 @@ pub(super) async fn prepare(
         acp_client_tool_ids = client_tools.ids;
         acp_client_tool_requests = client_tools.requests;
         if !descriptors.is_empty() {
-            let grants = Arc::new(crate::acp_tool_export::AcpToolExecutionGrants::new(
-                descriptors
-                    .iter()
-                    .filter(|descriptor| {
-                        descriptor.kind
-                            != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                    })
-                    .map(|descriptor| descriptor.id.clone()),
+            let grants = Arc::new(crate::acp_tool_export::AcpToolExecutionGrants::for_exports(
+                &descriptors,
             ));
             acp_tool_grants = Some(grants.clone());
-            executors = executors
-                .into_iter()
-                .map(|tool| {
-                    Arc::new(crate::acp_tool_export::PermissionGuardedAcpTool::new(
-                        tool,
-                        permission.clone(),
-                        grants.clone(),
-                    )) as Arc<dyn awaken_tool_contract::tool::RawTool>
-                })
-                .collect();
+            executors = crate::acp_tool_export::permission_guarded_tools(
+                executors,
+                permission.clone(),
+                grants.clone(),
+                client_tools.sender,
+            );
             let exporter = host.capabilities.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
                 SessionExecutionError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
             })?;
