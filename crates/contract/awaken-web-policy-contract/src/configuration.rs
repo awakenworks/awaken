@@ -757,6 +757,8 @@ pub struct WebFetchExecutionConfiguration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domains: Option<WebDomainFilter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Approximate host-returned text budget, independent of response bytes and
+    /// provider-reported usage. The nearest configured scalar wins; zero is empty.
     pub max_content_tokens: Option<u64>,
 }
 
@@ -788,6 +790,8 @@ pub struct WebSearchUserLocation {
 pub struct EffectiveWebFetchConfiguration {
     pub url_sources: Vec<WebFetchUrlSources>,
     pub domains: Vec<WebDomainFilter>,
+    /// Approximate host-returned text budget, independent of response bytes and
+    /// provider-reported usage. The nearest configured scalar wins; zero is empty.
     pub max_content_tokens: Option<u64>,
 }
 
