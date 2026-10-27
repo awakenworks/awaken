@@ -1035,6 +1035,14 @@ exit "$RESULT_STATUS"
         inventory="critical: test\n"
         interleaved="test critical ... metric=10\nok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
         self.assertTrue(execution_evidence(inventory,interleaved,0,["critical"])["errors"])
+        # Direct tracing writers can interleave even with libtest capture on.
+        # A successes list/summary cannot repair that missing terminal record.
+        # The HTTP fixture must use a span-only subscriber; keep this strict.
+        traced=("test critical ... 2026-10-26T22:18:05Z  INFO opentelemetry: "
+                "name=\"MeterProvider.GlobalSet\" provider installed\n"
+                "ok\nsuccesses:\n    critical\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
+        self.assertTrue(execution_evidence(inventory,traced,0,["critical"])["errors"])
         captured="test critical ... ok\nsuccesses:\nmetric=10\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
         self.assertEqual(execution_evidence(inventory,captured,0,["critical"])["errors"],[])
 
