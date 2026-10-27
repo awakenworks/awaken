@@ -726,5 +726,40 @@
     "log_sha256": "bb64f7fc27263056b51e17e3596a29a66ce2c6ca7cda16bf28603c73d10fed21",
     "historical": false,
     "entry_sha256": "776820fbcc402be51c2f043e7696e214a55a8a16cd64bd769b6918dfaac607c4"
+  },
+  {
+    "id": "E42",
+    "receipt": "target/session-acceptance-evidence/E42/receipt.json",
+    "receipt_sha256": "087ad3e3d09e0435b1839eaf8eccf983ffc8e6186e7b9283002972ffb4a48721",
+    "source": {
+      "head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
+      "tree": "9b08dc8b3259c0e692c4c195b46da49d8ec460b0",
+      "dirty_digest": "f5f02ba039b5d271b48f9e17edeee7058b37e687c6c6217c2faca851c8b3df67"
+    },
+    "platform": "native-Linux x86_64",
+    "passed": true,
+    "historical": false,
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "-p",
+      "awaken-credential-materializer",
+      "--features",
+      "authority,brokered",
+      "--lib",
+      "--no-fail-fast",
+      "--status-level",
+      "pass"
+    ],
+    "exit": 0,
+    "executed_count": 25,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0",
+    "scope": "Claimed Provider/A2A materialization only: real Vault local authority, barrier-controlled SecretStore/verifier/receipt collaborators; model/network Provider invocation is outside this receipt",
+    "files_changed_during_run": [],
+    "entry_sha256": "bbdca04609508b7ee91ab4271a31f4ff5bd2748b63ee461c3451fab7b153cb69"
   }
 ]

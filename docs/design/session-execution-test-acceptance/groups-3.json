@@ -213,9 +213,10 @@
         "binding_ids": [
           "B224",
           "B225",
-          "B257"
+          "B257",
+          "B261"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -228,17 +229,12 @@
         ],
         "slices": {
           "executed": [
-            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
+            "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features",
+            "E42 native Linux x86_64: claimed Provider/A2A; ownership changes before resolution, during the single secret read, and after receipt commit while acknowledgement remains owned; real Vault local authority with barrier-controlled collaborators"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
-          ]
-        },
-        "product_gap": {
-          "reason": "等待机密读取后不再校验所有权",
-          "follow_up": "credential-materializer claimed materialization（S）",
-          "reproducers": [
-            "t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt"
+            "Model invocation and every refresh/provision transport facet are outside E42.",
+            "Full T00/T34/T35/T36 common-gate closure and whole-scenario acceptance remain pending."
           ]
         }
       },

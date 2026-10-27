@@ -15,9 +15,9 @@
 //! | W4   | Unavailable while blocked    | Err, zero receipts                     |
 //! W2-W4 also require the in-flight read to stay owned by the call and to be
 //! observed to completion exactly once (never abandoned, never re-issued).
-//! W2-W4's final denial is a product gap: ownership is verified before the
-//! read but not after it (claimed_materialization.rs, materialize_claimed_remote),
-//! so that reproducer is ignored.
+//! Both Provider and A2A exercise the same claim-bound sequence. W5-W7 change
+//! authority while an already committed receipt waits for acknowledgement:
+//! retain that receipt, observe the acknowledgement once, and release no material.
 //!
 //! Negative control (executed): replaying cached successful material after
 //! revocation must be detected by the same oracle check.
@@ -121,12 +121,29 @@ impl AttemptOwnershipVerifier for OwnerAuthority {
     }
 }
 
-#[derive(Default)]
-struct CountingRecorder(StdMutex<Vec<CredentialRealizationReceipt>>);
+struct CountingRecorder {
+    receipts: StdMutex<Vec<CredentialRealizationReceipt>>,
+    acknowledged: AtomicUsize,
+    armed: AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl Default for CountingRecorder {
+    fn default() -> Self {
+        Self {
+            receipts: StdMutex::new(Vec::new()),
+            acknowledged: AtomicUsize::new(0),
+            armed: AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
 
 impl CountingRecorder {
     fn receipts(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.receipts.lock().unwrap().len()
     }
 }
 
@@ -136,26 +153,57 @@ impl awaken_credential_contract::CredentialRealizationRecorder for CountingRecor
         &self,
         receipt: CredentialRealizationReceipt,
     ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
-        self.0.lock().unwrap().push(receipt);
+        self.receipts.lock().unwrap().push(receipt);
+        if self.armed.load(Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release
+                .acquire()
+                .await
+                .expect("receipt gate open")
+                .forget();
+        }
+        self.acknowledged.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
 
+const KINDS: [CredentialRealizationKind; 2] = [
+    CredentialRealizationKind::WorkerRelay,
+    CredentialRealizationKind::WorkerProviderAdapter,
+];
+
 struct Fixture {
+    kind: CredentialRealizationKind,
     secrets: Arc<GatedSecrets>,
     materializer: PinnedCredentialMaterializer,
     candidate: ResolvedModelCandidate,
     bindings: Vec<awaken_credential_contract::AttemptCredentialBinding>,
 }
 
-async fn fixture() -> Fixture {
+async fn fixture(kind: CredentialRealizationKind) -> Fixture {
+    let (provider, usage, purpose) = match kind {
+        CredentialRealizationKind::WorkerRelay => (
+            "https://agent.example",
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
+        ),
+        CredentialRealizationKind::WorkerProviderAdapter => (
+            "anthropic",
+            CredentialUsage::ProviderAdapter,
+            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+        ),
+        _ => unreachable!("the table selects exactly the two claimed adapters"),
+    };
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let secrets = Arc::new(GatedSecrets::new());
     let source = enter_credential(
         CredentialCreateParams {
             workspace_id: "workspace-a".into(),
             kind: CredentialKind::Vault,
-            provider_id: Some("https://agent.example".into()),
+            provider_id: Some(provider.into()),
             env_key: None,
             secret: Some(RedactedString::new("remote-token")),
             oauth_command: None,
@@ -167,38 +215,48 @@ async fn fixture() -> Fixture {
     .await
     .unwrap();
     let holder = selected_holder();
-    let candidate = ResolvedModelCandidate::try_remote(
-        ModelBinding::parse("", "", "a2a:https://agent.example").expect("valid binding"),
-        "workspace-a",
-        Some(
-            CredentialAccess::new(
-                CredentialRef {
-                    id: source.id.0,
-                    revision: 1,
-                },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::HttpHeader {
-                    name: "authorization".into(),
-                    scheme: Some("Bearer".into()),
-                },
-                CredentialExecutionPolicy::self_hosted_provider(),
-            )
-            .with_target(awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
-                "https://agent.example",
-            )),
-        ),
-        "sha256:card",
+    let access = CredentialAccess::new(
+        CredentialRef {
+            id: source.id.0,
+            revision: 1,
+        },
+        CredentialMaterialSource::ControlPlaneReference,
+        usage,
+        CredentialExecutionPolicy::self_hosted_provider(),
     )
-    .expect("coherent remote credential candidate");
+    .with_target(awaken_credential_contract::CredentialTarget::new(
+        purpose, provider,
+    ));
+    let candidate = match kind {
+        CredentialRealizationKind::WorkerRelay => ResolvedModelCandidate::try_remote(
+            ModelBinding::parse("", "", "a2a:https://agent.example").expect("valid binding"),
+            "workspace-a",
+            Some(access),
+            "sha256:card",
+        ),
+        CredentialRealizationKind::WorkerProviderAdapter => ResolvedModelCandidate::try_provider(
+            ModelBinding::parse("anthropic", "model", "native").expect("valid binding"),
+            "anthropic@1",
+            "endpoint@1",
+            "workspace-a",
+            Some(access),
+            InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://example.invalid".into(),
+                upstream_model: "model".into(),
+                processing_placement: None,
+            },
+        ),
+        _ => unreachable!("the table selects exactly the two claimed adapters"),
+    }
+    .expect("coherent claimed credential candidate");
     let capabilities = CredentialRealizationCapabilities {
         holders: [holder.clone()].into_iter().collect(),
         material_sources: [CredentialMaterialSource::ControlPlaneReference]
             .into_iter()
             .collect(),
-        realization_kinds: [CredentialRealizationKind::WorkerRelay]
-            .into_iter()
-            .collect(),
+        realization_kinds: [kind].into_iter().collect(),
         ..Default::default()
     };
     let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
@@ -211,10 +269,32 @@ async fn fixture() -> Fixture {
     .unwrap();
     let materializer = pinned_vault(credentials, secrets.clone(), awaken_time::system_clock());
     Fixture {
+        kind,
         secrets,
         materializer,
         candidate,
         bindings,
+    }
+}
+
+impl Fixture {
+    async fn materialize(
+        &self,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> Result<Option<RedactedString>, String> {
+        match self.kind {
+            CredentialRealizationKind::WorkerRelay => {
+                self.materializer
+                    .materialize_claimed_remote(&self.candidate, context)
+                    .await
+            }
+            CredentialRealizationKind::WorkerProviderAdapter => {
+                self.materializer
+                    .materialize_claimed_provider(&self.candidate, context, self.kind)
+                    .await
+            }
+            _ => unreachable!("the table selects exactly the two claimed adapters"),
+        }
     }
 }
 
@@ -243,8 +323,8 @@ struct RevokedObservation {
 
 /// The T15-C02 oracle for a call whose authority is not current: refuse with
 /// an ownership error, release no material and record no realization.
-fn check_rejected_under_current_authority(observed: &RevokedObservation) -> Result<(), String> {
-    match &observed.outcome {
+fn check_material_rejected(outcome: &Result<Option<RedactedString>, String>) -> Result<(), String> {
+    match outcome {
         Ok(Some(_)) => return Err("material was returned under revoked authority".into()),
         Ok(None) => return Err("revoked call reported an anonymous success".into()),
         Err(error)
@@ -255,6 +335,11 @@ fn check_rejected_under_current_authority(observed: &RevokedObservation) -> Resu
         }
         Err(_) => {}
     }
+    Ok(())
+}
+
+fn check_rejected_under_current_authority(observed: &RevokedObservation) -> Result<(), String> {
+    check_material_rejected(&observed.outcome)?;
     if observed.new_receipts != 0 {
         return Err(format!(
             "{} realization receipt(s) recorded under revoked authority",
@@ -284,8 +369,11 @@ fn apply(authority: &OwnerAuthority, change: Change) {
 /// Run one materialization with the read held at the barrier, apply `change`
 /// once the read has been entered, assert the read is still in flight and
 /// owned by the call (no early return, no abandonment), then release it.
-async fn materialize_with_change_during_read(change: Change) -> RevokedObservation {
-    let fixture = fixture().await;
+async fn materialize_with_change_during_read(
+    kind: CredentialRealizationKind,
+    change: Change,
+) -> RevokedObservation {
+    let fixture = fixture(kind).await;
     let authority = Arc::new(OwnerAuthority::new("worker-a"));
     let recorder = Arc::new(CountingRecorder::default());
     let context = context(&fixture, authority.clone(), recorder.clone());
@@ -296,10 +384,7 @@ async fn materialize_with_change_during_read(change: Change) -> RevokedObservati
     let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::join!(
             async {
-                let outcome = fixture
-                    .materializer
-                    .materialize_claimed_remote(&fixture.candidate, &context)
-                    .await;
+                let outcome = fixture.materialize(&context).await;
                 finished.store(true, Ordering::SeqCst);
                 outcome
             },
@@ -348,73 +433,68 @@ async fn materialize_with_change_during_read(change: Change) -> RevokedObservati
 
 #[tokio::test]
 async fn t15_c02_revocation_before_resolution_and_cached_replay_are_rejected() {
-    // W0 healthy row: material plus exactly one receipt and one read.
-    let fixture = fixture().await;
-    let authority = Arc::new(OwnerAuthority::new("worker-a"));
-    let recorder = Arc::new(CountingRecorder::default());
-    let ctx = context(&fixture, authority.clone(), recorder.clone());
-    let reads_before = fixture.secrets.reads();
-    let cached = fixture
-        .materializer
-        .materialize_claimed_remote(&fixture.candidate, &ctx)
-        .await
-        .expect("W0 current authority")
-        .expect("W0 credential-bearing candidate");
-    assert_eq!(cached.expose_secret(), "remote-token", "W0");
-    assert_eq!(fixture.secrets.reads(), reads_before + 1, "W0 one read");
-    assert_eq!(recorder.receipts(), 1, "W0 one receipt");
-
-    // W1: authority changes before the call -> production rejects with zero
-    // new reads and zero new receipts.
-    for change in CHANGES {
+    for kind in KINDS {
+        // W0 healthy row: material plus exactly one receipt and one read.
+        let fixture = fixture(kind).await;
         let authority = Arc::new(OwnerAuthority::new("worker-a"));
         let recorder = Arc::new(CountingRecorder::default());
         let ctx = context(&fixture, authority.clone(), recorder.clone());
-        apply(&authority, change);
         let reads_before = fixture.secrets.reads();
+        let cached = fixture
+            .materialize(&ctx)
+            .await
+            .expect("W0 current authority")
+            .expect("W0 credential-bearing candidate");
+        assert_eq!(cached.expose_secret(), "remote-token", "W0");
+        assert_eq!(fixture.secrets.reads(), reads_before + 1, "W0 one read");
+        assert_eq!(recorder.receipts(), 1, "W0 one receipt");
+
+        // W1: authority changes before the call -> production rejects with zero
+        // new reads and zero new receipts.
+        for change in CHANGES {
+            let authority = Arc::new(OwnerAuthority::new("worker-a"));
+            let recorder = Arc::new(CountingRecorder::default());
+            let ctx = context(&fixture, authority.clone(), recorder.clone());
+            apply(&authority, change);
+            let reads_before = fixture.secrets.reads();
+            let observed = RevokedObservation {
+                outcome: fixture.materialize(&ctx).await,
+                new_reads: fixture.secrets.reads() - reads_before,
+                new_receipts: recorder.receipts(),
+            };
+            check_rejected_under_current_authority(&observed)
+                .unwrap_or_else(|violation| panic!("W1 {change:?}: {violation}"));
+            assert_eq!(observed.new_reads, 0, "W1 {change:?}: no secret read");
+        }
+
+        // Negative control, executed: a caller that replays the cached successful
+        // material after revocation (instead of re-entering the production
+        // boundary) must be detected by the same oracle check.
+        let replay = RevokedObservation {
+            outcome: Ok(Some(cached.clone())),
+            new_reads: 0,
+            new_receipts: 0,
+        };
+        let violation = check_rejected_under_current_authority(&replay)
+            .expect_err("NC: cached-success replay must violate the oracle");
+        assert!(violation.contains("revoked authority"), "NC: {violation}");
+        // The production boundary, re-entered on the same (now revoked) attempt
+        // that previously succeeded, does not serve the earlier success.
+        apply(&authority, Change::Revoke);
+        let reads_before = fixture.secrets.reads();
+        let receipts_before = recorder.receipts();
         let observed = RevokedObservation {
-            outcome: fixture
-                .materializer
-                .materialize_claimed_remote(&fixture.candidate, &ctx)
-                .await,
+            outcome: fixture.materialize(&ctx).await,
             new_reads: fixture.secrets.reads() - reads_before,
-            new_receipts: recorder.receipts(),
+            new_receipts: recorder.receipts() - receipts_before,
         };
         check_rejected_under_current_authority(&observed)
-            .unwrap_or_else(|violation| panic!("W1 {change:?}: {violation}"));
-        assert_eq!(observed.new_reads, 0, "W1 {change:?}: no secret read");
+            .unwrap_or_else(|violation| panic!("NC production re-entry: {violation}"));
+        assert_eq!(
+            observed.new_reads, 0,
+            "NC production re-entry reads nothing"
+        );
     }
-
-    // Negative control, executed: a caller that replays the cached successful
-    // material after revocation (instead of re-entering the production
-    // boundary) must be detected by the same oracle check.
-    let replay = RevokedObservation {
-        outcome: Ok(Some(cached.clone())),
-        new_reads: 0,
-        new_receipts: 0,
-    };
-    let violation = check_rejected_under_current_authority(&replay)
-        .expect_err("NC: cached-success replay must violate the oracle");
-    assert!(violation.contains("revoked authority"), "NC: {violation}");
-    // The production boundary, re-entered on the same (now revoked) attempt
-    // that previously succeeded, does not serve the earlier success.
-    apply(&authority, Change::Revoke);
-    let reads_before = fixture.secrets.reads();
-    let receipts_before = recorder.receipts();
-    let observed = RevokedObservation {
-        outcome: fixture
-            .materializer
-            .materialize_claimed_remote(&fixture.candidate, &ctx)
-            .await,
-        new_reads: fixture.secrets.reads() - reads_before,
-        new_receipts: recorder.receipts() - receipts_before,
-    };
-    check_rejected_under_current_authority(&observed)
-        .unwrap_or_else(|violation| panic!("NC production re-entry: {violation}"));
-    assert_eq!(
-        observed.new_reads, 0,
-        "NC production re-entry reads nothing"
-    );
 }
 
 #[tokio::test]
@@ -423,18 +503,90 @@ async fn t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed() {
     // at the barrier and authority changes, the call keeps the original read
     // outstanding, observes it to completion exactly once, and never
     // re-issues it (asserted inside `materialize_with_change_during_read`).
-    for change in CHANGES {
-        let observed = materialize_with_change_during_read(change).await;
-        assert_eq!(observed.new_reads, 1, "{change:?}");
+    for kind in KINDS {
+        for change in CHANGES {
+            let observed = materialize_with_change_during_read(kind, change).await;
+            assert_eq!(observed.new_reads, 1, "{kind:?}/{change:?}");
+        }
     }
 }
 
 #[tokio::test]
-#[ignore = "product gap: claimed materialization does not re-verify ownership after the awaited secret read, so revocation during resolution still returns material and records a receipt"]
 async fn t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt() {
-    for change in CHANGES {
-        let observed = materialize_with_change_during_read(change).await;
-        check_rejected_under_current_authority(&observed)
-            .unwrap_or_else(|violation| panic!("{change:?}: {violation}"));
+    // W2-W4 x Provider/A2A: a completed read under changed authority must
+    // produce no receipt or material, while retaining the original read owner.
+    for kind in KINDS {
+        for change in CHANGES {
+            let observed = materialize_with_change_during_read(kind, change).await;
+            check_rejected_under_current_authority(&observed)
+                .unwrap_or_else(|violation| panic!("{kind:?}/{change:?}: {violation}"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn t15_c02_receipt_acknowledgement_never_releases_material_after_authority_changes() {
+    // W5-W7 x Provider/A2A: C1 the exact receipt committed while ownership was
+    // current; C2 its acknowledgement is in flight; C3 revoke/swap/unavailable
+    // occurs before that acknowledgement returns. E1 finish the original call
+    // exactly once; E2 retain the already committed receipt; E3 refuse material.
+    // This is a different persistence boundary from W2-W4's zero-receipt rows.
+    for kind in KINDS {
+        for change in CHANGES {
+            let fixture = fixture(kind).await;
+            let authority = Arc::new(OwnerAuthority::new("worker-a"));
+            let recorder = Arc::new(CountingRecorder::default());
+            recorder.armed.store(true, Ordering::SeqCst);
+            let ctx = context(&fixture, authority.clone(), recorder.clone());
+            let reads_before = fixture.secrets.reads();
+            let finished = AtomicBool::new(false);
+            let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(
+                    async {
+                        let result = fixture.materialize(&ctx).await;
+                        finished.store(true, Ordering::SeqCst);
+                        result
+                    },
+                    async {
+                        recorder.entered.notified().await;
+                        assert_eq!(
+                            recorder.receipts(),
+                            1,
+                            "W5-W7 commit preceded authority change"
+                        );
+                        assert_eq!(
+                            fixture.secrets.reads(),
+                            reads_before + 1,
+                            "W5-W7 one settled read"
+                        );
+                        apply(&authority, change);
+                        for _ in 0..16 {
+                            tokio::task::yield_now().await;
+                        }
+                        assert!(
+                            !finished.load(Ordering::SeqCst),
+                            "W5-W7 acknowledgement remains owned"
+                        );
+                        assert_eq!(recorder.acknowledged.load(Ordering::SeqCst), 0);
+                        recorder.release.add_permits(1);
+                    }
+                )
+            })
+            .await
+            .expect("receipt barrier settles");
+            check_material_rejected(&outcome)
+                .unwrap_or_else(|violation| panic!("{kind:?}/{change:?}: {violation}"));
+            assert_eq!(recorder.receipts(), 1, "W5-W7 no duplicate or rollback");
+            assert_eq!(
+                recorder.acknowledged.load(Ordering::SeqCst),
+                1,
+                "W5-W7 one acknowledgement"
+            );
+            assert_eq!(
+                fixture.secrets.reads(),
+                reads_before + 1,
+                "W5-W7 no re-issued material read"
+            );
+        }
     }
 }

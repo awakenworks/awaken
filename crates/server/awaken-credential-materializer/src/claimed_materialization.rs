@@ -106,39 +106,16 @@ impl PinnedCredentialMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<Option<RedactedString>, String> {
-        let Some((access, binding)) = Self::claimed_remote_binding(candidate, context)? else {
-            return Ok(None);
-        };
-        let realization = Self::admit_claimed_materialization(
-            binding,
+        self.materialize_claimed_material(
+            candidate,
             context,
+            Self::claimed_remote_binding(candidate, context)?,
             CredentialRealizationKind::WorkerRelay,
             "remote",
         )
-        .await?;
-        let delivered = realization
-            .delivered_access_for(candidate, access)
-            .await
-            .map_err(|error| error.to_string())?;
-        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
-            .await
-            .map_err(|error| error.to_string())?;
-        let secret = self
-            .materialize_remote_for(
-                candidate,
-                delivered.as_ref(),
-                &binding.selected_plaintext_holder,
-                binding.selected_realization_kind,
-            )
-            .await?;
-        realization
-            .record(binding)
-            .await
-            .map_err(|error| error.to_string())?;
-        secret
-            .into_secret()
-            .map(Some)
-            .map_err(|error| error.to_string())
+        .await?
+        .map(|material| material.into_secret().map_err(|error| error.to_string()))
+        .transpose()
     }
 
     pub(super) async fn materialize_claimed_provider_material(
@@ -147,12 +124,29 @@ impl PinnedCredentialMaterializer {
         context: &awaken_runtime_contract::RuntimeRunContext,
         expected_kind: CredentialRealizationKind,
     ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, String> {
-        let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
+        self.materialize_claimed_material(
+            candidate,
+            context,
+            Self::claimed_provider_binding(candidate, context)?,
+            expected_kind,
+            "provider",
+        )
+        .await
+    }
+
+    async fn materialize_claimed_material(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+        selected: Option<(&CredentialAccess, &AttemptCredentialBinding)>,
+        expected_kind: CredentialRealizationKind,
+        kind: &str,
+    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, String> {
+        let Some((access, binding)) = selected else {
             return Ok(None);
         };
         let realization =
-            Self::admit_claimed_materialization(binding, context, expected_kind, "provider")
-                .await?;
+            Self::admit_claimed_materialization(binding, context, expected_kind, kind).await?;
         let delivered = realization
             .delivered_access_for(candidate, access)
             .await
@@ -160,16 +154,41 @@ impl PinnedCredentialMaterializer {
         awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
             .await
             .map_err(|error| error.to_string())?;
-        let secret = self
-            .materialize_provider_for(
-                candidate,
-                delivered.as_ref(),
-                &binding.selected_plaintext_holder,
-                binding.selected_realization_kind,
-            )
-            .await?;
+        let secret = match candidate.provisioning() {
+            ModelProvisioning::Provider { .. } => {
+                self.materialize_provider_for(
+                    candidate,
+                    delivered.as_ref(),
+                    &binding.selected_plaintext_holder,
+                    binding.selected_realization_kind,
+                )
+                .await?
+            }
+            ModelProvisioning::Remote { .. } => {
+                self.materialize_remote_for(
+                    candidate,
+                    delivered.as_ref(),
+                    &binding.selected_plaintext_holder,
+                    binding.selected_realization_kind,
+                )
+                .await?
+            }
+            ModelProvisioning::HostExecutor | ModelProvisioning::BackendOwned { .. } => {
+                return Err(format!("model candidate has no {kind} provisioning"));
+            }
+        };
+        // The original read remains owned until it settles. Its returned
+        // bytes cannot authorize the receipt after a claim/tenure handoff.
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
+            .await
+            .map_err(|error| error.to_string())?;
         realization
             .record(binding)
+            .await
+            .map_err(|error| error.to_string())?;
+        // A receipt may have committed before its acknowledgement was delayed.
+        // Retain that fact, but release no material under superseded authority.
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
             .await
             .map_err(|error| error.to_string())?;
         Ok(Some(secret))
