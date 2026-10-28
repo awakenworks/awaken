@@ -20,10 +20,24 @@
 //! | C3 | winner key | winner reply | caller lost the receipt, retries via the OTHER client | the original receipt; root and outbox unchanged |
 //! | C4 | new key | any | after consumption | occupied rejection; root and outbox unchanged |
 //! | C5 | shared key | equal | both clients concurrently | both return the one canonical batch |
+//! | C6 | unrelated Session | lifecycle fact | between replay snapshots | tested Session's outbox unchanged; unrelated fact retained |
 //! | X | SQLite vs PostgreSQL | rows C1-C5 | - | identical normalized outcome signatures |
 use super::*;
 
 type Store = Arc<dyn awaken_session_repository_contract::SessionStore>;
+
+async fn session_outbox(
+    store: &Store,
+    session: &SessionId,
+) -> Vec<awaken_session_event_contract::ManagedLifecycleFact> {
+    store
+        .pending_lifecycle()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|fact| fact.object_id == session.as_str())
+        .collect()
+}
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -152,7 +166,20 @@ async fn consumption_table(prefix: &str, store_a: Store, store_b: Store) -> Vec<
             root.event_batches[0], receipt,
             "C1/C2 the receipt is the root batch"
         );
-        let outbox = store_b.pending_lifecycle().await.unwrap();
+        let outbox = session_outbox(&store_b, &session).await;
+
+        // C6: a shared PostgreSQL fixture legitimately receives facts from
+        // other tests. Make that interleaving deterministic on BOTH backends;
+        // C3/C4 must protect this Session rather than freeze the whole database.
+        let unrelated = awaken_session_event_contract::ManagedLifecycleFact {
+            id: unique(&format!("{prefix}-unrelated-fact")),
+            object_id: unique(&format!("{prefix}-unrelated-session")),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.status_idled".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        };
+        store_b.append_lifecycle(unrelated.clone()).await.unwrap();
 
         // C3: the caller lost the receipt and retries the identical request
         // through the OTHER independent client.
@@ -172,9 +199,17 @@ async fn consumption_table(prefix: &str, store_a: Store, store_b: Store) -> Vec<
             "C3/C4 root unchanged"
         );
         assert_eq!(
-            store_a.pending_lifecycle().await.unwrap(),
+            session_outbox(&store_a, &session).await,
             outbox,
-            "C3/C4 outbox unchanged"
+            "C3/C4 this Session's outbox unchanged"
+        );
+        assert!(
+            store_a
+                .pending_lifecycle()
+                .await
+                .unwrap()
+                .contains(&unrelated),
+            "C6 unrelated Session fact remains durable"
         );
         assert_eq!(
             a.runtime.tool_reply_calls.load(Ordering::SeqCst)
