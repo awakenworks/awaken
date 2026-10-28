@@ -110,14 +110,13 @@ async fn durable_router(
         clock.clone(),
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     );
-    let workspace_host = host.clone();
-    let agent_host = host.clone();
+    let (workspace, projected_agent) = host.capabilities().session_run_projection_callbacks();
     let admission = Arc::new(awaken_session_application::SessionRunApplication::new(
         host.session_runs().clone(),
         sessions.run_admissions(),
         sessions.coordination(),
-        move |thread| Ok(workspace_host.capabilities().thread_workspace(thread)?),
-        move |thread| Ok(agent_host.capabilities().thread_agent_projection(thread)?),
+        workspace,
+        projected_agent,
     ));
     durable_ops_router_with_session_admission(
         host.session_runs().clone(),

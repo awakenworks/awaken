@@ -20,6 +20,7 @@ const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 enum GatePoint {
     AfterCanonicalFinish,
     AfterAbsentVisit,
+    PresentVisit,
 }
 
 struct FinishGate {
@@ -28,6 +29,7 @@ struct FinishGate {
     release: Condvar,
     actual_true: AtomicUsize,
     actual_absent: AtomicUsize,
+    actual_present: AtomicUsize,
     point: GatePoint,
 }
 
@@ -43,6 +45,14 @@ impl FinishGate {
     fn after_actual_absence(&self) {
         if matches!(self.point, GatePoint::AfterAbsentVisit)
             && self.actual_absent.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            self.pause();
+        }
+    }
+
+    fn after_actual_presence(&self) {
+        if matches!(self.point, GatePoint::PresentVisit)
+            && self.actual_present.fetch_add(1, Ordering::SeqCst) == 0
         {
             self.pause();
         }
@@ -80,7 +90,7 @@ impl Drop for ReleaseOnDrop {
 }
 
 /// Delegates every operation to the same original allocation. Only the return
-/// of a successful real removal is delayed; its result and authority are unchanged.
+/// of a selected real removal or observation is delayed; its result and authority are unchanged.
 struct GateAfterCanonicalFinish {
     inner: Arc<InstalledSessions>,
     session: &'static str,
@@ -126,6 +136,9 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
         // no callback, output value or authority has been manufactured here.
         if result.is_ok() && !visited && session == self.session {
             self.gate.after_actual_absence();
+        }
+        if result.is_ok() && visited && session == self.session {
+            self.gate.after_actual_presence();
         }
         result
     }
@@ -304,6 +317,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             release: Condvar::new(),
             actual_true: AtomicUsize::new(0),
             actual_absent: AtomicUsize::new(0),
+            actual_present: AtomicUsize::new(0),
             point: GatePoint::AfterCanonicalFinish,
         });
         let release = ReleaseOnDrop(gate.clone());
@@ -367,7 +381,12 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             let sessions = canonical.realizations();
             let _permit = sessions.acquire_realization(session).await;
             host.run_assembly
+                .installed_sessions
                 .install_frozen_session_projection(
+                    (
+                        &host.run_assembly.realization_executor,
+                        &host.run_assembly.mcp,
+                    ),
                     session,
                     frozen.clone(),
                     None,
@@ -429,7 +448,12 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             let sessions = canonical.realizations();
             let _permit = sessions.acquire_realization(session).await;
             host.run_assembly
+                .installed_sessions
                 .install_frozen_session_projection(
+                    (
+                        &host.run_assembly.realization_executor,
+                        &host.run_assembly.mcp,
+                    ),
                     session,
                     frozen,
                     None,
@@ -555,7 +579,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         let gate = Arc::new(FinishGate {
             reached: Mutex::new(Some(reached_tx)), released: Mutex::new(false),
             release: Condvar::new(), actual_true: AtomicUsize::new(0),
-            actual_absent: AtomicUsize::new(0), point: GatePoint::AfterAbsentVisit,
+            actual_absent: AtomicUsize::new(0), actual_present: AtomicUsize::new(0), point: GatePoint::AfterAbsentVisit,
         });
         let release = ReleaseOnDrop(gate.clone());
         let observed = Arc::new(std::sync::OnceLock::new());
@@ -587,7 +611,7 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         tokio::time::timeout(INSTALL_TIMEOUT, async {
             let sessions = canonical.realizations();
             let _permit = sessions.acquire_realization(session).await;
-            host.run_assembly.install_frozen_session_projection(
+            host.run_assembly.installed_sessions.install_frozen_session_projection((&host.run_assembly.realization_executor, &host.run_assembly.mcp),
                 session, projection(), None, true,
                 Some(awaken_session_realization::test_support::test_observed_lease(lease.clone())),
             ).await.expect("B uses the original complete projection installer after real absence");
@@ -607,4 +631,136 @@ async fn absent_component_retirement_cannot_close_or_remove_a_later_session() {
         assert!(!retired, "absence contributes no successful retirement");
         assert_eq!(gate.actual_absent.load(Ordering::SeqCst), 1);
     }).await.expect("bounded actual-absence counterexample controller");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projection_installation_rechecks_the_original_registry_after_decorated_observation() {
+    // Cause/effect graph: C1 the realizer source decorates the SAME canonical
+    // registry; C2 its actual phase lookup has returned under the registry lock,
+    // but the decorator delays returning it to the installer; C3 the controller
+    // keeps, removes, recreates or poisons that original registration; C4 mode
+    // is Dispatch, zero-resource Synchronize, ValidateInstalled or Terminal.
+    // E1 Keep succeeds with the exact receipt; E2 Remove -> original absence;
+    // E3 Recreate -> generation_changed and the empty successor survives;
+    // E4 Poison -> the original poison refusal. No denial publishes a receipt,
+    // lease, context or Resource transition. Rules O1-O4 cross C3 with every C4.
+    // The real lookup and real mutations run before release; no fake return,
+    // identity or receipt is introduced. Reading canonical state BEFORE the
+    // decorated observation would miss O2-O4, so these rows require its last read.
+    for variant in ["dispatch", "zero", "validate", "terminal"] {
+        for action in ["keep", "remove", "recreate", "poison"] {
+            tokio::time::timeout(CONTROLLER_TIMEOUT, async {
+                let session = "projection-source-coherence";
+                let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+                let gate = Arc::new(FinishGate {
+                    reached: Mutex::new(Some(reached_tx)),
+                    released: Mutex::new(false),
+                    release: Condvar::new(),
+                    actual_true: AtomicUsize::new(0),
+                    actual_absent: AtomicUsize::new(0),
+                    actual_present: AtomicUsize::new(0),
+                    point: GatePoint::PresentVisit,
+                });
+                let release = ReleaseOnDrop(gate.clone());
+                let observed = Arc::new(std::sync::OnceLock::new());
+                let by_factory = observed.clone();
+                let source_gate = gate.clone();
+                let mut dependencies = crate::SessionExecutorBuilder::ephemeral(
+                    Arc::new(crate::NoModelConfiguredExecutor), "model",
+                ).await;
+                dependencies.realization_source = Some(Box::new(move |canonical| {
+                    by_factory.set(canonical.clone()).unwrap_or_else(|_| panic!("one canonical source factory"));
+                    Arc::new(GateAfterCanonicalFinish { inner: canonical, session, gate: source_gate })
+                }));
+                let host = dependencies.build().unwrap();
+                let canonical = observed.get().unwrap().clone();
+                assert!(Arc::ptr_eq(&canonical, &host.run_assembly.installed_sessions), "C1 same actual registry");
+                let expected = awaken_session_realization_contract::FrozenProjectionReceipt::from_projection(&projection()).unwrap();
+                let driver = host.clone();
+                let install = tokio::spawn(async move {
+                    let installed = &driver.run_assembly.installed_sessions;
+                    let physical = (&*driver.realization_executor, &driver.run_assembly.mcp);
+                    let lease = crate::session_resource::SessionRealizationLease {
+                        owner: "worker".into(), runtime_incarnation: "worker/boot".into(),
+                        epoch: 2, expires_at_unix_ms: u64::MAX,
+                    };
+                    let proof = awaken_session_realization::test_support::test_observed_lease(lease.clone());
+                    match variant {
+                        "dispatch" => installed.install_dispatch_frozen_session_projection(physical, session, projection()).await,
+                        "terminal" => {
+                            let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                                environment_creation_not_attempted: false,
+                                session_id: session.into(),
+                                projection: projection(),
+                                authority: awaken_session_realization::test_support::test_lease_receipt(lease),
+                            };
+                            installed.install_terminal_cleanup_projection(physical, &assignment, proof).await
+                        }
+                        _ => installed.install_frozen_session_projection(physical, session, projection(), None, variant != "validate", Some(proof)).await,
+                    }
+                });
+                tokio::time::timeout(INSTALL_TIMEOUT, reached_rx).await
+                    .expect("original phase lookup reaches the post-return gate")
+                    .expect("actual original lookup witness");
+                let original = canonical.read(session, |s| s.realization.execution().phase.clone()).unwrap().unwrap();
+                assert!(canonical.read(session, |s| s.inputs.baseline.is_none()
+                    && s.realization.execution().frozen_receipt.is_none()
+                    && s.realization.execution().authority.lease().is_none()
+                    && s.realization.staging().preparation.is_none()).unwrap().unwrap(), "gate precedes original publication/preparation");
+                let successor = match action {
+                    "remove" | "recreate" => {
+                        assert!(canonical.remove(session).is_some(), "real removal");
+                        if action == "recreate" {
+                            canonical.install(session).unwrap();
+                            let next = canonical.read(session, |s| s.realization.execution().phase.clone()).unwrap().unwrap();
+                            assert!(!Arc::ptr_eq(&original, &next), "real successor registration");
+                            Some(next)
+                        } else { None }
+                    }
+                    "poison" => {
+                        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            canonical.modify(session, |_| -> () { panic!("poison the original canonical registry after observation") })
+                        })).is_err());
+                        None
+                    }
+                    _ => None,
+                };
+                drop(release);
+                let result = tokio::time::timeout(INSTALL_TIMEOUT, install).await
+                    .expect("bounded decorated installation")
+                    .expect("installation task joins");
+                if action == "keep" {
+                    result.unwrap_or_else(|error| panic!("O1/{variant}: {error}"));
+                    assert_eq!(canonical.read(session, |s| s.realization.execution().frozen_receipt.clone()).unwrap().unwrap(), Some(expected), "O1 exact receipt");
+                } else {
+                    let error = result.expect_err("lost/foreign/unreadable original registration must refuse");
+                    assert_eq!(error.kind, crate::SessionExecutionErrorKind::Unavailable, "{variant}/{action}");
+                    assert_eq!(error.code, match action {
+                        "remove" => "session_realization_absent",
+                        "recreate" => "session_realization_generation_changed",
+                        "poison" => awaken_session_realization::realization_error::POISONED_CODE,
+                        _ => unreachable!(),
+                    }, "{variant}/{action}");
+                    if action == "poison" {
+                        assert!(canonical.read(session, |_| ()).is_err(), "O4 poison is never absence");
+                    } else {
+                        let remaining = canonical.read(session, |s| (
+                            s.realization.execution().phase.clone(),
+                            s.inputs.baseline.is_none()
+                                && s.realization.execution().frozen_receipt.is_none()
+                                && s.realization.execution().authority.lease().is_none()
+                                && s.realization.staging().transition.is_none()
+                                && s.run.context.is_none(),
+                        )).unwrap();
+                        match (successor, remaining) {
+                            (None, None) => {},
+                            (Some(expected), Some((actual, empty))) => assert!(Arc::ptr_eq(&expected, &actual) && empty, "O3 successor unchanged"),
+                            _ => panic!("O2/O3 registration was recreated or consumed"),
+                        }
+                    }
+                }
+                assert!(gate.actual_present.load(Ordering::SeqCst) >= 1, "actual decorated observation");
+            }).await.expect("bounded source observation controller");
+        }
+    }
 }

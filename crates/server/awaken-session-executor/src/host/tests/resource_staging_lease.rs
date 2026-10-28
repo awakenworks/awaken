@@ -595,6 +595,10 @@ const SESSION: &str = "cold-resource-lease";
 
 #[tokio::test]
 async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() {
+    // Receiver migration rule O1: the same InstalledSessions receives the
+    // original realizer and MCP owners directly. Waiting/expired proof causes
+    // must retain the no-publication/no-I/O effects below without RunAssembly.
+
     // C1 a complete frozen projection waits on its canonical Resource lock;
     // C2 its initially positive local proof expires during that wait; C3
     // Resource revision is zero or nonzero. E1 both paths reject; E2 neither
@@ -624,13 +628,21 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             remaining_ms: std::num::NonZeroU64::new(3).unwrap(),
         }
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
-        let install = f.host.run_assembly.install_frozen_session_projection(
-            SESSION,
-            projection,
-            None,
-            true,
-            Some(proof.clone()),
-        );
+        let install = f
+            .host
+            .run_assembly
+            .installed_sessions
+            .install_frozen_session_projection(
+                (
+                    &f.host.run_assembly.realization_executor,
+                    &f.host.run_assembly.mcp,
+                ),
+                SESSION,
+                projection,
+                None,
+                true,
+                Some(proof.clone()),
+            );
         tokio::pin!(install);
         assert!(
             futures_util::poll!(&mut install).is_pending(),
@@ -675,6 +687,285 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             futures_util::poll!(Box::pin(f.source.entered.notified())).is_pending(),
             "E3"
         );
+    }
+}
+
+#[tokio::test]
+async fn projection_installation_coherent_default_source_keeps_every_zero_resource_mode() {
+    // Cause/effect graph: C1 receiver and physical executor share the original
+    // default registry; C2 mode is Dispatch, zero-resource Synchronize,
+    // ValidateInstalled or Terminal; C3 no preparation/File I/O is required.
+    // E1 every entry installs the exact frozen root through the same identity;
+    // E2 only the supplied realization modes install the original live lease;
+    // E3 no Runtime or File effect is manufactured. D1=C1+C2+C3 -> E1+E2+E3.
+    // The ordinary nonzero staging rows below own actual preparation/File I/O.
+    for variant in ["dispatch", "zero", "validate", "terminal"] {
+        let f = StagingFixture::new().await;
+        let installed = &f.host.run_assembly.installed_sessions;
+        let mut projection = f.projection.clone();
+        projection.resource_revision = 0;
+        projection.resources = Default::default();
+        let expected_receipt =
+            awaken_session_realization_contract::FrozenProjectionReceipt::from_projection(
+                &projection,
+            )
+            .unwrap();
+        let physical = (&*f.host.realization_executor, &f.host.run_assembly.mcp);
+        let proof = awaken_session_realization::test_support::test_observed_lease(f.lease.clone());
+        let result = match variant {
+            "dispatch" => {
+                installed
+                    .install_dispatch_frozen_session_projection(physical, SESSION, projection)
+                    .await
+            }
+            "terminal" => {
+                let assignment =
+                    awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                        environment_creation_not_attempted: false,
+                        session_id: SESSION.into(),
+                        projection,
+                        authority: awaken_session_realization::test_support::test_lease_receipt(
+                            f.lease.clone(),
+                        ),
+                    };
+                installed
+                    .install_terminal_cleanup_projection(physical, &assignment, proof)
+                    .await
+            }
+            _ => {
+                installed
+                    .install_frozen_session_projection(
+                        physical,
+                        SESSION,
+                        projection,
+                        None,
+                        variant != "validate",
+                        Some(proof),
+                    )
+                    .await
+            }
+        };
+        result.unwrap_or_else(|error| panic!("D1/{variant}: {error}"));
+        let observed = installed
+            .read(SESSION, |s| {
+                (
+                    s.realization.execution().frozen_receipt.clone(),
+                    s.realization.execution().authority.lease().cloned(),
+                    s.inputs.baseline.is_some(),
+                    s.run.context.is_none(),
+                    s.realization.staging().preparation.is_none(),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(observed.0, Some(expected_receipt), "{variant}/E1");
+        assert_eq!(
+            observed.1,
+            (variant != "dispatch").then(|| f.lease.clone()),
+            "{variant}/E2"
+        );
+        assert!(observed.2 && observed.3 && observed.4, "{variant}/E1+E3");
+        assert!(
+            futures_util::poll!(Box::pin(f.source.entered.notified())).is_pending(),
+            "{variant}/E3"
+        );
+    }
+}
+
+#[tokio::test]
+async fn projection_installation_refuses_foreign_registration_before_resource_effects() {
+    // Cause/effect graph: C1 receiver A and physical source B are independent;
+    // C2 B is present with the exact same frozen facts under another original
+    // phase Arc (!C2 means absent); C3 mode is Dispatch, Synchronize with File,
+    // zero-resource Synchronize, ValidateInstalled, or Terminal. Effects: E1
+    // absent -> session_realization_absent; present -> generation_changed;
+    // E2 neither owner publishes correlated facts or a lease/preparation;
+    // E3 no original File read starts, and B is never installed by observation.
+    // Decision table: F1=C1+!C2 -> E1(absent)+E2+E3; F2=C1+C2 ->
+    // E1(changed)+E2+E3, crossed with every C3. Identical facts intentionally
+    // cannot stand in for allocation identity. The File row advances the root
+    // revision so a missing gate would reach actual staging, not receipt refusal.
+    for variant in ["dispatch", "file", "zero", "validate", "terminal"] {
+        for foreign_present in [false, true] {
+            let a = StagingFixture::new().await;
+            let b = StagingFixture::new().await;
+            let installed = &a.host.run_assembly.installed_sessions;
+            let foreign = &b.host.run_assembly.installed_sessions;
+            let mut baseline = a.projection.clone();
+            baseline.resource_revision = 0;
+            baseline.resources = Default::default();
+            installed
+                .install_dispatch_frozen_session_projection(
+                    (&a.host.realization_executor, &a.host.run_assembly.mcp),
+                    SESSION,
+                    baseline.clone(),
+                )
+                .await
+                .unwrap();
+            if foreign_present {
+                foreign
+                    .install_dispatch_frozen_session_projection(
+                        (&b.host.realization_executor, &b.host.run_assembly.mcp),
+                        SESSION,
+                        baseline.clone(),
+                    )
+                    .await
+                    .unwrap();
+                let original = installed
+                    .realizations()
+                    .installed_projection(SESSION)
+                    .unwrap()
+                    .unwrap();
+                let other = foreign
+                    .realizations()
+                    .installed_projection(SESSION)
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    !Arc::ptr_eq(&original.installation, &other.installation),
+                    "F2 distinct actual registrations"
+                );
+                assert_eq!(
+                    installed
+                        .read(SESSION, |s| s.inputs.baseline.clone())
+                        .unwrap(),
+                    foreign
+                        .read(SESSION, |s| s.inputs.baseline.clone())
+                        .unwrap(),
+                    "F2 identical frozen baseline facts",
+                );
+                assert_eq!(
+                    installed
+                        .read(SESSION, |s| s
+                            .realization
+                            .execution()
+                            .frozen_receipt
+                            .clone())
+                        .unwrap(),
+                    foreign
+                        .read(SESSION, |s| s
+                            .realization
+                            .execution()
+                            .frozen_receipt
+                            .clone())
+                        .unwrap(),
+                    "F2 identical complete root receipts",
+                );
+            }
+            let a_inputs = installed
+                .read(SESSION, |s| s.inputs.clone())
+                .unwrap()
+                .unwrap();
+            let b_inputs = foreign.read(SESSION, |s| s.inputs.clone()).unwrap();
+            let mut incoming = if variant == "file" {
+                a.projection.clone()
+            } else {
+                baseline.clone()
+            };
+            incoming.revision = awaken_session_types::SessionRevision(baseline.revision.0 + 1);
+            let physical = (&*b.host.realization_executor, &b.host.run_assembly.mcp);
+            let proof =
+                awaken_session_realization::test_support::test_observed_lease(a.lease.clone());
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                match variant {
+                    "dispatch" => {
+                        installed
+                            .install_dispatch_frozen_session_projection(physical, SESSION, incoming)
+                            .await
+                    }
+                    "terminal" => {
+                        let assignment =
+                            awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                                environment_creation_not_attempted: false,
+                                session_id: SESSION.into(),
+                                projection: incoming,
+                                authority:
+                                    awaken_session_realization::test_support::test_lease_receipt(
+                                        a.lease.clone(),
+                                    ),
+                            };
+                        installed
+                            .install_terminal_cleanup_projection(physical, &assignment, proof)
+                            .await
+                    }
+                    _ => {
+                        installed
+                            .install_frozen_session_projection(
+                                physical,
+                                SESSION,
+                                incoming,
+                                None,
+                                variant != "validate",
+                                Some(proof),
+                            )
+                            .await
+                    }
+                }
+            })
+            .await
+            .expect("F1/F2 must refuse before any blocked File read");
+            let error = result.expect_err("foreign physical registration is never admitted");
+            assert_eq!(
+                error.kind,
+                crate::SessionExecutionErrorKind::Unavailable,
+                "{variant}"
+            );
+            assert_eq!(
+                error.code,
+                if foreign_present {
+                    "session_realization_generation_changed"
+                } else {
+                    "session_realization_absent"
+                },
+                "{variant}"
+            );
+            assert!(
+                installed
+                    .read(SESSION, |s| {
+                        Arc::ptr_eq(&a_inputs, &s.inputs)
+                            && s.realization
+                                .execution()
+                                .frozen_receipt
+                                .as_ref()
+                                .is_some_and(|r| r.revision == baseline.revision)
+                            && s.realization.execution().authority.lease().is_none()
+                            && s.realization.staging().preparation.is_none()
+                            && s.realization
+                                .staging()
+                                .transition
+                                .as_ref()
+                                .is_some_and(|tr| tr.desired().revision == 0)
+                            && s.run.context.is_none()
+                    })
+                    .unwrap()
+                    .unwrap(),
+                "{variant}/E2 canonical state unchanged"
+            );
+            assert!(
+                match (
+                    &b_inputs,
+                    foreign
+                        .read(SESSION, |s| (
+                            s.inputs.clone(),
+                            s.realization.execution().authority.lease().is_none(),
+                            s.realization.staging().preparation.is_none()
+                        ))
+                        .unwrap()
+                ) {
+                    (None, None) => true,
+                    (Some(before), Some((after, no_lease, no_preparation))) =>
+                        Arc::ptr_eq(before, &after) && no_lease && no_preparation,
+                    _ => false,
+                },
+                "{variant}/E2/E3 foreign source unchanged and no observation install"
+            );
+            for source in [&a.source, &b.source] {
+                assert!(
+                    futures_util::poll!(Box::pin(source.entered.notified())).is_pending(),
+                    "{variant}/E3 no File I/O"
+                );
+            }
+        }
     }
 }
 
@@ -758,7 +1049,12 @@ impl StagingFixture {
                 .expect("installed Sessions");
             let _guard = lock.lock().await;
             host.run_assembly
+                .installed_sessions
                 .install_frozen_session_projection(
+                    (
+                        &host.run_assembly.realization_executor,
+                        &host.run_assembly.mcp,
+                    ),
                     &session,
                     projection,
                     None,
@@ -1310,17 +1606,24 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
             *gate.0.lock().unwrap() = false;
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
-                f.host.run_assembly.install_frozen_session_projection(
-                    SESSION,
-                    f.projection.clone(),
-                    None,
-                    true,
-                    Some(
-                        awaken_session_realization::test_support::test_observed_lease(
-                            f.lease.clone(),
+                f.host
+                    .run_assembly
+                    .installed_sessions
+                    .install_frozen_session_projection(
+                        (
+                            &f.host.run_assembly.realization_executor,
+                            &f.host.run_assembly.mcp,
+                        ),
+                        SESSION,
+                        f.projection.clone(),
+                        None,
+                        true,
+                        Some(
+                            awaken_session_realization::test_support::test_observed_lease(
+                                f.lease.clone(),
+                            ),
                         ),
                     ),
-                ),
             )
             .await;
             assert!(
@@ -1738,7 +2041,12 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
     assert!(
         f.host
             .run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &f.host.run_assembly.realization_executor,
+                    &f.host.run_assembly.mcp
+                ),
                 SESSION,
                 f.projection.clone(),
                 None,

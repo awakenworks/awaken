@@ -221,3 +221,22 @@ async fn poisoned_registry_refuses_every_session_read() {
         "R8 Memory",
     );
 }
+
+#[tokio::test]
+async fn poisoned_registry_refuses_session_run_projection_callbacks_before_fallback() {
+    // Decision table P4/P5: the same original registry is poisoned; callback is
+    // Workspace/Agent x known/unknown Thread. All four rows preserve the typed
+    // poison code before local Workspace or Agent None can become an answer.
+    // Factory construction reads nothing, even when the registry is unreadable.
+    let host = poisoned_host().await;
+    let (workspace, agent) = host.capabilities.session_run_projection_callbacks();
+    for thread in [SESSION, "unknown-poisoned-projection"] {
+        for error in [
+            workspace(thread).map(|_| ()).unwrap_err(),
+            agent(thread).map(|_| ()).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, awaken_session_types::RunErrorKind::Unavailable);
+            assert_poisoned(error, "P4/P5 original poison, no fallback");
+        }
+    }
+}

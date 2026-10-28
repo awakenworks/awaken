@@ -388,7 +388,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         let first_projection = projection("baseline-a", true);
         baseline_host
             .run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &baseline_host.run_assembly.realization_executor,
+                    &baseline_host.run_assembly.mcp,
+                ),
                 "local-baseline",
                 first_projection.clone(),
                 None,
@@ -422,7 +427,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         baseline_host
             .run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &baseline_host.run_assembly.realization_executor,
+                    &baseline_host.run_assembly.mcp,
+                ),
                 "local-baseline",
                 first_projection.clone(),
                 None,
@@ -437,7 +447,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             baseline_host
                 .run_assembly
-                .install_frozen_session_projection("empty-baseline", empty, None, true, None)
+                .installed_sessions
+                .install_frozen_session_projection(
+                    (
+                        &baseline_host.run_assembly.realization_executor,
+                        &baseline_host.run_assembly.mcp
+                    ),
+                    "empty-baseline",
+                    empty,
+                    None,
+                    true,
+                    None
+                )
                 .await
                 .unwrap_err()
                 .message
@@ -448,7 +469,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             baseline_host
                 .run_assembly
-                .install_frozen_session_projection("local-baseline", conflicting, None, true, None,)
+                .installed_sessions
+                .install_frozen_session_projection(
+                    (
+                        &baseline_host.run_assembly.realization_executor,
+                        &baseline_host.run_assembly.mcp
+                    ),
+                    "local-baseline",
+                    conflicting,
+                    None,
+                    true,
+                    None,
+                )
                 .await
                 .unwrap_err()
                 .message
@@ -463,7 +495,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             baseline_host
                 .run_assembly
+                .installed_sessions
                 .install_frozen_session_projection(
+                    (
+                        &baseline_host.run_assembly.realization_executor,
+                        &baseline_host.run_assembly.mcp
+                    ),
                     "realized-before-baseline",
                     first_projection,
                     None,
@@ -495,7 +532,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(coordinator.env.is_none(), "B6/E4 no physical Environment");
         baseline_host
             .run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &baseline_host.run_assembly.realization_executor,
+                    &baseline_host.run_assembly.mcp,
+                ),
                 "coordinator-before-baseline",
                 projection("baseline-a", true),
                 None,
@@ -529,7 +571,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(dispatch_coordinator.is_coordination_envelope(), "B6/E4");
         baseline_host
             .run_assembly
+            .installed_sessions
             .install_dispatch_frozen_session_projection(
+                (
+                    &baseline_host.run_assembly.realization_executor,
+                    &baseline_host.run_assembly.mcp,
+                ),
                 "dispatch-before-baseline",
                 projection("baseline-a", true),
             )
@@ -574,7 +621,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             failed_host
                 .run_assembly
-                .install_frozen_session_projection("failed-projection", rejected, None, true, None)
+                .installed_sessions
+                .install_frozen_session_projection(
+                    (
+                        &failed_host.run_assembly.realization_executor,
+                        &failed_host.run_assembly.mcp
+                    ),
+                    "failed-projection",
+                    rejected,
+                    None,
+                    true,
+                    None
+                )
                 .await
                 .unwrap_err()
                 .message
@@ -709,7 +767,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             amendment_host
                 .run_assembly
+                .installed_sessions
                 .install_frozen_session_projection(
+                    (
+                        &amendment_host.run_assembly.realization_executor,
+                        &amendment_host.run_assembly.mcp
+                    ),
                     "authority-amendment",
                     amended_dispatch.clone(),
                     Some(&amendment_claim),
@@ -787,7 +850,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         }]);
         let error = host
             .run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 "prospective-layout-conflict",
                 conflicting,
                 None,
@@ -826,11 +894,33 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     Box::pin(async {
         let frozen = projection("Use the bound Flow project.", true);
         host.run_assembly
-            .install_frozen_session_projection("flow-thread", frozen.clone(), None, true, None)
+            .installed_sessions
+            .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                "flow-thread",
+                frozen.clone(),
+                None,
+                true,
+                None,
+            )
             .await
             .expect("first frozen projection installs");
         host.run_assembly
-            .install_frozen_session_projection("flow-thread", frozen, None, true, None)
+            .installed_sessions
+            .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                "flow-thread",
+                frozen,
+                None,
+                true,
+                None,
+            )
             .await
             .expect("same frozen fingerprint is idempotent");
     })
@@ -874,7 +964,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     let mut branch = projection("branch prompt", false);
     branch_host
         .run_assembly
-        .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
+        .installed_sessions
+        .install_frozen_session_projection(
+            (
+                &branch_host.run_assembly.realization_executor,
+                &branch_host.run_assembly.mcp,
+            ),
+            "branch-thread",
+            branch.clone(),
+            None,
+            true,
+            None,
+        )
         .await
         .expect("B1 baseline without materialized prefix");
     let stale = branch_host
@@ -896,7 +997,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     )];
     branch_host
         .run_assembly
-        .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
+        .installed_sessions
+        .install_frozen_session_projection(
+            (
+                &branch_host.run_assembly.realization_executor,
+                &branch_host.run_assembly.mcp,
+            ),
+            "branch-thread",
+            branch.clone(),
+            None,
+            true,
+            None,
+        )
         .await
         .expect("B1 late materialized prefix");
     let rebuilt = branch_host
@@ -914,7 +1026,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     );
     branch_host
         .run_assembly
-        .install_frozen_session_projection("branch-thread", branch, None, true, None)
+        .installed_sessions
+        .install_frozen_session_projection(
+            (
+                &branch_host.run_assembly.realization_executor,
+                &branch_host.run_assembly.mcp,
+            ),
+            "branch-thread",
+            branch,
+            None,
+            true,
+            None,
+        )
         .await
         .expect("B2 identical replay");
     let replayed = branch_host
@@ -1129,7 +1252,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         let replacement = projection("different", true);
         assert!(
             host.run_assembly
-                .install_frozen_session_projection("flow-thread", replacement, None, true, None)
+                .installed_sessions
+                .install_frozen_session_projection(
+                    (
+                        &host.run_assembly.realization_executor,
+                        &host.run_assembly.mcp
+                    ),
+                    "flow-thread",
+                    replacement,
+                    None,
+                    true,
+                    None
+                )
                 .await
                 .is_err(),
             "a bound Session cannot switch frozen baselines"
@@ -1157,7 +1291,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             epoch,
         };
         host.run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 "repository-claim-thread",
                 repository_projection.clone(),
                 Some(&claim(1)),
@@ -1167,7 +1306,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .await
             .expect("C1 first claim");
         host.run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 "repository-claim-thread",
                 repository_projection,
                 Some(&claim(2)),

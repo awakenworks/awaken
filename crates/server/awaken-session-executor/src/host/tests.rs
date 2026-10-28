@@ -2591,7 +2591,12 @@ async fn install_terminal_recovery_projection(
     projection.revision.0 += 1;
     projection.environment = environment;
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),

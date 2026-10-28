@@ -200,7 +200,15 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             &activation.snapshot,
         );
         host.run_assembly
-            .install_dispatch_frozen_session_projection(thread, projection.clone())
+            .installed_sessions
+            .install_dispatch_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                thread,
+                projection.clone(),
+            )
             .await
             .expect("C1 install complete physical projection before creation");
         let lease = session_resource::SessionRealizationLease {
@@ -358,7 +366,12 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         // generation while retaining the exact physical owner; only then does
         // Control's terminal assignment install its new cleanup lease.
         host.run_assembly
+            .installed_sessions
             .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: thread.into(),
@@ -695,7 +708,12 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let mut aggregate =
         crate::host::tests::fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),

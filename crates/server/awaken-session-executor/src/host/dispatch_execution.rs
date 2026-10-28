@@ -446,15 +446,17 @@ impl SessionProjectionExecution for crate::RunAssembly {
         synchronize_resources: bool,
         lease: Option<ObservedSessionRealizationLease>,
     ) -> Result<(), RealizationError> {
-        self.install_frozen_session_projection(
-            session,
-            projection,
-            claim,
-            synchronize_resources,
-            lease,
-        )
-        .await
-        .map_err(Into::into)
+        self.installed_sessions
+            .install_frozen_session_projection(
+                (&self.realization_executor, &self.mcp),
+                session,
+                projection,
+                claim,
+                synchronize_resources,
+                lease,
+            )
+            .await
+            .map_err(Into::into)
     }
     fn invalidate_realization_lease(
         &self,

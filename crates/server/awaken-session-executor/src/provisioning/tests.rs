@@ -235,7 +235,12 @@ async fn install_terminal_artifact_projection_before_environment(
     workspace_id: &str,
 ) {
     host.run_assembly
+        .installed_sessions
         .install_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             session_id,
             terminal_cleanup_projection(workspace_id, Default::default()),
             None,
@@ -356,7 +361,12 @@ async fn root_terminal_cleanup_effect(
         )
         .unwrap();
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: session_id.into(),
@@ -1084,7 +1094,12 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
         inference: Default::default(),
     };
     host.run_assembly
+        .installed_sessions
         .install_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             "model-override-acp",
             frozen_projection_with_model_override(
                 "test",

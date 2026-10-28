@@ -1602,7 +1602,18 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         epoch: 1,
     };
     host.run_assembly
-        .install_frozen_session_projection(thread, projection.clone(), Some(&run_claim), true, None)
+        .installed_sessions
+        .install_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
+            thread,
+            projection.clone(),
+            Some(&run_claim),
+            true,
+            None,
+        )
         .await
         .expect("install the exact frozen Memory/checkpoint projection");
     let handle =
@@ -1638,7 +1649,12 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         source_release_preparation: None,
     };
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
@@ -2069,7 +2085,12 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     projection.revision.0 += 1;
     projection.environment = disposing_environment;
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
@@ -2242,7 +2263,12 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             }
         }
         host.run_assembly
+            .installed_sessions
             .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: thread.into(),
@@ -2354,7 +2380,12 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     .expect("HM0b install frozen writable Memory input");
 
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
@@ -2522,7 +2553,12 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             epoch: 1,
         };
         host.run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 &thread,
                 projection.clone(),
                 Some(&run_claim),
@@ -2584,7 +2620,12 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             }
         }
         host.run_assembly
+            .installed_sessions
             .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: SessionId::from(&thread),
