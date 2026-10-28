@@ -95,21 +95,28 @@ impl RunAssembly {
     ) -> Result<(), RunError> {
         match mode {
             awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch => {
-                self.install_dispatch_frozen_session_projection(thread, projection.clone())
+                self.installed_sessions
+                    .install_dispatch_frozen_session_projection(
+                        (&self.realization_executor, &self.mcp),
+                        thread,
+                        projection.clone(),
+                    )
                     .await
             }
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
                 prepare_session,
                 lease,
             } => {
-                self.install_frozen_session_projection(
-                    thread,
-                    projection.clone(),
-                    None,
-                    *prepare_session,
-                    Some(lease.clone()),
-                )
-                .await
+                self.installed_sessions
+                    .install_frozen_session_projection(
+                        (&self.realization_executor, &self.mcp),
+                        thread,
+                        projection.clone(),
+                        None,
+                        *prepare_session,
+                        Some(lease.clone()),
+                    )
+                    .await
             }
         }
         .map_err(to_run_error)

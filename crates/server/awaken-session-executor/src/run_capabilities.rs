@@ -16,6 +16,10 @@ use std::sync::Arc;
 
 use crate::host::capability;
 
+// The existing Workspace and Agent read outcomes used by admission callbacks.
+type WorkspaceProjectionResult = Result<String, awaken_session_types::RunError>;
+type AgentProjectionResult = Result<Option<String>, awaken_session_types::RunError>;
+
 /// Capability assembly for one process. Consumers: Session context assembly,
 /// child Run launching, claimed-Run admission and the Session application's
 /// capability role.
@@ -58,8 +62,7 @@ impl RunCapabilities {
         &self,
         thread: &str,
     ) -> Result<Option<String>, crate::realization_error::RealizationError> {
-        let realizations = self.installed_sessions.realizations();
-        Ok(realizations.frozen(thread)?.agent_id.clone())
+        self.installed_sessions.agent_projection(thread)
     }
 
     /// Workspace context supplied to the Session application admission boundary.
@@ -73,6 +76,43 @@ impl RunCapabilities {
         self.installed_sessions
             .realizations()
             .workspace(thread, &self.local_workspace)
+    }
+
+    /// The two read callbacks consumed by Session Run admission.
+    ///
+    /// They read the original raw registry, independently and only when called.
+    /// The Weak references are read lifetimes, not application back-bindings:
+    /// retaining admission callbacks cannot own this capability assembly, a
+    /// cached Context, or its installed Sessions. Owner loss is unavailable;
+    /// only an unknown Thread in a live registry receives the local fallback.
+    pub fn session_run_projection_callbacks(
+        &self,
+    ) -> (
+        impl Fn(&str) -> WorkspaceProjectionResult + Send + Sync + 'static + use<>,
+        impl Fn(&str) -> AgentProjectionResult + Send + Sync + 'static + use<>,
+    ) {
+        fn unavailable() -> awaken_session_types::RunError {
+            awaken_session_types::RunError::unavailable("Session projection owner is unavailable")
+        }
+
+        let workspace_sessions = Arc::downgrade(&self.installed_sessions);
+        let agent_sessions = workspace_sessions.clone();
+        let local_workspace = self.local_workspace.clone();
+        (
+            move |thread| {
+                let sessions = workspace_sessions.upgrade().ok_or_else(unavailable)?;
+                sessions
+                    .realizations()
+                    .workspace(thread, &local_workspace)
+                    .map_err(awaken_session_types::RunError::from)
+            },
+            move |thread| {
+                let sessions = agent_sessions.upgrade().ok_or_else(unavailable)?;
+                sessions
+                    .agent_projection(thread)
+                    .map_err(awaken_session_types::RunError::from)
+            },
+        )
     }
 
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids

@@ -802,34 +802,27 @@ impl ToolBatch {
     }
 
     pub fn complete(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
-        self.ensure_open()?;
-        let call = self.call_mut(&output.call_id)?;
-        let exact_completed_output =
-            matches!(&call.phase, ToolCallPhase::Completed(existing) if existing == &output);
-        match completion_disposition(
-            phase_view(&call.phase),
-            CallTransition::CompleteFromExecutionOrWait,
-            exact_completed_output,
-        ) {
-            CompletionDisposition::Apply => call.phase = ToolCallPhase::Completed(output),
-            CompletionDisposition::Replay => {}
-            CompletionDisposition::Reject => return Err(ToolBatchError::InvalidTransition),
-        }
-        Ok(())
+        self.complete_with_transition(output, CallTransition::CompleteFromExecutionOrWait)
     }
 
     /// Complete a call that the runtime answered without entering an external
     /// executor (schema/open, policy block, or a gate-supplied result).
     pub fn complete_immediate(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
+        self.complete_with_transition(output, CallTransition::CompleteImmediate)
+    }
+
+    // The public completion roles select their original phase admission; one
+    // mutable updater preserves lookup/error order and exact replay behavior.
+    fn complete_with_transition(
+        &mut self,
+        output: ToolOutput,
+        transition: CallTransition,
+    ) -> Result<(), ToolBatchError> {
         self.ensure_open()?;
         let call = self.call_mut(&output.call_id)?;
         let exact_completed_output =
             matches!(&call.phase, ToolCallPhase::Completed(existing) if existing == &output);
-        match completion_disposition(
-            phase_view(&call.phase),
-            CallTransition::CompleteImmediate,
-            exact_completed_output,
-        ) {
+        match completion_disposition(phase_view(&call.phase), transition, exact_completed_output) {
             CompletionDisposition::Apply => call.phase = ToolCallPhase::Completed(output),
             CompletionDisposition::Replay => {}
             CompletionDisposition::Reject => return Err(ToolBatchError::InvalidTransition),
@@ -1120,6 +1113,10 @@ mod tests {
 
     #[test]
     fn terminal_output_is_idempotent_and_finalization_requires_completion() {
+        // Updater consolidation: both public roles retain one exact-output
+        // comparison and mutation path. The immediate exact/changed rows below
+        // complement the original executor replay assertions; raw output and
+        // independently staged state remain distinct replay coordinates.
         // Causes: C1 completion source is executor/wait or immediate; C2 the
         // predecessor is its one admissible nonterminal phase or Completed;
         // C3 a Completed replay has the exact or changed output. Effects: E1 an
@@ -1155,6 +1152,22 @@ mod tests {
         let original_combined = raw_only.clone();
         raw_then_reaction.complete(raw_output.clone()).unwrap();
         assert_eq!(raw_then_reaction, original_raw, "R1 exact raw replay");
+        raw_then_reaction
+            .complete_immediate(raw_output.clone())
+            .unwrap();
+        assert_eq!(
+            raw_then_reaction, original_raw,
+            "R1 immediate exact raw replay is inert"
+        );
+        assert_eq!(
+            raw_then_reaction.complete_immediate(combined_output.clone()),
+            Err(ToolBatchError::InvalidTransition),
+            "R1 immediate replay cannot substitute equal staged state for exact raw output"
+        );
+        assert_eq!(
+            raw_then_reaction, original_raw,
+            "R1 immediate rejection preserves all staged effects"
+        );
         assert_eq!(
             raw_only.complete(raw_output),
             Err(ToolBatchError::InvalidTransition),
@@ -1292,6 +1305,12 @@ mod tests {
         // R4   | Completed     | replay   | replay    | reject        | accept
         // R5   | Indeterminate | reject   | reject    | Indeterminate | accept
         // R6: !C3 overrides R1-R5 with E2; R7: !C4 overrides with E2.
+        // Shared-updater cause/effect refinement: R7 returns Finalized even
+        // for an unknown call; otherwise R6 returns UnknownCall before phase
+        // rejection. Accepted completion changes only the selected call phase;
+        // exact Completed replay and every error preserve the whole aggregate.
+        // The existing replay test adds changed-output coverage for both roles,
+        // so another parallel completion table is unnecessary.
         let done = ToolOutput::ok("c", "done");
         for (phase, allowed) in [
             (ToolCallPhase::Requested, [false, true, true, false]),
@@ -1348,12 +1367,29 @@ mod tests {
                         );
                         if !accepted {
                             assert_eq!(candidate, before, "E2 rejected command stutters");
+                            let expected = if finalized {
+                                ToolBatchError::Finalized
+                            } else if !exact {
+                                ToolBatchError::UnknownCall(id.into())
+                            } else {
+                                ToolBatchError::InvalidTransition
+                            };
+                            assert_eq!(result, Err(expected), "R6/R7 exact error precedence");
                         } else {
                             match command {
-                                0 | 1 => assert_eq!(
-                                    candidate.calls[0].phase,
-                                    ToolCallPhase::Completed(done.clone())
-                                ),
+                                0 | 1 => {
+                                    assert_eq!(
+                                        candidate.calls[0].phase,
+                                        ToolCallPhase::Completed(done.clone())
+                                    );
+                                    let mut expected = before;
+                                    expected.calls[0].phase =
+                                        ToolCallPhase::Completed(done.clone());
+                                    assert_eq!(
+                                        candidate, expected,
+                                        "E1 completion preserves all other aggregate fields"
+                                    );
+                                }
                                 2 => assert_eq!(
                                     candidate.calls[0].phase,
                                     ToolCallPhase::Indeterminate {

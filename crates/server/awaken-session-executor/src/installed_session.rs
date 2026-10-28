@@ -21,10 +21,12 @@ pub(crate) fn registry_run_error(error: RealizationLock) -> awaken_session_types
     awaken_session_types::RunError::from(RealizationError::from(error))
 }
 
+mod frozen_projection;
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the installed Session
 /// allocation as its identity.
 mod realization_permit;
+mod resource_transition;
 
 /// One Session's process-local state, in three layers by lifetime. The
 /// Session aggregate stays the sole authority; every layer is a rebuildable
@@ -414,6 +416,15 @@ impl InstalledSessions {
         self: &Arc<Self>,
     ) -> crate::session_realizations::SessionRealizations {
         crate::session_realizations::SessionRealizations::new(self.clone())
+    }
+
+    /// Rebuildable Agent input for admission; this read grants no publication authority.
+    pub(crate) fn agent_projection(
+        self: &Arc<Self>,
+        thread: &str,
+    ) -> Result<Option<String>, RealizationError> {
+        let realizations = self.realizations();
+        Ok(realizations.frozen(thread)?.agent_id.clone())
     }
 
     pub(crate) fn close_realization(

@@ -1444,7 +1444,12 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         }
     };
     host.run_assembly
+        .installed_sessions
         .install_dispatch_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             "worker-dispatch-valid",
             projection(
                 Vec::new(),
@@ -1464,7 +1469,12 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     let dispatch_conflict = host
         .run_assembly
+        .installed_sessions
         .install_dispatch_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             "worker-dispatch-conflict",
             projection(
                 vec![mount()],
@@ -1503,7 +1513,12 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             .expect("validated Host dependencies");
     let realization_error = physical_without_provider
         .run_assembly
+        .installed_sessions
         .install_frozen_session_projection(
+            (
+                &physical_without_provider.run_assembly.realization_executor,
+                &physical_without_provider.run_assembly.mcp,
+            ),
             "worker-realization-missing-provider",
             projection(
                 Vec::new(),
@@ -1532,7 +1547,12 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let physical = (physical).build().expect("validated Host dependencies");
     physical
         .run_assembly
+        .installed_sessions
         .install_frozen_session_projection(
+            (
+                &physical.run_assembly.realization_executor,
+                &physical.run_assembly.mcp,
+            ),
             "worker-realization-valid",
             projection(
                 Vec::new(),

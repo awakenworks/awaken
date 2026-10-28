@@ -49,7 +49,14 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
             authority: awaken_session_realization::test_support::test_lease_receipt(lease),
         };
         host.run_assembly
-            .install_test_terminal_cleanup_projection(&assignment)
+            .installed_sessions
+            .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                &assignment,
+            )
             .await
             .unwrap();
         let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
@@ -156,7 +163,14 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             "H5 exact wire meaning"
         );
         host.run_assembly
-            .install_test_terminal_cleanup_projection(&assignment)
+            .installed_sessions
+            .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                &assignment,
+            )
             .await
             .unwrap();
         let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
@@ -177,7 +191,14 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         drop(host);
         let (host, _managed) = cold_host(provider, &worker_fence).await;
         host.run_assembly
-            .install_test_terminal_cleanup_projection(&assignment)
+            .installed_sessions
+            .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                &assignment,
+            )
             .await
             .unwrap();
         host.realization_executor
@@ -197,7 +218,14 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             };
         // A contradictory projection cannot consume the no-Create branch.
         host.run_assembly
-            .install_test_terminal_cleanup_projection(&conflicting)
+            .installed_sessions
+            .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                &conflicting,
+            )
             .await
             .unwrap();
         let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(

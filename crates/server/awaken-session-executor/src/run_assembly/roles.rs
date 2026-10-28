@@ -267,7 +267,12 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
         assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
         proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
-        self.install_terminal_cleanup_projection(assignment, proof)
+        self.installed_sessions
+            .install_terminal_cleanup_projection(
+                (&self.realization_executor, &self.mcp),
+                assignment,
+                proof,
+            )
             .await
             .map_err(to_run_error)
     }

@@ -1298,7 +1298,12 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
         },
     );
     host.run_assembly
+        .installed_sessions
         .install_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             "frozen-revision",
             awaken_session_realization_contract::FrozenSessionProjection {
                 workspace_id: host.run_assembly.local_workspace().to_string(),

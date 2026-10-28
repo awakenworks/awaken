@@ -3,7 +3,7 @@
 //! Resource transition.
 //!
 //! The Session aggregate remains the durable generation and amendment
-//! authority. The parent application installer owns projection state and
+//! authority. The installed-Session installer owns projection state and
 //! effects; this module only classifies whether its current disposable cache
 //! may stage, replace, or must reject one complete incoming transition.
 
@@ -201,6 +201,9 @@ mod tests {
 
     #[test]
     fn complete_projection_install_decision_has_one_authority_table() {
+        // Owner migration O3: the unchanged generation kernel now accompanies
+        // the sole InstalledSessions installer. I1-I7 keep the same causes and
+        // effects; changing the receiver grants no additional amendment mode.
         use FrozenResourceTransitionInstallDecision::{Reject, Replace, Stage};
 
         // Cause/effect graph: C1 a staged transition exists; C2 incoming desired
