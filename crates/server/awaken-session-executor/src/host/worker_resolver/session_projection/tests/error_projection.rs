@@ -38,7 +38,18 @@ async fn transition_refusals_keep_the_original_fault_and_code() {
     ] {
         let error = host
             .run_assembly
-            .install_frozen_session_projection(thread, projection, None, true, None)
+            .installed_sessions
+            .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                thread,
+                projection,
+                None,
+                true,
+                None,
+            )
             .await
             .expect_err("invalid original transition");
         actual.push((error.kind, error.code));
@@ -90,7 +101,18 @@ async fn staging_refusals_keep_the_original_fault_and_code() {
         .expect("valid binding shape");
     let error = host
         .run_assembly
-        .install_frozen_session_projection("missing-stage-skill", projection, None, true, None)
+        .installed_sessions
+        .install_frozen_session_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
+            "missing-stage-skill",
+            projection,
+            None,
+            true,
+            None,
+        )
         .await
         .expect_err("the exact Skill is absent");
     assert!(

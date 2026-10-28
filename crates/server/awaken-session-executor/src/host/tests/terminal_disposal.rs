@@ -228,7 +228,12 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         // Install the actual aggregate proof before closing its admission:
         // absence of a response is not an Unowned legacy-disposal permission.
         host.run_assembly
+            .installed_sessions
             .install_test_terminal_cleanup_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: "t-end".into(),
@@ -265,7 +270,12 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         lease.epoch += 1;
     }
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: "t-end".into(),
@@ -790,6 +800,10 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
 
 #[tokio::test]
 async fn terminal_projection_retirement_requires_generation_tag_and_durable_absence() {
+    // Receiver migration rule O2: terminal assignment installs on the same
+    // registry with the original physical owners; exact/foreign generation
+    // causes retain the receipt-gated retirement effects in P1-P5 below.
+
     // Cause/effect graph: C1 root lease generation is exact; C2 child c1 has
     // one durably accepted exact preparation; C3 child c2 remains pending; C4
     // the same opaque child id has a foreign
@@ -821,7 +835,12 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
     host.run_assembly
+        .installed_sessions
         .install_test_terminal_cleanup_projection(
+            (
+                &host.run_assembly.realization_executor,
+                &host.run_assembly.mcp,
+            ),
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: session_id.into(),

@@ -74,7 +74,9 @@ RUNTIME_HOST = "crates/server/awaken-session-executor/src/run_assembly/roles.rs"
 REALIZATION_EFFECTS_ROLE = (
     "crates/server/awaken-session-realization/src/realization_executor/effects_role.rs"
 )
-RUNTIME_HOST_APPLICATION = "crates/server/awaken-session-executor/src/application.rs"
+INSTALLED_SESSION_PROJECTION = (
+    "crates/server/awaken-session-executor/src/installed_session/frozen_projection.rs"
+)
 SESSION_REALIZATION_CONTROL_DEADLINE = (
     "crates/server/awaken-session-realization-driver/src/"
     "control_deadline.rs"
@@ -291,6 +293,7 @@ REQUIRED = {
     ),
     SQLITE_SESSION_STORE: ("validate_current_mutation(",),
     POSTGRES_SESSION_STORE: ("validate_current_mutation(",),
+    INSTALLED_SESSION_PROJECTION: (),
     RUNTIME_HOST: (
         "async fn prepare_terminal_cleanup_for_effect",
         "async fn acknowledge_terminal_cleanup_preparation",

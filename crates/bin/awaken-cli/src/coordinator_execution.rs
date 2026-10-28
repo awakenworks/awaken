@@ -65,14 +65,13 @@ pub fn coordinator_execution(
     verify_composition(host.dispatch(), &dispatch, sessions)?;
     install_managed_agent_coordination(host, sessions)?;
     let runs: Arc<dyn RunApplication> = host.session_runs().clone();
-    let workspace_host = host.clone();
-    let agent_host = host.clone();
+    let (workspace, projected_agent) = host.capabilities().session_run_projection_callbacks();
     let session_runs = Arc::new(SessionRunApplication::new(
         runs,
         sessions.run_admissions(),
         sessions.coordination(),
-        move |thread| Ok(workspace_host.capabilities().thread_workspace(thread)?),
-        move |thread| Ok(agent_host.capabilities().thread_agent_projection(thread)?),
+        workspace,
+        projected_agent,
     ));
     let background: Arc<dyn SessionRunBackgroundApplication> = session_runs.clone();
     let bindings = host.session_application_bindings();

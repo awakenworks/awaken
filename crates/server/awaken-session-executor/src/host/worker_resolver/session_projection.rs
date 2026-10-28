@@ -820,7 +820,18 @@ mod tests {
         let _managed = host.clone();
         let resident = frozen_projection();
         host.run_assembly
-            .install_frozen_session_projection(thread, resident.clone(), None, true, None)
+            .installed_sessions
+            .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                thread,
+                resident.clone(),
+                None,
+                true,
+                None,
+            )
             .await
             .expect("M1 establish resident baseline");
         let mut remote = resident;

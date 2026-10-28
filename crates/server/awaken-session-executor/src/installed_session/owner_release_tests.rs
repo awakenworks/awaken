@@ -107,3 +107,113 @@ async fn idle_resident_context_releases_installed_sessions_when_last_host_owner_
         "idle resident Context outlived its last real owner: slots_released={installed_sessions_released}, context_released={context_released}; assembly installed Sessions before={installed_sessions_before}, after={installed_sessions_after}; post-capture eviction is not owner-release success"
     );
 }
+
+#[tokio::test]
+async fn retained_session_run_projection_callbacks_release_the_original_owners_and_idle_context() {
+    // Cause/effect graph: C1 the real Host owns a cached idle Context; C2 only
+    // its two projection callbacks remain after external Host/Context owners
+    // drop; C3 a later callback reads the formerly known or an unknown Thread.
+    // P6=C1+!C2 => original live projection; P7=C1+C2 => actual Host, registry,
+    // capabilities, Context and realizer all release without cache eviction.
+    // P8=C2+C3, both callbacks x both Threads => typed Unavailable, never local
+    // fallback/Agent None, and no registry or Context resurrection. These are
+    // original-owner lifetime observations, not a replacement registry fixture.
+    let host = crate::SessionExecutorBuilder::ephemeral(
+        Arc::new(crate::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await
+    .build()
+    .expect("real executor composition");
+    let session = "retained-run-projection-owner";
+    let context = host
+        .run_assembly
+        .ctx_for_session_coordination(session, None)
+        .await
+        .expect("real cached idle Context");
+    assert!(
+        context.is_coordination_envelope() && context.env.is_none() && !context.has_active_run()
+    );
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .read_run(session, |run| run
+                .context
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &context)))
+            .unwrap()
+            .unwrap(),
+        "C1 exact cached Context"
+    );
+    // Reuse normal legacy Context assembly before selecting these read-only
+    // admission inputs; no Agent publication or Environment fixture is needed.
+    host.capabilities
+        .register_thread_workspace(session, "retained-workspace")
+        .unwrap();
+    host.capabilities
+        .register_thread_agent_projection(session, "retained-agent")
+        .unwrap();
+    let (workspace, agent) = host.capabilities.session_run_projection_callbacks();
+    assert_eq!(workspace(session).unwrap(), "retained-workspace", "P6");
+    assert_eq!(
+        agent(session).unwrap().as_deref(),
+        Some("retained-agent"),
+        "P6"
+    );
+    assert!(
+        host.dispatch.pool().is_none() && host.run_assembly.mcp.relay().is_none(),
+        "C1 no active physical task"
+    );
+    let weak_host = Arc::downgrade(&host);
+    let weak_installed_sessions = Arc::downgrade(&host.run_assembly.installed_sessions);
+    let weak_capabilities = Arc::downgrade(&host.capabilities);
+    let weak_context = Arc::downgrade(&context);
+    let weak_realizer = Arc::downgrade(&host.realization_executor);
+    drop(context);
+    drop(host);
+    assert!(weak_host.upgrade().is_none(), "P7 release original Host");
+    assert!(
+        weak_installed_sessions.upgrade().is_none(),
+        "P7 release original registry"
+    );
+    assert!(
+        weak_capabilities.upgrade().is_none(),
+        "P7 release original capabilities"
+    );
+    assert!(
+        weak_context.upgrade().is_none(),
+        "P7 release original cached Context"
+    );
+    assert!(
+        weak_realizer.upgrade().is_none(),
+        "P7 release original realizer"
+    );
+    for thread in [session, "unknown-after-projection-owner-loss"] {
+        for error in [
+            workspace(thread).map(|_| ()).unwrap_err(),
+            agent(thread).map(|_| ()).unwrap_err(),
+        ] {
+            assert_eq!(
+                error.kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "P8"
+            );
+            assert_eq!(
+                error.code, "unavailable",
+                "P8 existing typed owner-loss error"
+            );
+            assert_eq!(
+                error.message, "Session projection owner is unavailable",
+                "P8"
+            );
+        }
+    }
+    assert!(
+        weak_host.upgrade().is_none()
+            && weak_installed_sessions.upgrade().is_none()
+            && weak_capabilities.upgrade().is_none()
+            && weak_context.upgrade().is_none()
+            && weak_realizer.upgrade().is_none(),
+        "P8 reads cannot resurrect any original owner"
+    );
+}

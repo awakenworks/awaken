@@ -604,7 +604,12 @@ mod tests {
             let mut renewed = initial_lease.clone();
             renewed.expires_at_unix_ms += 30_000;
             host.run_assembly
+                .installed_sessions
                 .install_frozen_session_projection(
+                    (
+                        &host.run_assembly.realization_executor,
+                        &host.run_assembly.mcp,
+                    ),
                     thread,
                     projection.clone(),
                     None,
@@ -782,7 +787,12 @@ mod tests {
                 }
                 assert!(
                     host.run_assembly
+                        .installed_sessions
                         .install_frozen_session_projection(
+                            (
+                                &host.run_assembly.realization_executor,
+                                &host.run_assembly.mcp
+                            ),
                             thread,
                             foreign,
                             None,
@@ -1331,7 +1341,18 @@ mod tests {
         let mut projection = frozen_projection();
         projection.agent_publication = Some(snapshot.clone());
         host.run_assembly
-            .install_frozen_session_projection(thread, projection.clone(), None, true, None)
+            .installed_sessions
+            .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
+                thread,
+                projection.clone(),
+                None,
+                true,
+                None,
+            )
             .await
             .expect("CR1 install exact frozen publication before the legacy owner");
         let (original, raw_binding, retired_sentinel) =
@@ -1616,7 +1637,12 @@ mod tests {
                 expires_at_unix_ms: u64::MAX,
             };
         host.run_assembly
+            .installed_sessions
             .install_frozen_session_projection(
+                (
+                    &host.run_assembly.realization_executor,
+                    &host.run_assembly.mcp,
+                ),
                 thread,
                 local_projection,
                 None,

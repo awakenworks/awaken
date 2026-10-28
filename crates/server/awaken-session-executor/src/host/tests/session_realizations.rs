@@ -888,3 +888,94 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         "V8"
     );
 }
+
+#[tokio::test]
+async fn session_run_projection_callbacks_read_original_inputs_without_installing_or_opening_context()
+ {
+    // Cause/effect graph: C1 original registry is live; C2 Thread has frozen
+    // Workspace/Agent inputs or is absent; C3 physical realization uses its
+    // default source or a different decorated source. P1=C1+known, for both C3
+    // rows => exact original inputs through both callbacks and the public Agent
+    // getter. P2=C1+absent => immutable local Workspace/Agent None, no install.
+    // P3 every read and factory construction => no Context, pool, or MCP relay.
+    // The alternate existing source is a test seam, not admission authority.
+    for decorated in [false, true] {
+        let thread = "run-projection-inputs";
+        let mut dependencies =
+            crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
+        if decorated {
+            let alternate = Arc::new(crate::InstalledSessions::default());
+            alternate
+                .replace_frozen_with(thread, |next| {
+                    next.workspace = Some("decorated-workspace".into());
+                    next.agent_id = Some("decorated-agent".into());
+                })
+                .unwrap();
+            dependencies.realization_source = Some(Box::new(move |_| alternate.clone()));
+        }
+        let host = dependencies.build().expect("real executor composition");
+        let fallback = host.capabilities.local_workspace.clone();
+        let (workspace, agent) = host.capabilities.session_run_projection_callbacks();
+        assert!(
+            !host.run_assembly.installed_sessions.contains(thread),
+            "P3 factory is lazy"
+        );
+        host.capabilities
+            .register_thread_workspace(thread, "original-workspace")
+            .unwrap();
+        host.capabilities
+            .register_thread_agent_projection(thread, "original-agent")
+            .unwrap();
+        if decorated {
+            assert_eq!(
+                host.realization_executor
+                    .sessions()
+                    .workspace(thread, "unused")
+                    .unwrap(),
+                "decorated-workspace",
+                "C3 actually different physical source"
+            );
+        }
+        assert_eq!(workspace(thread).unwrap(), "original-workspace", "P1");
+        assert_eq!(
+            agent(thread).unwrap().as_deref(),
+            Some("original-agent"),
+            "P1"
+        );
+        assert_eq!(
+            host.capabilities.thread_agent_projection(thread).unwrap(),
+            agent(thread).unwrap(),
+            "P1 same canonical Agent getter"
+        );
+        assert_eq!(
+            workspace("unknown-projection").unwrap(),
+            fallback,
+            "P2 live unknown fallback"
+        );
+        assert_eq!(
+            agent("unknown-projection").unwrap(),
+            None,
+            "P2 no inferred Agent"
+        );
+        assert!(
+            !host
+                .run_assembly
+                .installed_sessions
+                .contains("unknown-projection"),
+            "P2 no read installation"
+        );
+        assert!(
+            host.run_assembly
+                .installed_sessions
+                .read_run(thread, |run| run.context.is_none())
+                .unwrap()
+                .unwrap(),
+            "P3 no Context read path"
+        );
+        assert!(host.dispatch.pool().is_none(), "P3 no pool task");
+        assert!(
+            host.run_assembly.mcp.relay().is_none(),
+            "P3 no MCP relay task"
+        );
+    }
+}
