@@ -44,12 +44,47 @@ pub struct AgentArchiveReceipt {
     pub already_archived: bool,
 }
 
+/// Read-only execution facts from the exact immutable publication. These are
+/// diagnostic coordinates, never a placement or credential-admission grant.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentExecution {
+    pub backend_ref: String,
+    pub model_ref: String,
+    pub provisioning: AgentModelProvisioning,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentModelProvisioning {
+    Provider,
+    BackendOwned,
+    Remote,
+    HostExecutor,
+}
+
+/// Safe read-only join keyed by the exact visible publication identity.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentExecutionEvidence {
+    pub agent_id: String,
+    pub version: u64,
+    pub execution: Option<AgentExecution>,
+}
+
 /// Durable authoring port for the SDK-facing Agent aggregate.
 ///
 /// `workspace_id` is trusted routing context supplied by the edge. It is an
 /// intrinsic repository partition, not an authorization policy or principal.
 #[async_trait::async_trait]
 pub trait ManagedAgentRepository: Send + Sync {
+    /// Read the same visible immutable publications without changing SDK wire.
+    async fn execution_evidence(
+        &self,
+        _workspace_id: &str,
+    ) -> Result<Vec<AgentExecutionEvidence>, ManagedAgentError> {
+        Err(ManagedAgentError::Invalid(
+            "Agent execution evidence is unavailable".into(),
+        ))
+    }
     async fn create(
         &self,
         workspace_id: &str,
@@ -102,6 +137,13 @@ pub struct AgentRegistryState {
 }
 
 impl AgentRegistryState {
+    pub async fn execution_evidence(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<AgentExecutionEvidence>, ManagedAgentError> {
+        self.repository.execution_evidence(workspace_id).await
+    }
+
     /// Native and Managed HTTP adapters share this state and its one downstream
     /// cascade. The repository remains the sole lifecycle mutation authority.
     pub async fn archive_at_revision(

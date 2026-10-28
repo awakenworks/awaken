@@ -64,7 +64,7 @@ impl RuntimeCapability {
             label: "Native".into(),
             kind: "native".into(),
             cli: None,
-            description: "Runs in-process on the awaken runtime — no external CLI, no sandbox."
+            description: "Runs model inference in-process; tools use the selected Session Environment and Sandbox."
                 .into(),
             local: None,
             supports_tool_aliases: false,
@@ -138,6 +138,12 @@ impl RuntimeCapability {
             "cli": self.cli,
             "description": self.description,
             "supported": true,
+            // Host observation only; actual Session placement revalidates.
+            "availability": {
+                "provider": self.local.as_ref().is_none_or(|local| local.detected),
+                "backend_owned": self.local.as_ref().is_some_and(|local|
+                    local.detected && local.login_state.as_deref() == Some("available")),
+            },
             "features": {
                 "tool_aliases": if native { "supported" } else if self.supports_tool_aliases { awaken_tool_bridge } else { "unavailable" },
                 "tool_alias_semantics": if native { "presentation" } else { "lookup" },
@@ -511,6 +517,37 @@ mod tests {
             Some("available"),
             "R2"
         );
+    }
+
+    #[test]
+    fn runtime_availability_does_not_confuse_provider_access_with_backend_login() {
+        // Decision table: local detected × login available/missing/failed.
+        // R1 provider -> detection only; R2 backend-owned -> detection AND
+        // verified login; R3 no local observation -> provider conditional,
+        // backend-owned unavailable. None of these facts grants placement.
+        assert_eq!(
+            RuntimeCapability::native().to_json()["availability"],
+            json!({"provider":true,"backend_owned":false})
+        );
+        for detected in [true, false] {
+            for login in [None, Some("available"), Some("expired"), Some("unknown")] {
+                let value = RuntimeCapability::acp("claude", "Claude", "test")
+                    .with_local(LocalRuntimeCapability {
+                        detected,
+                        version: None,
+                        login_state: login.map(str::to_owned),
+                        reason_code: None,
+                        remediation: None,
+                        negotiated: None,
+                    })
+                    .to_json();
+                assert_eq!(value["availability"]["provider"], detected);
+                assert_eq!(
+                    value["availability"]["backend_owned"],
+                    detected && login == Some("available")
+                );
+            }
+        }
     }
 
     #[test]

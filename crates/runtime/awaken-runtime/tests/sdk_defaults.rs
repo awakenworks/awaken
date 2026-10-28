@@ -109,6 +109,70 @@ impl RawTool for NeverCalledTool {
 }
 
 #[tokio::test]
+async fn duplicate_configuration_refuses_every_continuation_before_state_or_effects() {
+    use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
+    use awaken_runtime_contract::{
+        activation::RunActivation,
+        resolved::CatalogFingerprint,
+        resume::{ResumeCommand, ResumeResult},
+        snapshot::ExecutableAgentSnapshotId,
+    };
+    // Cause/effect matrix: duplicate/unique registry × native resume/owned
+    // resume/owned recovery. Invalid registry -> same duplicate_tool diagnostic
+    // before ticket/history admission, no commit/tool/model. Unique registry ->
+    // ordinary missing-ticket/running-history refusal, never duplicate_tool.
+    for duplicate in [false, true] {
+        let mut runtime = Runtime::new().with_tool(Arc::new(NeverCalledTool));
+        if duplicate {
+            runtime = runtime.with_tool(Arc::new(NeverCalledTool));
+        }
+        assert_eq!(
+            awaken_runtime::validate_configuration(&runtime).is_err(),
+            duplicate
+        );
+        let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let command = ResumeCommand {
+            correlation_id: "c".into(),
+            run_id: RunId("run".into()),
+            thread_id: ThreadId("thread".into()),
+            snapshot_id: ExecutableAgentSnapshotId("s".into()),
+            catalog_fingerprint: CatalogFingerprint("f".into()),
+            result: ResumeResult::allow(),
+            operation_id: None,
+            context_messages: vec![],
+            now_ms: 0,
+        };
+        let context = || RuntimeRunContext::new().with_store(store.clone());
+        let errors = [
+            runtime
+                .resume(command.clone(), store.as_ref(), context())
+                .await
+                .unwrap_err(),
+            runtime
+                .resume_tool_batch(command, store.as_ref(), context())
+                .await
+                .unwrap_err(),
+            runtime
+                .recover_tool_batch(
+                    RunActivation::new(
+                        RunId("run".into()),
+                        ThreadId("thread".into()),
+                        snapshot(),
+                        vec![],
+                    ),
+                    context(),
+                )
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(error.code() == "duplicate_tool", duplicate, "{error}");
+        }
+        assert_eq!(store.commit_count(), 0);
+    }
+}
+
+#[tokio::test]
 async fn duplicate_registration_is_reported_before_inference_or_commit() {
     let runtime = Runtime::new()
         .with_tool(Arc::new(NeverCalledTool))

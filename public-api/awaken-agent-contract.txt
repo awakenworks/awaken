@@ -278,6 +278,7 @@ pub fn awaken_agent_contract::agent::message::Id::steer_prefix(&awaken_agent_con
 pub fn awaken_agent_contract::agent::message::Id::tool_result(&str) -> Self
 pub fn awaken_agent_contract::agent::message::Id::tool_result_coordinates(&self) -> core::option::Option<(&str, usize, &str)>
 pub fn awaken_agent_contract::agent::message::Id::tool_result_for_batch(&str, &str) -> Self
+pub fn awaken_agent_contract::agent::message::Id::tool_result_scope_matches(&self, &Self, &str) -> bool
 pub struct awaken_agent_contract::agent::message::Message
 pub awaken_agent_contract::agent::message::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::agent::message::Message::id: awaken_agent_contract::agent::message::Id

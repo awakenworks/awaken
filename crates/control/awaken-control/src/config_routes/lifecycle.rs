@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::post,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -28,6 +28,10 @@ struct ArchiveRequest {
 pub(crate) fn configuration_lifecycle_router(state: Arc<AgentRegistryState>) -> Router {
     Router::new()
         .route("/v1/config/agents/{id}/archive", post(archive))
+        .route(
+            "/v1/awaken/agents/execution-evidence",
+            get(execution_evidence),
+        )
         .with_state(state)
 }
 
@@ -103,5 +107,22 @@ async fn archive(
             };
             (status, problem_details(code, title, error.to_string()))
         }
+    }
+}
+
+async fn execution_evidence(
+    State(state): State<Arc<AgentRegistryState>>,
+    RequiredScope(scope): RequiredScope,
+) -> (StatusCode, Json<Value>) {
+    match state.execution_evidence(scope.as_str()).await {
+        Ok(data) => (StatusCode::OK, Json(json!({"data": data}))),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            problem_details(
+                "agent_execution_evidence_unavailable",
+                "Agent execution evidence is unavailable",
+                error.to_string(),
+            ),
+        ),
     }
 }

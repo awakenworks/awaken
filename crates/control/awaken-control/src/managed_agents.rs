@@ -160,6 +160,46 @@ impl ConfigPlaneManagedAgentRepository {
             .then_some(reserved))
     }
 
+    async fn list_projected(
+        &self,
+        workspace_id: &str,
+        params: &AgentListParams,
+        publications: &ManagedAgentPublications,
+    ) -> Result<Vec<Agent>, ManagedAgentError> {
+        let scope = Self::scope(workspace_id);
+        let configs = self
+            .plane
+            .list(&scope)
+            .await
+            .map_err(ManagedAgentError::Storage)?;
+        let mut agents = Vec::with_capacity(configs.len());
+        for config in configs {
+            let Some(versioned) = self
+                .versioned_for_read(workspace_id, &config.id, publications)
+                .await?
+            else {
+                continue;
+            };
+            let agent = self.project_current(publications, versioned).await?;
+            if !params.include_archived && agent.archived_at.is_some() {
+                continue;
+            }
+            if params
+                .created_at_gte
+                .as_deref()
+                .is_some_and(|lower| agent.created_at.as_str() < lower)
+                || params
+                    .created_at_lte
+                    .as_deref()
+                    .is_some_and(|upper| agent.created_at.as_str() > upper)
+            {
+                continue;
+            }
+            agents.push(agent);
+        }
+        Ok(agents)
+    }
+
     async fn project_current(
         &self,
         publications: &ManagedAgentPublications,
@@ -414,39 +454,53 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Ok(Vec::new());
         }
-        let scope = Self::scope(workspace_id);
-        let configs = self
-            .plane
-            .list(&scope)
-            .await
-            .map_err(ManagedAgentError::Storage)?;
         let publications = self.publications_for_read(workspace_id).await?;
-        let mut agents = Vec::with_capacity(configs.len());
-        for config in configs {
-            let Some(versioned) = self
-                .versioned_for_read(workspace_id, &config.id, &publications)
-                .await?
-            else {
-                continue;
-            };
-            let agent = self.project_current(&publications, versioned).await?;
-            if !params.include_archived && agent.archived_at.is_some() {
-                continue;
-            }
-            if params
-                .created_at_gte
-                .as_deref()
-                .is_some_and(|lower| agent.created_at.as_str() < lower)
-                || params
-                    .created_at_lte
-                    .as_deref()
-                    .is_some_and(|upper| agent.created_at.as_str() > upper)
-            {
-                continue;
-            }
-            agents.push(agent);
+        self.list_projected(workspace_id, params, &publications)
+            .await
+    }
+
+    async fn execution_evidence(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<awaken_protocol_managed::AgentExecutionEvidence>, ManagedAgentError> {
+        use awaken_protocol_managed::{
+            AgentExecution, AgentExecutionEvidence, AgentModelProvisioning,
+        };
+        use awaken_runtime_contract::resolved::ModelProvisioning;
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Ok(Vec::new());
         }
-        Ok(agents)
+        let publications = self.publications_for_read(workspace_id).await?;
+        let agents = self
+            .list_projected(workspace_id, &AgentListParams::default(), &publications)
+            .await?;
+        let mut evidence = Vec::with_capacity(agents.len());
+        for agent in agents {
+            let execution = publications
+                .get(&agent.id, agent.version)
+                .await?
+                .map(|publication| {
+                    let candidate = &publication.snapshot.resolved_spec.model_binding;
+                    AgentExecution {
+                        backend_ref: candidate.binding().identity().2.to_owned(),
+                        model_ref: candidate.binding().identity().1.to_owned(),
+                        provisioning: match candidate.provisioning() {
+                            ModelProvisioning::Provider { .. } => AgentModelProvisioning::Provider,
+                            ModelProvisioning::BackendOwned { .. } => {
+                                AgentModelProvisioning::BackendOwned
+                            }
+                            ModelProvisioning::Remote { .. } => AgentModelProvisioning::Remote,
+                            ModelProvisioning::HostExecutor => AgentModelProvisioning::HostExecutor,
+                        },
+                    }
+                });
+            evidence.push(AgentExecutionEvidence {
+                agent_id: agent.id,
+                version: agent.version,
+                execution,
+            });
+        }
+        Ok(evidence)
     }
 
     async fn update(

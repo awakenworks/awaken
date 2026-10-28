@@ -1148,7 +1148,10 @@ impl WriteTool {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteArgs {
-    /// Path of the file to write.
+    /// For a new file, prefer a path relative to this tool's initial working
+    /// directory, such as work/report.md. Do not derive a writable directory
+    /// from a read-only input mount or a Skill path. An exact absolute path is
+    /// supported when the Environment explicitly supplies it as writable.
     #[serde(rename = "file_path", alias = "path")]
     pub path: String,
     /// Complete replacement content.
@@ -1160,7 +1163,7 @@ impl Tool for WriteTool {
     type Args = WriteArgs;
     type Output = String;
     const ID: &'static str = "write";
-    const DESCRIPTION: &'static str = "Write a file";
+    const DESCRIPTION: &'static str = "Write a UTF-8 text file and create its parent directories.";
 
     async fn call(&self, args: WriteArgs) -> Result<String, ToolError> {
         if args.path.is_empty() {
