@@ -147,27 +147,40 @@ pub enum SessionCreateRequestError {
 /// Preserve every create-time authoring candidate and its actual source. The
 /// Session aggregate, not array order or credential presence, resolves logical
 /// name precedence and target conflicts after canonical normalization.
-fn initial_mcp_candidates(
+pub(super) fn initial_mcp_candidates(
     profile: Option<&ExecutableAgentSessionProfile>,
     authored: Option<Vec<McpAttachmentCandidate>>,
-) -> Vec<McpAttachmentCandidate> {
+) -> Result<Vec<McpAttachmentCandidate>, RunError> {
     match (authored, profile) {
-        (Some(authored), _) => authored,
+        (Some(authored), _) => Ok(authored),
         (None, Some(profile)) => profile
             .mcp_servers
             .iter()
-            .map(|server| McpAttachmentCandidate {
-                name: server.name.clone(),
-                target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
-                prompts_as_skills: server.prompts_as_skills,
-                published_credential: server
-                    .credential_source_id
-                    .clone()
-                    .zip(server.credential_revision),
-                origin: crate::session_mcp::McpAttachmentOrigin::Agent,
+            .map(|server| {
+                let published_credential = match (
+                    server.credential_source_id.as_ref(),
+                    server.credential_revision,
+                ) {
+                    (None, None) => None,
+                    (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
+                        Some((id.clone(), revision))
+                    }
+                    _ => {
+                        return Err(RunError::bad_request(
+                            "published MCP credential pin is incomplete",
+                        ));
+                    }
+                };
+                Ok(McpAttachmentCandidate {
+                    name: server.name.clone(),
+                    target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
+                    prompts_as_skills: server.prompts_as_skills,
+                    published_credential,
+                    origin: crate::session_mcp::McpAttachmentOrigin::Agent,
+                })
             })
             .collect(),
-        (None, None) => Vec::new(),
+        (None, None) => Ok(Vec::new()),
     }
 }
 
@@ -492,7 +505,7 @@ impl SessionCreationCommands {
             crate::SessionCredentials::normalize_mcp_candidate_targets(initial_mcp_candidates(
                 profile.as_ref(),
                 mcp_override,
-            ))?;
+            )?)?;
         // Resolve the Environment and networking policy once, for both the
         // creation intent and the protocol's echo. No local-environment
         // fallback is invoked on behalf of an explicit selection.
@@ -751,5 +764,71 @@ impl SessionCreationCommands {
             Box::pin(self.create_session(command)).await
         }?;
         Ok(session)
+    }
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+
+    #[test]
+    fn initial_mcp_candidates_keep_complete_pins_and_explicit_replacement_authority() {
+        // One shared lowering owns Managed inheritance and Profiled union.
+        // Cause/effect table: no pin -> inherit unpinned; both nonempty source
+        // and positive revision -> inherit exact pin; partial/blank/zero pin
+        // -> reject, never silently drop its credential. An explicit authored
+        // replacement (including empty) suppresses inherited candidates and
+        // does not validate unused publication pins. Cross all seven pin rows
+        // with inheritance versus full replacement; absent profile -> empty.
+        for (source, revision, valid) in [
+            (None, None, true),
+            (Some("source"), Some(1), true),
+            (Some("source"), None, false),
+            (None, Some(1), false),
+            (Some(""), Some(1), false),
+            (Some(" "), Some(1), false),
+            (Some("source"), Some(0), false),
+        ] {
+            let profile = ExecutableAgentSessionProfile {
+                mcp_servers: vec![awaken_executable_agent_contract::ExecutableAgentMcpServer {
+                    name: "published".into(),
+                    target: awaken_agent_contract::McpTarget::parse_http(
+                        "https://example.test/mcp",
+                    )
+                    .unwrap(),
+                    prompts_as_skills: false,
+                    credential_source_id: source.map(str::to_owned),
+                    credential_revision: revision,
+                }],
+                ..Default::default()
+            };
+            let inherited = initial_mcp_candidates(Some(&profile), None);
+            assert_eq!(inherited.is_ok(), valid);
+            if valid {
+                let candidates = inherited.unwrap();
+                assert_eq!(candidates.len(), 1);
+                assert_eq!(
+                    candidates[0].published_credential,
+                    source.map(str::to_owned).zip(revision)
+                );
+                assert_eq!(
+                    candidates[0].origin,
+                    crate::session_mcp::McpAttachmentOrigin::Agent
+                );
+            } else {
+                assert!(
+                    inherited
+                        .unwrap_err()
+                        .message
+                        .contains("credential pin is incomplete")
+                );
+            }
+            assert!(
+                initial_mcp_candidates(Some(&profile), Some(Vec::new()))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(initial_mcp_candidates(None, None).unwrap().is_empty());
     }
 }

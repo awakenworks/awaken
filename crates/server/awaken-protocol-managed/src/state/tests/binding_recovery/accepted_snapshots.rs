@@ -211,7 +211,41 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
         b.agent.tools
     );
     assert_eq!(b.agent.mcp_servers[0].name, "accepted-b");
-    for (session, version) in [(&a, 7), (&b, 8)] {
+    // WU6-C: the private Profiled entry must share the same immutable Root
+    // recorder. Head8 + requested7 -> retain coordinator7 and researcher7;
+    // later withdrawal + warm/cold reads -> the exact same accepted DTO, with
+    // no catalog recovery. A Managed-only create test cannot cover this seam.
+    let c_id = "accepted-profiled-c";
+    state
+        .roles
+        .profiled
+        .accept_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
+            owner_scope: awaken_tenancy::DEFAULT_WORKSPACE_ID.into(),
+            session_id: c_id.into(),
+            mutation_policy:
+                awaken_session_configuration_contract::resource::SessionMutationPolicy::Managed,
+            application_origin: None,
+            agent_id: "coordinator".into(),
+            source_revision: Some(7),
+            environment_id: Some("env_local".into()),
+            model: None,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            resource_inputs: Vec::new(),
+            mcp_candidates: Vec::new(),
+            repositories: Vec::new(),
+            network_restriction: None,
+            title: None,
+            metadata: Default::default(),
+            tools: None,
+            idempotency: None,
+        })
+        .await
+        .unwrap();
+    state.ensure_session(c_id).await.unwrap();
+    let c = state.get_session(c_id).unwrap();
+    for (session, version) in [(&a, 7), (&b, 8), (&c, 7)] {
         let child = session.agent.multiagent.as_ref().unwrap().agents[0]
             .as_agent()
             .unwrap();
@@ -222,7 +256,7 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
     // it legitimately turns unknown usage into its observed zero counters.
     // Agent configuration remains byte-for-byte the accepted create response.
     let mut warmed = Vec::new();
-    for accepted in [&a, &b] {
+    for accepted in [&a, &b, &c] {
         state.ensure_session(&accepted.id).await.unwrap();
         let projected = state.get_session(&accepted.id).unwrap();
         assert_eq!(
@@ -232,7 +266,7 @@ async fn accepted_a_and_b_snapshots_survive_catalog_withdrawal_and_cold_peer() {
         warmed.push(projected);
     }
     let durable = roots(repo.as_ref()).await;
-    assert_eq!(durable.len(), 2);
+    assert_eq!(durable.len(), 3);
     for root in &durable {
         let configuration = SessionUpdateHistory::agent_configuration(root).unwrap();
         if root.session_id.as_str() == b.id {
@@ -560,4 +594,31 @@ async fn historic_missing_accepted_agent_keeps_tools_update_recovery_pending() {
             .is_projection_recovery_required()
     );
     assert_eq!(repo.get(&before.session_id).await.unwrap(), committed);
+    // Cleanup decision rules: R1 the same legacy Unrecorded update blocks
+    // complete warm/cold history; R2 verified ordinary release must still join
+    // the sole terminal cleanup receipt; R3 replay must join that same receipt.
+    // Neither R2 nor R3 may fabricate a historical Agent configuration or make
+    // R1 readable. Pending/failed cleanup remains covered by terminal tests.
+    for releasing in [&state, &cold] {
+        releasing
+            .release_profiled_session_without_publication(before.session_id.as_str())
+            .await
+            .expect("R2/R3 verified release is independent of incomplete presentation");
+        let terminal = repo.get(&before.session_id).await.unwrap();
+        assert!(terminal.is_terminal(), "R2 original root is terminal");
+        assert!(
+            terminal.terminal_cleanup.is_completed(),
+            "R2 exact cleanup receipt, not only an archive fence"
+        );
+        assert_eq!(
+            SessionUpdateHistory::for_session(&terminal),
+            SessionUpdateHistory::for_session(&committed),
+            "R2/R3 immutable historical evidence is never repaired from a catalog"
+        );
+        assert!(SessionUpdateHistory::agent_configuration(&terminal).is_none());
+        assert!(
+            awaken_managed_session_events::derive_session_update_events(&terminal).is_err(),
+            "R1 remains explicitly unavailable after successful cleanup"
+        );
+    }
 }
