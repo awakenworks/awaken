@@ -405,3 +405,13 @@ projection. A retained historical `Unrecorded` Agent update still prevents a
 complete history read, but cannot turn a verified cleanup into a false failure.
 Pending or failed cleanup still returns an error and keeps the original fence;
 ordinary public archive continues to return the full projected Session.
+
+MCP credential rotation and realization generations remain operational Session
+state, separate from the accepted Agent presentation. `SessionUpdateChanges`
+compares the root's canonical configured MCP values; changing only a credential
+pin, holder or realization phase does not manufacture an Agent update. The
+application still commits the existing `mcp_changed` decision and reconciles the
+same durable MCP intent, including on exact receipt replay. Adding, removing or
+changing a configured server still records its original immutable Agent fact.
+Existing historical facts are never rewritten, and a missing historical Agent
+snapshot is never reconstructed from the current catalog to admit renewal.

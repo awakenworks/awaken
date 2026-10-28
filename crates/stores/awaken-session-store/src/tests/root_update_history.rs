@@ -342,16 +342,39 @@ async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>
     repo: &R,
     prefix: &str,
 ) {
-    // SQL-H6/H7: fresh/legacy x MCP realization/retry or cumulative budget usage.
+    // SQL-H6/H7: fresh/legacy x MCP realization/retry/credential renewal or
+    // cumulative budget usage. A real credential revision advance changes its
+    // exact generation and persists through CAS, without an Agent update.
     // Same desired configuration/limit -> Applied with history exactly retained,
     // while real phase/accounting values advance. No authoring fact is invented.
     // H8 a no-op root replacement likewise preserves fresh/unknown history.
     use awaken_session_configuration_contract::mcp::McpRealizationClaim;
     for historical in [false, true] {
         let id = format!("{prefix}-runtime-{historical}");
-        let seed = if historical { legacy(&id) } else { fresh(&id) };
+        let mut seed = if historical { legacy(&id) } else { fresh(&id) };
+        let holder = seed
+            .frozen_baseline()
+            .unwrap()
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let credential_fixture = sample_with_credential_source(&id, "runtime-source");
+        let attachment = credential_fixture.mcp.desired_attachments()[0];
+        seed.mcp =
+            awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::from_initial(
+                vec![McpAttachmentDraft {
+                    name: attachment.name.clone(),
+                    target: attachment.target.clone(),
+                    prompts_as_skills: attachment.prompts_as_skills,
+                    credential: attachment.credential.clone(),
+                    origin: attachment.origin,
+                }],
+                Some(holder.clone()),
+            )
+            .unwrap();
         let mut before = create_fixture(repo, "ws_a", seed, Vec::new()).await;
-        for phase in ["mcp", "mcp_retry", "budget", "noop"] {
+        for phase in ["mcp", "mcp_retry", "mcp_credential", "budget", "noop"] {
             let mut root = SessionAggregate::try_from(before.clone()).unwrap();
             if phase == "mcp" {
                 let generation = root.mcp.attachments[0].generation.clone();
@@ -380,10 +403,44 @@ async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>
                     origin: attachment.origin,
                 };
                 root.mcp()
-                    .request_full_replacement(vec![draft], None)
+                    .request_full_replacement(vec![draft], Some(holder.clone()))
                     .unwrap();
                 assert_eq!(root.mcp.desired_fingerprint, before.mcp.desired_fingerprint);
                 assert_eq!(root.mcp.attachments.last().unwrap().generation.version(), 2);
+            } else if phase == "mcp_credential" {
+                let attachment = root.mcp.desired_attachments()[0];
+                let mut credential = attachment
+                    .credential
+                    .clone()
+                    .expect("original credential fixture");
+                credential.credential.revision += 1;
+                let draft = McpAttachmentDraft {
+                    name: attachment.name.clone(),
+                    target: attachment.target.clone(),
+                    prompts_as_skills: attachment.prompts_as_skills,
+                    credential: Some(credential),
+                    origin: attachment.origin,
+                };
+                assert!(
+                    root.mcp()
+                        .request_full_replacement(vec![draft], Some(holder.clone()))
+                        .unwrap()
+                        .changed
+                );
+                assert_ne!(root.mcp.desired_fingerprint, before.mcp.desired_fingerprint);
+                let changes = root
+                    .record_configuration_update(
+                        &before,
+                        true,
+                        awaken_session_event_contract::SessionEventProjectionAnchor {
+                            source_commit_cursor: 0,
+                        },
+                    )
+                    .unwrap();
+                assert!(
+                    !changes.any(),
+                    "same visible configuration, real runtime update"
+                );
             } else if phase == "budget" {
                 root.budget()
                     .reconcile_cumulative_usage(ManagedBudgetUsageCursor {
@@ -402,7 +459,7 @@ async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>
                 100,
             );
             assert_eq!(
-                repo.commit("ws_a", command).await.unwrap(),
+                repo.commit("ws_a", command.clone()).await.unwrap(),
                 SessionMutationResult::Applied {
                     new_revision: SessionRevision(before.revision.0 + 1)
                 }
@@ -413,6 +470,15 @@ async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>
             assert_eq!(
                 SessionUpdateHistory::for_session(&expected),
                 SessionUpdateHistory::for_session(&before)
+            );
+            assert_eq!(repo.get(&before.session_id).await.unwrap(), expected);
+            // Lost acknowledgment -> exact receipt replay, no second MCP
+            // generation or invented history, in every backend/rule above.
+            assert_eq!(
+                repo.commit("ws_a", command).await.unwrap(),
+                SessionMutationResult::Replayed {
+                    new_revision: expected.revision
+                }
             );
             assert_eq!(repo.get(&before.session_id).await.unwrap(), expected);
             before = expected;

@@ -888,7 +888,7 @@ impl SessionUpdateCommands {
         if changes.title()
             || changes.metadata()
             || changes.tools()
-            || changes.mcp()
+            || mcp_changed
             || changes.budget()
             || command_record.is_some()
         {
@@ -965,6 +965,80 @@ mod tests {
             credential: Some(credential(source, revision, holder)),
             origin: McpAttachmentOrigin::Session,
         }
+    }
+
+    #[test]
+    fn credential_renewal_does_not_invent_an_unrecorded_legacy_agent_update() {
+        // R1 genuine legacy Root has no accepted Agent snapshot/history; R2
+        // the same source advances credential revision with byte-equal MCP
+        // names, target, prompts and origin. Effect: rotate the retained MCP
+        // state, but do not invent an Agent configuration change which makes
+        // its next history/control read RecoveryRequired. Credential topology
+        // and monotonicity refusals remain in the adjacent decision table.
+        let mut legacy = crate::tests::persisted("legacy-credential-history", false, "idle");
+        let holder = legacy
+            .frozen_baseline()
+            .unwrap()
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let initial = draft(
+            "docs",
+            "https://docs.example.test/mcp",
+            "source-a",
+            3,
+            &holder,
+        );
+        legacy.mcp =
+            SessionMcpAttachmentSet::from_initial(vec![initial], Some(holder.clone())).unwrap();
+        let mut wire = serde_json::to_value(&legacy).unwrap();
+        for field in ["initial_agent_configuration", "update_history"] {
+            wire.as_object_mut().unwrap().remove(field);
+        }
+        let before: awaken_session_state_contract::PersistedSession =
+            serde_json::from_value(wire).unwrap();
+        let refreshed = vec![draft(
+            "docs",
+            "https://docs.example.test/mcp",
+            "source-a",
+            4,
+            &holder,
+        )];
+        validate_credential_lifecycle_replacement(&before.mcp, "source-a", false, &refreshed)
+            .unwrap();
+        let mut root =
+            awaken_session_state_contract::SessionAggregate::try_from(before.clone()).unwrap();
+        assert!(
+            root.mcp()
+                .request_full_replacement(refreshed, Some(holder))
+                .unwrap()
+                .changed
+        );
+        assert_eq!(
+            before.configured_mcp_servers(),
+            root.configured_mcp_servers()
+        );
+        root.record_configuration_update(
+            &before,
+            true,
+            awaken_session_event_contract::SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            },
+        )
+        .unwrap();
+        let after = root.into_snapshot();
+        assert_ne!(before.mcp, after.mcp, "R2 actual credential replacement");
+        assert!(
+            awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&after)
+                .is_none(),
+            "R1 no fabricated historical acceptance"
+        );
+        assert!(
+            awaken_session_state_contract::SessionUpdateHistory::for_session(&after)
+                .is_none_or(|history| history.facts().is_empty()),
+            "R2 credential refresh must not poison legacy presentation history"
+        );
     }
 
     #[test]

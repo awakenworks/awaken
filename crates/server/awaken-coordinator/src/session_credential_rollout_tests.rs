@@ -181,7 +181,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         .get(&SessionId::from("source-other-workspace"))
         .await
         .unwrap();
-    let state = Arc::new(
+    let managed = Arc::new(
         {
             let session_fixture_runtime = std::sync::Arc::new(RehydrateFake::default());
             let session_fixture_clock = awaken_time::system_clock();
@@ -198,7 +198,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         .with_credential_source(Arc::new(RolloutCredentialSource)),
     );
     let state =
-        SessionCredentialRolloutAdoption::over_managed(&state.session_application(), &state);
+        SessionCredentialRolloutAdoption::over_managed(&managed.session_application(), &managed);
 
     // Publication regression rule: old active + replacement staged => publish
     // only the new pending generation and drain the old one. A receipt for the
@@ -214,6 +214,36 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
             .unwrap();
     assert!(outcome.is_converged(), "V1/E1: {outcome:?}");
     let affected = repo.get(&SessionId::from("source-affected")).await.unwrap();
+    // V1-L: the existing fixture predates recorded Agent acceptance. A real
+    // pin advance must persist AND leave that same Session readable, without
+    // creating an Unrecorded Agent fact. Checking only credential revision
+    // used to miss the later Managed history failure seen after idle renewal.
+    assert!(
+        awaken_session_state_contract::SessionUpdateHistory::for_session(&affected)
+            .is_none_or(|history| history.facts().is_empty())
+    );
+    use tower::ServiceExt as _;
+    let mut read = axum::http::Request::builder()
+        .uri("/v1/sessions/source-affected")
+        .header("anthropic-beta", "managed-agents-2026-04-01")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    read.extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope("workspace-a".into()));
+    let response = awaken_protocol_managed::router(managed.clone())
+        .oneshot(read)
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "V1-L real Managed retrieve after rotation"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 1_048_576)
+        .await
+        .unwrap();
+    let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(session["agent"]["mcp_servers"][0]["name"], "calc");
     assert_eq!(
         affected.mcp.desired_attachments()[0]
             .credential
