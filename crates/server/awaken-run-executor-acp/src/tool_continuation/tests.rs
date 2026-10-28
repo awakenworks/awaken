@@ -5,7 +5,8 @@ use super::*;
 async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk_acknowledgements()
 {
     // R1 Runtime-minted result + Assistant ToolUse + owned tool => include exact
-    // success/error and data. R2 SDK-minted result => exclude (already SDK history).
+    // success/error, original committed input and data even with no SDK call
+    // history. R2 SDK-minted result => exclude (already SDK history).
     // R3 unowned tool, unpaired result or User-authored ToolUse => exclude.
     // R4 later Run / repeated projection => same ordered receipts, zero commits;
     // R5 two valid Assistant occurrences reuse one provider call id => each
@@ -45,7 +46,11 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
         messages.push(Message::new(
             MessageId(format!("use-{call}")),
             role,
-            vec![ContentBlock::tool_use(call, tool, serde_json::json!({}))],
+            vec![ContentBlock::tool_use(
+                call,
+                tool,
+                serde_json::json!({"file_path":format!("{call}.txt")}),
+            )],
         ));
         messages.push(Message::new(
             if sdk {
@@ -167,6 +172,14 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
     assert_eq!(receipts.len(), 6);
     assert_eq!(receipts[0]["call_id"], "ok");
     assert_eq!(receipts[0]["is_error"], false);
+    assert_eq!(
+        receipts[0]["input"],
+        serde_json::json!({"file_path":"ok.txt"})
+    );
+    assert_eq!(
+        receipts[1]["input"],
+        serde_json::json!({"file_path":"failed.txt"})
+    );
     assert_eq!(receipts[1]["call_id"], "failed");
     assert_eq!(receipts[1]["is_error"], true);
     assert_eq!(

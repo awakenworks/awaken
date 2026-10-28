@@ -812,3 +812,12 @@ availability proof, and nonblocking capacity reads retain `None` until ready.
 A caller can retry the original creation after the same build owner succeeds;
 it must not interpret a long cold-build budget as evidence that a known failure
 is still making progress. This does not repair or restart the container engine.
+
+
+ACP receipt context also carries each occurrence's original committed input.
+A reopened opaque SDK history may omit that ToolUse; the request-only projection
+therefore joins input, tool, outcome and content at the existing exact occurrence
+boundary. It does not reconstruct input from a later MCP arrival, infer success
+from SDK callback cancellation, or persist an acknowledgement. Input and result
+content remain data. Deterministic provider probes consume these same complete
+facts without requiring an SDK-history copy of an already committed call.
