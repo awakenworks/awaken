@@ -24,6 +24,26 @@ pub(crate) fn environment_executor_tools(
         .collect()
 }
 
+/// MCP exports report arrivals without registering another Runtime catalog.
+pub(crate) fn permission_guarded_tools(
+    tools: Vec<Arc<dyn RawTool>>,
+    policy: Arc<dyn ToolPermissionPolicy>,
+    grants: Arc<AcpToolExecutionGrants>,
+    sender: tokio::sync::mpsc::Sender<ToolCall>,
+) -> Vec<Arc<dyn RawTool>> {
+    tools
+        .into_iter()
+        .map(|tool| {
+            Arc::new(PermissionGuardedAcpTool::new(
+                tool,
+                policy.clone(),
+                grants.clone(),
+                sender.clone(),
+            )) as Arc<dyn RawTool>
+        })
+        .collect()
+}
+
 /// Model-visible client tools share the Session MCP export, while their adapter
 /// only signals arrival to the existing Runtime continuation.
 pub(crate) struct ClientExecutedAcpTools {
@@ -92,6 +112,21 @@ pub(crate) struct AcpToolExecutionGrants {
 }
 
 impl AcpToolExecutionGrants {
+    /// The frozen export descriptors own membership; client tools never acquire
+    /// a Host grant merely because they share the MCP transport.
+    pub(crate) fn for_exports(
+        descriptors: &[awaken_runtime_contract::resolved::ToolDescriptor],
+    ) -> Self {
+        Self::new(
+            descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .map(|descriptor| descriptor.id.clone()),
+        )
+    }
+
     pub(crate) fn new(ids: impl IntoIterator<Item = String>) -> Self {
         Self {
             exported: ids.into_iter().collect(),
@@ -434,6 +469,34 @@ impl AcpToolExporter for RecordingAcpToolExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_export_grants_exclude_client_and_unknown_tools() {
+        // C1 frozen Hand/client/absent descriptor; C2 exact Allow notification.
+        // G1 Hand+C2 -> one consumed grant; G2 client/absent -> no Host grant;
+        // G3 no Allow or second consume -> no grant. Shared MCP transport cannot
+        // change execution ownership or manufacture an approval.
+        use awaken_runtime_contract::permission::PermissionGrantObserver as _;
+        let hand = awaken_session_run_delivery::hand_tool_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "read")
+            .unwrap();
+        let grants = AcpToolExecutionGrants::for_exports(&[
+            hand,
+            crate::config::client_tool_descriptor("desktop_search"),
+        ]);
+        for (id, expected) in [("read", true), ("desktop_search", false), ("absent", false)] {
+            let call = ToolCall {
+                call_id: "wire".into(),
+                tool_id: id.into(),
+                arguments: serde_json::json!({}),
+            };
+            assert!(!grants.consume(id, &call.arguments), "G3");
+            grants.on_allow(&call);
+            assert_eq!(grants.consume(id, &call.arguments), expected, "G1/G2");
+            assert!(!grants.consume(id, &call.arguments), "G3");
+        }
+    }
     use awaken_runtime_contract::permission::ToolPermissionVerdict;
     use awaken_tool_contract::tool::{ToolConcurrency, ToolRecoveryCapability};
 

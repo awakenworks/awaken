@@ -2,19 +2,14 @@
 //! ACP export leases and the exact executor built from the realized Environment.
 
 use super::{SemanticSkillTools, resources::ContextResources};
-use crate::SessionExecutionError;
 use crate::host::session::input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers,
 };
 use crate::host::session_ctx::{RuntimeContextPurpose, acp_tool_export_admitted};
+use crate::{SessionExecutionError, web_search::ConfiguredWebTool};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, execution::RunAttemptExecutor};
 use std::sync::Arc;
-
-type ConfiguredTool = (
-    awaken_runtime_contract::resolved::ToolDescriptor,
-    Arc<dyn awaken_tool_contract::tool::RawTool>,
-);
 
 pub(super) struct ExecutionWiring {
     pub(super) runtime: Arc<Runtime>,
@@ -28,8 +23,8 @@ pub(super) struct ExecutionWiring {
 pub(super) struct AcpTools<'a> {
     pub(super) skills: Option<&'a SemanticSkillTools>,
     pub(super) memory: Option<&'a crate::session_memory_tools::SessionMemoryTools>,
-    pub(super) search: Option<ConfiguredTool>,
-    pub(super) fetch: Option<ConfiguredTool>,
+    pub(super) search: Option<ConfiguredWebTool>,
+    pub(super) fetch: Option<ConfiguredWebTool>,
 }
 
 pub(super) async fn prepare(
@@ -125,6 +120,13 @@ pub(super) async fn prepare(
         acp_provider_server_tools = provider_server_tools;
 
         let (mut descriptors, mut executors): (Vec<_>, Vec<_>) = host_web_tools.into_iter().unzip();
+        // This is the one registration point for ACP's configured Host web
+        // executors. Hand tools already belong to build_runtime; Skill/Memory
+        // tools already belong to their extensions. Re-registering those ids
+        // poisons RawToolRegistry as ambiguous, even for the same implementation.
+        for tool in &executors {
+            runtime = runtime.with_tool(tool.clone());
+        }
         // Project the exact publication-selected Hand subset. The
         // Session environment supplies rooted executors; the immutable
         // snapshot supplies model-visible descriptors. Neither side may
@@ -168,29 +170,20 @@ pub(super) async fn prepare(
         // through ExternalEvent resume.
         let client_tools =
             crate::acp_tool_export::client_executed_tools(&config.resolved_spec.tool_descriptors);
-        let acp_tool_sender = client_tools.sender.clone();
         descriptors.extend(client_tools.descriptors);
         executors.extend(client_tools.executors);
         acp_client_tool_ids = client_tools.ids;
         acp_client_tool_requests = client_tools.requests;
         if !descriptors.is_empty() {
-            let grants = Arc::new(crate::acp_tool_export::AcpToolExecutionGrants::new(
-                descriptors
-                    .iter()
-                    .filter(|descriptor| {
-                        descriptor.kind
-                            != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                    })
-                    .map(|descriptor| descriptor.id.clone()),
+            let grants = Arc::new(crate::acp_tool_export::AcpToolExecutionGrants::for_exports(
+                &descriptors,
             ));
             acp_tool_grants = Some(grants.clone());
-            (runtime, executors) = runtime_exports(
-                runtime,
+            executors = crate::acp_tool_export::permission_guarded_tools(
                 executors,
-                &acp_client_tool_ids,
                 permission.clone(),
                 grants.clone(),
-                acp_tool_sender.clone(),
+                client_tools.sender,
             );
             let exporter = host.capabilities.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
                 SessionExecutionError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
@@ -262,31 +255,4 @@ pub(super) async fn prepare(
         acp_tool_exports,
         acp_provider_server_tools,
     })
-}
-
-/// The exact exported executors also enter Runtime's one catalog. The MCP
-/// wrappers signal arrival only; client-owned tools never gain a Host executor.
-fn runtime_exports(
-    mut runtime: Runtime,
-    tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
-    client_ids: &std::collections::HashSet<String>,
-    policy: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
-    grants: Arc<crate::acp_tool_export::AcpToolExecutionGrants>,
-    sender: tokio::sync::mpsc::Sender<awaken_tool_contract::tool::ToolCall>,
-) -> (Runtime, Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>) {
-    let mut exported = Vec::with_capacity(tools.len());
-    for tool in tools {
-        if !client_ids.contains(tool.id()) {
-            runtime = runtime.with_tool(tool.clone());
-        }
-        exported.push(
-            Arc::new(crate::acp_tool_export::PermissionGuardedAcpTool::new(
-                tool,
-                policy.clone(),
-                grants.clone(),
-                sender.clone(),
-            )) as Arc<dyn awaken_tool_contract::tool::RawTool>,
-        );
-    }
-    (runtime, exported)
 }

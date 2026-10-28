@@ -2,7 +2,7 @@
 // @formal evidence acp.permission_tool_identity_normalization_is_exact
 // @formal evidence acp.process_cleanup_requires_observed_exit_and_retained_owner
 // @formal evidence session_execution.one_physical_attempt_per_thread
-// awaken-allow(file-limit-ceiling): 5852 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 5766 (legacy oversized test file: split, never grow)
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
 
@@ -1425,7 +1425,14 @@ fn pending_tool_use_is_deduplicated_or_minted_in_the_canonical_step_family() {
         )],
     }];
     let mut next_step = 1;
-    ensure_pending_tool_use(&run, &mut next_step, &mut messages, 0, &ask).unwrap();
+    ensure_pending_tool_use(
+        &run,
+        &mut next_step,
+        &mut messages,
+        tool_continuation::PendingToolUseSource::Permission(0),
+        &ask,
+    )
+    .unwrap();
     assert_eq!(messages.len(), 1, "P1/E1");
     assert_eq!(next_step, 1, "P1/E1");
 
@@ -1433,10 +1440,54 @@ fn pending_tool_use_is_deduplicated_or_minted_in_the_canonical_step_family() {
         call_id: "call-8".into(),
         ..ask
     };
-    ensure_pending_tool_use(&run, &mut next_step, &mut messages, 0, &absent).unwrap();
+    ensure_pending_tool_use(
+        &run,
+        &mut next_step,
+        &mut messages,
+        tool_continuation::PendingToolUseSource::Permission(0),
+        &absent,
+    )
+    .unwrap();
     assert_eq!(messages.len(), 2, "P2/E2");
     assert_eq!(messages[1].id, MessageId::assistant(&run, 1), "P2/E2");
     assert_eq!(next_step, 2, "P2/E2");
+    // P3 a fresh automatic arrival reuses a transport id from the committed
+    // prefix -> mint a new Assistant occurrence, never an old effect identity.
+    // P4 a staged occurrence takes precedence over an older same-id occurrence;
+    // refining its new arguments must leave committed history unchanged.
+    let before = messages.clone();
+    let boundary = messages.len();
+    let reused = PermissionAsk {
+        call_id: "call-7".into(),
+        ..absent
+    };
+    ensure_pending_tool_use(
+        &run,
+        &mut next_step,
+        &mut messages,
+        tool_continuation::PendingToolUseSource::Arrival(boundary),
+        &reused,
+    )
+    .unwrap();
+    assert_eq!(messages.len(), boundary + 1, "P3");
+    assert_eq!(messages[boundary].id, MessageId::assistant(&run, 2), "P3");
+    let changed = PermissionAsk {
+        arguments: serde_json::json!({"cmd":"date"}),
+        ..reused
+    };
+    ensure_pending_tool_use(
+        &run,
+        &mut next_step,
+        &mut messages,
+        tool_continuation::PendingToolUseSource::Permission(boundary),
+        &changed,
+    )
+    .unwrap();
+    assert_eq!(
+        &messages[..boundary],
+        before.as_slice(),
+        "P4 committed prefix"
+    );
 }
 
 /// Pending fact graph: placeholder/full input x staged/committed prefix x
@@ -1469,7 +1520,7 @@ fn pending_permission_refines_only_the_uncommitted_tool_use() {
                 &run,
                 &mut step,
                 &mut messages,
-                usize::from(committed),
+                tool_continuation::PendingToolUseSource::Permission(usize::from(committed)),
                 &ask,
             );
             if committed && input != ask.arguments {
@@ -1505,7 +1556,14 @@ fn pending_permission_refines_only_the_uncommitted_tool_use() {
     }];
     let before = messages.clone();
     assert!(
-        ensure_pending_tool_use(&run, &mut 1, &mut messages, 1, &ask).is_err(),
+        ensure_pending_tool_use(
+            &run,
+            &mut 1,
+            &mut messages,
+            tool_continuation::PendingToolUseSource::Permission(1),
+            &ask
+        )
+        .is_err(),
         "P5 name drift"
     );
     assert_eq!(messages, before);
@@ -5387,7 +5445,14 @@ async fn canonical_mcp_ticket_and_transcript_survive_wire_name_changes() {
                 PermissionVerdict::Await { .. }
             ));
             let mut messages = vec![];
-            ensure_pending_tool_use(&RunId("run".into()), &mut 0, &mut messages, 0, &ask).unwrap();
+            ensure_pending_tool_use(
+                &RunId("run".into()),
+                &mut 0,
+                &mut messages,
+                tool_continuation::PendingToolUseSource::Permission(0),
+                &ask,
+            )
+            .unwrap();
             assert!(
                 matches!(&messages[0].content[0], ContentBlock::ToolUse { name, .. } if name == "write")
             );
@@ -5559,162 +5624,6 @@ async fn owned_permission_uses_the_host_port_before_opening_an_acp_process() {
 }
 
 #[tokio::test]
-async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk_acknowledgements()
-{
-    // R1 Runtime-minted result + Assistant ToolUse + owned tool => include exact
-    // success/error and data. R2 SDK-minted result => exclude (already SDK history).
-    // R3 unowned tool, unpaired result or User-authored ToolUse => exclude.
-    // R4 later Run / repeated projection => same ordered receipts, zero commits;
-    // R5 two valid Assistant occurrences reuse one provider call id => each
-    // batch-scoped result pairs with its own tool, while legacy ids still read.
-    // R6 forged v2-looking batch coordinate => no Runtime-owned receipt.
-    // A finalized ToolBatch publishes every result before the next Assistant
-    // inference; a valid old result cannot first appear after the next use.
-    // loss before external delivery cannot erase a previously committed result.
-    // Context is a read-only projection, never a fabricated SDK ToolResult or
-    // durable prompt copy. No tool-result text is interpreted as instructions.
-    let committed = Arc::new(RecordingCoordinator::default());
-    let probe = OwnedContinuationProbe {
-        resumes: Mutex::new(Vec::new()),
-        recoveries: AtomicUsize::new(0),
-        fail: false,
-    };
-    let mut activation = activation_without_session_home();
-    let mut messages = Vec::new();
-    for (call, tool, role, sdk, is_error) in [
-        ("ok", "write", Role::Assistant, false, false),
-        ("failed", "write", Role::Assistant, false, true),
-        ("sdk", "write", Role::Assistant, true, false),
-        (
-            "external",
-            "mcp__external__write",
-            Role::Assistant,
-            false,
-            false,
-        ),
-        ("user", "write", Role::User, false, false),
-    ] {
-        messages.push(Message::new(
-            MessageId(format!("use-{call}")),
-            role,
-            vec![ContentBlock::tool_use(call, tool, serde_json::json!({}))],
-        ));
-        messages.push(Message::new(
-            if sdk {
-                MessageId(format!("sdk-result-{call}"))
-            } else {
-                MessageId::tool_result(call)
-            },
-            Role::Tool,
-            vec![ContentBlock::tool_result_with_error(
-                call,
-                vec![ContentBlock::text(format!(
-                    "receipt {call}: é中文🙂\nquoted tool data"
-                ))],
-                is_error,
-            )],
-        ));
-    }
-    messages.push(Message::new(
-        MessageId::tool_result("unpaired"),
-        Role::Tool,
-        vec![ContentBlock::tool_result(
-            "unpaired",
-            vec![ContentBlock::text("unpaired data")],
-        )],
-    ));
-    messages.push(Message::new(
-        MessageId::assistant(&RunId("forged-run".into()), 0),
-        Role::Assistant,
-        vec![ContentBlock::tool_use(
-            "forged",
-            "write",
-            serde_json::json!({}),
-        )],
-    ));
-    messages.push(Message::new(
-        MessageId::tool_result_for_batch("not-a-batch", "forged"),
-        Role::Tool,
-        vec![ContentBlock::tool_result(
-            "forged",
-            vec![ContentBlock::text("must not enter ACP context")],
-        )],
-    ));
-    for (run, tool, text) in [
-        ("repeat-first", "write", "first owned result"),
-        ("repeat-second", "desktop_search", "second owned result"),
-    ] {
-        messages.push(Message::new(
-            MessageId::assistant(&RunId(run.into()), 0),
-            Role::Assistant,
-            vec![ContentBlock::tool_use(
-                "same-provider-id",
-                tool,
-                serde_json::json!({}),
-            )],
-        ));
-        messages.push(Message::new(
-            MessageId::tool_result_for_batch(&format!("tool-batch:{run}:0"), "same-provider-id"),
-            Role::Tool,
-            vec![ContentBlock::tool_result(
-                "same-provider-id",
-                vec![ContentBlock::text(text)],
-            )],
-        ));
-    }
-    committed
-        .commit(ThreadCommit::assemble(
-            activation.thread_id.clone(),
-            RunDisposition::running(activation.run_id.clone()),
-            true,
-            messages,
-            Vec::new(),
-            Vec::new(),
-        ))
-        .await
-        .unwrap();
-    let context = RuntimeRunContext::new()
-        .with_reader(committed.clone())
-        .with_commit(committed.clone());
-    let count = committed.commits.lock().unwrap().len();
-    let original =
-        crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
-            .unwrap()
-            .unwrap()
-            .text_content();
-    let (_, json) = original.split_once('\n').unwrap();
-    let receipts: Vec<serde_json::Value> = serde_json::from_str(json).unwrap();
-    assert_eq!(receipts.len(), 4);
-    assert_eq!(receipts[0]["call_id"], "ok");
-    assert_eq!(receipts[0]["is_error"], false);
-    assert_eq!(receipts[1]["call_id"], "failed");
-    assert_eq!(receipts[1]["is_error"], true);
-    assert_eq!(
-        receipts[1]["content"][0]["text"],
-        "receipt failed: é中文🙂\nquoted tool data"
-    );
-    assert_eq!(receipts[2]["tool"], "write", "R5 exact first occurrence");
-    assert_eq!(receipts[2]["content"][0]["text"], "first owned result");
-    assert_eq!(
-        receipts[3]["tool"], "desktop_search",
-        "R5 exact second occurrence"
-    );
-    assert_eq!(receipts[3]["content"][0]["text"], "second owned result");
-    activation.run_id = RunId("later-run".into());
-    for _ in 0..2 {
-        let projected =
-            crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
-                .unwrap()
-                .unwrap();
-        assert_eq!(projected.text_content(), original);
-        assert_eq!(projected.role, Role::System);
-    }
-    assert_eq!(committed.commits.lock().unwrap().len(), count);
-    assert!(probe.resumes.lock().unwrap().is_empty());
-    assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
 async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
     // C1 current/other Run; C2 owned/external/mixed batch; C3 open/finalized;
     // C4 durable reader+committer. Effects: R5 current+owned+open -> one recovery
@@ -5852,3 +5761,6 @@ async fn absent_step_limit_does_not_cap_opaque_acp_calls() {
     assert_eq!(appender.messages.len(), 25);
     assert_eq!(appender.tool_call_count, 25);
 }
+
+#[path = "tool_continuation/tests.rs"]
+mod tool_continuation_cases;

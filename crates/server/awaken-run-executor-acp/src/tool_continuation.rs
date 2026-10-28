@@ -68,25 +68,42 @@ pub(super) fn take_runtime_execution(
 /// Correlate the MCP arrival with a unique staged ACP notification. This is
 /// transcript correlation only; the committed Runtime batch owns effect identity.
 pub(super) fn bind_runtime_execution(call: &mut ToolCall, staged: &[Message]) -> Result<()> {
-    let matches = staged.iter().flat_map(|message| &message.content)
+    let candidates = staged.iter().flat_map(|message| &message.content)
         .filter_map(|block| match block {
             ContentBlock::ToolUse { id, name, input }
                 if canonical_permission_tool_id(name) == call.tool_id
-                    && (input == &call.arguments || input.as_object().is_some_and(|map| map.is_empty()))
                     && !staged.iter().flat_map(|message| &message.content).any(|block| {
                         matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id)
-                    }) => Some(id),
+                    }) => Some((id, input)),
             _ => None,
         }).collect::<Vec<_>>();
+    // An unfinished notification is not another exact argument match. Prefer
+    // complete observations; refine a placeholder only when none is complete.
+    let exact = candidates
+        .iter()
+        .filter(|(_, input)| *input == &call.arguments)
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let exact_count = exact.len();
+    let matches = if exact.is_empty() {
+        candidates
+            .iter()
+            .filter(|(_, input)| input.as_object().is_some_and(|map| map.is_empty()))
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    } else {
+        exact
+    };
     match matches.as_slice() {
         [] => Ok(()),
         [id] => {
             call.call_id.clone_from(id);
             Ok(())
         }
-        _ => Err(Error::Execution(
-            "MCP arrival has ambiguous staged ACP calls".into(),
-        )),
+        _ => Err(Error::Execution(format!(
+            "MCP arrival has ambiguous staged ACP calls (matches={}, exact={exact_count})",
+            matches.len(),
+        ))),
     }
 }
 
@@ -187,18 +204,17 @@ pub(super) fn owned_tool_result_context(
     for message in &messages {
         match message.role {
             Role::Assistant => {
-                // Provider call ids are response-local. A finalized ToolBatch
-                // publishes its results before the next Assistant inference,
-                // so only this occurrence can own following Tool results.
-                owned_calls.clear();
-                owned_calls.extend(message.content.iter().filter_map(|block| match block {
-                    ContentBlock::ToolUse { id, name, .. }
-                        if continuation.tool_await_reason(name).is_some() =>
-                    {
-                        Some((id, name))
+                // ACP may report concurrent calls in separate Assistant
+                // notifications. A new occurrence shadows only its same id;
+                // other pending calls survive text/progress notifications.
+                for block in &message.content {
+                    if let ContentBlock::ToolUse { id, name, .. } = block {
+                        owned_calls.remove(id);
+                        if continuation.tool_await_reason(name).is_some() {
+                            owned_calls.insert(id, (&message.id, name));
+                        }
                     }
-                    _ => None,
-                }));
+                }
                 continue;
             }
             Role::User => {
@@ -215,11 +231,20 @@ pub(super) fn owned_tool_result_context(
                 is_error,
             } = block
                 && message.id.is_tool_result_for_call(tool_use_id)
-                && let Some(tool) = owned_calls.get(tool_use_id)
+                && let Some((source, tool)) = owned_calls.get(tool_use_id)
+                && message
+                    .id
+                    .tool_result_coordinates()
+                    .is_none_or(|(run, step, _)| {
+                        source
+                            .assistant_coordinates()
+                            .is_some_and(|(owner, origin, _)| owner == run && origin == step)
+                    })
             {
                 receipts.push(serde_json::json!({
                     "call_id": tool_use_id, "tool": tool, "is_error": is_error, "content": content,
                 }));
+                owned_calls.remove(tool_use_id);
             }
         }
     }
@@ -289,15 +314,30 @@ pub(super) fn attempt_interrupt_channel(
 /// Earlier committed messages are immutable: an exact replay is a no-op and a
 /// conflicting reuse of their call id fails closed. A streaming placeholder in
 /// the current staged suffix is refined to the permission request's exact input.
+pub(super) enum PendingToolUseSource {
+    Arrival(usize),
+    Permission(usize),
+}
+
 pub(super) fn ensure_pending_tool_use(
     run_id: &RunId,
     next_assistant_step: &mut usize,
     messages: &mut Vec<Message>,
-    first_staged_message: usize,
+    source: PendingToolUseSource,
     ask: &PermissionAsk,
 ) -> Result<()> {
     let name = canonical_permission_tool_id(&ask.tool);
-    for (index, message) in messages.iter_mut().enumerate() {
+    let (first_staged_message, allow_committed) = match source {
+        PendingToolUseSource::Arrival(first) => (first, false),
+        PendingToolUseSource::Permission(first) => (first, true),
+    };
+    // A fresh MCP arrival always owns a new occurrence. A permission resume may
+    // reuse its committed occurrence; new staged notifications take precedence
+    // because provider/transport call ids can repeat in later Assistant steps.
+    for (index, message) in messages.iter_mut().enumerate().rev() {
+        if index < first_staged_message && !allow_committed {
+            continue;
+        }
         for block in &mut message.content {
             if let ContentBlock::ToolUse {
                 id,
@@ -342,7 +382,11 @@ mod arrival_tests {
         // C3 an existing terminal result. R1 unique exact or empty-input
         // placeholder -> reuse the notification id; R2 absent/settled -> retain
         // the fresh MCP correlation; R3 ambiguous -> reject before commit/effect.
-        // Changed arguments cannot alias an already complete notification.
+        // C4 other incomplete notifications coexist: R4 one exact match wins
+        // over any placeholders; R5 multiple exact matches, or multiple empty
+        // candidates with no exact match, still refuse. Changed complete
+        // arguments cannot alias this arrival. These are correlation ids only;
+        // the committed Runtime batch remains the sole effect identity.
         let make = |id: &str, input| {
             Message::new(
                 MessageId(id.into()),
@@ -364,6 +408,24 @@ mod arrival_tests {
             bind_runtime_execution(&mut call, &[make("observed", input)]).unwrap();
             assert_eq!(call.call_id, "observed", "R1");
         }
+        for placeholders in 1..=3 {
+            let mut staged = vec![make("exact", args.clone())];
+            for index in 0..placeholders {
+                staged.push(make(&format!("placeholder-{index}"), serde_json::json!({})));
+            }
+            let mut call = ToolCall {
+                call_id: "mcp-fresh".into(),
+                tool_id: "read".into(),
+                arguments: args.clone(),
+            };
+            bind_runtime_execution(&mut call, &staged).unwrap();
+            assert_eq!(call.call_id, "exact", "R4");
+            staged.push(make("other-exact", args.clone()));
+            assert!(
+                bind_runtime_execution(&mut call, &staged).is_err(),
+                "R5 exact"
+            );
+        }
         let mut call = ToolCall {
             call_id: "mcp-fresh".into(),
             tool_id: "read".into(),
@@ -371,6 +433,23 @@ mod arrival_tests {
         };
         bind_runtime_execution(&mut call, &[]).unwrap();
         assert_eq!(call.call_id, "mcp-fresh", "R2 absent");
+        bind_runtime_execution(
+            &mut call,
+            &[make("changed", serde_json::json!({"file_path":"other"}))],
+        )
+        .unwrap();
+        assert_eq!(call.call_id, "mcp-fresh", "changed complete arguments");
+        assert!(
+            bind_runtime_execution(
+                &mut call,
+                &[
+                    make("one", serde_json::json!({})),
+                    make("two", serde_json::json!({})),
+                ]
+            )
+            .is_err(),
+            "R5 placeholders"
+        );
         assert!(
             bind_runtime_execution(
                 &mut call,

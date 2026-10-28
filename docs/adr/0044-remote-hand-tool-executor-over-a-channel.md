@@ -165,11 +165,20 @@ Runtime recovery path to execute it. Runtime supplies the operation token,
 permission/concurrency admission, effect-domain observation, and committed
 result through the same path as Native and approved tools. The existing
 request-only result projection then continues the SDK conversation.
+Correlation prefers a unique complete argument match; an incomplete notification
+is considered only when no complete match exists. Multiple complete matches or
+multiple remaining placeholders are refused before committing or dispatching.
+The ToolBatch uses its original Assistant occurrence's Run/Step, so the existing
+committed transcript index can attribute the result exactly. Pending calls may
+span separate ACP Assistant notifications; another notification cannot erase a
+pending receipt, and a new same-id occurrence cannot borrow an older result.
 
 Client-executed calls keep their external-result wait; a missing/failed commit,
 ambiguous staged correlation, stale execution authority, or unobserved SDK
-exit cannot enter a Hand effect. The one exported descriptor/executor set
-also supplies Runtime's catalog for semantic Skill, Memory, and Web tools.
+exit cannot enter a Hand effect. Hand, Skill and Memory registrations remain
+with their existing Runtime construction owners. Newly realized Host web tools
+register once at that realization edge; exporting MCP never re-registers those
+Runtime ids. Both protocols consume the same configured capabilities.
 No MCP transport id becomes an operation token and no second permission or
 execution owner is introduced.
 

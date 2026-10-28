@@ -30,7 +30,7 @@ impl AcpRunExecutor {
             &activation.run_id,
             next_assistant_step,
             &mut messages,
-            first_staged_message,
+            super::PendingToolUseSource::Arrival(first_staged_message),
             &PermissionAsk {
                 tool: call.tool_id.clone(),
                 call_id: call.call_id.clone(),

@@ -1076,7 +1076,7 @@ impl AcpRunExecutor {
                         &run_id,
                         &mut next_assistant_step,
                         &mut committed,
-                        first_staged_message,
+                        tool_continuation::PendingToolUseSource::Permission(first_staged_message),
                         &ask,
                     )?;
                     let tool_id = canonical_permission_tool_id(&ask.tool);

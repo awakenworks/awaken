@@ -91,11 +91,30 @@ fn requested_batch(
     messages: &[Message],
     call: ToolCall,
 ) -> Result<awaken_tool_contract::ToolBatch> {
-    // The committed Assistant coordinate, rather than the response-local wire
-    // id or a reset Vec length, namespaces every new request through Runtime.
+    // Results must point to the actual ToolUse occurrence, not the next unused
+    // Assistant step. Managed transcript attribution uses this exact coordinate.
+    let source = messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message.role == Role::Assistant
+                && message.content.iter().any(|block| {
+                    matches!(block,
+            ContentBlock::ToolUse { id, .. } if id == &call.call_id)
+                })
+        })
+        .ok_or_else(|| Error::Commit("tool handoff has no Assistant ToolUse".into()))?;
+    if !source.content.iter().any(|block| matches!(block,
+        ContentBlock::ToolUse { id, name, input }
+            if id == &call.call_id && canonical_permission_tool_id(name) == call.tool_id && input == &call.arguments)) {
+        return Err(Error::Commit("tool handoff differs from its Assistant ToolUse".into()));
+    }
+    let step = source.id.assistant_step_of(run_id).ok_or_else(|| {
+        Error::Commit("tool handoff requires its current Run Assistant coordinate".into())
+    })?;
     awaken_tool_contract::ToolBatch::for_step(
         run_id.clone(),
-        awaken_agent_contract::agent::message::next_assistant_step(messages, run_id),
+        step,
         [(
             call,
             awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
@@ -253,7 +272,12 @@ mod requested_tests {
     #[tokio::test]
     async fn automatic_handoff_commits_requested_without_a_permission_ticket() {
         // C1 automatic exported arrival; C2 durable commit available/missing;
-        // C3 distinct canonical Assistant steps with a reused wire id.
+        // C3 distinct canonical Assistant steps with a reused wire id; C4 a
+        // later unrelated placeholder. R4 the batch uses the exact originating
+        // Assistant step, never the next step: Managed occurrence attribution
+        // must pair its result with that ToolUse despite concurrent updates.
+        // R5 missing, foreign-Run, User-authored or argument-drifted sources
+        // refuse before commit; no caller/model-authored id supplies authority.
         // R1 C1+C2 -> Running + Requested batch + exact ToolUse, no user ask;
         // R2 !C2 -> reject, no dispatch; R3 C3 -> distinct Runtime operation ids.
         // Execution/recovery is verified by the Host's token-requiring integration
@@ -273,7 +297,7 @@ mod requested_tests {
             arguments: serde_json::json!({"file_path":"/workspace/SKILL.md"}),
         };
         let mut operations = Vec::new();
-        for step in [0, 1] {
+        for step in [0, 3] {
             commit_requested_tool(
                 &context,
                 Vec::new(),
@@ -281,15 +305,26 @@ mod requested_tests {
                 &thread,
                 run.clone(),
                 call.clone(),
-                vec![Message::new(
-                    MessageId::assistant(&run, step),
-                    Role::Assistant,
-                    vec![ContentBlock::tool_use(
-                        &call.call_id,
-                        &call.tool_id,
-                        call.arguments.clone(),
-                    )],
-                )],
+                vec![
+                    Message::new(
+                        MessageId::assistant(&run, step),
+                        Role::Assistant,
+                        vec![ContentBlock::tool_use(
+                            &call.call_id,
+                            &call.tool_id,
+                            call.arguments.clone(),
+                        )],
+                    ),
+                    Message::new(
+                        MessageId::assistant(&run, step + 1),
+                        Role::Assistant,
+                        vec![ContentBlock::tool_use(
+                            "not-arrived",
+                            "read",
+                            serde_json::json!({}),
+                        )],
+                    ),
+                ],
                 Vec::new(),
             )
             .await
@@ -316,12 +351,69 @@ mod requested_tests {
                 storage.resume_ticket(&run).is_none(),
                 "no manufactured approval"
             );
+            let expected = awaken_tool_contract::ToolBatch::for_step(
+                run.clone(),
+                step,
+                [(
+                    call.clone(),
+                    awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
+                )],
+            )
+            .unwrap();
+            assert_eq!(
+                batch.operation_id(&call.call_id),
+                expected.operation_id(&call.call_id),
+                "R4 originating occurrence"
+            );
             operations.push(batch.operation_id(&call.call_id));
         }
         assert_ne!(
             operations[0], operations[1],
             "R3 canonical step namespaces the wire id"
         );
+        let before = storage.committed_messages(&thread);
+        let source = |owner: &RunId, role, arguments| {
+            Message::new(
+                MessageId::assistant(owner, 9),
+                role,
+                vec![ContentBlock::tool_use(
+                    &call.call_id,
+                    &call.tool_id,
+                    arguments,
+                )],
+            )
+        };
+        for invalid in [
+            Vec::new(),
+            vec![source(
+                &RunId("foreign".into()),
+                Role::Assistant,
+                call.arguments.clone(),
+            )],
+            vec![source(&run, Role::User, call.arguments.clone())],
+            vec![source(
+                &run,
+                Role::Assistant,
+                serde_json::json!({"file_path":"changed"}),
+            )],
+        ] {
+            assert!(
+                commit_requested_tool(
+                    &context,
+                    Vec::new(),
+                    None,
+                    &thread,
+                    run.clone(),
+                    call.clone(),
+                    invalid,
+                    Vec::new()
+                )
+                .await
+                .is_err(),
+                "R5"
+            );
+            assert_eq!(storage.committed_messages(&thread), before, "R5 no commit");
+        }
         assert!(
             commit_requested_tool(
                 &RuntimeRunContext::new(),
