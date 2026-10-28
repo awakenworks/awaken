@@ -148,16 +148,7 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
-awaken-session-run-delivery.workspace = true
-awaken-cli = { workspace = true, features = ["test-support"] }
-# Integration fixtures build the co-located Session executor the Coordinator
-# consumes through ExecutionPorts; only the composition roots link it normally.
-awaken-session-executor = { workspace = true, features = ["test-support"] }
-awaken-executable-environment-catalog.workspace = true
-awaken-work-store = { workspace = true, features = ["test-support"] }
-awaken-session-budget-contract.workspace = true
-# Integration fixtures drive the actual outbound A2A attempt through its neutral port.
-awaken-run-executor-a2a.workspace = true
+awaken-session-application = { workspace = true, features = ["test-support"] }
 # The Broker regressions retain the original real Kube client/ledger fixture.
 awaken-worker-fleet-kubernetes.workspace = true
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"] }
@@ -170,17 +161,12 @@ awaken-process-startup = { workspace = true, features = ["container-k8s", "test-
 awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
 awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }
-awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-lease-contract.workspace = true
 awaken-worker = { workspace = true, features = ["container-k8s"] }
 awaken-protocol-managed-testkit.workspace = true
-awaken-session-executor-testkit.workspace = true
-k8s-openapi = { workspace = true }
-awaken-runtime.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-control = { workspace = true, features = ["test-support"] }
-awaken-executable-agent-catalog.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-webhook = { workspace = true, features = ["test-support"] }
@@ -190,15 +176,12 @@ awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
-awaken-provider-genai.workspace = true
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["test-support"] }
-awaken-scenario-host = { workspace = true }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
-awaken-ext-background-task.workspace = true
 awaken-lease-testkit.workspace = true
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"

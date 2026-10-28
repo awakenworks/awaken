@@ -51,13 +51,14 @@
   },
   "contract-reexport": {
     "awaken-credential-contract": 29,
+    "awaken-dispatch-contract": 58,
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,
-    "awaken-dispatch-contract": 58,
+    "awaken-runtime-contract": 3,
     "awaken-session-application-contract": 3,
     "awaken-session-configuration-contract": 3,
-    "awaken-session-realization-contract": 3,
     "awaken-session-execution-contract": 51,
+    "awaken-session-realization-contract": 3,
     "awaken-session-state-contract": 7,
     "awaken-tenancy": 2,
     "awaken-worker-contract": 2
@@ -98,6 +99,9 @@
   "growth_reasons": {
     "foreign-persistence-port": {
       "SandboxCheckpointStore <- awaken-session-realization": "R extraction onto main822: move existing SandboxCheckpointStore byte-custody use into the canonical resource component; Host still names its existing assembly/provider method arguments. Record that exact usage instead of claiming debt removal. Incoming main MemoryExecutionContent and narrow Memory roles are preserved; the former MemoryRepository trait/usage records stay deleted, with no compatibility route."
+    },
+    "contract-reexport": {
+      "awaken-runtime-contract": "{\"reason\": \"ADR-0088 amendment 2026-10-28: move the pure ThreadUsage vocabulary to Agent contract while preserving the three existing Runtime SDK import paths; new consumers import the owner directly.\", \"approved_by\": \"repository user: implement the reviewed crate and contract optimization, 2026-10-28\", \"date\": \"2026-10-28\", \"remove_when\": \"A reviewed SDK major migration removes the three legacy Runtime ThreadUsage import paths after downstream consumers adopt the Agent owner.\"}"
     }
   }
 }

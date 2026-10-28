@@ -2,7 +2,7 @@ use awaken_session_budget_contract::{SessionModelUsage, SessionUsage};
 
 #[must_use]
 pub fn session_usage_from_thread_usage(
-    attributed: awaken_runtime_contract::llm::ThreadUsage,
+    attributed: awaken_agent_contract::thread::usage::ThreadUsage,
 ) -> SessionUsage {
     let total = attributed.total();
     SessionUsage {

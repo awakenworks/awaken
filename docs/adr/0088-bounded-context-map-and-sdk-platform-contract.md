@@ -850,3 +850,19 @@ lock files regenerate):
 awaken-cloud source imports none of `awaken_session_runtime_contract`,
 `awaken_store_runtime` or `awaken_worker_runtime` directly. This source review
 does not certify an awaken-cloud build at a new pin.
+
+## Amendment 2026-10-28: committed usage is Agent vocabulary
+
+The existing `ThreadUsage`, `ThreadUsageKey` and `THREAD_USAGE_STATE_KEY` belong
+to `awaken-agent-contract::thread::usage`: they describe committed Thread token
+observations and their saturating algebra, with no executor, provider or Platform
+dependency. Runtime retains the original `awaken_runtime_contract::llm` paths as
+SDK compatibility exports. Internal value-only callers depend on the defining
+Agent contract; in particular, the Session application contract's usage projection
+no longer adds an engine-SPI dependency solely for this value. The serialized
+cell, key, counters and read/write semantics remain unchanged. The two SDK API
+snapshots and independent-consumer qualification remain required evidence.
+
+The three compatibility exports are a bounded migration obligation: keep them
+until an explicitly reviewed SDK major release can retire the original paths.
+No new contract crate, backend authority or persistence boundary is introduced.

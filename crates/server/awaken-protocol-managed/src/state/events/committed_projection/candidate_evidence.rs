@@ -273,7 +273,7 @@ fn committed_session_usage(
             )
             .map(|snapshot| {
                 awaken_session_application_contract::session_usage_from_thread_usage(
-                    awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
+                    awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(
                         &snapshot.state,
                     ),
                 )

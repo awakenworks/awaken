@@ -153,11 +153,30 @@ container-k8s = ["awaken-execution-composition/k8s"]
 workspace = true
 
 [dev-dependencies]
+# Cross-component suites exercise the existing scenario composition.
+awaken-control = { workspace = true, features = ["test-support"] }
+awaken-coordinator-client = { workspace = true }
+awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
+awaken-data-governance-contract = { workspace = true }
+awaken-deployment-application = { workspace = true, features = ["test-support"] }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
+awaken-environment-contract = { workspace = true }
+awaken-executable-environment-contract = { workspace = true }
+awaken-ext-background-task = { workspace = true }
+awaken-lease-testkit = { workspace = true }
+awaken-process-startup = { workspace = true, features = ["container-k8s", "test-support"] }
+awaken-protocol-a2a = { workspace = true }
+awaken-run-executor-a2a = { workspace = true }
+awaken-runtime = { workspace = true }
+awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
+awaken-session-state-contract = { workspace = true }
+awaken-store-inmem = { workspace = true }
+awaken-webhook = { workspace = true, features = ["test-support"] }
+awaken-worker-contract = { workspace = true }
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
+http-body-util = "0.1"
 awaken-ext-mcp.workspace = true
 awaken-mcp-wire.workspace = true
-awaken-store-inmem.workspace = true
 url.workspace = true
-awaken-session-state-contract.workspace = true
-awaken-environment-contract.workspace = true
 awaken-dispatch-testkit.workspace = true
 tempfile = "3"

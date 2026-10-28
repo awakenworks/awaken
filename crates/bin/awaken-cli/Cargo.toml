@@ -84,10 +84,6 @@ container-podman = ["awaken-process-startup/container-podman", "awaken-execution
 container-k8s = ["awaken-process-startup/container-k8s", "awaken-execution-composition/k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dev-dependencies]
-awaken-dispatch-erasure.workspace = true
-awaken-scenario-host.workspace = true
-awaken-protocol-managed-testkit.workspace = true
-awaken-session-executor-testkit.workspace = true
 
 awaken-acp-contract = { workspace = true }
 awaken-installation-workspace.workspace = true

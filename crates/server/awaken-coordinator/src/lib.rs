@@ -40,6 +40,8 @@ mod session_credential_rollout;
 mod session_credential_rollout_tests;
 mod session_dispatch_reads;
 mod session_routes;
+#[cfg(test)]
+mod test_session_fixture;
 pub use credential_rollout_delivery::{
     HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
 };

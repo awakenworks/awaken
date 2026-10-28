@@ -172,8 +172,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 546,
-        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+        "line": 543,
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
       }
     ],
     "execution_witnesses": [],
@@ -185,7 +185,7 @@
       }
     },
     "review": "Ignored reproducer asserting the correct behaviour; fails today: Dream maps memory AtCapacity to internal_error",
-    "limitation": "Not execution evidence. Follow-up: coordinator Dream error mapping (S)",
+    "limitation": "Not execution evidence. Follow-up: coordinator Dream error mapping (S) 2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
     "id": "B244"
   },
   {
@@ -193,8 +193,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 316,
-        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+        "line": 313,
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
       }
     ],
     "execution_witnesses": [],
@@ -206,7 +206,7 @@
       }
     },
     "review": "Ignored reproducer asserting the correct behaviour; fails today: Dream prepare registers the snapshot catalog entry Active before the clone completes",
-    "limitation": "Not execution evidence. Follow-up: coordinator Dream prepare (M)",
+    "limitation": "Not execution evidence. Follow-up: coordinator Dream prepare (M) 2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
     "id": "B245"
   },
   {
@@ -214,8 +214,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 341,
-        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+        "line": 338,
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
       }
     ],
     "execution_witnesses": [],
@@ -227,7 +227,7 @@
       }
     },
     "review": "Ignored reproducer asserting the correct behaviour; fails today: release_result discards set_state/purge errors so cleanup reports Ok with private content left",
-    "limitation": "Not execution evidence. Follow-up: coordinator Dream cleanup (S)",
+    "limitation": "Not execution evidence. Follow-up: coordinator Dream cleanup (S) 2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
     "id": "B246"
   },
   {

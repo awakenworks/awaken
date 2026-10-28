@@ -67,14 +67,9 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
         .await
         .unwrap();
         let authorities = resources.authorities();
-        let dependencies = awaken_session_executor_testkit::volatile_dependencies(
-            Arc::new(awaken_scenario_host::EchoModel),
-            "stub",
-        )
-        .await;
-        let assembled = awaken_scenario_host::local_managed_state(
-            dependencies,
+        let assembled = crate::test_session_fixture::session_read_fixture(
             authorities.resource_registry(),
+            awaken_time::system_clock(),
         )
         .await;
         let snapshot = format!("mem_snapshot_reset-{row}");
@@ -111,7 +106,7 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
         let before_result = content(&authorities, &result).await;
         let before_source = content(&authorities, "dream-source").await;
         let mut agent = BuiltInDreamAgent::new(
-            assembled.state.sessions.clone(),
+            assembled.sessions.clone(),
             &authorities,
             authorities.resource_registry(),
             resources.memory_stores(),
@@ -187,7 +182,6 @@ async fn preparation_requires_private_cleanup_and_preserves_existing_output_on_r
         );
         assert!(
             assembled
-                .state
                 .sessions
                 .queries()
                 .session_transcript("default", &format!("sesn_dream_{}", request.job_id))

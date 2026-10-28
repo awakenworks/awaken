@@ -89,6 +89,38 @@ and the fix is a smaller harness or a bigger host, not more time.
 Hand-run one harness with `scripts/ci/kani.sh`, which sets the build directory
 Kani needs; `scripts/ci/bootstrap_kani.sh` installs the qualified Kani.
 
+## Affected execution and fixture ownership
+
+`python3 scripts/ci/rust_test_plan.py --base HEAD` previews local affected tests;
+add `--run` to execute the printed plan. Selection includes changed owners and
+transitive consumers, including development and build dependencies. The authored
+whole compilation graph and companion binaries remain unchanged.
+
+Only two static data files can avoid widening local Rust execution:
+`scripts/ci/test_inventory.txt` may increase each original test-name occurrence
+floor, and `scripts/ci/modularity_baseline.json` may decrease known numeric
+ceilings without changing keys, reasons or exemptions. Both base-to-index and
+index-to-working-tree transitions must qualify. Unknown shapes, duplicate JSON
+keys, deleted files, symlinks, weakened counts and other inputs retain the
+conservative fallback. A qualifying plan runs the complete `static` group before
+any Rust tests; a static failure prevents Rust execution. A static-only change
+runs that group without claiming Rust execution or a full-gate pass.
+
+`python3 scripts/ci/rust_test_plan.py --execution-scope --base HEAD` prints the
+source-bound execution scope and whole-static requirement without executing it.
+The canonical `--gate-scope`, public API qualification, push hooks and whole
+compile policy remain conservative. Neither selection nor a cache hit transfers
+an old receipt to a new source revision.
+
+CLI cross-component composition and Coordinator scenario suites live in the
+existing `awaken-scenario-host` test package. CLI and Coordinator unit targets
+therefore need no development edge back to that composition. Private Dream fault
+injection stays in Coordinator with narrow Session/Resource fixtures, preserving
+its durable crash-child and lifecycle assertions. Moving a test also moves its
+fixture imports, nested modules and active evidence paths; it does not remove its
+validation obligation. Compare actual per-profile compilation artifacts before
+claiming a timing improvement: workspace filtering still compiles the workspace.
+
 ## Features, environment and target directories
 
 - **Required test features** live in one place,
