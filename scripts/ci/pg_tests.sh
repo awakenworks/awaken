@@ -241,6 +241,12 @@ resources_evidence() {
     --require-case=tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission \
     --require-case=tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission \
     --require-case=tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission \
+    --require-case=tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas \
+    --require-case=tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas_fixture_admission \
+    --require-case=tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild \
+    --require-case=tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild_fixture_admission \
+    --require-case=tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite \
+    --require-case=tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite_fixture_admission \
     -- --test-threads=1 || record_failure "$?"
   pg_required_test --locked -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors \
     --require-case=state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors \

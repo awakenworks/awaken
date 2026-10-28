@@ -15,12 +15,38 @@ from unittest import mock
 import check_native_services as gate
 from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 from _native_postgres_scopes import postgres_plan
+import _native_postgres_scopes as policy
 
 INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
 
 PACKAGES=('awaken-admin-config-api','awaken-resource-store','awaken-resource-persistence',
     'awaken-session-application','awaken-protocol-managed','awaken-sandbox-policy-store',
     'awaken-executable-agent-catalog','awaken-executable-environment-catalog','awaken-environment-application', 'awaken-environment-image-build')
+
+
+# Independent original application outcomes; never derive these from the selector.
+EXPECTED_APPLICATION_CASES = frozenset({
+    'tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas',
+    'tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas_fixture_admission',
+    'tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration',
+    'tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission',
+    'tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild',
+    'tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild_fixture_admission',
+    'tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack',
+    'tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission',
+    'tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite',
+    'tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite_fixture_admission',
+    'tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict',
+    'tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission',
+})
+ORIGINAL_MISSING_FLOORS = (
+    'tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas',
+    'tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas_fixture_admission',
+    'tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild',
+    'tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild_fixture_admission',
+    'tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite',
+    'tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite_fixture_admission',
+)
 
 class ResourceSelectionTests(unittest.TestCase):
     def selection(self,status):
@@ -46,7 +72,7 @@ class ResourceSelectionTests(unittest.TestCase):
         self.assertEqual(rows[0][rows[0].index('--features')+1],'postgres')
         self.assertIn('--all-features',rows[1]);self.assertIn('--exact',rows[-1])
         counts=[sum(x.endswith('_fixture_admission') for x in row if x.startswith('--require-case=')) for row in rows]
-        self.assertEqual(counts,[0,4,3,3,1,0,0,1,5,0])
+        self.assertEqual(counts,[0, 4, 3, 6, 1, 0, 0, 1, 5, 0])
         # The two filtered groups must include the original domain and its new
         # admission case. An exact original-only filter would erase the latter.
         self.assertNotIn('--exact',rows[3]);self.assertNotIn('--exact',rows[4])
@@ -114,5 +140,66 @@ class ResourceSelectionTests(unittest.TestCase):
                 for output in (original.replace(' ... ok',' ... ignored'),original+'SKIPPED PostgreSQL fixture\n'):
                     path.write_text(output,encoding='utf-8')
                     with self.assertRaises(ValueError):gate.reconcile_postgres(log(paths),'source','resources',fixture_owner=FIXTURE_OWNER)
+
+class ApplicationCaseFloorTests(unittest.TestCase):
+
+    def setUp(self):
+        self.source = (gate.ROOT / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+
+    def check(self, text):
+        with tempfile.TemporaryDirectory(prefix='pg-case-policy-') as t:
+            d = Path(t) / 'scripts/ci'
+            d.mkdir(parents=True)
+            (d / 'pg_tests.sh').write_text(text)
+            return policy.postgres_phases('resources', Path(t))
+
+    def test_complete_existing_case_set_keeps_all_ten_resource_domains(self):
+        self.assertEqual(policy.RESOURCE_APPLICATION_CASE_FLOORS, EXPECTED_APPLICATION_CASES)
+        selected = self.check(self.source)
+        self.assertEqual(len(selected), 10)
+        case = next((p for p in selected if p.package == 'awaken-session-application'))
+        actual = {x.removeprefix('--require-case=') for x in case.arguments if x.startswith('--require-case=')}
+        self.assertEqual(actual, EXPECTED_APPLICATION_CASES)
+        self.assertEqual(len(actual), 12)
+
+    def test_each_original_outcome_is_independent_and_cannot_be_deleted(self):
+        for name in EXPECTED_APPLICATION_CASES:
+            with self.subTest(case=name):
+                changed = self.source.replace('    --require-case=' + name + ' \\\n', '')
+                self.assertNotEqual(changed, self.source)
+                with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
+                    self.check(changed)
+
+    def test_same_package_older_phase_cannot_hide_new_required_outcomes(self):
+        changed = self.source
+        for name in ORIGINAL_MISSING_FLOORS:
+            changed = changed.replace('    --require-case=' + name + ' \\\n', '')
+        with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
+            self.check(changed)
+
+    def test_case_names_on_another_package_do_not_satisfy_application_policy(self):
+        changed = self.source
+        moved = []
+        for name in ORIGINAL_MISSING_FLOORS:
+            line = '    --require-case=' + name + ' \\\n'
+            self.assertEqual(changed.count(line), 1)
+            changed = changed.replace(line, '')
+            moved.append(line)
+        marker = '  pg_required_test --locked -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors \\\n'
+        self.assertEqual(changed.count(marker), 1)
+        changed = changed.replace(marker, marker + ''.join(moved))
+        with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
+            self.check(changed)
+
+    def test_unrelated_new_required_name_does_not_replace_the_original(self):
+        name = next(iter(EXPECTED_APPLICATION_CASES))
+        changed = self.source.replace('--require-case=' + name, '--require-case=some_other_test', 1)
+        with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
+            self.check(changed)
+
+    def test_original_core_and_storage_domain_policies_are_retained(self):
+        self.assertEqual(len(policy.postgres_phases('core', gate.ROOT)), 17)
+        self.assertEqual(len(policy.postgres_phases('storage', gate.ROOT)), 8)
+        self.assertEqual(len(policy.postgres_phases('storage-observations', gate.ROOT)), 2)
 
 if __name__=='__main__':unittest.main(verbosity=2)
