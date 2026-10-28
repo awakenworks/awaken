@@ -200,8 +200,23 @@ creation/update and plugin resolution all use the same kernel before credential
 or provider effects. Errors carry an owning field path and stable code (for
 example `invalid_web_domain_count`), including the original index in legacy
 HTTP tool arrays. Compilation returns the canonical value atomically and never
-publishes a partially normalized input. The compiler validates disabled and
+publishes a partially normalized input.
+The Web SDK's `WebConfigurationContext` states the boundary explicitly:
+`Publication` requires the exact client-tool roster; `Frozen` preserves that
+prior roster decision and still checks shape and intrinsic restrictions.
+The `parse_in`, `validate_in`, `compile_value_in` and `compile_in` APIs use this
+context. Legacy optional-roster entrypoints remain deprecated SDK adapters.
+The context decision tables cross publication/frozen input with exact, absent
+and case-mismatched rosters, typed/JSON values and malformed intrinsic rules.
+They separately prove that decoded configuration grants no fetch without the
+required URL evidence; a compile-fail doctest rejects a roster-less publication.
+ The compiler validates disabled and
 later duplicate entries as well as the selected entry.
+
+The extension retains `WebConfigurationIssue` (field path, stable code and
+message) through frozen decoding and inherited composition. Existing SDK
+String-returning helpers and plugin builders format it only at their compatibility
+boundary; they do not maintain a second parser or silently drop invalid sources.
 
 Web execution settings remain in the neutral
 `ToolPolicyOverride.configuration` value, separately from provider bindings and
@@ -242,12 +257,27 @@ Client-executed result content cannot carry Runtime state-writer authority:
 the resume boundary rejects nonempty client state commands before consuming
 the ticket or running hooks. Trusted in-process tools retain their state ports.
 
-The current `max_content_tokens` behavior is an independent compatibility issue:
-the nearest configured value wins rather than taking the minimum, and execution
-truncates text at a UTF-8 byte boundary, with the existing PDF URL exception.
-Source/domain composition and boundary refactoring do not silently change those
-scalar or truncation semantics. A token-count or minimum-limit correction needs
-its own change and tests.
+`max_content_tokens` is a lightweight estimate for host-returned text, not a
+model-specific tokenizer count: four ASCII scalars or one non-ASCII scalar cost
+one estimated token; fractional ASCII costs accumulate across the prefix.
+Truncation preserves a valid UTF-8 scalar prefix. It does not promise grapheme
+boundaries or a hard model-context ceiling. The nearest configured value still
+wins (including zero); absence does not introduce a content cap. This changes
+the earlier byte-as-token implementation, so the same configured number can now
+retain more text. All returned Strings use this budget, including text returned
+from PDF URLs; the extension does not claim to parse binary documents.
+
+Three distinct owners remain: each HTTP adapter bounds transport bytes (the
+direct adapter retains its 1 MiB read fence), the Web extension projects returned
+text using the estimated budget, and existing model usage handling records the
+provider's reported request totals. Request usage includes other messages and
+cannot be attributed to one fetched page or retroactively protect a request
+that has already been sent. Provider-server options remain that provider's own
+capability; a host budget that cannot be enforced by that route is refused.
+The native test matrix crosses Unicode/zero/huge budgets, absent and nearest
+inherited preferences, PDF text, fallback timing and a real oversized loopback
+response. Source and domain restrictions continue to be conjunctive authority
+checks before credentials or I/O; content preferences cannot relax them.
 
 `glob` and `grep` share one capability-relative walker rooted in the
 `ConfinedPath` directory handle. The compatibility floor follows the published

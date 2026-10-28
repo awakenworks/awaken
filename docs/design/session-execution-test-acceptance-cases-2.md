@@ -56,7 +56,7 @@
 - 必须断言：按当前权威拒绝后续效果；原不确定外部请求有观察/过期责任。
 - 反向控制：重放缓存的成功材料绕过撤销必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`t15_c02_revocation_before_resolution_and_cached_replay_are_rejected`、`t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt`（忽略，不计证据；E17 为预期失败）：等待机密读取后不再校验所有权。完整场景：待验收。
+- 绑定及状态：E42 在本机 Linux 执行 Provider/A2A 的四个具名等待用例，覆盖调用前撤销、读取期间换主/撤销/不可用、原读取的完成观察，以及回执已提交但确认延迟时不释放材料；原忽略复现已启用。E16/E17 保留原始 Windows 历史。当前为 `current_subset`：未把模型调用、所有 refresh/provision 传输或公共门禁计作完成；完整场景仍待验收。
 
 ### T15-C03 明文边界
 

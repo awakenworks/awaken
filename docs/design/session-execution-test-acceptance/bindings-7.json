@@ -541,14 +541,14 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 242,
+        "line": 277,
         "file_sha256": "4167b4ef2ed24691794a4428b15526fa95687f7c85a68335fb33c77f61a13fb1"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 244
+        "line": 279
       }
     ],
     "execution_witnesses": [
@@ -583,22 +583,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 248,
+        "line": 283,
         "file_sha256": "4167b4ef2ed24691794a4428b15526fa95687f7c85a68335fb33c77f61a13fb1"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 255
+        "line": 290
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 260
+        "line": 295
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 264
+        "line": 299
       }
     ],
     "execution_witnesses": [

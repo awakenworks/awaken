@@ -48,6 +48,15 @@ Every stable error class should expose:
 6. Indeterminate remote execution is explicit; it is never silently converted to
    success.
 
+Session admission carries the original neutral Run error through the existing
+`RuntimeDiagnostic`, including an owner-defined code that dispatch does not
+recognize. Claim disposition continues to come from the realization contract;
+preserving a diagnostic never grants permission to replay a tool or changes a
+deferral into a failed attempt. Claimed pre-execution settlement commits that
+original code. Only an unclassified legacy resolution error uses the generic
+`dispatch_resolution_failed` fallback. The Managed protocol remains the owner of
+the public error projection.
+
 ## Provider stream completion boundary
 
 The provider SDK owns wire parsing; `GenaiExecutor::infer_streaming` maps its

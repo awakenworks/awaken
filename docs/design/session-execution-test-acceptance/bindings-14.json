@@ -88,7 +88,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 410,
+        "line": 421,
         "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
       }
     ],
@@ -109,7 +109,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 429,
+        "line": 442,
         "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
       }
     ],
@@ -130,21 +130,42 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 434,
-        "file_sha256": "43b517de73d9a708aff5bcb334fe199980b0abf2d3cb405eaee63d970b7bdc18"
+        "line": 515,
+        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
       }
     ],
-    "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "execution_witnesses": [
+      {
+        "evidence": "E42",
+        "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_during_blocked_resolution_rejects_material_and_receipt",
+        "package": "awaken-credential-materializer",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
+        "historical": false,
+        "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
+      }
+    ],
+    "relation": "covers_case_clauses",
     "covers": {
       "T15-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: ownership is not re-verified after the awaited secret read",
-    "limitation": "Not execution evidence. Follow-up: credential-materializer claimed materialization (S)",
-    "id": "B257"
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt.",
+    "id": "B257",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 522
+      }
+    ]
   },
   {
     "name": "t16_c01_platform_relay_route_minted_in_the_window_keeps_a_cleanup_owner",
@@ -228,5 +249,79 @@
     "review": "compile_fail doctest pinned to E0599: the plain memory writer exposes no purge capability.",
     "limitation": null,
     "id": "B260"
+  },
+  {
+    "id": "B261",
+    "name": "t15_c02_receipt_acknowledgement_never_releases_material_after_authority_changes",
+    "covers": {
+      "T15-C02": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 528,
+        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 552
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 557
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 566
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 570
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 576
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 578
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 579
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 580
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 585
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E42",
+        "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_receipt_acknowledgement_never_releases_material_after_authority_changes",
+        "package": "awaken-credential-materializer",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
+        "historical": false,
+        "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt."
   }
 ]

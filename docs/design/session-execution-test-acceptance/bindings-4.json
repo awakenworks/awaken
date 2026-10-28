@@ -952,7 +952,7 @@
         "negative_control": false
       }
     },
-    "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch.",
+    "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch. Navigation lines refreshed after the proxy fixtures changed; this bound test body and its assertions are byte-identical. Original execution source and log hashes are retained.",
     "limitation": null,
     "id": "B114"
   },

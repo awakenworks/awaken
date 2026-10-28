@@ -194,3 +194,33 @@ for transparent authenticated relay transport. Optional live-provider tests are
 explicitly ignored in ordinary runs; selecting one for qualification requires
 its credentials and fails when they are absent. Such a test alone does not
 prove isolated ACP reachability or deployment-specific no-bypass networking.
+
+
+### Hosted Environment authoring clients
+
+Native Environment and sandbox-policy request DTOs remain owned by
+`awaken-protocol-awaken`. Their existing server decoders are also serializable
+public client contracts, so Hosted consumers reuse the exact types rather than
+maintaining another JSON schema or registry. Policy creation still chooses the
+initial version on the server; Environment creation atomically binds that exact
+policy through the existing `EnvironmentApplication` command, receipt and
+registration delivery. Workspace scope and stable command identities remain
+explicit. Making the wire values reusable adds no authoring or execution authority.
+### Scoped native dispatch observation
+
+The lower Session application contract owns the neutral observable vocabulary
+and scoped query port. Dispatch remains the sole owner of leases and physical
+attempts. Its neutral
+read role projects admission pending, admitted, recovery pending or unavailable
+from the current row, exact physical identity and store-clock claim guard.
+A second physical read fences a changed attempt; a Claimed/Running label alone
+never means admitted. This is a read projection, not execution/stop permission.
+
+The existing profiled Session owner and exact Run membership read run before
+the new `/v1/awaken/sessions/{id}/runs/{run}/dispatch` projection. The Coordinator query composition binds the Session application's original
+Run membership port and its verified canonical Dispatch source. The native protocol owns only scope/
+path decoding, HTTP status and JSON projection. Native Coordinator composition mounts the same read for both
+standalone and Cloud. Embedded and Hosted Flow consume this one projection;
+neither persists another phase, polls Kubernetes or creates recovery authority.
+Dependency failures stay unavailable; foreign coordinates reject before a phase
+is returned. Existing Run event pages and their wire shape stay unchanged.

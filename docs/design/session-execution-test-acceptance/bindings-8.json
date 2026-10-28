@@ -585,14 +585,14 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 221,
+        "line": 222,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 230
+        "line": 231
       }
     ],
     "execution_witnesses": [
@@ -627,22 +627,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 261,
+        "line": 262,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 275
-      },
-      {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 276
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 280
+        "line": 277
+      },
+      {
+        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "line": 281
       }
     ],
     "execution_witnesses": [
@@ -677,22 +677,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 354,
+        "line": 355,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 365
-      },
-      {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 366
       },
       {
         "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 377
+        "line": 367
+      },
+      {
+        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "line": 378
       }
     ],
     "execution_witnesses": [

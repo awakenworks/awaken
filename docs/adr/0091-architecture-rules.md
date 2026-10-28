@@ -86,10 +86,11 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
    not change counted only edges between contracts; merging them removes 46 edges from
    their users and 17 between contracts.
 
-3. **Size is measured per module.** The ADR-0081 §7 budgets (2,000 production lines for
-   a module declaring ports, 8,000 for a vocabulary module) apply to each module; a
-   crate's total size is not a reason to split it. The guard's advice changes to "split
-   the module".
+3. **Size is observed per module.** The ADR-0081 §7 references (2,000 production lines
+   for a module declaring ports, 8,000 for a vocabulary module) remain per-module
+   measurements. Under D8 they are diagnostic, not admission limits. A module or
+   crate is split when its responsibilities or boundary require it, rather than
+   because its line count crosses a recorded number.
 
 4. **Trait admission.**
    - A trait exists only when its caller and implementer must not depend on each other,
@@ -139,15 +140,28 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
       no such name exists it has no single responsibility and is split. A `Weak`
       back-reference must state why it is not a construction cycle.
 
-8. **Guards.** Each rule above has a ratchet whose baseline may only shrink: contract
-   crates on the target map; per-module size; `Option<&dyn Role>` accessors (31),
+8. **Guards.** Structural rules above have ratchets whose baselines may only shrink: contract
+   crates on the target map; module dependency relationships; `Option<&dyn Role>` accessors (31),
    bundle traits in contracts (18) and contract traits without a production
    implementation (4); mechanism-named types outside composition roots (33); bare
    `Runtime` outside the SDK (5); new bare `Provider`, `Coordinator` or `Host` types
    (none allowed); the noun `Turn` outside protocol adapters (0); the vocabulary check
    extended from documents to code identifiers; configuration reads outside binaries.
 
-   Explicit baseline growth uses the existing owning guard's `--write-baseline`
+   **Line measurements are diagnostic (2026-10-28).** File, function, module and
+   crate line counts, including the host and extracting-realization measurements,
+   remain visible for review. Exceeding a threshold or a recorded line baseline
+   emits a warning and does not block a check, commit or integration. A decrease
+   does not require rewriting the baseline before continuing either. Existing
+   measurements and historical ceilings may be retained without raising them.
+   Responsibility, ownership, dependency direction, duplicated authority, CAS and
+   replay behavior, and executed tests determine whether a change is acceptable;
+   structural violations and failed tests remain failures. Production code and
+   tests are not moved, compressed or removed merely to meet a line count.
+   Source-location and assertion anchors still have to identify the exact code
+   they describe; those evidence checks are independent of file-size metrics.
+
+   Explicit structural baseline growth uses the existing owning guard's `--write-baseline`
    path and shared `_architecture_ratchet.baseline_cli` admission. A new `--reason`
    value is one JSON object containing exactly four nonempty string fields:
    `reason` (why the allowance must grow), `approved_by` (the actual reviewer),
@@ -306,10 +320,9 @@ count at zero.
    Session executor or any Worker-side crate in the crate's normal closure;
    rule `D4` checks the closure of the package that declares the Coordinator
    binary (`awaken-coordinator-process`), because Cargo links every target of
-   a package with that package's closure. The crates that closure still
-   reaches are reviewed transitions in
-   `scripts/ci/coordinator_binary_closure_baseline.json` (9 today); a new
-   reach is refused and a transition leaves with `--tighten`. The co-located
+   a package with that package's closure. The reviewed transitions in
+   `scripts/ci/coordinator_binary_closure_baseline.json` have been tightened to
+   empty; D4 refuses any new Worker-side reach. The co-located
    root (`awaken-cli`) is the root meant to link executor and realization
    together ([Coordinator-only composition](../design/runtime-interface-boundaries.md#coordinator-only-composition)).
 

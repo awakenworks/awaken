@@ -56,22 +56,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 298,
+        "line": 300,
         "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 316
+        "line": 320
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 324
+        "line": 328
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 325
+        "line": 329
       }
     ],
     "execution_witnesses": [
@@ -106,22 +106,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 347,
+        "line": 354,
         "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 360
+        "line": 369
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 361
+        "line": 370
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 365
+        "line": 374
       }
     ],
     "execution_witnesses": [
@@ -155,35 +155,63 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 350,
-        "file_sha256": "43b517de73d9a708aff5bcb334fe199980b0abf2d3cb405eaee63d970b7bdc18"
+        "line": 435,
+        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 361
+        "line": 446
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 362
+        "line": 447
       },
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 363
+        "line": 448
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 449
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 450
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 466
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 467
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 480
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 492
+      },
+      {
+        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "line": 493
       }
     ],
     "execution_witnesses": [
       {
-        "evidence": "E16",
+        "evidence": "E42",
         "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
         "package": "awaken-credential-materializer",
         "target": "nextest",
         "result": "passed",
         "skipped": false,
-        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
         "historical": false,
-        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+        "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
       }
     ],
     "relation": "covers_case_clauses",
@@ -195,8 +223,8 @@
         "negative_control": true
       }
     },
-    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt.",
     "id": "B224"
   },
   {
@@ -204,27 +232,27 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 421,
-        "file_sha256": "43b517de73d9a708aff5bcb334fe199980b0abf2d3cb405eaee63d970b7bdc18"
+        "line": 501,
+        "file_sha256": "fa1acaa6fb525fc8415e4998acdb804febdde7fd43458e0f092d24370b1100bc"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
-        "line": 428
+        "line": 509
       }
     ],
     "execution_witnesses": [
       {
-        "evidence": "E16",
+        "evidence": "E42",
         "case": "awaken-credential-materializer tests::revocation_wait::t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
         "package": "awaken-credential-materializer",
         "target": "nextest",
         "result": "passed",
         "skipped": false,
-        "source_head": "bbd5d3bec420625be8b83f7af78d2277e940f942",
+        "source_head": "63a5f05812e6ef44ef01f8541b7584749e696f36",
         "historical": false,
-        "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
+        "log_sha256": "7a83b560a3a91abf381387c24ea5ab82974ae17ac50a7095e97bb1567db932a0"
       }
     ],
     "relation": "covers_case_clauses",
@@ -236,8 +264,8 @@
         "negative_control": false
       }
     },
-    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
+    "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt.",
     "id": "B225"
   },
   {
