@@ -225,7 +225,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 38,
+        "line": 50,
         "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
       }
     ],
@@ -274,14 +274,14 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 56,
+        "line": 68,
         "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 74
+        "line": 86
       }
     ],
     "execution_witnesses": [
@@ -315,14 +315,14 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 191,
+        "line": 206,
         "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 196
+        "line": 211
       }
     ],
     "execution_witnesses": [
@@ -356,14 +356,14 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 211,
+        "line": 233,
         "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
-        "line": 220
+        "line": 243
       }
     ],
     "execution_witnesses": [

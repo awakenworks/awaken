@@ -123,6 +123,25 @@ Sessions remain on their Environment WorkQueue and are not admitted through
 this no-Run path. Another live owner's lease is not reassigned; outage keeps
 the root retryable and a phase failure retains its ordinary durable result.
 
+### Run-free MCP updates on an existing Session
+
+An Idle externally placed Session's pending MCP stage, publication or drain
+uses this same preparation index and authenticated Worker claim. Its committed
+desired generation is the demand; no Run, job or second request flag is created.
+The Coordinator never realizes that Worker-owned update locally, even when its
+process also has co-located realization roles. Claim admission re-reads the
+root and retains the existing owner/epoch rules. A self-hosted Environment may
+use this lane for an Idle MCP update only after a realization owner exists;
+its initial WorkQueue placement remains unchanged. The shared driver retains
+physical Environment admission and receipt verification.
+
+Credential rollout remains pending until the desired source revision is Active
+and publication-acknowledged, or a revoked source is absent from both desired
+configuration and every live generation. The existing source-reference index
+therefore retains draining generations until their ordinary terminal result.
+Operational migration rebuilds these root-derived indexes with the existing
+store migration opener; Server startup continues to verify them read-only.
+
 A retry-exhausted claim bypasses execution placement and materialization. The
 Worker uses the same claim-fenced commit transport to append
 `Ended(Indeterminate)` and attempts the same `Done` settlement/tombstone.

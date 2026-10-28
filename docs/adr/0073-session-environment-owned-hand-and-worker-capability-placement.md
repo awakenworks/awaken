@@ -81,6 +81,15 @@ ACP is eager because the opaque process itself needs the Environment. A2A-only
 execution never realizes one; local mounts, repositories, memory or executable
 Skills combined with outbound A2A fail before provisioning.
 
+The management capability projection reports verified protocol support separately
+from backend-owned login readiness. An active but unavailable WorkerLocal source
+must not hide the protocol observation needed by a Provider-owned publication.
+`local.detected` and `local.negotiated` require the existing live protocol selector;
+`local.login_state` claims availability only when the credential-bound selector
+finds coherent evidence on the same Worker. Clients use the published model's
+credential source when presenting readiness. Publication and Dispatch still admit
+the exact required credential; this projection grants no execution authority.
+
 Failures are fail-closed: an insufficient Worker cannot claim; a lost claim is
 retried under the existing lease/epoch fence; a failed Environment binding is not
 published; a remote A2A transport failure is an attempt failure and never falls

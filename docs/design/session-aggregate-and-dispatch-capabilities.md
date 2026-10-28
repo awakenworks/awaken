@@ -164,6 +164,23 @@ existing CAS and replay boundaries. Work remains responsible for original
 business-effect reconciliation and successor admission; this Native slice
 does not certify an indeterminate tool result as successful.
 
+Cold terminal cleanup must not move an unprepared Resident-source obligation
+to another Actor while its frozen Dispatch scope remains unsettled. The existing
+`SessionTerminalCleanups` claim revalidation reads `SessionCoordinationReads`
+before checking Registry authority and before/after the root CAS. A pending,
+unavailable or unproven source read skips the new assignment; an uncertain CAS
+uses the existing exact-predecessor compensation. It neither closes the old
+attempt nor acknowledges cleanup. Exact prior owners may continue their own
+obligation. Unmaterialized/continued sources and already-prepared disposal retain
+their existing provider-verified recovery paths; no absent historical binding is
+promoted to no-Create evidence. The existing archive-receipt reader supplies the
+same no-Create qualification for assignment and occupancy.
+
+This reuses Session roots, Dispatch reads, Registry fencing and compensation
+unchanged; only the existing external cleanup selection is narrowed. No queue,
+retirement authority, persisted state or wire contract is added. Runtime still
+checks source safety immediately before live I/O, independently of selection.
+
 Local composition constructs `AnyCoordinatorDispatch` from an owner implementing
 `DurableDispatch`, then uses `DispatchBinding::local`. Its cached Worker view
 retains the exact queue owner. Remote composition uses
@@ -367,3 +384,34 @@ successor admission. The private release response still requires the exact
 verified cleanup receipt; pending cleanup retains the original cleanup obligation
 and returns no successful release. No route, persisted Session field, recovery
 queue or product WorkUnit state is added.
+
+Profiled creation reuses `agent_configuration_from_profile` and the same
+pre-insert `CompleteSessionRoot` recorder as Managed creation. The
+already selected publication, model choice, tools and roster supply that seed;
+the original root owns its immutable initial configuration. MCP updates can
+therefore retain a complete Agent fact without consulting a later catalog.
+Unversioned profiles use the existing unpinned-baseline/version-one presentation
+law. Existing roots are never backfilled with a current publication.
+Managed inheritance and Profiled union also use the same MCP candidate lowering:
+published credential pins require both a nonempty source and positive revision.
+Managed full replacement still suppresses unused publication defaults; Profiled
+union still delegates Agent-versus-Session precedence to the existing aggregate.
+
+Private profiled release returns the verified termination owner's result rather
+than a Managed Session DTO. Its sequence is scope authorization, archive CAS,
+canonical cleanup and exact completion receipt, then the existing release
+response. It neither realizes an Environment nor refreshes the complete event
+projection. A retained historical `Unrecorded` Agent update still prevents a
+complete history read, but cannot turn a verified cleanup into a false failure.
+Pending or failed cleanup still returns an error and keeps the original fence;
+ordinary public archive continues to return the full projected Session.
+
+MCP credential rotation and realization generations remain operational Session
+state, separate from the accepted Agent presentation. `SessionUpdateChanges`
+compares the root's canonical configured MCP values; changing only a credential
+pin, holder or realization phase does not manufacture an Agent update. The
+application still commits the existing `mcp_changed` decision and reconciles the
+same durable MCP intent, including on exact receipt replay. Adding, removing or
+changing a configured server still records its original immutable Agent fact.
+Existing historical facts are never rewritten, and a missing historical Agent
+snapshot is never reconstructed from the current catalog to admit renewal.

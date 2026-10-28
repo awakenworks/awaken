@@ -168,7 +168,7 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | `product_gap` | 产品尚不满足某条 oracle；复现测试按正确行为断言并以 `#[ignore = "product gap: …"]` 忽略，不计为执行证据；已成立的 oracle 仍可另有执行绑定 |
 | `platform_pending` | 只能在当前授权范围外的平台验证（例如 Linux 内核 FUSE），写明原因；不报告通过 |
 
-`acceptance_state` 均保持 `pending`：验收要求包含 T35 平台门禁，Linux 与 FUSE 不在本次授权范围内，公共门禁无法闭合。
+`acceptance_state` 均保持 `pending`：原始校准按 Windows 范围记录；后续按用户当前授权补充本机 Linux 证据。历史 receipt 不改写，公共门禁和完整场景仍须分别闭合。
 
 ### 批次
 
@@ -178,7 +178,8 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | 组件 | T01-C01、T14-C01 | `current_clause_complete` | E13 |
 | 组件 | T06-C01、T07-C01、T11-C02、T12-C01、T13-C03、T15-C01、T27-C01、T27-C02、T41-C01 | `current_clause_complete` | E13、E40、E41 |
 | SQL、全后端与原生效果 | T05-C01、T11-C03、T18-C01、T26-C03、T25-C03、T24-C02、T20-C03、T34-C01、T34-C02、T07-C03、T28-C03、T28-C02 | `current_clause_complete` | E16（T26-C03 另有 E18） |
-| SQL、全后端与原生效果 | T04-C03、T17-C01、T17-C02、T17-C03、T12-C03、T33-C02、T38-C03、T23-C03、T08-C02、T08-C03、T09-C02、T10-C03、T38-C02、T06-C02、T15-C02、T16-C01、T10-C02 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
+| SQL、全后端与原生效果 | T04-C03、T17-C01、T17-C02、T17-C03、T12-C03、T33-C02、T38-C03、T23-C03、T08-C02、T08-C03、T09-C02、T10-C03、T38-C02、T06-C02、T16-C01、T10-C02 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
+| 凭据读取与回执等待 | T15-C02 | `current_subset` | E42（Linux Provider/A2A 的具名等待断言）；完整场景未验收 |
 
 #### 静态门禁
 

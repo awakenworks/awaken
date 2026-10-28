@@ -82,14 +82,29 @@ over the shared process startup
 which links no Worker: the `awaken` launcher (`awaken-cli`) supplies the Worker
 an AllInOne process co-locates through
 [`ColocatedWorkerPreparation`](../../crates/bin/awaken-process-startup/src/colocated_worker.rs),
-and the Coordinator package supplies none. The startup still builds the full
-Session executor for the Coordinator role (`SessionExecutorBuilder::for_coordinator`)
-because the Coordinator-side Session execution still lives there. Rule D4
-checks the closure of the package that declares the binary and holds the
-remaining Worker-side crates as reviewed transitions in
-`scripts/ci/coordinator_binary_closure_baseline.json`; a new reach is refused
-and each transition is removed with `--tighten` when its crate leaves the
-closure.
+and the Coordinator package supplies none. Registered-Worker startup constructs
+shared Run delivery and commit components directly. The `LocalWorker` branch
+consumes one launcher-supplied `ColocatedExecution` constructor. Its port and
+selected-input declarations belong to the existing Coordinator execution-port
+module, so startup unit tests and the CLI use one type identity. The CLI owns the
+original SDK, Environment, ACP, Memory and model/credential assembly. Shared
+startup names none of those concrete execution implementations. Rule D4 checks
+the normal dependency closure of the binary's package against an empty
+`scripts/ci/coordinator_binary_closure_baseline.json`; any Worker-side reach is
+refused. Passing this graph check is distinct from final distributed acceptance.
+
+The constructor consumes the original selected ports once, returns the Session
+roles, Dispatch and artifact fence, and captures its SDK only in a one-shot
+completion. Startup builds the Session application from those roles, then invokes
+that completion to connect the existing application-bound observation. Constructor
+failure returns the original startup error before exposing routes. Registered
+placement never invokes it and selects the original direct Run delivery path.
+The local Vault's resolver and SecretBroker views are selected from the same Arc
+at the composition root; the launcher alone constructs the pinned materializer.
+The inference materializer port lives beside the existing endpoint executor
+factory in `awaken-inference-endpoint`, within Execution rather than Credentials.
+An AllInOne product override is passed to the actual registered Worker before
+construction, with its supported schemes reflected in the Worker manifest.
 
 ### Composition mechanism
 
@@ -109,27 +124,135 @@ have left the executor and the Worker-side crates.
 
 | Coordinator need | Owner today | Reaches Worker-side code on that path | Destination |
 |---|---|---|---|
-| Run admission and delivery (`RunApplication`, `DurableRunOperations`, `SessionRuntime`, `StreamingRunRuntime`, and the `CoordinationRuntime` reservation, report continuation and resume paths) | `SessionRuns` and `ChildRunCoordination` over `RunAssembly::ctx_for*` | Yes: every role entry first revalidates Resource bindings through the realization executor, and the dispatch envelope is built from a Session context opened under the realization lifecycle lock. Measured on 2026-10-25: of that context the Coordinator uses only the effective Agent snapshot, the Skill registry for slash expansion and the commit boundary; but the envelope compiler (`DispatchPreparation`) also reads the run Resource manifest, the pinned Skill bytes and the MCP stage requests, which the `Dispatch` projection install stages through the realization's Resource staging. `DurableRunOperations::cancel` refuses on a Coordinator without a pool (no local claimer); `deliver`, `resume` and the dead-letter verbs open an execution context | `awaken-session-run-delivery`, which builds the envelope from the frozen projection and the publication closure; attempt execution stays in the executor. Decided: the Coordinator lowers the frozen projection to immutable descriptors/content digests; the Worker fetches and stages the content. `SessionProjections` and `WorkerPlacedSessions` implement that path in Run delivery; the production startup still needs to select them instead of the executor |
-| Frozen projection installation (`RealizationRuntime`) | `RunAssembly`, `InstalledSessions` | Yes: on the Worker placement the Session application installs a `SessionProjectionInstallMode::Dispatch` projection into the executor's realization registry only so Run admission can read it back | The Session application, which already owns the frozen projection; Run admission reads it there and the Dispatch install mode disappears |
-| Realization lease renewal, Environment, terminal-cleanup and realization effects (`RealizationRuntime`, `EnvironmentRuntime`, `TerminalCleanupRuntime`, `RealizationEffects`) | `RunAssembly`, `RealizationExecutor` | Yes | The Worker only (realization and its driver); the Coordinator issues them as dispatched preparation and cleanup work. The Session application reaches these roles through one `SessionExecutor` for every placement today, so this needs placement-typed role sets in the application; a Session whose frozen placement needs a local owner is refused by the Worker-placement set |
+| Run admission and delivery (`RunApplication`, `DurableRunOperations`, `SessionRuntime`, `StreamingRunRuntime`, and the `CoordinationRuntime` reservation, report continuation and resume paths) | Co-located: `SessionRuns` and `ChildRunCoordination` over `RunAssembly::ctx_for*`; registered Workers: `WorkerPlacedSessions` over the frozen `SessionProjections` | Co-located only: every role entry first revalidates Resource bindings through the realization executor, and the dispatch envelope is built from a Session context opened under the realization lifecycle lock. Measured on 2026-10-25: of that context the Coordinator uses only the effective Agent snapshot, the Skill registry for slash expansion and the commit boundary; but the envelope compiler (`DispatchPreparation`) also reads the run Resource manifest, the pinned Skill bytes and the MCP stage requests, which the `Dispatch` projection install stages through the realization's Resource staging. `DurableRunOperations::cancel` refuses on a Coordinator without a pool (no local claimer); `deliver`, `resume` and the dead-letter verbs open an execution context | `awaken-session-run-delivery`, which builds the envelope from the frozen projection and the publication closure; attempt execution stays in the executor. Decided: the Coordinator lowers the frozen projection to immutable descriptors/content digests; the Worker fetches and stages the content. `SessionProjections` and `WorkerPlacedSessions` implement that path in Run delivery; registered-Worker production startup now selects them directly; the co-located placement keeps its executor |
+| Frozen projection installation (`RealizationRuntime`) | Co-located: `RunAssembly`, `InstalledSessions`; registered Workers: `SessionProjections` | Co-located realization only. Registered-Worker production now installs and reads the frozen projection directly in Run delivery | The Session application, which already owns the frozen projection; Run admission reads it there and the Dispatch install mode disappears |
+| Realization lease renewal, Environment, terminal-cleanup and realization effects (`RealizationRuntime`, `EnvironmentRuntime`, `TerminalCleanupRuntime`, `RealizationEffects`) | Co-located: `RunAssembly`, `RealizationExecutor`; registered Workers select no local effect roles | Co-located only | The Worker only (realization and its driver); the Coordinator issues them as dispatched preparation and cleanup work. The Session application selects the existing placement-typed role set at construction. Realization and MCP stage/publication/drain capabilities belong only to its co-located variant; a Worker-only application requires no MCP effect owner or placeholder. A Session whose frozen placement needs a local owner is refused by the Worker-placement set |
+| Session preparation placement (`SessionPreparationPlacement`) | `awaken-dispatch-execution::PreparationPlacement`, over the unchanged `placement::session_preparation_requirements` law | No | The root supplies the same original compiler Arc to Session admission and Worker transport, so exact/foreign-instance validation stays unchanged. `ProcessDispatch` exposes that child component, implements no preparation role and is released when only the compiler remains |
 | Prospective Sandbox layout validation | `RealizationEffects::validate_session_sandbox_layout` | No provider on this path: a Worker-placement layout is validated structurally (`validate_structural_binding_layout`) | The Worker-placement role set, over the same structural kernel; no provider capability is needed |
 | Retained-source observation for Worker retirement | *done*: Worker-reported data ([worker retirement](worker-retirement.md#amendment-2026-10-24-retention-is-worker-reported-data)) | No | The Coordinator's occupancy read names the subjects and decides from the facts the draining Worker reports in its heartbeat; the Worker observes through its own execution provider (`RunAssembly::observe_source_retention`). The read-only observation assembly is deleted |
-| Committed Thread reads and the Worker recovery source (`ThreadReadRuntime`) | `ThreadReads` | Partly: its lifecycle-held cleanup reads | Committed reads: the Coordinator-side crate over the runtime authority; lifecycle-held cleanup reads stay with the Worker |
-| Claimed commit ingest (`ClaimedOperationCoordinatorResolver`) | `commit_ingest::session_commit_owner` | No, but it lives in the executor with `HostCommit` and `SessionAuthority`, and `ThreadReads::commit_for_read` takes the realization lifecycle lock before it opens the commit | `awaken-session-run-delivery`, together with `HostCommit` and the local `SessionAuthority`; a Coordinator opens the commit straight from its runtime authority |
-| Completion relay, Worker stream sink, Thread event hub | *done*: [`awaken-session-run-delivery`](../../crates/server/awaken-session-run-delivery/src/lib.rs) (`CompletionRegistry`, `ThreadEventHub`, the register-before-activate wait); the completion port `CompletionSink` is a dispatch contract | No | The executor's `SettlementWakeup` settles through the relay, then wakes the Session application (the `SessionApplicationBindings` wakeup, which leaves with the placement-typed role sets) |
-| Terminal Memory settlement observer | `MemoryDispatchSettlementObserver` | Yes (measured 2026-10-25, the earlier "No" was wrong): it compiles the frozen Memory bindings with the realization's `MemoryBindingCompiler` and runs extraction on the executor's `MemoryRuntime` with the inference materializer and auxiliary sandboxes | Decided: record the existing extraction intent on the Coordinator, dispatch the frozen extractor as an ordinary Run to a Worker, and decode its committed proposals before applying through `MemoryExecutionContent`. `awaken-session-run-delivery` owns the stateless proposal sink, exact committed-Run decoder, shared auxiliary snapshot selection and the existing process-owned Memory recovery registration; `write_memory` schema/filtering and the extraction controller remain with `awaken-ext-memory`. The remote dispatch/settlement wiring remains; the compiler does not move to a contract and extraction does not execute on the Coordinator |
+| Committed Thread reads and the Worker recovery source (`ThreadReadRuntime`) | *done*: `awaken-session-run-delivery::CommittedReads` over a selected `SessionCommitSource` | Only the embedded source: its `InstalledCommitSource` retains lifecycle-held cleanup reads | A Coordinator selects the existing `AuthorityCommits` directly over its Runtime authority. SDK raw opens now implement that same `SessionCommitSource` role: local opens delegate to `AuthorityCommits`, remote opens retain a fresh recovery projection without committed authority. The SDK private authority declares no duplicate raw-open/existence methods. `InstalledCommitSource` still owns resident reuse and lifecycle serialization; production selects `AuthorityCommits` for registered Workers and retains `InstalledCommitSource` only for co-located execution |
+| Claimed commit ingest (`ClaimedOperationCoordinatorResolver`) | The startup binds `CommittedReads::commit_owner` through `SessionCommitOwner`, retaining only the selected `CommittedReads` | The commit boundary is shared and the adapter releases the executor composition; registered-Worker production selects `AuthorityCommits`; co-located execution retains its embedded source | Select `CommittedReads` over `AuthorityCommits` directly; claim fencing and `ClaimedCommitService` remain unchanged |
+| Completion relay, Worker stream sink, Thread event hub | *done*: [`awaken-session-run-delivery`](../../crates/server/awaken-session-run-delivery/src/lib.rs) (`CompletionRegistry`, `ThreadEventHub`, the register-before-activate wait); the completion port `CompletionSink` is a dispatch contract | No | `SettlementWakeup` now shares the Run delivery owner and receives one relay and one notification-only callback at construction. The root selects that same sink for pool/terminal-scan startup and authenticated Worker completion. The callback retains only the original lifecycle signal, not the application, mutation authority, Repository or Clock. The original pool admission owner is constructed with `ProcessDispatch`, before pool or terminal-scan startup. Both services retain its shutdown signal, so drain closes cold and constructing services through the same absorbing gate without waiting for a synchronous resolver factory. Constructor failures before drain remain retryable. Standalone SDK/Worker execution uses the original raw relay. The lifecycle-wakeup slot and weak application closure are deleted; only coordination/background-submission bindings remain. Managed composition refuses a pre-started pool or scanner before changing either application binding, because its service completion port is already immutable |
+| Terminal Memory settlement observer | `DispatchedMemorySettlement` for Worker placement; `MemoryDispatchSettlementObserver` for embedded execution | The Worker-placement adapter links no executor or model materializer; registered-Worker production selects the shared adapter | Decided: record the existing extraction intent on the Coordinator, dispatch the frozen extractor as an ordinary Run to a Worker, and decode its committed proposals before applying through `MemoryExecutionContent`. `awaken-session-run-delivery` owns the stateless proposal sink, exact committed-Run decoder, shared auxiliary snapshot selection and the existing process-owned Memory recovery registration, and the canonical frozen Memory binding/compiler. Realization and embedded execution consume these same binding values, retaining the selected live verifier, content roles and commit identity; only the Worker reference-transport intersection remains in realization. Moving the binding's lock keeps its original public poison code and retryable classification. `write_memory` schema/filtering and the extraction controller remain with `awaken-ext-memory`. The executor's single Memory tool factory now selects that frozen proposal descriptor for embedded and ordinary Worker execution (Native or the existing ACP bridge), including a scoped unattended baseline which retains authored ask/deny. It distinguishes the SDK proposal from the Session store writer by the existing descriptor namespace and execution kind; committed proposal decoding checks the same contract. Embedded recovery holds the original `SessionCommit` and consumes a single authoritative recovery prefix before realizing a model, so an already committed extractor is recoverable without a working provider. The pure decoder takes that prefix's record and messages; it does not query a process-local projection. Worker recovery projections cannot supply committed Memory authority. The Worker-placement adapter now persists the existing intent from one exact authoritative terminal prefix and registers the original background recovery without waiting for a Worker while the parent is settling. Proposal-producing Runs do not recursively trigger extraction. Projection installation recovers every writable frozen Memory binding, even with the current parent plugin disabled. The controller selects execution scope through its existing revision fence before claiming pristine work; progressed work cannot relocate. The compiler does not move to a contract and extraction does not execute on the Coordinator. Registered-Worker production now selects this observer and its existing extraction/recovery owners |
 | Worker File content | `ResourcePorts::file_content_source` (the root's own Resource application value) | No | Selected by the root from the Resource application |
 | Content capture policy | `ContentCaptureCapability` (Deployment ceiling and Control policy sources) | No | Composed by the root from the same two values |
-| Coordination reads, child-Run coordination binding, dispatch observation | `ChildRunCoordination` | Child-Run launch: yes | Coordination reads: the Coordinator-side crate; child-Run launch: the executor |
-| Budgets and Outcomes (`BudgetRuntime`, `OutcomeRuntime`) | `BudgetAccounting`, `Outcomes` | Outcomes launch grader Runs; a grader whose snapshot is not environment-free opens an execution context, which needs an Environment provider a Coordinator does not have; a budget resume without a dispatch row opens an execution context | `awaken-session-run-delivery`, over Run admission; grader Runs are dispatched like every other Worker-placement Run |
-| Thread Workspace and Agent projection registry (`CapabilityRuntime`) | `RunCapabilities` | No | The Coordinator-side crate; tool, MCP, ACP and credential capability assembly stays in the executor |
-| Committed-terminal reconciliation resolver | `CommitBoundaryAssembly` | Carries `RunCapabilities` for remote cancellation | The Coordinator-side crate; `ProcessDispatch` stays in dispatch-execution |
+| Coordination reads, child-Run coordination binding, dispatch observation | Shared `CoordinatedThreads` selected directly for coordination reads by both role sets; `SessionDispatchObserver` owns application-bound admission and settlement; `ChildRunCoordination` owns embedded commands | Child-Run launch: yes; the embedded Thread component retains its existing `InstalledSessionLowering` and Run assembly, while Worker placement lowers frozen projections | Coordination reads have one implementation in `awaken-session-run-delivery`, without a command or placement facade; child-Run launch stays in the executor. The original dispatch, committed reads, replay and fence laws are unchanged |
+| Budgets and Outcomes (`BudgetRuntime`, `OutcomeRuntime`) | Shared `SessionBudgets`, selected directly by both executor and Worker-placement role sets; SDK `Outcomes` and Worker-placement Outcomes | Outcomes launch grader Runs; a grader whose snapshot is not environment-free opens an execution context, which needs an Environment provider a Coordinator does not have; a budget resume without a dispatch row opens an execution context | `awaken-session-run-delivery`, over Run admission; grader Runs are dispatched like every other Worker-placement Run |
+| Thread Workspace and Agent projection registry (`CapabilityRuntime`) | Co-located: `RunCapabilities`; registered Workers: `SessionProjections` and the shared admission-read role | No | The root selects workspace and Agent projections from those original owners; tool, MCP, ACP and credential capability assembly stays in the executor |
+| Committed-terminal reconciliation resolver | `awaken-session-run-delivery::SessionCommitWorkers` is the sole `CommitBoundaryWorkers` / `ThreadCommitBoundary` implementation, over the selected raw source, dispatch binding, clock and recovery reader | The SDK supplies only `EmbeddedBoundaryObservation`, which retains its original late coordination/Memory selection; the shared factory itself links no executor, realization or provider. `SessionDispatchObserver` configures the same factory role directly for application-owned observation | Registered-Worker production now selects the shared factory with `AuthorityCommits`, the existing Session observer and the Worker Memory settlement adapter. Cancellation executor selection stays exclusively on the claiming Worker; the shared factory exposes no cancellation switch. `ProcessDispatch` stays in dispatch-execution |
+| Process dispatch lifecycle | `awaken-session-run-delivery::SessionDispatchLifecycle`, over the original `ProcessDispatch` and `BackgroundRuns` | The SDK factory supplies its original lazy resolver; the lifecycle component links no executor, realization or model | The root and Worker role set select the same implementation. The SDK `CoordinatorRoles` / `ProcessOperations` implementation is deleted. Service topology, fallible initialization and absorbing drain stay with `ProcessDispatch`; claimed Runs finish before auxiliary drain, within one original deadline. Registered-Worker production selects the shared resolver/roles; co-located composition is supplied by the CLI |
 | Deployment configuration (`DeploymentConfig`, `SandboxSettings`, `ExecutionTopology`, `CoordinatorStorage`) | *done*: `awaken-deployment-config`, the execution context's domain crate | No | Every root resolves it without linking the executor; the executor projects it with `SessionExecutionProcess::from_deployment`, dispatch-execution with `DispatchServiceConfig::for_topology`; the container MCP relay exposure it carries lives in `awaken-session-environment-contract` |
 | Kubernetes Worker fleet control (Pod identity authentication, Pod process observation and stop, the Worker create ledger) | *done*: [`awaken-worker-fleet-kubernetes`](../../crates/shared/awaken-worker-fleet-kubernetes/src/lib.rs), selected by the root's Worker transport; Pod identity authentication stays in `awaken-worker-transport-security` | No | The fleet crate is `shared`, not Coordinator-only: the Worker observes its own Pod process through it, and the Kubernetes Sandbox adapter creates Sandbox Pods through the same Create ledger and isolation guard and reuses its Kubernetes API boundary (status classification, the Pod metadata CAS loop, API-default normalization, managed Pod/claim names) instead of a second copy |
 | Environment package image provisioning (`EnvironmentImageBuildCoordinator`) | *done*: the Docker, Podman and Kubernetes builders of [`awaken-package-image`](../../crates/worker/awaken-package-image/src/selection.rs), constructed from the deployment's `SandboxSettings::package_image_build_settings` (`PackageImageBuildSettings` in `awaken-container-contract`) for the builder `SandboxSettings::package_image_builder_for` selects, and consumed by the Environment image build context (`awaken-environment-package-image-builder`) over the `PackageImageProvisioner` port | No: no Sandbox adapter builds images any more | Destination changed from "a port the container engines implement". A Worker's container provider receives the same builder through `with_package_provisioner`, and without one package requirements fail closed. Each root matches the selected builder to the engine it links: the Coordinator has no Environment image builder for an unlinked engine, a Worker refuses the deployment by name. The Podman builder and the Podman Sandbox adapter share one child-process environment (`awaken_local_process::podman`) |
 | Local Memory invalidation bus (`LocalInvalidator`) | *done*: `awaken-resource-contract`, beside the `MemoryInvalidator` port it implements | No | The Resources stores every process opens publish to it; only the Worker's Memory mounter (`awaken-sandbox-memoryd`) subscribes. A context seam forbids the mounter from reaching the Resource application, so the contract owns the bus |
-| Credential realization the startup named for Control and its own guard | *done*: the endpoint executors and the Awaken Cloud broker transport ([`awaken-inference-endpoint`](../../crates/server/awaken-inference-endpoint/src/lib.rs)), the recipient-key envelope ([`awaken-credential-envelope`](../../crates/shared/awaken-credential-envelope/src/lib.rs)), the refresh port (`awaken-credential-contract`), the ambient provider-key guard (`awaken-deployment-config`) and the live MCP credential probe (`awaken-control`) | No | The startup still names the materializer only for the AllInOne model and credential plane (`PinnedCredentialMaterializer` over the local Vault, `CredentialInferenceMaterializer`, the A2A attempt relay capabilities, the hosted `InferenceExecutorMaterializer` adapter). Destination: the co-located execution composition (`awaken-cli`) with the executor; the hosted inference materializer becomes an input of that composition, so awaken-cloud's `CoordinatorServiceAdapters::with_inference_materializer` call moves with it |
-| Process startup (configuration, stores, identity, listeners, drain) | *done*: `awaken-process-startup`, declared over by `awaken-coordinator-process` (`awaken-coordinator`) and `awaken-cli` (`awaken`, `awaken-control`) | No longer links `awaken-worker`, the Memory mount data plane or the Hand executor factory; still composes the executor; Environment image provisioning selects its builder from `awaken-package-image`, so the execution composition and the Sandbox adapters are only test fixtures | The co-located Worker is the launcher's (`ColocatedWorkerPreparation`). A process whose Sessions run on its own local claim pool (`LocalWorker` placement) receives its Session execution through the startup's `ColocatedExecution` role; the implementation is `awaken-cli`'s `LocalExecution` (Session environment, Hand factory, ACP routes, Memory mount data plane, auxiliary sandboxes), supplied by the scenario host and the startup's AllInOne test builders. Production processes never take that placement: the `awaken` AllInOne co-locates a registered Worker, which installs its own execution, and a Coordinator's Sessions run on registered Workers. The executor composition moves to `awaken-cli` once the Coordinator-side crate exists |
+| Credential realization the startup named for Control and its own guard | *done*: the endpoint executors, inference materializer port and Awaken Cloud broker transport ([`awaken-inference-endpoint`](../../crates/server/awaken-inference-endpoint/src/lib.rs)), the recipient-key envelope ([`awaken-credential-envelope`](../../crates/shared/awaken-credential-envelope/src/lib.rs)), the refresh port (`awaken-credential-contract`), the ambient provider-key guard (`awaken-deployment-config`) and the live MCP credential probe (`awaken-control`) | No | Only `awaken-cli` constructs `PinnedCredentialMaterializer`, `CredentialInferenceMaterializer` and the original outbound A2A attempt adapter. Startup retains publication and Vault-owned delivery, passes their existing ports, and constructs no model executor. The AllInOne hosted inference override is consumed by the CLI's registered Worker constructor |
+| Process startup (configuration, stores, identity, listeners, drain) | *done*: `awaken-process-startup`, declared over by `awaken-coordinator-process` (`awaken-coordinator`) and `awaken-cli` (`awaken`, `awaken-control`) | No Worker-side normal dependency; concrete SDK and materializer fixtures are dev-only | The CLI supplies `ColocatedWorkerPreparation` for the AllInOne registered Worker and the move-only `ColocatedExecution` constructor for local-placement scenarios. Shared startup sees only the existing selected roles and values. It never receives an SDK builder/customizer; the scenario-only CLI module owns that callback. Environment image provisioning retains its existing selected package-image builder. Production AllInOne and Coordinator Sessions run on registered Workers |
+
+
+An extraction intent's `MemoryExtractionExecution` freezes its output commit
+scope and the request's existing neutral DataSubject attribution. The existing
+Session affinity continues to select the Memory binding; an independent ordinary
+extractor Run reads its own auxiliary Thread partition instead. Missing historical
+execution context keeps the original Session partition and unknown attribution.
+The Session-store codec writes one versioned envelope for the intent, understood
+execution facts included, so an older bare-intent reader refuses the new format.
+Historical bare records remain readable without inventing a context; unknown
+fields, versions and unversioned new execution facts are refused.
+The Memory controller retains the first stored context on terminal redelivery;
+its direct immutable-request port still rejects a changed request. Embedded
+extraction accepts only Session commit scope and projects the frozen attribution
+before invoking its existing inference materializer. Worker placement uses the
+ordinary Run delivery driver and the same terminal observer/controller. Its
+terminal reader is the immutable prefix obtained from committed authority, not
+a Worker cache. Registered-Worker production now selects these roles directly.
+
+The Session contract constructs each Agent boundary command once from the
+caller's trusted affinity and committed Run facts. Worker adapters retain the
+explicit-affinity requirement; authenticated HTTP retains its guarded primary
+fallback and existing outcome/error translation. `SessionDispatchObserver`
+adapts the original Session application to Dispatch admission and pre/post-CAS
+observation; its implementation links no Session executor or provider. The
+selected application retains its existing collaborators. The SDK local bridge
+borrows it for each active weak-endpoint call; remote calls retain the original
+claim-scoped transport and finalize only on the Coordinator after its Dispatch
+CAS. Registered-Worker production now selects these observers without SDK application
+bindings. The remaining SDK coordination/background-submission bindings are still open.
+Co-located construction now belongs to the CLI; closing the binary dependency
+graph does not prove that the SDK application dependency cycle is eliminated.
+
+The default model a Session creation uses is an immutable composition value in
+`SessionExecutionRoles`, copied from the SDK's existing Agent model reference or
+from `WorkerPlacement::default_model`. `SessionCreationCommands` owns that value,
+not a `SessionRuntime` port whose run/resume methods it never calls. The direct
+SDK Run API retains that execution role. Per-Session model rebinding continues
+through the existing streaming role and frozen Session baseline; it does not
+replace the composition default. This removes one unnecessary executor-owner
+edge, while the remaining coordination/background-submission bindings stay open.
+
+The commit factory's required `SessionBoundaryEffects` role configures the existing
+Worker only after its original raw commit, binding and recovery reader have been
+selected. The SDK adapter selects its late coordination observer, then its original
+Memory terminal context, before installing caller context; failures return unchanged.
+The selected Session observer installs its two original roles over the same application.
+Both use the single shared factory; no parallel open/Worker implementation remains in
+the SDK. A selected source/effect may retain its original collaborators: a narrow trait
+object alone does not erase those lifetimes or close the remaining application cycle.
+
+`DispatchPublication` is the immutable durable-change publisher, selected once
+from the process topology over its original `DispatchHint`. Every publication
+first calls the original owner's idempotent Outbox relay, so a Session reply is
+runnable before publication returns even while the local pool is cold. Local
+publication then sends the same bounded hint; registered remote Worker topology
+needs no local hint. This replaces pool-handle-presence discovery and gives cold
+and warm local publication the same durable visibility/error ordering. Relay
+failure remains visible before any success hint, leaves the staged input intact,
+and retries the same identity. The existing maintenance loop may relay again;
+its canonical store transaction suppresses duplicates. No second relay or scheduler
+is implemented. Production services still start before request traffic.
+Run delivery and coordinated Threads hold this value without a `ProcessDispatch`;
+budgets reuse their original Thread publication without another injected publisher.
+A retained publisher therefore cannot keep a pool or terminal scanner alive. The
+SDK still owns dispatch for actual resident execution/lifecycle operations; the
+remaining application bindings are still open.
+
+The preparation compiler retains no process service: its one adapter implementation
+moves from `ProcessDispatch` to the pure `PreparationPlacement` component in the
+existing placement owner. The canonical frozen-Session law is unchanged. One
+component Arc is created with each process and selected by both application admission
+and transport; constructing a fresh equal compiler at either call site would still
+fail their original identity check. An application that retains this role therefore
+cannot keep the pool/scanner alive through a narrow trait cast of the process.
+
+The process lifecycle now has one implementation in Run delivery. The SDK's
+`session_dispatch_lifecycle` selects its existing immutable authority,
+completion sink, lazy resolver and original auxiliary registry; its Worker role set
+uses that same component. The root retains it directly through
+`ProcessDispatchLifecycle`, rather than an SDK Coordinator role wrapper. A
+Coordinator-only root can construct the same component over the shared commit
+factory and observer. The resolver remains lazy: disabled/unbound services do not
+construct it, original construction errors remain retryable, and a cold drained
+process refuses construction. Drain still closes the original gate, waits for
+claimed work, then joins the same background registry using the remaining budget;
+a timeout neither aborts that work nor fabricates quiescence. Drain now observes
+completion of the original pool/scanner task handles as well as physical capacity:
+a claim still resolving or a terminal scan still settling can register auxiliary
+work while the heartbeat's physical execution count is zero. That count keeps its
+original placement meaning. Native held-resolution/scan cases witness the ordering
+and timeout retention; Kani exercises the same production completion fold
+over zero through six task-return observations, not task scheduling. This consolidation adds no queue, registry, state machine or second
+lifecycle implementation.
+Registered-Worker startup now selects this executor-free resolver and these roles.
+The construction product is consumed once after the Session application exists:
+its shared commit factory retains the Session observer and the original Worker
+Memory settlement adapter. Memory intent registration precedes Session settlement;
+the original Dispatch CAS separates settlement from finalization. The HTTP Worker
+port remains Memory-only because its authenticated Session endpoint already owns
+that coordination callback. Both placement roots use one authority/startup guard,
+and the same completion sink is fixed before pool/scanner startup. A retained
+registered-Worker application does not retain process services. Co-located SDK
+assembly remains selected only by the local-placement branch, whose artifact
+publisher stays with that branch; registered Workers use their existing transport
+and claim-fenced Resource ports.
 
 The order that removes D4's transitions, each step a reviewed `--tighten`:
 the Deployment configuration (done); the Memory invalidation bus (done); the
@@ -140,19 +263,24 @@ done), and the co-located execution install (Hand factory, Memory mount data
 plane) moved behind the launcher (done: removed `awaken-sandbox-memoryd`);
 Environment image provisioning from the package-image builders (done: removed
 the execution composition and the Sandbox adapters); the credential pieces the
-startup named outside execution (done, see the row above; the materializer
-still arrives through the executor and the AllInOne model plane); then the
-Coordinator-side crate `awaken-session-run-delivery` now holds the event hub,
-completion relay, committed reads, commit boundary, frozen projections and
-Worker-placement Run roles. Production composition still obtains its ports
-from the executor. Worker-dispatched Memory extraction, settlement and Worker
-ports, followed by moving co-located execution into the launcher, remain
-necessary to remove the executor, realization and credential materializer
-from the Coordinator binary closure. The Session application and
-the executor stop binding each other (`SessionApplicationBindings`) in that
-last step: the bindings exist because the executor serves the application's
-roles while the application supplies the executor's coordination and
-background submission.
+startup named outside execution (done, see the row above); then the
+Coordinator-side crate `awaken-session-run-delivery` (the event hub,
+completion relay, commit boundary, committed reads, frozen projection registry,
+Run admission and placement-typed role implementations: done; their Worker Memory
+dispatch/settlement and recovery: done; registered-Worker production selection:
+done; co-located composition/model-plane extraction into the CLI: done). The
+shared startup's normal closure contains no executor, realization or credential
+materializer; D4 has an empty transition baseline and rejects reintroduced
+Worker-side dependencies. Runtime placement selection alone would not prove
+this static property.
+
+The remaining SDK `SessionApplicationBindings` are a separate open item:
+the executor still serves the local application's execution roles while that
+application supplies its coordination and background submission. Their removal
+must preserve actual object lifetimes, construction/drain ordering and the
+existing single Session admission authority. Claim/tenure-fenced Worker
+BackgroundTask attention and the final combined-source distributed suite also
+remain open; D4 closure does not stand in for those product acceptance gates.
 
 ## Embedded Runtime SDK Boundary
 
