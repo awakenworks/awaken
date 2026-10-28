@@ -564,6 +564,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     exit 1
   fi
   tlc_state_root="$formal_tmp_root/tlc-states"
+  # This existing mutation entry checks the complete green baseline from
+  # formal/tla/SessionRunBudgetAdmission.tla and
+  # formal/tla/SessionRunBudgetAdmission.cfg before its exact mutants/witnesses.
   python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
   AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations" \
     python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"

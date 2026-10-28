@@ -285,29 +285,16 @@ impl SessionCreationCommands {
             None => None,
         };
         let model = requested_model.clone().unwrap_or(published_model);
-        let execution_model_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().1.to_owned())
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .and_then(|profile| profile.execution_model_ref.clone())
-            })
-            .unwrap_or_else(|| model.clone());
-        let published_backend_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().2.to_owned())
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .map(|profile| profile.backend_ref.trim())
-                    .filter(|backend| !backend.is_empty())
-                    .map(str::to_owned)
-            });
+        let (execution_model_ref, published_backend_ref) = super::baseline::creation_model_route(
+            model_override.as_ref(),
+            profile
+                .as_ref()
+                .and_then(|profile| profile.execution_model_ref.as_deref()),
+            profile.as_ref().map(|profile| profile.backend_ref.trim()),
+            &model,
+        );
         let capabilities = queries.capabilities_for(&session_id)?;
-        let multiagent = admission.enter(|| {
+        let (multiagent, accepted_delegates) = admission.enter(|| {
             crate::agent_configuration::resolve_session_multiagent(
                 profile.as_ref(),
                 &capabilities,
@@ -323,7 +310,14 @@ impl SessionCreationCommands {
             .as_ref()
             .map(|profile| profile.skills.clone())
             .unwrap_or_default();
-        self.validate_session_skill_total(&owner_scope, &agent_id, profile.as_ref(), &skills)?;
+        crate::runtime_commands::validate_session_skill_total(
+            queries,
+            &owner_scope,
+            &agent_id,
+            profile.as_ref(),
+            &skills,
+            &accepted_delegates,
+        )?;
         mcp_candidates.extend(super::request::initial_mcp_candidates(
             profile.as_ref(),
             None,

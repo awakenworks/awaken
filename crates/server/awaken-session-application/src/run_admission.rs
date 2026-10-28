@@ -353,29 +353,9 @@ impl SessionRunAdmissions {
         })
     }
 
-    /// Admit, register-before-activation, and project one foreground Run from
-    /// authoritative committed Thread truth. Foreground/background is only an
-    /// observation policy; the durable state transition is the same admission.
-    pub async fn run_admitted_session(
-        &self,
-        command: AdmitSessionRun,
-        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<StepOutcome, RunError> {
-        let coordination_runtime = self.coordination.as_ref();
-
-        let input_message_ids = command.input_message_ids();
-        let admitted = Box::pin(self.admit_session_run(command)).await?;
-        Box::pin(coordination_runtime.activate_and_observe_session_run(
-            admitted,
-            input_message_ids,
-            sink,
-        ))
-        .await
-    }
-
-    /// Owned form of [`Self::run_admitted_session`] used by public protocol
-    /// adapters and product coordinators. Both forms converge on the same
-    /// durable Run reservation and foreground observation port.
+    /// Admit, register before activation, and observe one foreground Run for
+    /// a Session the caller owns. Durable reservation and foreground observation
+    /// use the canonical admission and coordination ports.
     pub async fn run_admitted_session_for_owner(
         &self,
         access: &crate::SessionAccess,

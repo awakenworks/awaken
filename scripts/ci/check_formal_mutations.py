@@ -164,6 +164,77 @@ class MutationOracleTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [("mutant", "config", "constant:TraceRefines")])
 
+    def test_budget_admission_keeps_both_canonical_dependencies_and_causal_rows(self) -> None:
+        # B1 A/U/R/E/C use one full baseline, ten unsafe source variants and
+        # positive joint-Open/joint-Settle, both caller and same-key witnesses.
+        # B2 H1/H2 keep that full domain with one categorical malformed key.
+        # B3 anchor drift fails before launching any tool. This is an isolated
+        # transport/selection test, NOT TLC execution or a model-safety result.
+        source = (ROOT / "formal/tla/SessionRunBudgetAdmission.tla").read_text()
+        config = (ROOT / "formal/tla/SessionRunBudgetAdmission.cfg").read_text()
+        # B5 imported tuple operators parse, but do not expose local variables
+        # as assignable UNCHANGED frames. Require direct local tuples covering
+        # every canonical variable (with the explicit Activity renaming); the
+        # real TLC baseline remains the execution oracle for the joint actions.
+        def tuple_names(text: str, marker: str) -> list[str]:
+            return [name.strip() for name in text.split(marker, 1)[1].split(">>", 1)[0].split(",")]
+
+        cas = (ROOT / "formal/tla/AggregateCAS.tla").read_text()
+        self.assertEqual(tuple_names(source, "casVars == <<"), tuple_names(cas, "vars == <<"))
+        kernel = (ROOT / "formal/tla/SessionActivityKernel.tla").read_text()
+        import re
+        instance = source.split("Activity == INSTANCE SessionActivityKernel WITH", 1)[1].split("casVars ==", 1)[0]
+        renamed = dict(re.findall(r"(\w+)\s*<-\s*(\w+)", instance))
+        self.assertEqual(tuple_names(source, "activityVars == <<"),
+                         [renamed[name] for name in tuple_names(kernel, "kVars == <<")])
+        with patch(f"{__name__}.check_tlc_model_mutations") as runner:
+            check_session_budget_admission_model_mutants(Path("tlc.jar"))
+        self.assertEqual(runner.call_count, 3)
+        first, positive, negative = runner.call_args_list
+        self.assertEqual(first.args[:4], (Path("tlc.jar"), "SessionRunBudgetAdmission", source, config))
+        for call in runner.call_args_list:
+            self.assertEqual(call.kwargs, {"dependencies": ("SessionActivityKernel", "AggregateCAS")})
+            self.assertIn("Operations = {operation_a, operation_b, operation_c}", call.args[3])
+            self.assertIn("Callers = {fast, worker_repair}", call.args[3])
+            self.assertIn("MaxRootChanges = 3", call.args[3])
+            self.assertIn("MaxActivityEpoch = 4", call.args[3])
+        self.assertEqual(len(first.args[4]), 27)
+        self.assertTrue(all(mutant != source for mutant, _, _ in first.args[4][:10]))
+        self.assertEqual([oracle for _, _, oracle in first.args[4][:10]], [
+            "AcceptedObservationIsNotDiscarded", "NoAcceptedNegativePair", "HealthyClosedReadReplaysAccepted",
+            "action:NewRefusalWasBudgetRejected", "action:RejectedCASPreservesDurableState",
+            "action:ActivityCommitUsesExactRootRevision", "UncertaintyCannotReportRefusal",
+            "UncertaintyCannotReportRefusal", "RaisedDecisionCannotCloseRefusal", "action:NegativeReceiptIsAbsorbing",
+        ])
+        for _, cfg, oracle in first.args[4][:10]:
+            selected = [line for line in cfg.splitlines() if line.startswith(("INVARIANTS ", "PROPERTIES "))]
+            self.assertEqual(selected, [f"PROPERTIES {oracle.removeprefix('action:')}" if oracle.startswith("action:") else f"INVARIANTS {oracle}"])
+        witnesses = ("NoOpenCommit", "NoSettleCommit", "NoSettledReplay", "NoAcceptedAfterStaleBudget",
+                     "NoRaisedPending", "NoNegativeAfterRaise", "NoNegativeCASLossToRaise",
+                     "NoNegativeCASLossToAccepted", "NoBeforeWriteOutage", "NoNegativeLostAckRecovery",
+                     "NoPositiveLostAckRecovery", "NoFastOpenCommit", "NoWorkerOpenCommit",
+                     "NoFastNegativeCommit", "NoWorkerNegativeCommit", "NoPositiveStoreReplay", "NoNegativeStoreReplay")
+        self.assertEqual(first.args[4][10:], [
+            (source, config.replace("INVARIANTS Safety", f"INVARIANTS {name} Safety"), name)
+            for name in witnesses
+        ])
+        for call, kind in ((positive, "Positive"), (negative, "Negative")):
+            self.assertEqual(call.args[3], config.replace('ReceiptFault = "None"', f'ReceiptFault = "{kind}"'))
+            self.assertEqual(len(call.args[4]), 2)
+            self.assertEqual(call.args[4][0][2], "CorruptReceiptNeverBecomesAbsence")
+            self.assertEqual(call.args[4][1][2], f"No{kind}HashRefusal")
+        # B4 the existing CLI handler reaches this same family before its old
+        # families, with the exact parsed jar; no second registration is needed.
+        with patch(f"{__name__}.check_session_budget_admission_model_mutants", side_effect=RuntimeError("budget family selected")) as selected:
+            with self.assertRaisesRegex(RuntimeError, "budget family selected"):
+                check_session_observation_model_mutants(Path("tlc.jar"))
+            selected.assert_called_once_with(Path("tlc.jar"))
+        with patch.object(Path, "read_text", side_effect=[source.replace("    /\\ IF lastApplied'\n", "    /\\ IF TRUE\n"), config]), \
+                patch(f"{__name__}.check_tlc_model_mutations") as runner:
+            with self.assertRaisesRegex(SystemExit, "Budget admission mutation anchor drifted"):
+                check_session_budget_admission_model_mutants(Path("tlc.jar"))
+            runner.assert_not_called()
+
     def test_observation_time_embedding_preserves_and_reflects_relations(self) -> None:
         from render_runtime_refinement_traces import normalize_observation_times
         # Q4 TLC's integer bound must not truncate, saturate or conflate actual
@@ -1210,7 +1281,82 @@ def check_session_ownership_model_mutants(tlc_jar: Path) -> None:
     print("Session ownership: 5/5 semantic mutants killed; 3/3 read witnesses reached")
 
 
+def check_session_budget_admission_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect table mirrors the actual gated SQLite rows without replacing
+    # them: A accepted active/settled wins; U raised-only stays Pending; R a
+    # negative survives raise; E failed/unknown writes stay Pending; C a late
+    # candidate loses its CAS; H either mismatched payload is never absence.
+    # Root/receipt reads, candidate reduction, CAS and reply are separate. All
+    # ten mutations retain both original kernels and the complete CFG. Positive
+    # inverse invariants reject always-deny and impossible joint-action models.
+    source = (ROOT / "formal/tla/SessionRunBudgetAdmission.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRunBudgetAdmission.cfg").read_text()
+
+    def changed(before: str, after: str) -> str:
+        if source.count(before) != 1:
+            raise SystemExit(f"Budget admission mutation anchor drifted: {before}")
+        return source.replace(before, after, 1)
+
+    def oracle_config(oracle: str, cfg: str = config) -> str:
+        # The unmodified full CFG is the green base. Isolate each negative
+        # control's named oracle so another Safety conjunct cannot receive its
+        # credit. No domain, kernel, primary assertion or tool budget changes.
+        selected = "\n".join(line for line in cfg.splitlines()
+                             if not line.startswith(("INVARIANTS ", "PROPERTIES ")))
+        return selected + (f"\nPROPERTIES {oracle.removeprefix('action:')}\n"
+                           if oracle.startswith("action:") else f"\nINVARIANTS {oracle}\n")
+
+    def witness_config(witness: str, cfg: str = config) -> str:
+        return cfg.replace("INVARIANTS Safety", f"INVARIANTS {witness} Safety")
+
+    late_read = '!.phase = "ObservePositive", !.route = "Late",'
+    late_decision = 'LateDecide(caller) ==\n    /\\ calls[caller].phase = "LateDecide"\n    /\\ IF calls[caller].readBudget'
+    cas_result = '    /\\ CAS!Write(caller)\n    /\\ IF lastApplied\''
+    lost_ack = '!.outcome = "Pending", !.cause = "LostAck",'
+    outage = 'Finish(caller, "Pending", "Outage",'
+    positive_exact = '[] calls[caller].positive = "Exact" ->'
+    negative_exact = '[] calls[caller].negative = "Exact" ->'
+    epoch = 'Activity!OpenAt(calls[caller].operation,\n                                        generation\' + InitialRootRevision)'
+    raised = 'Finish(caller, "Pending", "Raised", {"RaisedPending"})'
+    raise_frame = '    /\\ policyPhase\' = "Done"\n    /\\ UNCHANGED <<activityVars, negativeReceipts, calls,'
+    changes = [
+        (positive_exact, positive_exact.replace(' = "Exact" ->', ' = "Exact" /\\ calls[caller].seenEpoch \\in activeEpochs ->'), "AcceptedObservationIsNotDiscarded"),
+        (negative_exact, '[] FALSE ->', "NoAcceptedNegativePair"),
+        (late_read, '!.phase = "LateDecide", !.route = "Late",', "HealthyClosedReadReplaysAccepted"),
+        (late_decision, late_decision.replace('IF calls[caller].readBudget', 'IF FALSE'), "action:NewRefusalWasBudgetRejected"),
+        (cas_result, cas_result.replace("IF lastApplied'", "IF TRUE"), "action:RejectedCASPreservesDurableState"),
+        (epoch, epoch.replace("generation' + InitialRootRevision)", "generation' + InitialRootRevision + 1)"), "action:ActivityCommitUsesExactRootRevision"),
+        (lost_ack, lost_ack.replace('"Pending"', '"Rejected"'), "UncertaintyCannotReportRefusal"),
+        (outage, outage.replace('"Pending"', '"Rejected"'), "UncertaintyCannotReportRefusal"),
+        (raised, raised.replace('"Pending"', '"Rejected"'), "RaisedDecisionCannotCloseRefusal"),
+        (raise_frame, raise_frame.replace('    /\\ UNCHANGED <<activityVars, negativeReceipts, calls,', '    /\\ negativeReceipts\' = {}\n    /\\ UNCHANGED <<activityVars, calls,'), "action:NegativeReceiptIsAbsorbing"),
+    ]
+    mutations = [(changed(before, after), oracle_config(oracle), oracle) for before, after, oracle in changes]
+    witnesses = ("NoOpenCommit", "NoSettleCommit", "NoSettledReplay", "NoAcceptedAfterStaleBudget",
+                 "NoRaisedPending", "NoNegativeAfterRaise", "NoNegativeCASLossToRaise",
+                 "NoNegativeCASLossToAccepted", "NoBeforeWriteOutage", "NoNegativeLostAckRecovery",
+                 "NoPositiveLostAckRecovery", "NoFastOpenCommit", "NoWorkerOpenCommit",
+                 "NoFastNegativeCommit", "NoWorkerNegativeCommit", "NoPositiveStoreReplay", "NoNegativeStoreReplay")
+    mutations.extend((source, witness_config(witness), witness) for witness in witnesses)
+    dependencies = ("SessionActivityKernel", "AggregateCAS")
+    # Resolve every anchor before invoking the runner, including H1/H2. A drift
+    # fails source preparation rather than starting a partially selected suite.
+    hash_cases = []
+    for kind, field in (("Positive", "positive"), ("Negative", "negative")):
+        before = f'calls[caller].{field} = "Mismatch" ->'
+        mutant = changed(before, 'FALSE ->')
+        cfg = config.replace('ReceiptFault = "None"', f'ReceiptFault = "{kind}"')
+        witness = f"No{kind}HashRefusal"
+        hash_cases.append((cfg, [(mutant, oracle_config("CorruptReceiptNeverBecomesAbsence", cfg), "CorruptReceiptNeverBecomesAbsence"),
+                                 (source, witness_config(witness, cfg), witness)]))
+    check_tlc_model_mutations(tlc_jar, "SessionRunBudgetAdmission", source, config, mutations, dependencies=dependencies)
+    for cfg, cases in hash_cases:
+        check_tlc_model_mutations(tlc_jar, "SessionRunBudgetAdmission", source, cfg, cases, dependencies=dependencies)
+    print("Budget admission: semantic mutations and Open/Settle/read/replay reachability checked; finite abstract I/O ordering only")
+
+
 def check_session_observation_model_mutants(tlc_jar: Path) -> None:
+    check_session_budget_admission_model_mutants(tlc_jar)
     # Decision-table mutation witnesses: M1 unchanged revision resamples time;
     # M2 processed replay resamples; M3 cold recovery invents legacy time;
     # M4 Stage's retired generation escapes into Publish. Every case must have
