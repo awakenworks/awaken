@@ -131,34 +131,24 @@ fn live_acp_local(
                 .is_some_and(|binding| binding.driver_id == backend_ref)
     });
     let matching = matching.collect::<Vec<_>>();
-    if matching.is_empty() {
-        return match awaken_worker_contract::select_verified_acp_capability(
-            workers,
-            backend_ref,
-            None,
-            now_ms,
-        ) {
-            awaken_worker_contract::VerifiedAcpCapabilitySelection::Available(only) => {
-                LiveLocalEvidence::Decided(awaken_control::LocalRuntimeCapability {
-                    detected: true,
-                    version: Some(only.adapter_version),
-                    // A capability-only handshake proves the backend protocol,
-                    // not a local account. Provider or workload material is
-                    // selected later by the immutable Agent publication.
-                    login_state: None,
-                    reason_code: None,
-                    remediation: None,
-                    negotiated: serde_json::to_value(only.negotiated).ok(),
-                })
-            }
-            awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {
-                LiveLocalEvidence::Absent
-            }
-            awaken_worker_contract::VerifiedAcpCapabilitySelection::Incompatible => {
-                LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous"))
-            }
-        };
-    }
+    // Protocol availability is independent of any ambient WorkerLocal source.
+    // A Provider-owned publication supplies its own credential later; the
+    // credential-bound selector below proves only backend-owned login readiness.
+    let protocol = match awaken_worker_contract::select_verified_acp_capability(
+        workers,
+        backend_ref,
+        None,
+        now_ms,
+    ) {
+        awaken_worker_contract::VerifiedAcpCapabilitySelection::Available(only) => only,
+        awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {
+            return LiveLocalEvidence::Absent;
+        }
+        awaken_worker_contract::VerifiedAcpCapabilitySelection::Incompatible => {
+            return LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous"));
+        }
+    };
+    let has_local_source = !matching.is_empty();
     let mut evidence = Vec::new();
     for source in matching {
         let Some(revision) = u64::try_from(source.version)
@@ -188,18 +178,20 @@ fn live_acp_local(
             awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {}
         }
     }
-    match evidence.as_slice() {
-        [only] => LiveLocalEvidence::Decided(awaken_control::LocalRuntimeCapability {
-            detected: true,
-            version: Some(only.adapter_version.clone()),
-            login_state: Some("available".into()),
-            reason_code: None,
-            remediation: None,
-            negotiated: serde_json::to_value(&only.negotiated).ok(),
-        }),
-        [] => LiveLocalEvidence::Absent,
-        _ => LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous")),
-    }
+    let login_state = match evidence.as_slice() {
+        [_] => Some("available".into()),
+        [] if has_local_source => Some("unavailable".into()),
+        [] => None,
+        _ => return LiveLocalEvidence::Decided(unavailable_local("acp_capability_ambiguous")),
+    };
+    LiveLocalEvidence::Decided(awaken_control::LocalRuntimeCapability {
+        detected: true,
+        version: Some(protocol.adapter_version),
+        login_state,
+        reason_code: None,
+        remediation: None,
+        negotiated: serde_json::to_value(protocol.negotiated).ok(),
+    })
 }
 
 pub(crate) struct LiveRuntimeCapabilities {
@@ -525,20 +517,22 @@ mod tests {
         // exact revision and a verified ACP profile are live on one Ready
         // Worker; C3 all qualifying profiles agree; C4 no Worker-local source
         // exists because the publication will deliver Provider/workload
-        // material later. Effects: E1 runtime is detected and usable; E2
-        // split/missing evidence is unavailable; E3 incompatible profiles fail
+        // material later. Effects: E1 protocol and local login are available; E2
+        // split/missing credential evidence cannot claim login; E3 incompatible profiles fail
         // closed; E4 capability-only discovery reports no local-login claim.
         //
         // | Rule | local source | same-worker credential | ACP agreement | Effect |
         // | R1 | yes | yes | one | E1 |
-        // | R2 | yes | no | any | E2 |
+        // | R2 | yes | no | one | protocol detected, login unavailable (E2) |
         // | R3 | any | allowed | conflict | E3 |
         // | R4 | no | n/a | one | E1,E4 |
-        // | R5 | no | n/a | none | E2 |
+        // | R5 | any | any | missing/expired | protocol unavailable |
         //
         // This management projection reuses the publication selector. R4 only
         // proves protocol capability; publication still requires its exact
-        // credential when the selected model binding names one.
+        // credential when the selected model binding names one. R2 keeps that
+        // same-worker credential boundary without hiding protocol capability
+        // from a Provider-owned publication that does not use the local source.
         let active = credential(
             "credential-1",
             "acp:claude",
@@ -562,10 +556,33 @@ mod tests {
             std::slice::from_ref(&active),
             150,
         );
-        assert!(!split.detected, "R2");
-        assert_eq!(
-            split.reason_code.as_deref(),
-            Some("acp_runtime_unavailable")
+        assert!(split.detected, "R2 protocol is independently verified");
+        assert_eq!(split.login_state.as_deref(), Some("unavailable"), "R2");
+        assert!(
+            split.negotiated.is_some(),
+            "R2 Provider-owned route remains visible"
+        );
+        let protocol_only = worker("protocol-only", None, Some("sha256:same"));
+        let no_login = live_local(
+            "acp:claude",
+            std::slice::from_ref(&protocol_only),
+            std::slice::from_ref(&active),
+            150,
+        );
+        assert!(
+            no_login.detected,
+            "R2 unrelated local source cannot hide protocol"
+        );
+        assert_eq!(no_login.login_state.as_deref(), Some("unavailable"), "R2");
+        let expired = live_local(
+            "acp:claude",
+            &[protocol_only],
+            std::slice::from_ref(&active),
+            201,
+        );
+        assert!(
+            !expired.detected,
+            "R5 expired protocol never becomes usable"
         );
 
         let incompatible = live_local(
