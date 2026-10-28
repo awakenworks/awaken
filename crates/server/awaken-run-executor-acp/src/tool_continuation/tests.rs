@@ -135,7 +135,7 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
             vec![ContentBlock::tool_use(
                 "same-provider-id",
                 tool,
-                serde_json::json!({}),
+                serde_json::json!({"occurrence":run}),
             )],
         ));
         messages.push(Message::new(
@@ -190,6 +190,14 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
     assert_eq!(receipts[3]["call_id"], "parallel-b", "R7");
     assert_eq!(receipts[4]["tool"], "write", "R5 exact first occurrence");
     assert_eq!(receipts[4]["content"][0]["text"], "first owned result");
+    assert_eq!(
+        receipts[4]["input"]["occurrence"], "repeat-first",
+        "R5 original input"
+    );
+    assert_eq!(
+        receipts[5]["input"]["occurrence"], "repeat-second",
+        "R5 never the latest reused-id input"
+    );
     assert_eq!(
         receipts[5]["tool"], "desktop_search",
         "R5 exact second occurrence"
