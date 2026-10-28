@@ -58,7 +58,7 @@
       "crates/runtime/awaken-ext-builtin-tools/tests/web.rs": 1,
       "crates/runtime/awaken-ext-mcp/src/plugin.rs": 2,
       "crates/runtime/awaken-provider-genai/tests/stall.rs": 1,
-      "crates/server/awaken-coordinator/tests/managed_dream_e2e.rs": 1,
+      "crates/devtools/awaken-scenario-host/tests/managed_dream_e2e.rs": 1,
       "crates/server/awaken-dispatch-http/tests/active_active_postgres.rs": 2,
       "crates/server/awaken-dispatch/tests/durable_postgres.rs": 2,
       "crates/server/awaken-dispatch/tests/pool_memory.rs": 3,
