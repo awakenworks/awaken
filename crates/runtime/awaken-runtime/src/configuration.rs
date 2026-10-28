@@ -60,7 +60,7 @@ impl From<ConfigurationError> for Error {
 }
 
 /// Validate registrations made through either the fluent or fallible API.
-pub(crate) fn validate_configuration(runtime: &Runtime) -> Result<(), ConfigurationError> {
+pub fn validate_configuration(runtime: &Runtime) -> Result<(), ConfigurationError> {
     runtime.tools.validate().map_err(|error| match error {
         awaken_tool_contract::tool::ToolError::AmbiguousTool(id) => {
             ConfigurationError::DuplicateTool { id }

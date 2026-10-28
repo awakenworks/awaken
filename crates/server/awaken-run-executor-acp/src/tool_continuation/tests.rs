@@ -5,7 +5,8 @@ use super::*;
 async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk_acknowledgements()
 {
     // R1 Runtime-minted result + Assistant ToolUse + owned tool => include exact
-    // success/error and data. R2 SDK-minted result => exclude (already SDK history).
+    // success/error, original committed input and data even with no SDK call
+    // history. R2 SDK-minted result => exclude (already SDK history).
     // R3 unowned tool, unpaired result or User-authored ToolUse => exclude.
     // R4 later Run / repeated projection => same ordered receipts, zero commits;
     // R5 two valid Assistant occurrences reuse one provider call id => each
@@ -45,7 +46,11 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
         messages.push(Message::new(
             MessageId(format!("use-{call}")),
             role,
-            vec![ContentBlock::tool_use(call, tool, serde_json::json!({}))],
+            vec![ContentBlock::tool_use(
+                call,
+                tool,
+                serde_json::json!({"file_path":format!("{call}.txt")}),
+            )],
         ));
         messages.push(Message::new(
             if sdk {
@@ -130,7 +135,7 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
             vec![ContentBlock::tool_use(
                 "same-provider-id",
                 tool,
-                serde_json::json!({}),
+                serde_json::json!({"occurrence":run}),
             )],
         ));
         messages.push(Message::new(
@@ -167,6 +172,14 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
     assert_eq!(receipts.len(), 6);
     assert_eq!(receipts[0]["call_id"], "ok");
     assert_eq!(receipts[0]["is_error"], false);
+    assert_eq!(
+        receipts[0]["input"],
+        serde_json::json!({"file_path":"ok.txt"})
+    );
+    assert_eq!(
+        receipts[1]["input"],
+        serde_json::json!({"file_path":"failed.txt"})
+    );
     assert_eq!(receipts[1]["call_id"], "failed");
     assert_eq!(receipts[1]["is_error"], true);
     assert_eq!(
@@ -177,6 +190,14 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
     assert_eq!(receipts[3]["call_id"], "parallel-b", "R7");
     assert_eq!(receipts[4]["tool"], "write", "R5 exact first occurrence");
     assert_eq!(receipts[4]["content"][0]["text"], "first owned result");
+    assert_eq!(
+        receipts[4]["input"]["occurrence"], "repeat-first",
+        "R5 original input"
+    );
+    assert_eq!(
+        receipts[5]["input"]["occurrence"], "repeat-second",
+        "R5 never the latest reused-id input"
+    );
     assert_eq!(
         receipts[5]["tool"], "desktop_search",
         "R5 exact second occurrence"
@@ -191,6 +212,47 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
         assert_eq!(projected.text_content(), original);
         assert_eq!(projected.role, Role::System);
     }
+    assert_eq!(committed.commits.lock().unwrap().len(), count);
+    assert!(probe.resumes.lock().unwrap().is_empty());
+    assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+
+    // R8 an oversized aggregate over real committed receipts -> typed refusal,
+    // same complete history, no recovery/effect or additional commit. The limit
+    // must not silently truncate a result or reissue its already settled call.
+    let run = RunId("large".into());
+    committed
+        .commit(ThreadCommit::assemble(
+            activation.thread_id.clone(),
+            RunDisposition::running(activation.run_id.clone()),
+            true,
+            vec![
+                Message::new(
+                    MessageId::assistant(&run, 0),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "large-call",
+                        "write",
+                        serde_json::json!({}),
+                    )],
+                ),
+                Message::new(
+                    MessageId::tool_result_for_batch("tool-batch:large:0", "large-call"),
+                    Role::Tool,
+                    vec![ContentBlock::tool_result(
+                        "large-call",
+                        vec![ContentBlock::text("中".repeat(400_000))],
+                    )],
+                ),
+            ],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let count = committed.commits.lock().unwrap().len();
+    let error = crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
+        .unwrap_err();
+    assert_eq!(error.code(), "acp_receipt_context_exceeded");
     assert_eq!(committed.commits.lock().unwrap().len(), count);
     assert!(probe.resumes.lock().unwrap().is_empty());
     assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);

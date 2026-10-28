@@ -47,13 +47,14 @@ impl ToolPresentation {
         self.overrides.is_empty() && self.exposure.is_default()
     }
 
-    /// Compile the existing presentation intent to single-hop SDK lookup aliases.
+    /// Compile canonical ids and presentation intent to single-hop SDK lookup aliases.
     /// MCP descriptors retain their canonical names and schemas; permissions do too.
     pub fn acp_aliases(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
         if !self.exposure.is_default() || self.discovery != ToolDiscoverySettings::default() {
             return Err("ACP_TOOL_UNSUPPORTED: tool exposure/discovery is Native-only".into());
         }
         let mut aliases = std::collections::BTreeMap::new();
+        let mut canonical_bindings = Vec::new();
         for (target, value) in &self.overrides {
             if value.description.is_some() || value.exposure.is_some() {
                 return Err("ACP_TOOL_UNSUPPORTED: SDK lookup aliases cannot rewrite descriptions or exposure".into());
@@ -80,9 +81,19 @@ impl ToolPresentation {
                     .as_str()
                     .to_string()
             };
+            if !awaken_agent_contract::McpToolId::claims_namespace(target) {
+                canonical_bindings.push((target.clone(), actual.clone()));
+            }
             if aliases.insert(alias.clone(), actual).is_some() {
                 return Err("ACP_TOOL_UNSUPPORTED: duplicate tool alias".into());
             }
+        }
+        // Canonical ids remain valid Agent-facing names when the SDK's MCP
+        // transport adds a namespace. Reuse the same exact selected target;
+        // explicit presentation aliases retain resolve()'s precedence. Already
+        // canonical MCP ids need no identity alias (which would be a chain).
+        for (canonical, actual) in canonical_bindings {
+            aliases.entry(canonical).or_insert(actual);
         }
         if aliases.values().any(|target| aliases.contains_key(target)) {
             return Err(
@@ -252,7 +263,11 @@ mod acp_alias_tests {
         // description/exposure/discovery policy. Effects: exact single-hop map or
         // refusal before launch. R1 empty => unchanged; R2 local => reserved MCP;
         // R3 external => identity; R4 malformed/duplicate/shadow => refusal;
-        // R5 presentation semantics unsupported => refusal. No arguments are changed.
+        // R5 presentation semantics unsupported => refusal. R6 selected builtin
+        // canonical id and explicit alias -> same MCP target; R7 explicit alias
+        // shadows a canonical spelling exactly as resolve() does; R8 identity
+        // spellings deduplicate, while unknown case is never inferred. No
+        // arguments, registration, permissions or execution authority change.
         assert!(
             ToolPresentation::default()
                 .acp_aliases()
@@ -266,7 +281,42 @@ mod acp_alias_tests {
             let p = presentation(target, "Bash");
             assert_eq!(p.acp_aliases().unwrap()["Bash"], actual);
             assert_eq!(p.resolve("Bash"), target);
+            if target == "bash" {
+                assert_eq!(p.acp_aliases().unwrap()[target], actual);
+            } else {
+                assert!(!p.acp_aliases().unwrap().contains_key(target));
+            }
         }
+        let read = presentation("read", "Read").acp_aliases().unwrap();
+        assert_eq!(read["Read"], "mcp__awaken_session__read");
+        assert_eq!(read["read"], read["Read"]);
+        assert!(!read.contains_key("rEaD"));
+        let identity = presentation("read", "read").acp_aliases().unwrap();
+        assert_eq!(identity.len(), 1);
+        assert_eq!(identity["read"], "mcp__awaken_session__read");
+        let explicit = ToolPresentation::from_overrides([
+            (
+                "bash".into(),
+                ToolPresentationOverride {
+                    alias: Some("read".into()),
+                    description: None,
+                    exposure: None,
+                },
+            ),
+            (
+                "read".into(),
+                ToolPresentationOverride {
+                    alias: Some("Read".into()),
+                    description: None,
+                    exposure: None,
+                },
+            ),
+        ]);
+        let bindings = explicit.acp_aliases().unwrap();
+        assert_eq!(explicit.resolve("read"), "bash");
+        assert_eq!(bindings["read"], "mcp__awaken_session__bash");
+        assert_eq!(bindings["Read"], "mcp__awaken_session__read");
+        assert_eq!(bindings["bash"], "mcp__awaken_session__bash");
         for alias in ["", "with space", "../Bash", "🛠"] {
             assert!(presentation("bash", alias).acp_aliases().is_err());
         }

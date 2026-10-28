@@ -252,6 +252,23 @@ async fn immutable_agent_reads_do_not_repeat_published_table_loads() {
         BTreeMap::from([("workspace-a".into(), 1)]),
         "R1 bounded publication reads"
     );
+    // R6 native read retains exact visible publication r2 despite draft r3,
+    // with one publication read per needed scope, no secrets or SDK wire change.
+    let rows = reader.execution_evidence("workspace-a").await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].agent_id, agent.id);
+    assert_eq!(rows[0].version, 2);
+    let execution = serde_json::to_value(rows[0].execution.as_ref().unwrap()).unwrap();
+    assert_eq!(execution["backend_ref"], "genai");
+    assert_eq!(execution["provisioning"], "provider");
+    assert_eq!(execution.as_object().unwrap().len(), 3);
+    assert_eq!(probe.take_reads(), expected_reads);
+    assert!(
+        serde_json::to_value(&exact)
+            .unwrap()
+            .get("execution")
+            .is_none()
+    );
     let versions = reader.versions("workspace-a", &agent.id).await.unwrap();
     assert_eq!(
         versions.iter().map(|v| v.version).collect::<Vec<_>>(),

@@ -31,7 +31,7 @@ pub use awaken_runtime_contract::{
     CancellationToken, ExecutableAgentSnapshot, ResumeResult, RuntimeRunContext,
 };
 pub use circuit_breaker::CircuitBreakerConfig;
-pub use configuration::ConfigurationError;
+pub use configuration::{ConfigurationError, validate_configuration};
 pub use conversation::Conversation;
 pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
 pub use engine::run_commands::resume_activated_tool_batch;

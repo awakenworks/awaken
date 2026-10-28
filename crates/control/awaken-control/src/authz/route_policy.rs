@@ -254,6 +254,13 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     ),
     RoutePolicyDescriptor::control(
+        "/v1/awaken/agents",
+        RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
         "/v1/agents",
         RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,

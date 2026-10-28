@@ -1177,6 +1177,12 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     );
 
     // -- the public agent registry (distinct from /v1/config/agents authoring) --
+    // Native publication evidence retains the same Workspace read gate;
+    // the application cannot inspect another Workspace via this GET projection.
+    assert_eq!(
+        scoped(get.clone(), "/v1/awaken/agents/execution-evidence"),
+        Some(WORKSPACE_READ)
+    );
     assert_eq!(scoped(get.clone(), "/v1/agents"), Some(WORKSPACE_READ));
     assert_eq!(scoped(post.clone(), "/v1/agents"), Some(WORKSPACE_WRITE));
     assert_eq!(scoped(get.clone(), "/v1/agents/a1"), Some(WORKSPACE_READ));

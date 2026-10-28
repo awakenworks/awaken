@@ -1176,6 +1176,27 @@ async fn mutation_receipts_keep_the_resolved_logical_path_after_bash_changes_dir
     // retain ownership of failed admission; this changes only success receipts.
     // The direct root expectation follows the host canonical path (macOS /var
     // may resolve through /private); projected output remains /managed.
+    // W5 model-schema guidance must survive the one descriptor projection.
+    // New relative output paths use the initial FileContext; an explicitly
+    // writable absolute path remains compatible. Read-only input mount prefixes
+    // are not another writable root (the Cowork headcount E2E reproduced three
+    // parallel bad guesses). Existing W1-W4 execute every supported path form;
+    // actual model compliance and its error budget stay in the real E2E.
+    let descriptor = awaken_ext_builtin_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.descriptor().id == "write")
+        .unwrap()
+        .into_descriptor();
+    let guidance = descriptor.parameters["properties"]["file_path"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(guidance.contains("initial working"));
+    assert!(guidance.contains("read-only input mount"));
+    assert!(guidance.contains("exact absolute path"));
+    assert_eq!(
+        descriptor.model_parameters()["properties"]["file_path"]["description"],
+        guidance
+    );
     for projected in [false, true] {
         for form in ["relative", "absolute", "normalized"] {
             let root = tempfile::tempdir().unwrap();
