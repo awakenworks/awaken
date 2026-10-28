@@ -311,3 +311,73 @@ async fn native_archive_repairs_withdrawal_for_a_rich_archived_snapshot() {
     assert_eq!(after.config, archived);
     assert_eq!(after.revision, before.revision + 1);
 }
+
+#[tokio::test]
+async fn execution_evidence_native_read_is_scoped_immutable_and_has_no_effects() {
+    // Decision table: owner/foreign/reserved scope × GET/POST. R1 owner GET
+    // -> exact published identity with safe execution facts; R2 foreign/reserved
+    // GET -> empty, no leakage; R3 POST ->405, no authoring or publication.
+    // SDK Agent wire stays unchanged. The query invokes no cascade or runtime.
+    let temp = tempfile::tempdir().unwrap();
+    let (plane, _) = plane_with_catalog(temp.path().join("config.sqlite").to_str().unwrap()).await;
+    let repository = Arc::new(ConfigPlaneManagedAgentRepository::new(
+        plane.clone(),
+        "workspace-a",
+        awaken_time::system_clock(),
+    ));
+    let agent = repository
+        .create("workspace-a", create_params("execution evidence"))
+        .await
+        .unwrap();
+    let cascade = Arc::new(CascadeProbe::default());
+    let state = Arc::new(
+        AgentRegistryState::from_repository(repository.clone())
+            .with_archive_cascade(cascade.clone()),
+    );
+    let app = crate::config_routes::configuration_lifecycle_router(state);
+    for workspace in ["workspace-a", "workspace-b", RESERVED_ADMIN_SCOPE] {
+        let response = app
+            .clone()
+            .layer(Extension(WorkspaceScope(workspace.into())))
+            .oneshot(
+                Request::get("/v1/awaken/agents/execution-evidence")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let data = body["data"].as_array().unwrap();
+        if workspace == "workspace-a" {
+            assert_eq!(data.len(), 1);
+            assert_eq!(data[0]["agent_id"], agent.id);
+            assert_eq!(data[0]["version"], agent.version);
+            assert_eq!(data[0]["execution"]["backend_ref"], "genai");
+            assert_eq!(data[0]["execution"]["provisioning"], "provider");
+            assert_eq!(data[0]["execution"].as_object().unwrap().len(), 3);
+        } else {
+            assert!(data.is_empty());
+        }
+    }
+    let response = app
+        .layer(Extension(WorkspaceScope("workspace-a".into())))
+        .oneshot(
+            Request::post("/v1/awaken/agents/execution-evidence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(cascade.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        repository
+            .retrieve("workspace-a", &agent.id, None)
+            .await
+            .unwrap()
+            .version,
+        agent.version
+    );
+}

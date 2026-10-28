@@ -126,6 +126,20 @@ impl Id {
         Some((run, number, call_id))
     }
 
+    /// Match an existing result's occurrence scope to its Assistant source.
+    /// Unscoped historical/SDK results retain ordered matching by the caller.
+    /// This is correlation only: callers still prove commit and Runtime ownership.
+    #[must_use]
+    pub fn tool_result_scope_matches(&self, source: &Self, call_id: &str) -> bool {
+        self.tool_result_coordinates()
+            .is_none_or(|(run, step, call)| {
+                call == call_id
+                    && source
+                        .assistant_coordinates()
+                        .is_some_and(|(owner, origin, _)| owner == run && origin == step)
+            })
+    }
+
     /// Recognize the exact provider call addressed by a Runtime result,
     /// including legacy committed results. A different call or SDK result id
     /// does not acquire Runtime-owned receipt authority by its content alone.
@@ -308,6 +322,32 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tool_result_occurrence_scope_decision_table() {
+        // Causes: scoped/unscoped result, same/different Run, Step and call,
+        // full/truncated/unknown source. R1 scoped -> all three coordinates
+        // must match; R2 unscoped -> retain caller's historical FIFO behavior.
+        // Correlation alone never authenticates a result or authorizes an effect.
+        let result = super::Id::tool_result_for_batch("tool-batch:run:2", "call");
+        for (source, call, expected) in [
+            ("run-assistant-2", "call", true),
+            ("run-assistant-2-truncated-1", "call", true),
+            ("other-assistant-2", "call", false),
+            ("run-assistant-3", "call", false),
+            ("run-assistant-2", "other", false),
+            ("unknown", "call", false),
+        ] {
+            assert_eq!(
+                result.tool_result_scope_matches(&super::Id(source.into()), call),
+                expected
+            );
+        }
+        assert!(
+            super::Id::tool_result("call")
+                .tool_result_scope_matches(&super::Id("legacy-source".into()), "call")
+        );
+    }
+
     use super::*;
 
     #[test]

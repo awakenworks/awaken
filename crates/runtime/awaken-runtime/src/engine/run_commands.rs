@@ -424,6 +424,7 @@ pub(crate) async fn recover_tool_batch(
     activation: RunActivation,
     context: RuntimeRunContext,
 ) -> Result<RunState> {
+    crate::configuration::validate_configuration(runtime)?;
     let context = activation.narrow_context(context);
     let reader = context
         .reader
@@ -549,6 +550,7 @@ pub(crate) async fn resume_with_continuation(
     continuation: ResumeContinuation,
     activation: Option<&RunActivation>,
 ) -> Result<RunState> {
+    crate::configuration::validate_configuration(runtime)?;
     let (ticket, context, resume_commit) =
         admit_resume(runtime, &command, reader, context, continuation, activation)?;
 

@@ -264,25 +264,6 @@ pub fn validate_committed_message_identities(
     Ok(())
 }
 
-/// Match a result's existing batch scope without introducing another identity
-/// parser. Unscoped historical results retain the original ordered FIFO rule.
-fn result_matches_occurrence(
-    scope: Option<(&str, usize, &str)>,
-    source: &Message,
-    call_id: &str,
-) -> bool {
-    match scope {
-        Some((run, step, call)) => {
-            call == call_id
-                && source
-                    .id
-                    .assistant_coordinates()
-                    .is_some_and(|(owner, source_step, _)| owner == run && source_step == step)
-        }
-        None => true,
-    }
-}
-
 /// Fold the full committed prefix once into exact occurrence evidence. A result
 /// consumes the earliest unmatched call in its proven batch scope, or the same
 /// provider-local id for an unscoped historical result. Awaiting qualification
@@ -358,11 +339,9 @@ pub fn committed_transcript_evidence(
                     let Some(queue) = unmatched.get_mut(tool_use_id) else {
                         continue;
                     };
-                    let scope = message.id.tool_result_coordinates();
                     let position = queue.iter().position(|&index| {
-                        result_matches_occurrence(
-                            scope,
-                            &messages[occurrences[index].message_index],
+                        message.id.tool_result_scope_matches(
+                            &messages[occurrences[index].message_index].id,
                             tool_use_id,
                         )
                     });

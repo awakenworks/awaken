@@ -56,10 +56,18 @@ pub(super) async fn finish_step(
     std::result::Result<super::TerminationReason, AcpError>,
     bool,
 ) {
+    let started = awaken_time::mono::Stopwatch::start();
     let reaped =
         Supervisor::reap_after_terminal(session.channel.as_mut(), session.process.as_ref(), grace)
             .await;
     let complete = reaped.is_ok();
+    tracing::info!(
+        process_id = session.process.id(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        complete,
+        phase = "sdk_reap",
+        "ACP Step cleanup observed"
+    );
     (
         preserve_terminal_outcome(outcome, reaped, session.process.id()),
         complete,

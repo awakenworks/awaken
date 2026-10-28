@@ -194,4 +194,45 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
     assert_eq!(committed.commits.lock().unwrap().len(), count);
     assert!(probe.resumes.lock().unwrap().is_empty());
     assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+
+    // R8 an oversized aggregate over real committed receipts -> typed refusal,
+    // same complete history, no recovery/effect or additional commit. The limit
+    // must not silently truncate a result or reissue its already settled call.
+    let run = RunId("large".into());
+    committed
+        .commit(ThreadCommit::assemble(
+            activation.thread_id.clone(),
+            RunDisposition::running(activation.run_id.clone()),
+            true,
+            vec![
+                Message::new(
+                    MessageId::assistant(&run, 0),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "large-call",
+                        "write",
+                        serde_json::json!({}),
+                    )],
+                ),
+                Message::new(
+                    MessageId::tool_result_for_batch("tool-batch:large:0", "large-call"),
+                    Role::Tool,
+                    vec![ContentBlock::tool_result(
+                        "large-call",
+                        vec![ContentBlock::text("中".repeat(400_000))],
+                    )],
+                ),
+            ],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let count = committed.commits.lock().unwrap().len();
+    let error = crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
+        .unwrap_err();
+    assert_eq!(error.code(), "acp_receipt_context_exceeded");
+    assert_eq!(committed.commits.lock().unwrap().len(), count);
+    assert!(probe.resumes.lock().unwrap().is_empty());
+    assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
 }

@@ -125,7 +125,9 @@ pub(super) async fn prepare(
         // tools already belong to their extensions. Re-registering those ids
         // poisons RawToolRegistry as ambiguous, even for the same implementation.
         for tool in &executors {
-            runtime = runtime.with_tool(tool.clone());
+            runtime = runtime.try_with_tool(tool.clone()).map_err(|error| {
+                SessionExecutionError::internal(format!("RUNTIME_CONFIGURATION: {error}"))
+            })?;
         }
         // Project the exact publication-selected Hand subset. The
         // Session environment supplies rooted executors; the immutable
@@ -216,6 +218,9 @@ pub(super) async fn prepare(
             }
         }
     }
+    awaken_runtime::validate_configuration(&runtime).map_err(|error| {
+        SessionExecutionError::internal(format!("RUNTIME_CONFIGURATION: {error}"))
+    })?;
     let runtime = Arc::new(runtime);
     let acp_executor = host
         .capabilities
