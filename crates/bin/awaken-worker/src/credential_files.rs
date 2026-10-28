@@ -265,6 +265,8 @@ mod tests {
             CredentialMaterialSource::WorkerReference,
             usage,
             CredentialExecutionPolicy {
+                handling_mode:
+                    awaken_agent_contract::credential::CredentialHandlingMode::PlatformManaged,
                 allowed_plaintext_holders: BTreeSet::from([holder.clone()]),
                 model_exposure: ModelExposurePolicy::Forbidden,
             },

@@ -3,10 +3,10 @@
 - Status: Accepted
 - Date: 2026-07-24
 - Accepted: 2026-07-25
+- Amended by: [ADR-0098](0098-claimed-credential-delivery-revocation-fence.md)
 - Builds on: [ADR-0062](0062-published-inference-access-and-runtime-credential-injection.md)
   (one exact published model candidate and credential access pin)
-- Coordinates with:
-  [ADR-0066](0066-session-service-binding-and-realization.md)
+- Coordinates with: [ADR-0066](0066-session-service-binding-and-realization.md)
   (Session baseline and MCP attachment lifecycle), and
   [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md)
   (Repository configuration pinning and activation)

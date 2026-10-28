@@ -5,6 +5,26 @@
 pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 
+/// Explicit destination opt-in, frozen in this connection's authored URL.
+/// Default MCP services receive no Awaken execution identifiers. This is
+/// correlation consent only; receivers must still authenticate and revalidate.
+pub fn execution_context_enabled(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let mut selected = url
+        .query_pairs()
+        .filter(|(key, _)| key == "awaken_execution_context");
+    matches!(selected.next(),Some((_,value)) if value=="run-agent-v1") && selected.next().is_none()
+}
+
 /// Preserve protocol and failure semantics without forwarding credentials,
 /// cookies, message framing, or Connection-nominated hop headers. Adapters own
 /// HTTP framework conversion; this wire helper preserves header value bytes.
@@ -44,6 +64,22 @@ pub fn relay_response_headers<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_context_requires_an_exact_destination_opt_in() {
+        for endpoint in [
+            "https://other.invalid/mcp",
+            "https://other.invalid/mcp?awaken_execution_context=no",
+            "https://other.invalid/mcp?awaken_execution_context=run-agent-v1&awaken_execution_context=run-agent-v1",
+            "https://u:p@other.invalid/mcp?awaken_execution_context=run-agent-v1",
+            "https://other.invalid/mcp?awaken_execution_context=run-agent-v1#fragment",
+        ] {
+            assert!(!execution_context_enabled(endpoint));
+        }
+        assert!(execution_context_enabled(
+            "http://127.0.0.1:3062/mcp?awaken_execution_context=run-agent-v1"
+        ));
+    }
 
     #[test]
     fn relay_header_decision_table_preserves_only_end_to_end_mcp_semantics() {

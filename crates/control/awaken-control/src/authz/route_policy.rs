@@ -127,6 +127,13 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     ),
     RoutePolicyDescriptor::control(
+        "/v1/config/application-credentials",
+        RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
         "/v1/config/provider-connections",
         RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,

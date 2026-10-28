@@ -44,6 +44,8 @@ pub struct ManagedServiceAdapters {
     pub background_services: Vec<Arc<dyn ManagedBackgroundService>>,
     pub credential_material_delivery:
         Option<awaken_credential_contract::CredentialMaterialDelivery>,
+    pub credential_execution_authority:
+        Option<Arc<dyn awaken_credential_contract::CredentialExecutionAuthority>>,
     pub provider_credential_execution: Option<HostedProviderCredentialExecution>,
     /// Hosted delivery of the durable Managed Credential outbox. The open
     /// Control remains the publication authority; a hosted composition may

@@ -18,8 +18,8 @@ mod wire_tests;
 pub use outbound::{AuthChallenge, Credential, CredentialRefresher};
 pub use reference::{
     CandidateFingerprint, CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy,
-    CredentialMaterialSource, CredentialRef, CredentialRefreshAccess, ModelExposurePolicy,
-    PlaintextBoundary, PlaintextHolder, SELF_HOSTED_ACP_TRUST_DOMAIN,
+    CredentialHandlingMode, CredentialMaterialSource, CredentialRef, CredentialRefreshAccess,
+    ModelExposurePolicy, PlaintextBoundary, PlaintextHolder, SELF_HOSTED_ACP_TRUST_DOMAIN,
     SELF_HOSTED_SANDBOX_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef,
     TokenEndpointAuth, TrustDomainRef,
 };

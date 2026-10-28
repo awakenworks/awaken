@@ -279,6 +279,12 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0092-worker-capacity-and-schedulability.md` | Decision record | Not required | n/a |
 | `adr/0093-immutable-application-origin-provenance.md` | Decision record; source carrier/read projection does not qualify product model authorization | Not required | n/a |
 | `adr/0094-session-access-and-run-admission-outcomes.md` | Decision record; executed by the Session acceptance ledger tests | Not required | n/a |
+| `adr/0095-windows-local-process-tree-ownership.md` | Decision record | Not required | n/a |
+| `adr/0097-protected-browser-authentication-boundary.md` | Historical component design; placement superseded by ADR-0099 | Not required | n/a |
+| `adr/0098-claimed-credential-delivery-revocation-fence.md` | Decision record; local Windows component witness does not qualify all native/provider facets | Not required | n/a |
+| `adr/0099-application-owned-credential-consumption.md` | Generic Native entry/envelope delivery implemented; application browser/Android E2E uses synthetic accounts/sites; production IAM/storage and real provider login remain unqualified | Not required | n/a |
+| `adr/0100-credential-handling-and-execution-binding.md` | Unified handling policy and JS/Python SDK; execution admission reuses original Session/Dispatch owners; local qualification and production limits documented | Not required | n/a |
+| `adr/0101-acp-application-execution-context.md` | Opted-in ACP/native MCP correlation; original Session authority resolves actual execution; strict request-body closure and Windows external-process E2E | Not required | n/a |
 
 ## Implementation Context
 

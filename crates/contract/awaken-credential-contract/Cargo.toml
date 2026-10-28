@@ -15,6 +15,7 @@ authority = "credential"
 separation = "contract"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-agent-contract = { workspace = true, features = ["schema"] }
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true

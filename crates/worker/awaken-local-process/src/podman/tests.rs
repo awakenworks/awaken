@@ -57,6 +57,12 @@ async fn podman_child_does_not_inherit_worker_service_lifetime() {
     // tests. Actual systemd/Podman/network survival is owned by the Cowork pause
     // matrix; a child-environment check alone cannot qualify physical recovery.
     const CHILD: &str = "AWAKEN_TEST_PODMAN_SERVICE_CHILD";
+    const ENV_CHECK: &str = "AWAKEN_TEST_PODMAN_ENV_CHECK";
+    if std::env::var_os(ENV_CHECK).is_some() {
+        assert!(std::env::var_os("INVOCATION_ID").is_none());
+        assert_eq!(std::env::var(CHILD).unwrap(), "fixture");
+        return;
+    }
     if std::env::var_os(CHILD).is_some() {
         let before = std::env::var_os("INVOCATION_ID");
         // R3 service + run/start -> peer scope with exact CLI argv. R4 no
@@ -109,11 +115,16 @@ async fn podman_child_does_not_inherit_worker_service_lifetime() {
                 assert!(!output.status.success(), "R5 no unsupervised fallback");
             }
         }
-        let status = podman_command("sh")
+        // The real child verifies its environment without requiring a POSIX
+        // shell on Windows. It still crosses the production spawn boundary.
+        let executable = std::env::current_exe().unwrap();
+        let status = podman_command(executable.to_str().unwrap())
             .args([
-                "-c",
-                r#"test -z "${INVOCATION_ID+x}" && test "$AWAKEN_TEST_PODMAN_SERVICE_CHILD" = fixture"#,
+                "--exact",
+                "podman::tests::podman_child_does_not_inherit_worker_service_lifetime",
+                "--nocapture",
             ])
+            .env(ENV_CHECK, "1")
             .status()
             .await
             .unwrap();

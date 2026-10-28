@@ -28,6 +28,8 @@ use awaken_time::{WallClock, WallClockExt};
 
 mod capability_probe;
 mod host_discovery;
+mod npm_launch;
+mod process_output;
 mod projected_bindings;
 pub use capability_probe::{
     AcpCapabilityState, EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
@@ -72,12 +74,12 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
         let prefix = root.join(cli.id);
         let executable = prefix.join("node_modules").join(".bin").join(bin);
         if executable.is_file() && installed_wrapper_matches(&prefix, package) {
-            return canonical_launch_argv(&executable, &[]).map(Some);
+            return npm_launch::wrapper_argv(&prefix, package, bin).map(Some);
         }
         std::fs::create_dir_all(&prefix).map_err(|error| {
             format!("create ACP wrapper directory {}: {error}", prefix.display())
         })?;
-        let mut command = tokio::process::Command::new(installer);
+        let mut command = npm_launch::installer_command(installer)?;
         command
             .args([
                 "install",
@@ -93,21 +95,14 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        for key in ["PATH", "HOME"] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        let output = tokio::time::timeout(std::time::Duration::from_secs(120), command.output())
+        npm_launch::inherit_host_environment(&mut command);
+        let output = process_output::output(&mut command, std::time::Duration::from_secs(120))
             .await
-            .map_err(|_| format!("install pinned ACP wrapper for {} timed out", cli.id))?
             .map_err(|error| format!("start {installer} for {}: {error}", cli.id))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.exit_code != Some(0) {
             return Err(format!(
-                "install pinned ACP wrapper for {} failed: {}",
-                cli.id,
-                stderr.lines().next().unwrap_or("npm exited unsuccessfully")
+                "install pinned ACP wrapper for {} failed (exit {:?})",
+                cli.id, output.exit_code,
             ));
         }
         if !installed_wrapper_matches(&prefix, package) {
@@ -116,7 +111,7 @@ impl AcpWrapperInstaller for NpmWrapperInstaller {
                 cli.id
             ));
         }
-        canonical_launch_argv(&executable, &[]).map(Some)
+        npm_launch::wrapper_argv(&prefix, package, bin).map(Some)
     }
 }
 

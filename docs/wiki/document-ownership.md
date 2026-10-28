@@ -157,6 +157,12 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [prompt-skill-optimization-state-machine.md](../design/prompt-skill-optimization-state-machine.md) | proposed optimization job, candidate, privacy, retry, cancellation, promotion, and recovery lifecycle | [index.md](index.md) |
 | [error-taxonomy.md](../design/error-taxonomy.md) | neutral error ownership and public adapter error mapping | [runtime-explicit-boundaries-facts.md](runtime-explicit-boundaries-facts.md) |
 | [packaging-enforcement-matrix.md](../design/packaging-enforcement-matrix.md) | package, import, license, vocabulary, ownership, and catalog enforcement | [runtime-explicit-boundaries-facts.md](runtime-explicit-boundaries-facts.md) |
+| [adr/0095-windows-local-process-tree-ownership.md](../adr/0095-windows-local-process-tree-ownership.md) | Windows process tree ownership and exact termination receipts | [index.md](index.md) |
+| [adr/0097-protected-browser-authentication-boundary.md](../adr/0097-protected-browser-authentication-boundary.md) | historical browser component boundary; application placement superseded by ADR-0099 | [index.md](index.md) |
+| [adr/0098-claimed-credential-delivery-revocation-fence.md](../adr/0098-claimed-credential-delivery-revocation-fence.md) | claim revalidation after material reads and receipt acknowledgements | [index.md](index.md) |
+| [adr/0099-application-owned-credential-consumption.md](../adr/0099-application-owned-credential-consumption.md) | generic Native delivery and application-owned login/verification | [index.md](index.md) |
+| [adr/0100-credential-handling-and-execution-binding.md](../adr/0100-credential-handling-and-execution-binding.md) | platform/application handling modes and original live execution authority | [index.md](index.md) |
+| [adr/0101-acp-application-execution-context.md](../adr/0101-acp-application-execution-context.md) | opted-in native/ACP execution correlation and reserved metadata headers | [index.md](index.md) |
 | [INVARIANTS.md](../INVARIANTS.md) | guardrail registry and DDD review checklist | all fact pages |
 
 ## Cross-Theme Anchors

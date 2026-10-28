@@ -113,6 +113,7 @@ pub enum ManagedCredentialOperation {
 /// Target discovery, topology and rollout policy deliberately do not appear in
 /// this event. A consumer freezes those facts within its own bounded context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManagedCredentialRollout {
     pub id: String,
     pub workspace_id: String,

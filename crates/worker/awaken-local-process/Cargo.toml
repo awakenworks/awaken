@@ -22,6 +22,12 @@ tokio = { workspace = true, features = ["process", "sync", "time"] }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }
 
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "=10.0.1", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+winsafe = { version = "=0.0.19", features = ["kernel"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Scoped cutoffs read the same BOOTTIME the authority proof samples.
 awaken-authority-clock.workspace = true

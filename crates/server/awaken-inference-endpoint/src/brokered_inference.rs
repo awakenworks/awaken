@@ -362,6 +362,7 @@ struct CreateGrantBody<'a> {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GrantBody {
     grant_id: String,
     gateway_base_url: String,

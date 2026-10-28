@@ -2,41 +2,8 @@
 // @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Authenticated Session realization and terminal-cleanup HTTP handlers.
 
+use super::session_requests::*;
 use super::*;
-
-#[derive(Deserialize)]
-pub(super) struct SessionResumeReq {
-    claim: RunClaim,
-    identity: WorkerIdentity,
-    session_id: String,
-    session_work_authority:
-        Option<awaken_session_application_contract::SessionWorkAuthorityReceipt>,
-    continuation: Option<awaken_session_configuration_contract::resource::SessionRealizationLease>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionCleanupPollReq {
-    pub(super) identity: WorkerIdentity,
-    pub(super) session_id: String,
-    pub(super) lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SessionCleanupClaimNextReq {
-    identity: WorkerIdentity,
-    target: awaken_session_realization_contract::SessionRealizationTarget,
-    sweep_cursor_version: u8,
-    #[serde(default)]
-    after_session_id: Option<awaken_session_types::SessionId>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SessionPreparationClaimNextReq {
-    identity: WorkerIdentity,
-    target: awaken_session_realization_contract::SessionRealizationTarget,
-}
 
 pub(super) async fn session_preparation_claim_next(
     State(service): State<Arc<WorkerDispatchService>>,
@@ -91,32 +58,6 @@ pub(super) async fn session_preparation_claim_next(
     }
     .await;
     respond_realization(result)
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionCleanupPreparationRecordReq {
-    identity: WorkerIdentity,
-    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    preparation: awaken_session_state_contract::SessionCleanupPreparation,
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionCleanupPreparationAuthorizeReq {
-    identity: WorkerIdentity,
-    effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionCleanupDisposalAuthorizeReq {
-    identity: WorkerIdentity,
-    effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionCleanupDisposalRecordReq {
-    identity: WorkerIdentity,
-    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
 }
 
 pub(super) async fn session_cleanup_claim_next(
@@ -506,24 +447,6 @@ pub(super) async fn session_resume(
     }
     .await;
     respond_realization(result)
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionRealizationReq<T> {
-    identity: WorkerIdentity,
-    command: T,
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionEnvironmentIntentReq {
-    identity: WorkerIdentity,
-    intent: awaken_session_state_contract::SessionEnvironmentEffectIntent,
-}
-
-#[derive(Deserialize)]
-pub(super) struct SessionEnvironmentReceiptReq {
-    identity: WorkerIdentity,
-    receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
 }
 
 pub(super) async fn authorize_session_environment_effect(

@@ -85,6 +85,11 @@ impl McpCredentialRequirement {
 
     #[must_use]
     pub fn usage_class(&self) -> McpCredentialUsageClass {
+        if self.credential.policy.handling_mode
+            != awaken_agent_contract::credential::CredentialHandlingMode::PlatformManaged
+        {
+            return McpCredentialUsageClass::Unsupported;
+        }
         McpCredentialUsageClass::of(&self.credential.usage)
     }
 }

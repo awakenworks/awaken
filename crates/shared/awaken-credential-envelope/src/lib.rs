@@ -259,6 +259,76 @@ impl RecipientKeyEnvelope {
         request: CredentialEnvelopeIssuance,
     ) -> Result<CredentialEnvelope, CredentialMaterialError> {
         self.validate_access(&request.access, &request.selected_holder, &request.binding)?;
+        self.seal_exact(request).await
+    }
+
+    /// Seal material for one explicitly installed external consumer. The
+    /// application owns decoding and use; the built-in resolver does not claim
+    /// support for that consumer or interpret its material schema.
+    pub async fn seal_for_consumer(
+        &self,
+        request: CredentialEnvelopeIssuance,
+        consumer: &awaken_credential_contract::CredentialExtensionDescriptor,
+    ) -> Result<CredentialEnvelope, CredentialMaterialError> {
+        request.binding.validate()?;
+        let CredentialUsage::Extension {
+            consumer_id,
+            material_type,
+            ..
+        } = &request.access.usage
+        else {
+            return Err(CredentialMaterialError::MaterialKindMismatch);
+        };
+        if consumer_id != &consumer.consumer_id
+            || !consumer.material_types.contains(material_type)
+            || awaken_credential_contract::is_core_delivery_consumer(consumer_id)
+            || request.selected_holder.boundary != PlaintextBoundary::Workload
+            || request.access.policy.model_exposure
+                != awaken_credential_contract::ModelExposurePolicy::Forbidden
+            || request
+                .access
+                .target
+                .as_ref()
+                .is_none_or(|t| t.purpose != CredentialPurpose::Extension)
+            || request.access.material_source != CredentialMaterialSource::ControlPlaneReference
+        {
+            return Err(CredentialMaterialError::RecipientMismatch);
+        }
+        let capabilities = awaken_credential_contract::CredentialRealizationCapabilities {
+            holders: [request.selected_holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [
+                awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
+            ]
+            .into_iter()
+            .collect(),
+            recipient_bound_envelopes: true,
+            extension_consumers: [(
+                consumer.consumer_id.clone(),
+                consumer.material_types.clone(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        request
+            .access
+            .admit(
+                &request.selected_holder,
+                awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
+                &capabilities,
+                self.clock.now_ms(),
+            )
+            .map_err(|_| CredentialMaterialError::Invalid)?;
+        self.seal_exact(request).await
+    }
+
+    async fn seal_exact(
+        &self,
+        request: CredentialEnvelopeIssuance,
+    ) -> Result<CredentialEnvelope, CredentialMaterialError> {
         if request.access.envelope.is_some() || request.material.expose_secret().len() > MAX_BYTES {
             return Err(CredentialMaterialError::Invalid);
         }

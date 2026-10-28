@@ -22,7 +22,9 @@
 //! guard exactly where it applied before.
 
 pub mod admin_assistant;
+mod application_credentials;
 mod application_mcp_credentials;
+pub use application_credentials::application_credentials_router;
 mod mcp_catalog;
 mod mcp_probe;
 pub use mcp_catalog::McpCatalogService;
@@ -266,7 +268,14 @@ async fn durable_management_audit(
         )
             .into_response();
     };
-    let body_hash = format!("{:x}", Sha256::digest(&bytes));
+    // Write-only application material must leave no plaintext-derived digest
+    // in the audit store (weak passwords are vulnerable to offline guessing).
+    // The audit call, tenant, route and completion remain durable.
+    let body_hash = if parts.uri.path() == "/v1/config/application-credentials/enter" {
+        "redacted-application-material".to_string()
+    } else {
+        format!("{:x}", Sha256::digest(&bytes))
+    };
     let audit = ManagementAuditRecord::new(
         format!("http:{}:{}", parts.method, parts.uri.path()),
         call_id,
@@ -358,6 +367,8 @@ pub struct ControlRouterInput {
     pub managed_runtime_available: bool,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
+    pub credential_execution_authority:
+        Option<Arc<dyn awaken_credential_contract::CredentialExecutionAuthority>>,
     /// The one authoring projection used by `/v1/agents`. Execution-owned
     /// consumers receive the same port from composition instead of reconstructing
     /// a second repository adapter.
@@ -436,6 +447,17 @@ impl awaken_admin_config_api::ConfigCapabilitiesSource for LiveControlCapabiliti
     }
 }
 
+fn application_credential_routes(
+    vault: Arc<VaultState>,
+    authority: Option<Arc<dyn awaken_credential_contract::CredentialExecutionAuthority>>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Router {
+    let external = std::env::var_os("AWAKEN_APPLICATION_CREDENTIAL_CONSUMERS_FILE")
+        .map(|path| application_credentials_router(vault.clone(), path.into(), authority, clock))
+        .unwrap_or_default();
+    application_mcp_credentials_router(vault).merge(external)
+}
+
 /// Build the authoring / authz management router over the shared handles. The
 /// lifecycle sink is assembled separately by its Managed Execution consumer, so
 /// split Control never needs a Session repository merely to expose webhook CRUD.
@@ -456,6 +478,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         model_supply,
         managed_runtime_available,
         vault_state,
+        credential_execution_authority,
         agent_repository,
         agent_archive_cascade,
         plane,
@@ -510,7 +533,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
             brokered_catalog,
             // Shared credential-availability cooldowns (E3-4).
             availability: Default::default(),
-            clock,
+            clock: clock.clone(),
         },
         capabilities,
         cloud_login,
@@ -522,7 +545,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
     let webhook_crud = webhook_authoring::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
-    let application_mcp_credentials = application_mcp_credentials_router(vault_state.clone());
+    let application_credentials =
+        application_credential_routes(vault_state.clone(), credential_execution_authority, clock);
     let presentation_org = data_subject_org.clone();
     let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
@@ -555,7 +579,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // against the same embedded IAM the guard authenticates with), and they
     // are merged before the layer so the guard authenticates them first.
     let mut mgmt = admin
-        .merge(application_mcp_credentials)
+        .merge(application_credentials)
         .merge(mcp_catalog::router(mcp_catalog))
         .merge(telemetry_policy::router(telemetry_policy))
         .merge(vault_router(vault_state))

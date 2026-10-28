@@ -44,6 +44,9 @@ pub(super) async fn control_component_for_process(
     inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     managed_request_limiter: Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
     credential_material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
+    credential_execution_authority: Option<
+        Arc<dyn awaken_credential_contract::CredentialExecutionAuthority>,
+    >,
     coordinator_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     iam: Option<Arc<ManagementAuthz>>,
@@ -84,6 +87,7 @@ pub(super) async fn control_component_for_process(
             web_search_providers,
         );
     awaken_control::build_control_component(awaken_control::ControlDependencies {
+        credential_execution_authority,
         tool_configuration_compiler: std::sync::Arc::new(
             awaken_ext_builtin_tools::WebToolConfigurationCompiler,
         ),
@@ -186,13 +190,7 @@ pub(super) async fn prepare_control_routers(
         .expect("Control process requires executable Environment registrar wiring");
     let content_capture_ceiling = process.content_capture_ceiling;
     let data_subject_org = process.org_id.clone().unwrap_or_else(local_org_id);
-    let enrollment_signing_key = match process.enrollment_signing_key {
-        Some(key) => key,
-        #[cfg(any(test, feature = "test-support"))]
-        None => [0xA5; 32],
-        #[cfg(not(any(test, feature = "test-support")))]
-        None => panic!("Control process requires a derived enrollment signing key"),
-    };
+    let enrollment_signing_key = control_enrollment_key(process.enrollment_signing_key);
     // Store startup already resolved the one installation coordinate after all
     // owned authorities opened; Control consumes it without a second publisher.
     let execution_workspace = stores.platform_workspace.clone();
@@ -308,6 +306,10 @@ pub(super) async fn prepare_control_routers(
             .managed_services
             .credential_material_delivery
             .clone(),
+        process
+            .managed_services
+            .credential_execution_authority
+            .clone(),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
         iam,
@@ -390,6 +392,16 @@ pub(super) async fn prepare_control_routers(
         None,
         component.admin_tools,
     ))
+}
+
+fn control_enrollment_key(key: Option<[u8; 32]>) -> [u8; 32] {
+    match key {
+        Some(key) => key,
+        #[cfg(any(test, feature = "test-support"))]
+        None => [0xA5; 32],
+        #[cfg(not(any(test, feature = "test-support")))]
+        None => panic!("Control process requires a derived enrollment signing key"),
+    }
 }
 
 /// The privacy ports the private Control boundary projects for a split

@@ -33,6 +33,7 @@ pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
+pub mod credential_execution;
 mod credential_rollout_delivery;
 mod session_credential_rollout;
 #[cfg(test)]

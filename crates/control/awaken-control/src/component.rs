@@ -130,6 +130,8 @@ pub struct ControlDependencies {
         Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
     pub credential_material_delivery:
         Option<awaken_credential_contract::CredentialMaterialDelivery>,
+    pub credential_execution_authority:
+        Option<Arc<dyn awaken_credential_contract::CredentialExecutionAuthority>>,
     pub data_subjects: Arc<dyn DataSubjectRepo>,
     pub erasure_jobs: Arc<dyn ErasureJobRepo>,
     pub coordinator_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
@@ -209,6 +211,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         inference_geo_policy,
         managed_request_limiter,
         credential_material_delivery,
+        credential_execution_authority,
         data_subjects,
         erasure_jobs,
         coordinator_content_eraser,
@@ -252,10 +255,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         .await;
 
     let tool_catalog = scoped_tool_catalog(global_tools.clone());
-    let credential_validator = Arc::new(crate::CredentialRevisionValidator::new(
-        credentials.clone(),
-        clock.clone(),
-    ));
+    let credential_validator = publication_credential_validator(credentials.clone(), clock.clone());
     let mut config_service = ConfigService::new(
         model_publication_resolver,
         executable_agent_registrar,
@@ -369,6 +369,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         clock.clone(),
     );
     let router = control_router(ControlRouterInput {
+        credential_execution_authority,
         catalog,
         credentials,
         secrets,
@@ -426,6 +427,13 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         data_subject_resolver,
         organization_privacy,
     }
+}
+
+fn publication_credential_validator(
+    credentials: Arc<dyn CredentialRepo>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Arc<crate::CredentialRevisionValidator> {
+    Arc::new(crate::CredentialRevisionValidator::new(credentials, clock))
 }
 
 /// The Control-owned privacy ports one component exports: the Run-boundary

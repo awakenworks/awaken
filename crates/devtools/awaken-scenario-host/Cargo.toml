@@ -153,4 +153,11 @@ container-k8s = ["awaken-execution-composition/k8s"]
 workspace = true
 
 [dev-dependencies]
+awaken-ext-mcp.workspace = true
+awaken-mcp-wire.workspace = true
+awaken-store-inmem.workspace = true
+url.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-dispatch-testkit.workspace = true
 tempfile = "3"

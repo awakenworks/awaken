@@ -51,6 +51,7 @@ async fn erase(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GrantBody {
     purpose: Purpose,
     #[serde(default)]
@@ -146,6 +147,7 @@ async fn read_consent(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DecisionQuery {
     #[serde(default)]
     requested: Option<ContentCapture>,

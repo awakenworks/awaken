@@ -26,6 +26,7 @@ use std::sync::Arc;
 mod adapter_policy;
 mod cleanup;
 pub mod host;
+mod mcp_context;
 mod session_factory;
 pub use adapter_policy::acp_adapter_policy;
 use cleanup::CleanupScope;
@@ -926,7 +927,7 @@ impl AcpRunExecutor {
             let process = session.process.clone();
             let mut config = TurnConfig::new(base_permission);
             config.max_turn_requests = activation.snapshot.resolved_spec.max_steps;
-            config.mcp_servers = session.mcp_session_servers.clone();
+            mcp_context::install(&mut config, &session.mcp_session_servers, &activation);
             config.session_id = acp_session_id.take();
             config.session_model = session.session_model.clone();
             config.session_mode = session.session_mode.clone();

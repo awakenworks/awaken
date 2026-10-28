@@ -192,6 +192,7 @@ pub(super) async fn initialize_agent(
 pub(super) struct NewSessionConfig<'a> {
     pub cwd: &'a str,
     pub mcp_servers: &'a [crate::SessionMcpServer],
+    pub mcp_execution_context: Option<&'a awaken_acp_contract::McpExecutionContext>,
     pub meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
@@ -206,7 +207,10 @@ pub(super) async fn open_new_session(
         ID_NEW_SESSION,
         AGENT_METHOD_NAMES.session_new,
         NewSessionRequest::new(config.cwd)
-            .mcp_servers(to_acp_mcp_servers(config.mcp_servers))
+            .mcp_servers(to_acp_mcp_servers(
+                config.mcp_servers,
+                config.mcp_execution_context,
+            ))
             .meta(config.meta),
     )
     .await?;
@@ -258,7 +262,10 @@ pub(super) async fn open_or_restore_session(
                     ID_NEW_SESSION,
                     AGENT_METHOD_NAMES.session_load,
                     LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
-                        .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
+                        .mcp_servers(to_acp_mcp_servers(
+                            &config.mcp_servers,
+                            config.mcp_execution_context.as_ref(),
+                        ))
                         .meta(claude_session_meta(
                             &config.tool_aliases,
                             config.max_turn_requests,
@@ -304,6 +311,7 @@ pub(super) async fn open_or_restore_session(
                             NewSessionConfig {
                                 cwd: &cwd,
                                 mcp_servers: &config.mcp_servers,
+                                mcp_execution_context: config.mcp_execution_context.as_ref(),
                                 meta: claude_session_meta(
                                     &config.tool_aliases,
                                     config.max_turn_requests,
@@ -339,6 +347,7 @@ pub(super) async fn open_or_restore_session(
                     NewSessionConfig {
                         cwd: &cwd,
                         mcp_servers: &config.mcp_servers,
+                        mcp_execution_context: config.mcp_execution_context.as_ref(),
                         meta: claude_session_meta(
                             &config.tool_aliases,
                             config.max_turn_requests,
@@ -421,6 +430,7 @@ pub async fn negotiate_capabilities(
         NewSessionConfig {
             cwd,
             mcp_servers: &[],
+            mcp_execution_context: None,
             meta: None,
         },
     )

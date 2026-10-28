@@ -218,6 +218,7 @@ pub struct DreamModelConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DreamPolicyConfig {
     pub enabled: bool,
     pub interval_seconds: u64,

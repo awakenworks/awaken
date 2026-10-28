@@ -58,12 +58,14 @@ struct ControlServiceState {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AuditRecordCommand {
     scope: ScopeId,
     audit: ManagementAuditRecord,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AuditLookupCommand {
     scope: ScopeId,
     tool: String,
@@ -71,12 +73,14 @@ struct AuditLookupCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VaultExistsCommand {
     workspace_id: String,
     vault_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct McpSourceCommand {
     workspace_id: String,
     vault_ids: Vec<String>,
@@ -84,6 +88,7 @@ struct McpSourceCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SourceCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
@@ -93,6 +98,7 @@ struct SourceCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CredentialAccessCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
@@ -119,6 +125,7 @@ enum RepositoryAdmission {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConsentCeilingCommand {
     subject: awaken_runtime_contract::DataSubjectId,
     purpose: awaken_runtime_contract::Purpose,
@@ -131,16 +138,19 @@ struct TelemetryNarrowingCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DataSubjectEraseCommand {
     subject: awaken_runtime_contract::DataSubjectId,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrganizationEraseCommand {
     organization_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrganizationExportCommand {
     organization_id: String,
     subject: Option<awaken_runtime_contract::DataSubjectId>,

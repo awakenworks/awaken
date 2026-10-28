@@ -236,6 +236,15 @@ async fn model_attribute_token_limits_fail_closed_when_impossible() {
 #[tokio::test]
 async fn quota_cooldown_without_a_retry_after_uses_the_default_window() {
     let app = router(None);
+    // A typo must not silently select the default cooldown window.
+    let (invalid, _, _) = call(
+        &app,
+        "POST",
+        "/v1/config/credentials/src-typo/cooldown",
+        Some(json!({"kind":"quota","retry_after_sec":3600})),
+    )
+    .await;
+    assert_eq!(invalid, StatusCode::UNPROCESSABLE_ENTITY);
     // No `retry_after_secs` → the `None` branch of `cooldown_deadline` (a default
     // window), the arm CD1 never exercises because it always passes 3600.
     let (s, _, state) = call(

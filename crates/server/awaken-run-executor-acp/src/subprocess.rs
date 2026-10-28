@@ -106,7 +106,12 @@ fn inline_env(name: &str, value: &str) -> pc::EnvVar {
 
 /// Minimum host lookup admitted for managed local processes. `HOME` is replaced
 /// by the Session-owned config directory before an opaque CLI is launched.
+#[cfg(not(windows))]
 const HOST_PASSTHROUGH_ENV: &[&str] = &["PATH", "HOME"];
+// Winsock/Node need the OS directory even when ambient process identity and
+// tokens are cleared. These locators grant no user credential access.
+#[cfg(windows)]
+const HOST_PASSTHROUGH_ENV: &[&str] = &["PATH", "HOME", "SYSTEMROOT", "WINDIR"];
 
 /// Host identity explicitly admitted only for a backend-owned TrustedHost
 /// launch. HOME resolves Git/CLI config and SSH_AUTH_SOCK delegates to the
@@ -795,6 +800,25 @@ mod tests {
         assert_eq!(homes, vec!["/projected/home"], "projected HOME wins");
         // The secret survives untouched.
         assert!(env_value(&env, "ANTHROPIC_API_KEY") == Some("secret"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn managed_windows_bootstrap_keeps_os_locators_without_ambient_tokens() {
+        let env = with_host_passthrough(Vec::new(), HOST_PASSTHROUGH_ENV, |name| {
+            Some(format!("fixture-{name}"))
+        });
+        let names: Vec<_> = env.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["PATH", "HOME", "SYSTEMROOT", "WINDIR"]);
+        for forbidden in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GIT_ASKPASS",
+            "APPDATA",
+            "SSH_AUTH_SOCK",
+        ] {
+            assert!(!names.contains(&forbidden));
+        }
     }
 
     #[test]

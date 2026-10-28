@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 importers:
+  packages/credential-client: {}
 
   .:
     devDependencies:

@@ -28,6 +28,7 @@ pub const MAX_PAGE_LIMIT: usize = 500;
 /// contract (`size`, `cursor`); the adapter builds a `CursorPage` response from
 /// the paginated result.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CursorParams {
     #[serde(default)]
     pub size: Option<u32>,

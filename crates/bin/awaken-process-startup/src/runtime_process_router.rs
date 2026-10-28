@@ -57,6 +57,20 @@ pub(super) async fn prepare_runtime_routers(
     process: ProcessStartup,
 ) -> Result<ProcessRouters, String> {
     let mut base = open_process_base(stores, iam, remote_iam, process).await?;
+    let credential_execution =
+        Arc::new(crate::credential_execution::ExecutionAuthoritySlot::default());
+    if base.role == config::Role::AllInOne {
+        if base
+            .process
+            .managed_services
+            .credential_execution_authority
+            .is_some()
+        {
+            return Err("ambiguous credential execution authority".into());
+        }
+        base.process.managed_services.credential_execution_authority =
+            Some(credential_execution.clone());
+    }
     let resources = assemble_deployment_and_resources(&mut base).await?;
     let mut cloud = assemble_cloud_plane(&mut base, model_supply).await?;
     let control_component =
@@ -74,6 +88,12 @@ pub(super) async fn prepare_runtime_routers(
         host,
     )?;
     let event_batch_cutover_validation = session.event_batch_cutover_validation.clone();
+    credential_execution.install(Arc::new(
+        awaken_coordinator::credential_execution::SessionCredentialExecutionAuthority::new(
+            session.session_application.session_repository_handle(),
+            session.execution.coordinator_dispatch.clone(),
+        ),
+    ))?;
     let coordinator = assemble_coordinator(
         &mut base, &resources, &mut cloud, &control, &execution, session,
     )
@@ -340,6 +360,10 @@ async fn assemble_control_component(
                     base.process
                         .managed_services
                         .credential_material_delivery
+                        .clone(),
+                    base.process
+                        .managed_services
+                        .credential_execution_authority
                         .clone(),
                     resources.content_eraser.clone(),
                     base.process.content_capture_ceiling,

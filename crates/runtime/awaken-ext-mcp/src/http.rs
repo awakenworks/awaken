@@ -60,6 +60,10 @@ use crate::types::{
 
 use awaken_mcp_wire::http::MCP_SESSION_ID_HEADER as SESSION_HEADER;
 
+#[path = "http_execution_context.rs"]
+mod execution_context;
+use execution_context::{is_runtime_identity_header, with_runtime_execution_header};
+
 /// Upper bound on the body bytes a [`McpRequestTrace`] retains from one failed
 /// HTTP response. Reading stops there, so a hostile peer cannot grow it.
 pub const HTTP_FAILURE_BODY_LIMIT: usize = 64 * 1024;
@@ -202,15 +206,20 @@ impl HttpShared {
     /// Custom headers + credential header + session header, on any request.
     fn apply_headers(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         for (name, value) in &self.headers {
+            if is_runtime_identity_header(name) {
+                continue;
+            }
             request = request.header(name, value);
         }
-        if let Some((name, value)) = self.credential.read().unwrap().header() {
+        if let Some((name, value)) = self.credential.read().unwrap().header()
+            && !is_runtime_identity_header(&name)
+        {
             request = request.header(name, value);
         }
         if let Some(session) = self.session_id.lock().unwrap().clone() {
             request = request.header(SESSION_HEADER, session);
         }
-        request
+        with_runtime_execution_header(request, &self.url)
     }
 
     /// Build a POST with all headers applied.

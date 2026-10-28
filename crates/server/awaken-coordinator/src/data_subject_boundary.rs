@@ -57,6 +57,7 @@ pub fn coordinator_content_eraser(
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EraseCommand {
     subject: DataSubjectId,
 }

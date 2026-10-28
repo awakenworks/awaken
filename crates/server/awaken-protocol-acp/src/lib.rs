@@ -395,6 +395,8 @@ pub struct TurnConfig<'a> {
     /// claude/gemini/opencode). Empty for the newline stand-in and for config-file CLIs
     /// (legacy config-file adapters receive no in-band servers).
     pub mcp_servers: Vec<SessionMcpServer>,
+    /// Runtime correlation; only endpoints explicitly opting in receive it.
+    pub mcp_execution_context: Option<awaken_acp_contract::McpExecutionContext>,
     /// In: an ACP session id to resume via `session/load` (a relaunched CLI reloads
     /// its own session, so context survives the per-turn relaunch). Out: the id the
     /// turn used — `session/new`'s fresh id when none was given — so the caller can
@@ -450,6 +452,7 @@ impl<'a> TurnConfig<'a> {
             max_turn_requests: None,
             system_prompt: None,
             mcp_servers: Vec::new(),
+            mcp_execution_context: None,
             session_id: None,
             session_model: None,
             session_mode: None,

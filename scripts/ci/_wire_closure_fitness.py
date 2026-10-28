@@ -61,7 +61,7 @@ ESCAPING_UNIT_VARIANT_EXEMPTIONS: dict[str, str] = {}
 # request body today rather than only after the migration finishes — the
 # failure mode of a file allow-list, which freezes the debt and guards nothing.
 # Lower these as instances are closed or registered; never raise them.
-OPEN_REQUEST_BODY_BASELINE = 42
+OPEN_REQUEST_BODY_BASELINE = 0
 ESCAPING_UNIT_VARIANT_BASELINE = 20
 
 # `Json(body): Json<T>` in a handler signature. The `let` guard matters: sqlx

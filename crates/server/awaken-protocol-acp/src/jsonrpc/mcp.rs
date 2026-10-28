@@ -42,6 +42,7 @@ fn exact_mcp_projection<Name, Command, Args, Url, Auth>(
 /// transports carry it as env.
 pub(super) fn to_acp_mcp_servers(
     servers: &[crate::SessionMcpServer],
+    context: Option<&awaken_acp_contract::McpExecutionContext>,
 ) -> Vec<agent_client_protocol::McpServer> {
     use agent_client_protocol::{
         EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio,
@@ -57,10 +58,28 @@ pub(super) fn to_acp_mcp_servers(
                 server.auth.as_ref(),
             ) {
                 ExactMcpProjection::Http { name, url, auth } => {
-                    let headers = auth
+                    let mut headers: Vec<HttpHeader> = auth
                         .into_iter()
+                        .filter(|(name, _)| {
+                            ![
+                                "x-awaken-run-id",
+                                "x-awaken-agent-id",
+                                "x-awaken-session-id",
+                            ]
+                            .iter()
+                            .any(|reserved| name.eq_ignore_ascii_case(reserved))
+                        })
                         .map(|(name, value)| HttpHeader::new(name.clone(), value.clone()))
                         .collect();
+                    if let Some(context) =
+                        context.filter(|_| awaken_mcp_wire::http::execution_context_enabled(url))
+                    {
+                        headers.push(HttpHeader::new("x-awaken-run-id", context.run_id.clone()));
+                        headers.push(HttpHeader::new(
+                            "x-awaken-agent-id",
+                            context.agent_id.clone(),
+                        ));
+                    }
                     McpServer::Http(McpServerHttp::new(name.clone(), url.clone()).headers(headers))
                 }
                 ExactMcpProjection::Stdio {
@@ -82,6 +101,71 @@ pub(super) fn to_acp_mcp_servers(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod execution_header_tests {
+    use super::*;
+
+    #[test]
+    fn reserved_auth_never_supplies_run_agent_or_session_identity() {
+        for opted in [true, false] {
+            for current in [true, false] {
+                for name in [
+                    "X-Awaken-Run-Id",
+                    "X-Awaken-Agent-Id",
+                    "X-Awaken-Session-Id",
+                    "Authorization",
+                ] {
+                    let servers = [crate::SessionMcpServer {
+                        name: "application".into(),
+                        command: None,
+                        args: Vec::new(),
+                        url: Some(
+                            if opted {
+                                "http://127.0.0.1/mcp?awaken_execution_context=run-agent-v1"
+                            } else {
+                                "http://127.0.0.1/mcp"
+                            }
+                            .into(),
+                        ),
+                        auth: Some((name.into(), "fixture-auth".into())),
+                    }];
+                    let context = awaken_acp_contract::McpExecutionContext {
+                        run_id: "live-run".into(),
+                        agent_id: "live-agent".into(),
+                    };
+                    let value = serde_json::to_value(to_acp_mcp_servers(
+                        &servers,
+                        current.then_some(&context),
+                    ))
+                    .unwrap();
+                    let actual = value[0]
+                        .get("headers")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut expected = Vec::new();
+                    if name == "Authorization" {
+                        expected.push(
+                            serde_json::json!({"name":"Authorization","value":"fixture-auth"}),
+                        );
+                    }
+                    if opted && current {
+                        expected
+                            .push(serde_json::json!({"name":"x-awaken-run-id","value":"live-run"}));
+                        expected.push(
+                            serde_json::json!({"name":"x-awaken-agent-id","value":"live-agent"}),
+                        );
+                    }
+                    assert_eq!(
+                        actual, expected,
+                        "opted={opted} current={current} auth={name}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(kani)]

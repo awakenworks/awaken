@@ -30,6 +30,7 @@ pub const MAX_CLAIMED_COMMIT_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// operation. Authentication remains transport metadata; `identity` proves the
 /// registered incarnation named by the claim owner at the Coordinator edge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimedCommitRequest {
     pub claim: RunClaim,
     pub operation: CommitOperation,

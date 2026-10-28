@@ -1,0 +1,10 @@
+{
+  "name": "@awaken/credential-client",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "exports": "./index.mjs",
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

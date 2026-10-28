@@ -80,9 +80,30 @@ pub enum ModelExposurePolicy {
     VirtualOnly,
 }
 
+/// Who implements safe use after delivery; this never grants access or changes
+/// the selected plaintext holder. Historical policies remain platform-managed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialHandlingMode {
+    #[default]
+    PlatformManaged,
+    ApplicationManaged,
+}
+impl CredentialHandlingMode {
+    #[must_use]
+    pub const fn is_platform_managed(&self) -> bool {
+        matches!(self, Self::PlatformManaged)
+    }
+}
+
 /// Published authorization for execution-time plaintext and model exposure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialExecutionPolicy {
+    #[serde(
+        default,
+        skip_serializing_if = "CredentialHandlingMode::is_platform_managed"
+    )]
+    pub handling_mode: CredentialHandlingMode,
     pub allowed_plaintext_holders: BTreeSet<PlaintextHolder>,
     pub model_exposure: ModelExposurePolicy,
 }
@@ -102,6 +123,7 @@ impl CredentialExecutionPolicy {
     #[must_use]
     pub fn exact(holder: PlaintextHolder, model_exposure: ModelExposurePolicy) -> Self {
         Self {
+            handling_mode: CredentialHandlingMode::PlatformManaged,
             allowed_plaintext_holders: BTreeSet::from([holder]),
             model_exposure,
         }
@@ -113,8 +135,19 @@ impl CredentialExecutionPolicy {
         model_exposure: ModelExposurePolicy,
     ) -> Self {
         Self {
+            handling_mode: CredentialHandlingMode::PlatformManaged,
             allowed_plaintext_holders: allowed_plaintext_holders.into_iter().collect(),
             model_exposure,
+        }
+    }
+
+    /// The registered extension consumer owns plaintext use, not authorization.
+    #[must_use]
+    pub fn application_managed(holder: PlaintextHolder) -> Self {
+        Self {
+            handling_mode: CredentialHandlingMode::ApplicationManaged,
+            allowed_plaintext_holders: BTreeSet::from([holder]),
+            model_exposure: ModelExposurePolicy::Forbidden,
         }
     }
 
