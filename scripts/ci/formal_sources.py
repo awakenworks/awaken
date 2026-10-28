@@ -486,11 +486,26 @@ def _selftest_guard_inputs() -> None:
         for owner in owners:
             # SIO1: a real own alternate index is clean while working bytes
             # are bad. Staged succeeds; default still scans the working file.
-            assert invoke(owner, root, ["--staged"], own)[0] == 0, "SIO1 own partial index"
-            assert invoke(owner, root, [], own)[0] == 1, "SIO1 default working bytes"
-            # SIO2: the same actual main cannot substitute the foreign clean
-            # index. The old copies returned0 without scanning the bad source.
-            assert invoke(owner, root, ["--staged"], decoy)[0] == 1, "SIO2 foreign hook cannot hide debt"
+            clean = invoke(owner, root, ["--staged"], own)
+            assert clean[0] == 0, "SIO1 own partial index"
+            if owner is check_file_limits:
+                assert "1201" not in clean[2], "SIO1 clean index has no working-file size warning"
+            # SIO1/SIO2 decision table: line-only findings warn with status 0;
+            # secrets/hygiene findings retain status 1. Both working and foreign
+            # hook modes must still scan the ROOT's bad bytes. Requiring the
+            # exact file/count warning catches the old false-empty status 0 even
+            # though a line measurement no longer rejects the change.
+            for arguments, hook, rule in (
+                ([], own, "SIO1 default working bytes"),
+                (["--staged"], decoy, "SIO2 foreign hook cannot hide debt"),
+            ):
+                status, _, diagnostic = invoke(owner, root, arguments, hook)
+                if owner is check_file_limits:
+                    assert status == 0, rule
+                    assert "docs/probe.md" in diagnostic and "1201" in diagnostic, rule
+                    assert "warn" in diagnostic.lower(), rule
+                else:
+                    assert status == 1, rule
         assert protected == {path.relative_to(foreign).as_posix(): path.read_bytes()
                              for path in foreign.rglob("*") if path.is_file()}, "SIO2 no foreign mutation"
 
