@@ -190,15 +190,28 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
             .await?;
         let deadline = awaken_time::mono::MonoDeadline::after(self.policy.wait_timeout);
         loop {
-            if let Some(record) = self.store.get(&demand.build_key).await?
-                && let EnvironmentImageBuildState::Ready { image, .. } = record.state
-            {
-                if self.builder.available(&demand, &image).await? {
-                    return Ok(Some(image));
+            if let Some(record) = self.store.get(&demand.build_key).await? {
+                match record.state {
+                    EnvironmentImageBuildState::Ready { image, .. } => {
+                        if self.builder.available(&demand, &image).await? {
+                            return Ok(Some(image));
+                        }
+                        self.store
+                            .invalidate_ready(&demand.build_key, self.clock.now_ms())
+                            .await?;
+                    }
+                    EnvironmentImageBuildState::Failed { .. } => {
+                        // Report the known failed attempt now. The same durable
+                        // queue still owns its backoff/retry; a waiting Session
+                        // must not hide failure behind the full cold-build budget.
+                        // Keep provider paths/credentials in the operator record.
+                        return Err(EnvironmentImageBuildError::Unavailable(format!(
+                            "Environment `{}` revision {} package-image build failed; Awaken retains the build task for retry",
+                            demand.environment_id, demand.source_revision.0,
+                        )));
+                    }
+                    _ => {}
                 }
-                self.store
-                    .invalidate_ready(&demand.build_key, self.clock.now_ms())
-                    .await?;
             }
             if deadline.has_passed() {
                 return Err(EnvironmentImageBuildError::Timeout(format!(
@@ -532,6 +545,103 @@ mod tests {
             assert_eq!(attempt, 1, "{rule}: E2");
             assert_eq!(retry_at_ms, 1_020_000, "{rule}: C6/E3 exact retry");
         }
+    }
+
+    #[tokio::test]
+    async fn readiness_reports_failed_build_without_waiting_or_changing_its_retry_authority() {
+        // Decision table: Pending/Building -> existing bounded Timeout; known
+        // Failed -> Unavailable before that deadline, no build/state mutation;
+        // original retry edge -> same queue claims/builds once -> exact Ready.
+        // Zero wait budget makes error precedence deterministic without timing
+        // assertions. A private provider message stays in the operator record.
+        // Nonblocking capacity reads still return None for failed work.
+        let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
+        let builder = Arc::new(FakeBuilder {
+            builds: Mutex::new(0),
+            available: AtomicBool::new(true),
+            availability_checks: Mutex::new(Vec::new()),
+        });
+        let clock = Arc::new(ManualClock::new(1_000));
+        let coordinator = EnvironmentImageBuildCoordinator::new(
+            store.clone(),
+            builder.clone(),
+            "registry/base",
+            EnvironmentImageBuildPolicy {
+                wait_timeout: Duration::ZERO,
+                ..EnvironmentImageBuildPolicy::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
+        let packaged = registration(
+            "env-office",
+            EnvironmentConfig::Cloud {
+                networking: Default::default(),
+                packages: EnvironmentPackages {
+                    pip: vec!["generic-package==1.0".into()],
+                    ..Default::default()
+                },
+            },
+        );
+        coordinator.ensure_registration(&packaged).await.unwrap();
+        let demand = coordinator.demand(&packaged, None).await.unwrap().unwrap();
+        assert!(
+            matches!(
+                coordinator.ready_image(&packaged, None).await,
+                Err(EnvironmentImageBuildError::Timeout(_))
+            ),
+            "Pending"
+        );
+        let claim = store
+            .claim_next("builder-a", clock.now_ms(), 10_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                coordinator.ready_image(&packaged, None).await,
+                Err(EnvironmentImageBuildError::Timeout(_))
+            ),
+            "Building"
+        );
+        store
+            .fail(
+                &claim,
+                "/private/provider/diagnostic-canary",
+                clock.now_ms(),
+                15,
+            )
+            .await
+            .unwrap();
+        let before = store.get(&demand.build_key).await.unwrap().unwrap();
+        let error = coordinator.ready_image(&packaged, None).await.unwrap_err();
+        assert!(matches!(error, EnvironmentImageBuildError::Unavailable(_)));
+        assert!(error.to_string().contains("env-office"));
+        assert!(!error.to_string().contains("diagnostic-canary"));
+        assert_eq!(
+            coordinator.ready_image_now(&packaged, None).await.unwrap(),
+            None
+        );
+        assert_eq!(store.get(&demand.build_key).await.unwrap().unwrap(), before);
+        assert_eq!(*builder.builds.lock().unwrap(), 0);
+        assert!(
+            !coordinator.run_once("builder-b").await.unwrap(),
+            "backoff preserved"
+        );
+        clock.set(1_015);
+        assert!(
+            coordinator.run_once("builder-b").await.unwrap(),
+            "same owner queue retries"
+        );
+        assert_eq!(*builder.builds.lock().unwrap(), 1);
+        assert!(
+            coordinator
+                .ready_image(&packaged, None)
+                .await
+                .unwrap()
+                .unwrap()
+                .ends_with("@sha256:ready")
+        );
     }
 
     #[tokio::test]

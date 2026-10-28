@@ -801,3 +801,14 @@ context is limited to 1 MiB UTF-8 JSON; exceeding it returns
 This is a bounded refusal, not transparent long-context compaction. No aggregate
 file is written outside a receipted Runtime effect, and physical SDK exit remains
 mandatory before the original execution owner proceeds.
+
+
+Known failed Environment image attempts are reported immediately by the existing
+blocking `EnvironmentImageReadiness::ready_image` query as unavailable. The query
+keeps provider diagnostics in the operator build record, creates no retry or
+terminal state, and leaves the original build queue, lease/CAS and backoff intact.
+Pending/Building retain the cold-preparation deadline, exact Ready retains its
+availability proof, and nonblocking capacity reads retain `None` until ready.
+A caller can retry the original creation after the same build owner succeeds;
+it must not interpret a long cold-build budget as evidence that a known failure
+is still making progress. This does not repair or restart the container engine.
