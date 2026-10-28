@@ -102,12 +102,15 @@ pub mod phase {
     pub const THREAD_CLOSED: u16 = 81;
     pub const AGGREGATE_USAGE: u16 = 90;
     pub const AGGREGATE_CLOSE: u16 = 100;
-    pub const ACTIVATION_FAILED: u16 = 109;
-    pub const PARENT_TERMINAL_CHILD: u16 = 110;
-    pub const PARENT_TERMINAL_PRIMARY: u16 = 111;
-    pub const PARENT_TERMINAL_SESSION: u16 = 112;
     /// An accepted inbound command, ordered at its admission fence.
     pub const INBOUND_ADMISSION: u16 = 120;
+    // A terminal Root is absorbing. Cleanup can observe the same Runtime
+    // cursor as an idle interrupt, so closure must follow admitted commands
+    // even when no further Runtime commit advances that cursor.
+    pub const ACTIVATION_FAILED: u16 = 129;
+    pub const PARENT_TERMINAL_CHILD: u16 = 130;
+    pub const PARENT_TERMINAL_PRIMARY: u16 = 131;
+    pub const PARENT_TERMINAL_SESSION: u16 = 132;
 }
 
 impl ManagedEventType {
@@ -312,12 +315,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_roles_are_distinct_sorted_and_phase_matches_the_former_table() {
+    fn fixed_roles_keep_wire_identity_and_canonical_phase_compatibility() {
         // Causes: each of the 39 fixed roles, including the new Root update.
-        // R1 existing roles retain their literal phase; R2 SessionUpdated uses
-        // the retained admission fence (120). Effects: E1 wire roles are unique
-        // and in the published order; E2 every phase equals the value the
-        // retired order table assigned; E3 transcript folds share the
+        // R1 ordinary Runtime roles retain their literal phase; R2 Root
+        // terminals follow the admission fence (120), including equal-cursor
+        // idle interruption. Effects: E1 wire roles are unique and keep their
+        // published strings; E2 only the four Root-terminal phases move;
+        // E3 transcript folds share the
         // transcript phase and round-trip their wire type.
         let wire = ManagedEventType::FIXED.map(ManagedEventType::as_wire_role);
         let mut sorted = wire.to_vec();
@@ -325,7 +329,7 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted, wire.to_vec(), "E1");
         let table = [
-            ("activation-failed-error", 109),
+            ("activation-failed-error", 129),
             ("advisor-lifecycle-status-terminated", 81),
             ("advisor-message-received", 55),
             ("aggregate-status-idle", 100),
@@ -351,9 +355,9 @@ mod tests {
             ("outcome-evaluation-end", 60),
             ("outcome-evaluation-ongoing", 60),
             ("outcome-evaluation-start", 60),
-            ("parent-terminal-child-status-terminated", 110),
-            ("parent-terminal-primary-status-terminated", 111),
-            ("parent-terminal-session-status-terminated", 112),
+            ("parent-terminal-child-status-terminated", 130),
+            ("parent-terminal-primary-status-terminated", 131),
+            ("parent-terminal-session-status-terminated", 132),
             ("rescheduled-lifecycle-status-running", 22),
             ("root-lifecycle-error", 70),
             ("root-lifecycle-session-status-rescheduled", 20),
