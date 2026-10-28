@@ -25,6 +25,30 @@ use awaken_session_execution_contract::CoordinatedThreadLink;
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 
 impl CommittedReads {
+    /// Subscribe through the original hub after the existing committed child
+    /// membership check. The root keeps its direct, read-free observation path.
+    pub async fn subscribe_session_thread_live(
+        &self,
+        hub: &crate::ThreadEventHub,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &str,
+    ) -> Result<
+        Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
+        RunError,
+    > {
+        if thread_id != session_id {
+            let links = self.coordinated_threads(session_id.as_str(), None).await?;
+            if !links.iter().any(|link| {
+                link.session_id == *session_id && link.thread_id.0.as_str() == thread_id
+            }) {
+                return Err(RunError::bad_request(
+                    "live observer target is not a coordinated Session Thread",
+                ));
+            }
+        }
+        Ok(Some(hub.live_subscription(thread_id)?))
+    }
+
     pub async fn coordinated_threads(
         &self,
         session_id: &str,

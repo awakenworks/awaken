@@ -113,23 +113,10 @@ impl CoordinationRuntime for WorkerPlacedSessions {
         session_id: &SessionId,
         thread_id: &str,
     ) -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError> {
-        if thread_id == session_id {
-            return Ok(Some(self.ports.hub.live_subscription(thread_id)?));
-        }
-        let links = self
-            .ports
+        self.ports
             .reads
-            .coordinated_threads(session_id.as_str(), None)
-            .await?;
-        if !links
-            .iter()
-            .any(|link| link.session_id == *session_id && link.thread_id.0.as_str() == thread_id)
-        {
-            return Err(RunError::bad_request(
-                "live observer target is not a coordinated Session Thread",
-            ));
-        }
-        Ok(Some(self.ports.hub.live_subscription(thread_id)?))
+            .subscribe_session_thread_live(&self.ports.hub, session_id, thread_id)
+            .await
     }
 
     async fn continue_session_agent_report(
