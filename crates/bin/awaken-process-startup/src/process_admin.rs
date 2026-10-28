@@ -11,9 +11,11 @@
 //!   SSE/event streams), scraped by the KEDA prometheus trigger to autoscale.
 //! - `POST /admin/drain` — flip the Brain to draining: `/readyz` then reports 503, so
 //!   the Service/gateway stops routing new work to it. The public request gate also
-//!   rejects new requests on retained HTTP/1.1 or HTTP/2 connections while requests
+//!   rejects new execution/stream requests on retained HTTP/1.1 or HTTP/2 connections while requests
 //!   admitted before the drain continue to completion (a `preStop` hook calls this
 //!   before SIGTERM; interrupted clients reconnect and resume from durable truth).
+//!   Bounded Session authority reads retain their existing handler authorization
+//!   so MCP preparation and Worker retirement can finish without new execution.
 //! - `GET /readyz` — readiness for the Service: 200 normally, 503 while draining.
 //!   A Coordinator backed by PostgreSQL also executes one bounded `SELECT 1`
 //!   against its process-owned pool; it never opens a probe-only connection pool.
@@ -217,12 +219,12 @@ impl DrainController {
             .and_then(|source| source.snapshot())
     }
 
-    fn admit_public_request(ctrl: &Arc<Self>) -> Option<ActiveRequestGuard> {
+    fn admit_public_request(ctrl: &Arc<Self>, authority_read: bool) -> Option<ActiveRequestGuard> {
         let _fence = ctrl
             .public_admission_fence
             .lock()
             .expect("public request admission fence poisoned");
-        if ctrl.is_draining() {
+        if ctrl.is_draining() && !authority_read {
             return None;
         }
         ctrl.active.fetch_add(1, Ordering::AcqRel);
@@ -238,6 +240,27 @@ impl DrainController {
     }
 }
 
+/// Consume only the two bounded Session query shapes from the Managed protocol.
+/// This classifies drain impact, not tenancy or authorization: the existing
+/// Workspace dispatcher and query handlers still validate the original request.
+/// Collection, stream, mutation and execution paths deliberately do not match.
+fn is_bounded_session_authority_read(request: &Request) -> bool {
+    if !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) {
+        return false;
+    }
+    let segments: Vec<_> = request.uri().path().split('/').collect();
+    let tail = match segments.as_slice() {
+        ["", "v1", "workspaces", workspace, tail @ ..] if !workspace.is_empty() => tail,
+        ["", "v1", tail @ ..] => tail,
+        _ => return false,
+    };
+    matches!(tail, ["sessions", session] if !session.is_empty())
+        || matches!(tail, ["awaken", "sessions", session, "execution-evidence"] if !session.is_empty())
+}
+
 /// Count every request while it is in flight. A normal request increments then
 /// decrements almost immediately; a long-lived stream holds the count for its whole
 /// lifetime, so `active_streams` tracks concurrent connection load. RAII-style: the
@@ -247,7 +270,9 @@ async fn count_active(
     req: Request,
     next: Next,
 ) -> Response {
-    let Some(guard) = DrainController::admit_public_request(&ctrl) else {
+    let Some(guard) =
+        DrainController::admit_public_request(&ctrl, is_bounded_session_authority_read(&req))
+    else {
         return awaken_coordinator::admin::readyz(false).into_response();
     };
     let response = next.run(req).await;
@@ -467,6 +492,122 @@ mod tests {
             .await
             .unwrap();
         (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn drain_preserves_only_bounded_authority_reads_and_their_original_authorization() {
+        // Cause/effect graph: C1 drain linearized; C2 exact Session-root or
+        // execution-evidence GET/HEAD (flat or existing Workspace alias);
+        // C3 the original handler authorizes the reader; C4 mutation, new Run,
+        // stream, collection or lookalike. D4=C1+C2+C3 -> query200, normal body
+        // guard1->0, readiness still503. D5=C1+C2+!C3 -> original401. D6=C1+C4
+        // ->503 before the handler. Admitted responses retain the existing
+        // body-owned guard. Nested routers may finish HEAD's empty body before
+        // returning its headers; it must be fully released after Drop. Public/private gates remain
+        // separate; existing HTTP1/HTTP2 tests own in-flight and reuse races.
+        async fn authority(headers: axum::http::HeaderMap) -> (StatusCode, &'static str) {
+            // Stand-in for the existing route's auth, not a new authenticator.
+            if headers
+                .get("authorization")
+                .is_some_and(|v| v == "fixture-reader")
+            {
+                (StatusCode::OK, "authorized authority")
+            } else {
+                (StatusCode::UNAUTHORIZED, "unauthorized authority")
+            }
+        }
+        let ctrl = DrainController::new();
+        let flat = Router::new()
+            .route(
+                "/v1/sessions/{id}",
+                axum::routing::get(authority).post(|| async { StatusCode::CREATED }),
+            )
+            .route(
+                "/v1/awaken/sessions/{id}/execution-evidence",
+                axum::routing::get(authority),
+            )
+            .fallback(|| async { StatusCode::OK });
+        let app = with_connection_metric(
+            awaken_coordinator::workspace_path::with_workspace_path_addressing(flat),
+            ctrl.clone(),
+        );
+        ctrl.begin_drain();
+        for prefix in ["/v1", "/v1/workspaces/execution"] {
+            for suffix in [
+                "/sessions/session",
+                "/awaken/sessions/session/execution-evidence",
+            ] {
+                for method in [axum::http::Method::GET, axum::http::Method::HEAD] {
+                    for authorized in [false, true] {
+                        let mut request = HttpRequest::builder()
+                            .method(method.clone())
+                            .uri(format!("{prefix}{suffix}"));
+                        if authorized {
+                            request = request.header("authorization", "fixture-reader");
+                        }
+                        let response = app
+                            .clone()
+                            .oneshot(request.body(Body::empty()).unwrap())
+                            .await
+                            .unwrap();
+                        assert_eq!(
+                            response.status(),
+                            if authorized {
+                                StatusCode::OK
+                            } else {
+                                StatusCode::UNAUTHORIZED
+                            },
+                            "D4/D5 {method} {prefix}{suffix}"
+                        );
+                        if method == axum::http::Method::GET {
+                            assert_eq!(
+                                ctrl.active_streams(),
+                                1,
+                                "D4/D5 GET original body guard {prefix}{suffix}"
+                            );
+                        }
+                        drop(response);
+                        assert_eq!(ctrl.active_streams(), 0);
+                        assert!(!ctrl.is_ready(), "D4 metadata never reopens serving");
+                    }
+                }
+            }
+        }
+        for (method, path) in [
+            ("POST", "/v1/sessions/session"),
+            ("DELETE", "/v1/sessions/session"),
+            ("POST", "/v1/ai-sdk/threads/session/runs"),
+            ("GET", "/v1/sessions"),
+            ("GET", "/v1/sessions/session/events"),
+            ("GET", "/v1/sessions/session/events/stream"),
+            ("GET", "/v1/awaken/sessions/session/runs/run/events"),
+            (
+                "GET",
+                "/v1/awaken/sessions/session/execution-evidence/extra",
+            ),
+            ("GET", "/v1/workspaces//sessions/session"),
+            ("GET", "/v1/sessions/"),
+            ("GET", "/unrelated"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("authorization", "fixture-reader")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "D6 {method} {path}"
+            );
+            assert_eq!(ctrl.active_streams(), 0, "D6 no handler admission");
+        }
     }
 
     #[tokio::test]
