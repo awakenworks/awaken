@@ -21,7 +21,6 @@ use awaken_session_execution_contract::{
 };
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
-const INBOUND_ADMISSION_PHASE: u16 = 120;
 
 /// The sole order rule for accepted inbound commands. Processing/effect
 /// observations may enrich the public row but can never replace this coordinate.
@@ -30,7 +29,10 @@ const fn inbound_admission_order(
     anchor: Option<awaken_session_event_contract::SessionEventProjectionAnchor>,
 ) -> Option<(u64, u16)> {
     match anchor {
-        Some(anchor) => Some((anchor.source_commit_cursor, INBOUND_ADMISSION_PHASE)),
+        Some(anchor) => Some((
+            anchor.source_commit_cursor,
+            awaken_managed_session_events::ManagedEventType::SessionUpdated.phase(),
+        )),
         None => None,
     }
 }
@@ -104,7 +106,13 @@ fn inbound_order_is_fixed_before_effect_observation() {
         },
     );
     let issued = inbound_admission_order(anchor);
-    assert_eq!(issued, Some((admission_cursor, INBOUND_ADMISSION_PHASE)));
+    assert_eq!(
+        issued,
+        Some((
+            admission_cursor,
+            awaken_managed_session_events::ManagedEventType::SessionUpdated.phase()
+        ))
+    );
     // Effect progress has no input to the order function: replay after any
     // effect observation produces the exact coordinate already issued.
     assert_eq!(inbound_admission_order(anchor), issued);
