@@ -10,6 +10,8 @@
 use super::*;
 use awaken_session_types::SessionId;
 
+mod profiled_history;
+
 #[derive(Default)]
 pub(super) struct RecordingCreateRuntime {
     pub(super) baseline_installs: AtomicUsize,

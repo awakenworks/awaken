@@ -648,37 +648,32 @@ impl ManagedState {
     /// events. Idempotent: a re-archive observes the same fact and emits no
     /// duplicate event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
-        self.archive_session_with_cleanup(id, false).await
-    }
-
-    /// Profiled release joins verified cleanup through the existing Session
-    /// archive owner, including exact failed Frozen WorkUnit admission.
-    /// Public archive keeps its strict idle-only admission.
-    pub async fn release_profiled_session_without_publication(
-        &self,
-        id: &str,
-    ) -> Result<Session, StateError> {
-        self.archive_session_with_cleanup(id, true).await
-    }
-
-    async fn archive_session_with_cleanup(
-        &self,
-        id: &str,
-        verified_cleanup: bool,
-    ) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
-        let termination = &self.roles.termination;
-        let release = if verified_cleanup {
-            termination.release_profiled_session(id).await
-        } else {
-            termination.archive_session(id).await
-        };
-        release.map_err(Self::map_preparation_error)?;
+        self.roles
+            .termination
+            .archive_session(id)
+            .await
+            .map_err(Self::map_preparation_error)?;
         // No direct cache mutation or bespoke terminal append belongs here. The
         // canonical refresh rereads PersistedSession and projects root + every
         // derived child terminal with identical warm/restart behavior.
         self.refresh_committed_projection(id).await?;
         self.get_session(id)
+    }
+
+    /// The private release response carries no Session presentation. Join the
+    /// sole termination owner's verified receipt without realizing a Runtime
+    /// or making cleanup depend on complete historical event projection.
+    pub async fn release_profiled_session_without_publication(
+        &self,
+        id: &str,
+    ) -> Result<(), StateError> {
+        self.roles
+            .termination
+            .release_profiled_session(id)
+            .await
+            .map_err(Self::map_preparation_error)?;
+        Ok(())
     }
 }
 

@@ -384,3 +384,24 @@ successor admission. The private release response still requires the exact
 verified cleanup receipt; pending cleanup retains the original cleanup obligation
 and returns no successful release. No route, persisted Session field, recovery
 queue or product WorkUnit state is added.
+
+Profiled creation reuses `agent_configuration_from_profile` and the same
+pre-insert `CompleteSessionRoot` recorder as Managed creation. The
+already selected publication, model choice, tools and roster supply that seed;
+the original root owns its immutable initial configuration. MCP updates can
+therefore retain a complete Agent fact without consulting a later catalog.
+Unversioned profiles use the existing unpinned-baseline/version-one presentation
+law. Existing roots are never backfilled with a current publication.
+Managed inheritance and Profiled union also use the same MCP candidate lowering:
+published credential pins require both a nonempty source and positive revision.
+Managed full replacement still suppresses unused publication defaults; Profiled
+union still delegates Agent-versus-Session precedence to the existing aggregate.
+
+Private profiled release returns the verified termination owner's result rather
+than a Managed Session DTO. Its sequence is scope authorization, archive CAS,
+canonical cleanup and exact completion receipt, then the existing release
+response. It neither realizes an Environment nor refreshes the complete event
+projection. A retained historical `Unrecorded` Agent update still prevents a
+complete history read, but cannot turn a verified cleanup into a false failure.
+Pending or failed cleanup still returns an error and keeps the original fence;
+ordinary public archive continues to return the full projected Session.
