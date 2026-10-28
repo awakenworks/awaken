@@ -96,3 +96,20 @@ test('the shared offline image decodes to a conventional solid-red RGB PNG', asy
     assert.deepEqual(pixels.subarray(y * row.length, (y + 1) * row.length), row, `R3 row ${y}`);
   }
 });
+
+test('canonical fixture removal preserves foreign siblings and is idempotent', async (t) => {
+  // C1 isolated caller tree with the observed late SDK config leaf; C2 foreign
+  // sibling; C3 repeat after absence. R1 remove only C1, R2 C2 survives both
+  // calls, R3 absent C1 succeeds. The real Claude E2E owns the observed transient
+  // ENOTEMPTY regression; Node owns bounded retry, not a second removal loop.
+  const root=fs.mkdtempSync(path.join(tmpdir(),'fixture-removal-law-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const own=path.join(root,'own'), foreign=path.join(root,'foreign');
+  fs.mkdirSync(path.join(own,'e2e-home'),{recursive:true});fs.mkdirSync(foreign);
+  fs.writeFileSync(path.join(own,'e2e-home','.claude.json'),'synthetic');
+  fs.writeFileSync(path.join(foreign,'sentinel'),'keep');
+  const {cleanupFixtureTree}=await import('./harness.mjs');
+  cleanupFixtureTree(own);cleanupFixtureTree(own);
+  assert.equal(fs.existsSync(own),false);
+  assert.equal(fs.readFileSync(path.join(foreign,'sentinel'),'utf8'),'keep');
+});
