@@ -53,19 +53,27 @@ pub(super) async fn admit_model_request(
     let Some(gate) = &context.model_request_gate else {
         return Ok(Some(ModelRequestAdmission::Admit));
     };
-    let admission = model_read(
-        context.cancellation.as_ref(),
-        context
-            .physical_quiescence
-            .observe_return(gate.admit_model_request(ModelRequestAdmissionRequest {
-                run_id: run_id.clone(),
-                thread_id: thread_id.clone(),
-            })),
-    )
-    .await
-    .ok_or_else(|| LlmError::Cancelled("model admission cancelled".into()))?;
     if !context.physical_quiescence.permits_execution() {
         return Ok(None);
+    }
+    if context.is_cancelled() {
+        return Err(LlmError::Cancelled("model admission cancelled".into()));
+    }
+    // Admission can reconcile durable Session accounting. Once entered, let its
+    // owning authority return instead of dropping that write on Run cancellation.
+    // Its return is local evidence only; an independent effect veto still wins.
+    let admission = context
+        .physical_quiescence
+        .observe_return(gate.admit_model_request(ModelRequestAdmissionRequest {
+            run_id: run_id.clone(),
+            thread_id: thread_id.clone(),
+        }))
+        .await;
+    if !context.physical_quiescence.permits_execution() {
+        return Ok(None);
+    }
+    if context.is_cancelled() {
+        return Err(LlmError::Cancelled("model admission cancelled".into()));
     }
     admission.map(Some).map_err(|source| {
         LlmError::Admission {
