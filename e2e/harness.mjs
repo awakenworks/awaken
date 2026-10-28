@@ -1322,7 +1322,10 @@ export function cleanupFixtureTree(root) {
     }
     if (!detached) throw new Error(`could not detach fixture mount ${mountPoint}`);
   }
-  fs.rmSync(root, { recursive: true, force: true });
+  // SDK configuration can be atomically renamed while its already-stopped
+  // fixture is being removed. Delegate bounded ENOTEMPTY/EBUSY retry to Node;
+  // persistent removal errors still throw, and product teardown is independent.
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }
 
 /**
