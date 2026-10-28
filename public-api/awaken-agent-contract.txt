@@ -390,6 +390,17 @@ pub fn awaken_agent_contract::agent::state::StateKey::load_or_default(&awaken_ag
 pub fn awaken_agent_contract::agent::state::StateKey::remove() -> awaken_agent_contract::agent::state::Command
 pub fn awaken_agent_contract::agent::state::StateKey::try_write(&Self::Value) -> core::result::Result<awaken_agent_contract::agent::state::Command, awaken_agent_contract::agent::state::StateError>
 pub fn awaken_agent_contract::agent::state::StateKey::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl awaken_agent_contract::agent::state::StateKey for awaken_agent_contract::thread::usage::ThreadUsageKey
+pub type awaken_agent_contract::thread::usage::ThreadUsageKey::Value = awaken_agent_contract::thread::usage::ThreadUsage
+pub const awaken_agent_contract::thread::usage::ThreadUsageKey::KEY: &'static str
+pub const awaken_agent_contract::thread::usage::ThreadUsageKey::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_agent_contract::thread::usage::ThreadUsageKey::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::address() -> awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::load(&awaken_agent_contract::agent::state::Store) -> core::result::Result<Self::Value, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::load_or_default(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::remove() -> awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::try_write(&Self::Value) -> core::result::Result<awaken_agent_contract::agent::state::Command, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
 pub fn awaken_agent_contract::agent::state::validate_batch(&[awaken_agent_contract::agent::state::Command]) -> core::result::Result<(), awaken_agent_contract::agent::state::Conflict>
 pub mod awaken_agent_contract::agent::thread
 pub struct awaken_agent_contract::agent::thread::Id(pub alloc::string::String)
@@ -1397,6 +1408,28 @@ pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::end_
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::thread_id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::version: u64
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
+pub mod awaken_agent_contract::thread::usage
+pub struct awaken_agent_contract::thread::usage::ThreadUsage
+pub awaken_agent_contract::thread::usage::ThreadUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_contract::audit::model_request::TokenUsage>
+impl awaken_agent_contract::thread::usage::ThreadUsage
+pub fn awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(&[awaken_agent_contract::agent::state::Command]) -> Self
+pub fn awaken_agent_contract::thread::usage::ThreadUsage::is_empty(&self) -> bool
+pub fn awaken_agent_contract::thread::usage::ThreadUsage::merge(&mut self, &awaken_agent_contract::thread::usage::ThreadUsage)
+pub fn awaken_agent_contract::thread::usage::ThreadUsage::record(&mut self, &str, awaken_agent_contract::audit::model_request::TokenUsage)
+pub fn awaken_agent_contract::thread::usage::ThreadUsage::total(&self) -> awaken_agent_contract::audit::model_request::TokenUsage
+pub struct awaken_agent_contract::thread::usage::ThreadUsageKey
+impl awaken_agent_contract::agent::state::StateKey for awaken_agent_contract::thread::usage::ThreadUsageKey
+pub type awaken_agent_contract::thread::usage::ThreadUsageKey::Value = awaken_agent_contract::thread::usage::ThreadUsage
+pub const awaken_agent_contract::thread::usage::ThreadUsageKey::KEY: &'static str
+pub const awaken_agent_contract::thread::usage::ThreadUsageKey::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_agent_contract::thread::usage::ThreadUsageKey::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::address() -> awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::load(&awaken_agent_contract::agent::state::Store) -> core::result::Result<Self::Value, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::load_or_default(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::remove() -> awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::try_write(&Self::Value) -> core::result::Result<awaken_agent_contract::agent::state::Command, awaken_agent_contract::agent::state::StateError>
+pub fn awaken_agent_contract::thread::usage::ThreadUsageKey::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+pub const awaken_agent_contract::thread::usage::THREAD_USAGE_STATE_KEY: &str
 pub mod awaken_agent_contract::toolset
 pub enum awaken_agent_contract::toolset::GrantedAutonomy
 pub awaken_agent_contract::toolset::GrantedAutonomy::Evaluated

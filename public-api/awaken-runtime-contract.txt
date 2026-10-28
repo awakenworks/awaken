@@ -215,14 +215,14 @@ pub awaken_runtime_contract::delegation::DelegationStep::Awaiting
 pub awaken_runtime_contract::delegation::DelegationStep::Awaiting::continuation: serde_json::value::Value
 pub awaken_runtime_contract::delegation::DelegationStep::Ended
 pub awaken_runtime_contract::delegation::DelegationStep::Ended::text: alloc::string::String
-pub awaken_runtime_contract::delegation::DelegationStep::Ended::usage: awaken_runtime_contract::llm::ThreadUsage
+pub awaken_runtime_contract::delegation::DelegationStep::Ended::usage: awaken_agent_contract::thread::usage::ThreadUsage
 pub enum awaken_runtime_contract::delegation::ResultRecord
 pub awaken_runtime_contract::delegation::ResultRecord::Duplicate
 pub awaken_runtime_contract::delegation::ResultRecord::Recorded
 pub struct awaken_runtime_contract::delegation::ChildRunResult
 pub awaken_runtime_contract::delegation::ChildRunResult::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::delegation::ChildRunResult::text: alloc::string::String
-pub awaken_runtime_contract::delegation::ChildRunResult::usage: awaken_runtime_contract::llm::ThreadUsage
+pub awaken_runtime_contract::delegation::ChildRunResult::usage: awaken_agent_contract::thread::usage::ThreadUsage
 pub struct awaken_runtime_contract::delegation::ChildRunResultInbox
 impl awaken_runtime_contract::delegation::ChildRunResultInbox
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::consume(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_runtime_contract::delegation::ChildRunResult, awaken_runtime_contract::delegation::DelegationResultError>
@@ -403,6 +403,9 @@ pub awaken_runtime_contract::live_inbox::LiveInboxMessage::message: awaken_agent
 pub awaken_runtime_contract::live_inbox::LiveInboxMessage::origin: awaken_runtime_contract::live_inbox::MessageOrigin
 pub struct awaken_runtime_contract::live_inbox::LiveInboxMessageId(pub u64)
 pub mod awaken_runtime_contract::llm
+pub use awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY
+pub use awaken_runtime_contract::llm::ThreadUsage
+pub use awaken_runtime_contract::llm::ThreadUsageKey
 pub enum awaken_runtime_contract::llm::Error
 pub awaken_runtime_contract::llm::Error::Admission
 pub awaken_runtime_contract::llm::Error::Admission::source: alloc::boxed::Box<awaken_runtime_contract::llm::Error>
@@ -503,21 +506,6 @@ pub fn awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch(
 pub struct awaken_runtime_contract::llm::ModelRequestAdmissionRequest
 pub awaken_runtime_contract::llm::ModelRequestAdmissionRequest::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::llm::ModelRequestAdmissionRequest::thread_id: awaken_agent_contract::agent::thread::Id
-pub struct awaken_runtime_contract::llm::ThreadUsage
-pub awaken_runtime_contract::llm::ThreadUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_contract::audit::model_request::TokenUsage>
-impl awaken_runtime_contract::llm::ThreadUsage
-pub fn awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&[awaken_agent_contract::agent::state::Command]) -> Self
-pub fn awaken_runtime_contract::llm::ThreadUsage::is_empty(&self) -> bool
-pub fn awaken_runtime_contract::llm::ThreadUsage::merge(&mut self, &awaken_runtime_contract::llm::ThreadUsage)
-pub fn awaken_runtime_contract::llm::ThreadUsage::record(&mut self, &str, awaken_agent_contract::audit::model_request::TokenUsage)
-pub fn awaken_runtime_contract::llm::ThreadUsage::total(&self) -> awaken_agent_contract::audit::model_request::TokenUsage
-pub struct awaken_runtime_contract::llm::ThreadUsageKey
-impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::llm::ThreadUsageKey
-pub type awaken_runtime_contract::llm::ThreadUsageKey::Value = awaken_runtime_contract::llm::ThreadUsage
-pub const awaken_runtime_contract::llm::ThreadUsageKey::KEY: &'static str
-pub const awaken_runtime_contract::llm::ThreadUsageKey::MERGE: awaken_agent_contract::agent::state::MergePolicy
-pub const awaken_runtime_contract::llm::ThreadUsageKey::SCOPE: awaken_agent_contract::agent::state::Scope
-pub const awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY: &str
 pub trait awaken_runtime_contract::llm::DeltaSink: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::DeltaSink::on_reasoning<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::llm::DeltaSink::on_text<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -1695,7 +1683,7 @@ pub awaken_runtime_contract::DelegationStep::Awaiting
 pub awaken_runtime_contract::DelegationStep::Awaiting::continuation: serde_json::value::Value
 pub awaken_runtime_contract::DelegationStep::Ended
 pub awaken_runtime_contract::DelegationStep::Ended::text: alloc::string::String
-pub awaken_runtime_contract::DelegationStep::Ended::usage: awaken_runtime_contract::llm::ThreadUsage
+pub awaken_runtime_contract::DelegationStep::Ended::usage: awaken_agent_contract::thread::usage::ThreadUsage
 pub enum awaken_runtime_contract::GateOutcome
 pub awaken_runtime_contract::GateOutcome::Allow
 pub awaken_runtime_contract::GateOutcome::Block
@@ -1858,7 +1846,7 @@ pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self)
 pub struct awaken_runtime_contract::ChildRunResult
 pub awaken_runtime_contract::ChildRunResult::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::ChildRunResult::text: alloc::string::String
-pub awaken_runtime_contract::ChildRunResult::usage: awaken_runtime_contract::llm::ThreadUsage
+pub awaken_runtime_contract::ChildRunResult::usage: awaken_agent_contract::thread::usage::ThreadUsage
 pub struct awaken_runtime_contract::ChildRunResultInbox
 impl awaken_runtime_contract::delegation::ChildRunResultInbox
 pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::consume(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_runtime_contract::delegation::ChildRunResult, awaken_runtime_contract::delegation::DelegationResultError>
