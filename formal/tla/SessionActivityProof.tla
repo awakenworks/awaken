@@ -6,10 +6,17 @@ BY Z3T(30) DEF Init, Safety, TypeOK, ReceiptsAreInjective,
    ActiveEpochHasExactReceipt, SettledActivityHasDurableReceipt,
    IssuedEpochsAreMonotonic, KernelAssumptions
 
+LEMMA OpenAtSafety ==
+    \A activity \in ActivityIds, epoch \in Nat:
+      KernelAssumptions /\ Safety /\ OpenAt(activity, epoch) => Safety'
+BY Z3T(30) DEF OpenAt, Safety, TypeOK, ReceiptsAreInjective,
+   ActiveEpochHasExactReceipt, SettledActivityHasDurableReceipt,
+   IssuedEpochsAreMonotonic, KernelAssumptions
+
 LEMMA OpenSafety ==
     \A activity \in ActivityIds:
       KernelAssumptions /\ Safety /\ Open(activity) => Safety'
-BY Z3T(30) DEF Open, Safety, TypeOK, ReceiptsAreInjective,
+BY Z3T(30) DEF Open, OpenAt, Safety, TypeOK, ReceiptsAreInjective,
    ActiveEpochHasExactReceipt, SettledActivityHasDurableReceipt,
    IssuedEpochsAreMonotonic, KernelAssumptions
 

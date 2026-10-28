@@ -338,6 +338,27 @@ obligation when the development host is Linux.
   exact create replay classification, realization fencing, terminal absorption,
   and disposable Work projection. Their standalone instances have independent
   TLC and TLAPS gates.
+- `SessionRunBudgetAdmission.tla` composes that same Activity kernel's exact
+  `OpenAt`/`Settle` with the existing `AggregateCAS` read/write actions for the
+  two fresh-Run admission entrances. Root and positive/negative receipt reads,
+  late refresh, CAS and ACK remain separate; same-kind store receipt replay
+  does not write the root or introduce a cross-kind CAS guard. The fixed initial
+  revision offsets the one CAS generation, so accepted epochs are actual model
+  root coordinates even when budget/refusal/settlement writes leave gaps.
+  `SessionRunBudgetAdmission.cfg` retains three operation identities, two
+  callers, three root changes and epochs through four. Its mutation/reachability
+  controls run under the existing session-observation entry and strict runner.
+  At staged tree `4c0c6f782344b3c37d398f5ccf19c84a69c325b0`, TLC completed
+  the full CFG: 1,900,146 generated / 617,268 distinct states, depth 63, in 13s.
+  The strict runner passed all 34 invocations: three full baselines, twelve
+  target mutants and nineteen reachability controls, each retaining 512 MiB,
+  one worker and a 60-second timeout. Pinned TLAPS `763bf3c` proved all 55
+  `SessionActivityProof` obligations including `OpenAtSafety`, retaining each
+  original `Z3T(30)`. These are finite composition and abstract Activity results,
+  not Rust/SQL refinement. These model receipts do not substitute for separate
+  execution evidence for the sixteen SQLite/native race rows, original
+  default-stack Startup MCP regression and Kani. Historical passes do not
+  establish new I/O-race execution or Rust/SQL refinement.
 - `SessionEventProtocol.tla` composes activity and Dispatch with distinct wake/Run
   receipts. `SessionStartProtocol.tla` composes root, Work, realization, Event,
   Run, ThreadCommit observation and settlement; original TLC configs check faults

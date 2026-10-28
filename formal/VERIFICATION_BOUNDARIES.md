@@ -428,6 +428,27 @@ type checking are valuable executable evidence, but are not formal proofs.
   for creation and returns the official synchronous 200 shape; no public async
   status projection is claimed at this checkpoint. Database durability,
   scheduling fairness, and HTTP delivery remain outside the theorem.
+- Fresh-Run budget-refusal I/O ordering has a separate finite composition in
+  `SessionRunBudgetAdmission.tla`, reusing `SessionActivityKernel.OpenAt/Settle`
+  and `AggregateCAS.Read/Write`. It keeps two callers, three operations, three
+  root changes and epochs through four, with independent root/receipt reads,
+  late refresh, CAS, ACK and lost ACK. A same-kind incoming-key replay stutters
+  the root; it cannot inspect a positive receipt to block a negative CAS. Its
+  categorical malformed-key configurations and semantic mutants complement
+  the actual SQLite A/U/R/E/H/C table; they do not establish String/hash truth,
+  source authenticity, SQL CAS/durability, actual I/O counts, aggregate lifecycle
+  readiness, async fairness or Rust/SQL refinement. On staged tree
+  `4c0c6f782344b3c37d398f5ccf19c84a69c325b0`, the complete primary TLC run
+  passed with 1,900,146 generated / 617,268 distinct states and depth 63 in 13s;
+  all 34 strict mutation-family invocations passed (three full baselines,
+  twelve target mutants, nineteen reachability controls), retaining 512 MiB,
+  one worker and 60 seconds per invocation. Pinned TLAPS `763bf3c` proved all
+  55 Activity obligations including `OpenAtSafety`, without changing the
+  original `Z3T(30)` budgets. These executions qualify those exact model/proof
+  bytes. These model receipts do not substitute for separate execution evidence
+  for the sixteen actual SQLite/native race rows, original default-stack Startup
+  MCP regression or Kani. Historical scalar Kani passes do not establish new
+  I/O-race execution or Rust/SQL refinement.
 - Session activity receipts retain the unbounded abstract theorem in
   `SessionActivityProof.tla`. The four existing `PersistedSession` activity and
   execution methods now delegate to one reducer borrowing the actual scalar,
