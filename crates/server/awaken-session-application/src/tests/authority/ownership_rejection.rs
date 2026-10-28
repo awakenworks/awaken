@@ -490,6 +490,9 @@ async fn http_only_owner_validation_is_detected_by_the_matrix() {
 
 #[tokio::test]
 async fn foreign_run_admission_is_indistinguishable_from_missing() {
+    // API cleanup coverage: E1 keeps missing/foreign owner-scoped admission
+    // indistinguishable and reaches neither creation path. Removing an unused
+    // convenience adapter changes no SessionAccess or create boundary.
     // The projection resolves creation-time Environments so create-on-missing
     // completes; worker assignment/leases stay the shared recording fakes.
     let creation = Arc::new(CreationEnvironment::default());

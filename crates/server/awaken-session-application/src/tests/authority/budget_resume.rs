@@ -448,3 +448,5 @@ async fn budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise() {
         "no activity for the bypass Run"
     );
 }
+
+mod rejection_races;

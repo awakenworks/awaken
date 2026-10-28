@@ -779,6 +779,10 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
 
 #[tokio::test]
 async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_activity() {
+    // API cleanup coverage: original R1/R2 fresh/replay cases still use the
+    // owner-scoped foreground path after the unused unscoped convenience
+    // adapter is removed. R3-R5 retain refusal before another reservation;
+    // the existing admission and observation ports and assertions stay whole.
     // Cause/effect graph: C1 the profiled Session is durable in `workspace`;
     // C2 this Coordinator has no Session slot, so its local fallback is wrong;
     // C3 the authenticated request carries `workspace`; C4 the same message is

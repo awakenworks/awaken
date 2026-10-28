@@ -193,28 +193,25 @@ fn capture_accepted_delegates(
     mut resolve: impl FnMut(
         &awaken_executable_agent_contract::ExecutableAgentDelegate,
     ) -> Option<ExecutableAgentSessionProfile>,
-) -> Result<Vec<(String, ExecutableAgentSessionProfile)>, RunError> {
-    let mut accepted_delegates = Vec::new();
-    for delegate_ref in profile
-        .as_ref()
-        .into_iter()
-        .flat_map(|profile| profile.delegates.iter())
-    {
-        let delegate_id = &delegate_ref.agent_id;
-        let delegate = resolve(delegate_ref).ok_or_else(|| {
-            RunError::bad_request(format!(
-                "multiagent_unavailable: Agent `{delegate_id}` has no exact executable profile"
-            ))
-        })?;
-        if delegate.inference.inference_geo != selected_geo {
-            return Err(RunError::bad_request(format!(
-                "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
-                selected_geo, delegate.inference.inference_geo
-            )));
-        }
-        accepted_delegates.push((delegate_id.clone(), delegate));
-    }
-    Ok(accepted_delegates)
+) -> Result<crate::agent_configuration::CapturedDelegates, RunError> {
+    crate::agent_configuration::capture_accepted_delegates(
+        profile.map_or(&[], |profile| profile.delegates.as_slice()),
+        |delegate_ref| {
+            let delegate_id = &delegate_ref.agent_id;
+            let delegate = resolve(delegate_ref).ok_or_else(|| {
+                RunError::bad_request(format!(
+                    "multiagent_unavailable: Agent `{delegate_id}` has no exact executable profile"
+                ))
+            })?;
+            if delegate.inference.inference_geo != selected_geo {
+                return Err(RunError::bad_request(format!(
+                    "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
+                    selected_geo, delegate.inference.inference_geo
+                )));
+            }
+            Ok(delegate)
+        },
+    )
 }
 
 fn compile_creation_tools<P: SessionCreateProtocol + ?Sized>(
@@ -466,26 +463,14 @@ impl SessionCreationCommands {
         let resolved_model_id = model
             .as_ref()
             .map_or_else(|| default_model.clone(), |model| model.model_id.clone());
-        let execution_model_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().1.to_owned())
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .and_then(|profile| profile.execution_model_ref.clone())
-            })
-            .unwrap_or_else(|| resolved_model_id.clone());
-        let published_backend_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().2.to_owned())
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .map(|profile| profile.backend_ref.clone())
-                    .filter(|backend_ref| !backend_ref.trim().is_empty())
-            });
+        let (execution_model_ref, published_backend_ref) = super::baseline::creation_model_route(
+            model_override.as_ref(),
+            profile
+                .as_ref()
+                .and_then(|profile| profile.execution_model_ref.as_deref()),
+            profile.as_ref().map(|profile| profile.backend_ref.as_str()),
+            &resolved_model_id,
+        );
         let budget_model_refs = budget_request
             .as_ref()
             .map(|_| {
@@ -581,14 +566,10 @@ impl SessionCreationCommands {
         // Validate the advertised tool surface before persisting an activation
         // or touching a Host. A definition error cannot strand Prepared inputs.
         if profile.is_none() {
-            accepted_delegates.extend(capabilities.delegates.iter().map(|id| {
-                (
-                    id.clone(),
-                    queries
-                        .selected_session_profile(&owner_scope, id, None)
-                        .unwrap_or_default(),
-                )
-            }));
+            accepted_delegates = crate::agent_configuration::capture_capability_delegates(
+                &capabilities,
+                |id, revision| queries.selected_session_profile(&owner_scope, id, revision),
+            );
         }
         let skills_configured = skills
             .as_ref()
@@ -739,11 +720,12 @@ impl SessionCreationCommands {
             crate::agent_configuration::resolve_session_multiagent(
                 profile.as_ref(),
                 &capabilities,
-                Some(&accepted_delegates),
+                Some(accepted_delegates),
                 |agent_id, revision| {
                     queries.selected_session_profile(&owner_scope, agent_id, revision)
                 },
-            )?;
+            )?
+            .0;
         protocol.validate_before_insert(&initial_agent_configuration)?;
         let command = CreateSessionCommand {
             initial_agent_configuration: Some(Box::new(initial_agent_configuration)),
@@ -770,6 +752,85 @@ impl SessionCreationCommands {
 #[cfg(test)]
 mod candidate_tests {
     use super::*;
+
+    #[test]
+    fn managed_delegate_capture_preserves_geography_errors_and_first_refusal_order() {
+        // M1 first missing => original missing error, no second read; M2 first
+        // geography mismatch then second missing => geo wins, no second read;
+        // M3 matching first then mismatched second => second geo error;
+        // M4 both match => original declaration order. Shared capture selects
+        // no policy: this original Managed wrapper still owns every check.
+        use awaken_runtime_contract::agent_bindings::InferenceGeography::Us;
+        for (first, second, code, calls) in [
+            (None, Some(Some(Us)), Some("multiagent_unavailable"), 1),
+            (
+                Some(None),
+                None,
+                Some("multiagent_inference_geo_mismatch"),
+                1,
+            ),
+            (
+                Some(Some(Us)),
+                Some(None),
+                Some("multiagent_inference_geo_mismatch"),
+                2,
+            ),
+            (Some(Some(Us)), Some(Some(Us)), None, 2),
+        ] {
+            let profile = ExecutableAgentSessionProfile {
+                delegates: ["first", "second"]
+                    .into_iter()
+                    .map(
+                        |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
+                            agent_id: agent_id.into(),
+                            source_revision: Some(7),
+                        },
+                    )
+                    .collect(),
+                ..Default::default()
+            };
+            let mut reads = Vec::new();
+            let result = capture_accepted_delegates(Some(&profile), Some(Us), |reference| {
+                reads.push(reference.agent_id.clone());
+                assert_eq!(reference.source_revision, Some(7));
+                (if reference.agent_id == "first" {
+                    first
+                } else {
+                    second
+                })
+                .map(|inference_geo| ExecutableAgentSessionProfile {
+                    source_revision: 7,
+                    inference: awaken_runtime_contract::agent_bindings::InferenceOptions {
+                        inference_geo,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            });
+            assert_eq!(reads, ["first", "second"][..calls]);
+            if let Some(code) = code {
+                let message = result.unwrap_err().message;
+                let id = if calls == 1 { "first" } else { "second" };
+                let expected = if code == "multiagent_unavailable" {
+                    format!("multiagent_unavailable: Agent `{id}` has no exact executable profile")
+                } else {
+                    format!(
+                        "multiagent_inference_geo_mismatch: coordinator is Some(Us), Agent `{id}` is None"
+                    )
+                };
+                assert_eq!(message, expected);
+            } else {
+                assert_eq!(
+                    result
+                        .unwrap()
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect::<Vec<_>>(),
+                    reads
+                );
+            }
+        }
+    }
 
     #[test]
     fn initial_mcp_candidates_keep_complete_pins_and_explicit_replacement_authority() {

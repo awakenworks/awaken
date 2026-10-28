@@ -82,6 +82,7 @@ impl SessionProjectionReads for SessionQueries {
                 resolve_session_multiagent(profile.as_ref(), &caps, None, |agent_id, revision| {
                     self.selected_session_profile(owner_scope, agent_id, revision)
                 })?
+                .0
             }
             RehydrationPublicationDecision::RejectMissingExact => {
                 unreachable!("missing exact publication was rejected before projection")

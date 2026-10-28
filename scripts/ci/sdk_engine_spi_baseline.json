@@ -68,7 +68,7 @@
       "awaken_agent_contract::thread::read::RunRecoverySource": 1
     },
     "awaken-session-application": {
-      "awaken_agent_contract::stream::sink": 9,
+      "awaken_agent_contract::stream::sink": 8,
       "awaken_runtime_contract::llm": 1
     },
     "awaken-coordinator-client": {
