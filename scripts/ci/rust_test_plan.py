@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
+from collections import Counter, deque
 import contextlib
 import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ import generate_hooks
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
-INPUT_GLOBS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", "fuzz/**", "apps/**", "tests/**", "xtask/**", ".cargo/**", ".config/**", "scripts/ci/**", "lefthook.yml")
+INPUT_GLOBS = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**', 'fuzz/**', 'apps/**', 'tests/**', 'xtask/**', '.cargo/**', '.config/**', 'scripts/ci/**', 'lefthook.yml', 'scripts/ci/test_inventory.txt', 'scripts/ci/modularity_baseline.json')
 
 
 def workspace_features() -> str:
@@ -88,6 +89,115 @@ def gate_scope(metadata: dict, changed: list[str], root: Path = ROOT,
     if reason == "changed owners and transitive consumers, including test dependencies":
         return "packages", selected, reason
     return "whole", selected, reason
+
+
+
+# These are data inputs to whole-tree static checks, not executable inputs.
+# Keep INPUT_GLOBS and gate_scope conservative: public API and push qualification
+# retain their existing policy. Only the explicit local affected-test planner
+# may separate these inputs, and it must run the complete static lane first.
+# Exact data inputs are derived from this owner's input declaration. The
+# content classifier below still rejects every path except its two schemas.
+STATIC_EXECUTION_INPUTS = frozenset(
+    path for path in INPUT_GLOBS
+    if path.endswith((".txt", ".json")) and not any(char in path for char in "*?[")
+)
+
+
+def static_metadata_tightens(path: str, before: bytes, after: bytes) -> bool:
+    """Recognize only pointwise stronger floors/ceilings under the same schema."""
+    try:
+        old_text, new_text = before.decode("utf-8"), after.decode("utf-8")
+        if path == "scripts/ci/test_inventory.txt":
+            old, new = (Counter(line for line in text.splitlines() if line)
+                        for text in (old_text, new_text))
+            names = set(old) | set(new)
+            return (all(re.fullmatch(r"\$?[^\W\d]\w*", name) for name in names)
+                    and all(new[name] >= count for name, count in old.items()))
+        if path != "scripts/ci/modularity_baseline.json":
+            return False
+
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate metadata key")
+                value[key] = item
+            return value
+
+        old, new = (json.loads(text, object_pairs_hook=unique)
+                    for text in (old_text, new_text))
+        numeric = {"super-glob", "module-cycle", "long-function"}
+        structured = {"impl-spread": {"files", "methods"},
+                      "crate-budget": {"lines", "deps", "host_lines"}}
+        frozen = {"unreachable-pub-pending", "growth_reasons", "$comment"}
+        if (not isinstance(old, dict) or not isinstance(new, dict)
+                or old.keys() != new.keys()
+                or set(old) - numeric - structured.keys() - frozen):
+            return False
+
+        def ceiling(a, b):
+            return type(a) is int and type(b) is int and 0 <= b <= a
+
+        for rule in old:
+            a, b = old[rule], new[rule]
+            if rule in frozen:
+                if json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
+                    return False
+                continue
+            if not isinstance(a, dict) or not isinstance(b, dict) or a.keys() != b.keys():
+                return False
+            for key in a:
+                if rule in numeric:
+                    if not ceiling(a[key], b[key]):
+                        return False
+                    continue
+                previous, candidate = a[key], b[key]
+                allowed = structured[rule]
+                required = {"files", "methods"} if rule == "impl-spread" else {"lines", "deps"}
+                if (not isinstance(previous, dict) or not isinstance(candidate, dict)
+                        or previous.keys() != candidate.keys()
+                        or set(previous) - allowed - {"reason"}
+                        or not required <= previous.keys()
+                        or not isinstance(previous.get("reason"), str)
+                        or not previous["reason"].strip()
+                        or previous["reason"] != candidate.get("reason")):
+                    return False
+                if any(not ceiling(previous[field], candidate[field])
+                       for field in previous.keys() & allowed):
+                    return False
+        return True
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        return False
+
+
+def rust_execution_inputs(base: str, changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str]]:
+    """Preserve base/index/WT axes; a cancelling or ambiguous edit stays global."""
+    runtime, static = [], []
+    for path in changed:
+        admitted = False
+        if path in STATIC_EXECUTION_INPUTS:
+            try:
+                read = lambda *args: formal_sources.git_output(root, *args)
+                tree = read("ls-tree", "-z", base, "--", path).split(b"\0")
+                index = read("ls-files", "--stage", "-z", "--", path).split(b"\0")
+                tree, index = [item for item in tree if item], [item for item in index if item]
+                target = root / path
+                if (len(tree) == len(index) == 1
+                        and tree[0].split(b"\t", 1)[0].split()[:2] == [b"100644", b"blob"]
+                        and index[0].split(b"\t", 1)[0].split()[::2] == [b"100644", b"0"]
+                        and not target.is_symlink()
+                        and target.resolve().is_relative_to(root.resolve())):
+                    original = read("show", base + ":" + path)
+                    staged = formal_sources.file_bytes(root, path, True)
+                    working = formal_sources.file_bytes(root, path, False)
+                    if staged is not None and working is not None:
+                        admitted = (static_metadata_tightens(path, original, staged)
+                                    and static_metadata_tightens(path, staged, working))
+            except (OSError, ValueError, IndexError, subprocess.CalledProcessError):
+                pass  # Unknown inputs retain the original whole fallback.
+        (static if admitted else runtime).append(path)
+    return runtime, static
 
 
 def git_output(*arguments: str) -> bytes:
@@ -234,6 +344,163 @@ class PlanTests(unittest.TestCase):
     def git(self, root: Path, *arguments: str, environment: dict | None = None) -> bytes:
         return subprocess.check_output(["git", "-C", str(root), *arguments],
                                        env=self.detached_environment() if environment is None else environment, stderr=subprocess.PIPE)
+
+    def test_static_metadata_admits_only_pointwise_stronger_original_shapes(self) -> None:
+        self.assertEqual(STATIC_EXECUTION_INPUTS, frozenset({
+            "scripts/ci/test_inventory.txt", "scripts/ci/modularity_baseline.json",
+        }))
+        floor = "scripts/ci/test_inventory.txt"
+        for before, after, expected in [
+            (b"kept\nkept\n", b"kept\nkept\nnew\n", True),
+            (b"kept\nkept\n", b"kept\nnew\nnew\n", False),
+            (b"kept\n", b"kept\n", True),
+            (b"kept\n", b"replacement\n", False),
+            (b"kept\n", b"kept\n invalid \n", False),
+            (b"$name\n", b"$name\nother\n", True),
+        ]:
+            with self.subTest(before=before, after=after):
+                self.assertEqual(static_metadata_tightens(floor, before, after), expected)
+        path = "scripts/ci/modularity_baseline.json"
+        old = {"impl-spread": {"crate::Owner": {"files": 4, "methods": 58, "reason": "split owner"}},
+               "super-glob": {"crate": 3}, "unreachable-pub-pending": ["pending"]}
+        encode = lambda value: json.dumps(value).encode()
+        new = json.loads(json.dumps(old)); new["impl-spread"]["crate::Owner"]["methods"] = 57
+        self.assertTrue(static_metadata_tightens(path, encode(old), encode(new)))
+        for fault in ("increase", "boolean", "negative", "float", "reason", "remove", "new-key", "pending", "unknown"):
+            candidate = json.loads(json.dumps(new))
+            row = candidate["impl-spread"]["crate::Owner"]
+            if fault == "increase": candidate["super-glob"]["crate"] = 4
+            elif fault == "boolean": row["methods"] = True
+            elif fault == "negative": row["methods"] = -1
+            elif fault == "float": row["methods"] = 57.0
+            elif fault == "reason": row["reason"] = "another review"
+            elif fault == "remove": del candidate["impl-spread"]["crate::Owner"]
+            elif fault == "new-key": candidate["super-glob"]["other"] = 0
+            elif fault == "pending": candidate["unreachable-pub-pending"] = []
+            else: candidate["future-rule"] = {}
+            with self.subTest(fault=fault):
+                self.assertFalse(static_metadata_tightens(path, encode(old), encode(candidate)))
+        self.assertFalse(static_metadata_tightens(path, b'{"super-glob":{},"super-glob":{}}', b'{}'))
+        self.assertFalse(static_metadata_tightens(path, b"not-json", encode(new)))
+        self.assertFalse(static_metadata_tightens("scripts/ci/unknown.json", b"{}", b"{}"))
+        self.assertFalse(static_metadata_tightens(path, b'{"growth_reasons":{"opaque":1}}',
+                                                  b'{"growth_reasons":{"opaque":true}}'))
+        self.assertFalse(static_metadata_tightens(path, b"[" * 1500, b"{}"))
+
+    def test_execution_scope_separates_static_plans_without_executing_or_accepting_races(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata = self.fixture_repository(directory)
+            name = "scripts/ci/test_inventory.txt"
+            file = root / name
+            file.write_bytes(b"kept\n")
+            self.git(root, "add", name)
+            self.git(root, "commit", "--quiet", "-m", "floor")
+            file.write_bytes(b"kept\nadded\n")
+            original_output = subprocess.check_output
+            original_scope = gate_scope
+            for flag, race in (("--gate-scope", False), ("--execution-scope", False),
+                               ("--execution-scope", True)):
+                with self.subTest(flag=flag, race=race):
+                    printed, errors = io.StringIO(), io.StringIO()
+                    def output(command, **kwargs):
+                        if Path(command[0]).stem.lower() == "cargo":
+                            if race:
+                                file.write_bytes(b"kept\nadded\nlate\n")
+                            return json.dumps(metadata).encode()
+                        return original_output(command, **kwargs)
+                    with mock.patch.dict(globals(), ROOT=root), \
+                            mock.patch.object(sys, "argv", [__file__, flag, "--base", "HEAD"]), \
+                            mock.patch.dict(globals(), gate_scope=lambda m, paths: original_scope(m, paths, root, ("scripts/ci/**", "crates/**"))), \
+                            mock.patch.object(subprocess, "check_output", side_effect=output), \
+                            mock.patch.object(crate_test, "execute_commands") as execution, \
+                            contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
+                        status = main()
+                    execution.assert_not_called()
+                    if race:
+                        self.assertNotEqual(status, 0)
+                        self.assertEqual(printed.getvalue(), "")
+                        self.assertIn("Source changed during execution-scope planning", errors.getvalue())
+                    elif flag == "--gate-scope":
+                        self.assertEqual(status, 0, errors.getvalue())
+                        self.assertTrue(printed.getvalue().startswith("scope=whole\n"))
+                    else:
+                        self.assertEqual(status, 0, errors.getvalue())
+                        plan = json.loads(printed.getvalue())
+                        self.assertEqual((plan["scope"], plan["packages"], plan["static_inputs"]),
+                                         ("none", [], [name]))
+                        self.assertEqual(plan["static_scope"], "whole")
+                        self.assertFalse(plan["execution_performed"])
+                        self.assertFalse(plan["full_gate"])
+                        self.assertEqual(len(plan["source_digest"]), 64)
+
+    def test_static_execution_partition_preserves_index_working_and_unknown_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata = self.fixture_repository(directory)
+            name = "scripts/ci/test_inventory.txt"
+            file = root / name
+            file.write_bytes(b"kept\n")
+            self.git(root, "add", name)
+            self.git(root, "commit", "--quiet", "-m", "floor")
+            file.write_bytes(b"kept\nadded\n")
+            self.git(root, "add", name)
+            file.write_bytes(b"kept\n")
+            # The index grew but WT weakened it. HEAD->WT equality must not hide it.
+            self.assertEqual(rust_execution_inputs("HEAD", [name], root), ([name], []))
+            file.write_bytes(b"kept\nadded\nmore\n")
+            cause = "crates/kernel/src/lib.rs"
+            self.assertEqual(rust_execution_inputs("HEAD", [name, cause], root), ([cause], [name]))
+            declared = ("scripts/ci/**", "crates/**", "Cargo.lock", "examples/sdk-consumer/**")
+            runtime, static = rust_execution_inputs("HEAD", [name, cause], root)
+            self.assertEqual(gate_scope(metadata, runtime, root, declared)[0], "packages")
+            self.assertEqual(gate_scope(metadata, [name, cause], root, declared)[0], "whole")
+            for unknown in ("Cargo.lock", "scripts/ci/test_inventory_ledger.json",
+                            "scripts/ci/check_test_inventory.py", "examples/sdk-consumer/src/main.rs"):
+                runtime, _ = rust_execution_inputs("HEAD", [name, unknown], root)
+                self.assertEqual(gate_scope(metadata, runtime, root, declared)[0], "whole")
+            with mock.patch.object(Path, "is_symlink", return_value=True):
+                self.assertEqual(rust_execution_inputs("HEAD", [name], root), ([name], []))
+            self.assertEqual(rust_execution_inputs("HEAD", [name, "Cargo.lock"], root), (["Cargo.lock"], [name]))
+            file.unlink()
+            self.assertEqual(rust_execution_inputs("HEAD", [name], root), ([name], []))
+
+    def test_local_static_lane_precedes_rust_and_failure_never_runs_rust(self) -> None:
+        execute = crate_test.execute_commands
+        for with_rust in (False, True):
+            for static_status in (0, 23):
+                with self.subTest(with_rust=with_rust, static_status=static_status), tempfile.TemporaryDirectory() as directory:
+                    root, metadata = self.fixture_repository(directory)
+                    name = "scripts/ci/test_inventory.txt"
+                    (root / name).write_bytes(b"kept\n")
+                    self.git(root, "add", name)
+                    self.git(root, "commit", "--quiet", "-m", "floor")
+                    (root / name).write_bytes(b"kept\nnew\n")
+                    if with_rust:
+                        (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
+                    calls = []
+                    def run(command, **kwargs):
+                        calls.append(command)
+                        status = static_status if "--group" in command else 0
+                        return subprocess.CompletedProcess(command, status)
+                    def execute_plan(commands, environment, **kwargs):
+                        return execute(commands, environment, run=run, **kwargs)
+                    target = Path(directory) / "evidence"
+                    with mock.patch.dict(globals(), ROOT=root, PROFILE=root / ".config/rust-tests.toml"), \
+                            mock.patch.object(crate_test, "full_graph_metadata", return_value=metadata), \
+                            mock.patch.object(crate_test, "execute_commands", side_effect=execute_plan), \
+                            mock.patch.dict(os.environ, CARGO_TARGET_DIR=str(target)), \
+                            mock.patch.object(sys, "argv", [__file__, "--base", "HEAD", "--run"]), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        status = main()
+                    self.assertEqual(status, static_status)
+                    self.assertIn("--group", calls[0])
+                    self.assertEqual(calls[0][-1], "static")
+                    self.assertEqual(len(calls), 1 + int(with_rust and not static_status))
+                    receipt = json.loads(next((target / "test-timings").glob("affected-*.json")).read_text())
+                    self.assertEqual(receipt["static_inputs"], [name])
+                    self.assertEqual(receipt["static_scope"], "whole")
+                    self.assertFalse(receipt["full_gate"])
+                    self.assertTrue(receipt["source_unchanged"])
+                    self.assertEqual(receipt["selected_packages"], ["application", "cli", "kernel"] if with_rust else [])
 
     def test_gate_scope_follows_the_decision_table(self) -> None:
         # P1 no declared Rust gate input -> none; P2 member sources -> owners
@@ -818,13 +1085,16 @@ def main() -> int:
     parser.add_argument("--base")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--check-command", nargs=argparse.REMAINDER)
-    parser.add_argument("--gate-scope", action="store_true")
+    scope_modes = parser.add_mutually_exclusive_group()
+    scope_modes.add_argument("--gate-scope", action="store_true")
+    scope_modes.add_argument("--execution-scope", action="store_true")
     args = parser.parse_args()
-    if args.gate_scope:
+    if args.gate_scope or args.execution_scope:
         if not args.base or args.run or args.check_command is not None or args.features or args.self_test or args.source_digest:
-            parser.error("--gate-scope takes only --base")
+            parser.error(("--execution-scope" if args.execution_scope else "--gate-scope") + " takes only --base")
         try:
             base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
+            subject = source_snapshot()[0] if args.execution_scope else None
             changed = changed_sources(base)
             environment = crate_test.environment(ROOT)
             # Every feature and platform: an edge that exists in any graph a
@@ -832,10 +1102,19 @@ def main() -> int:
             metadata = json.loads(subprocess.check_output(crate_test.native_command(
                 ["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"], environment),
                 cwd=ROOT, env=environment))
-            kind, packages, reason = gate_scope(metadata, changed)
+            runtime_inputs, static_inputs = rust_execution_inputs(base, changed, ROOT) if args.execution_scope else (changed, [])
+            kind, packages, reason = gate_scope(metadata, runtime_inputs)
+            if args.execution_scope and source_snapshot()[0] != subject:
+                raise ValueError("Source changed during execution-scope planning")
         except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
             print(f"Cannot establish the gate scope: {error}", file=sys.stderr)
             return 1
+        if args.execution_scope:
+            print(json.dumps(dict(scope=kind, packages=packages, reason=reason,
+                                  static_scope="whole", static_inputs=static_inputs,
+                                  source_digest=subject, full_gate=False,
+                                  execution_performed=False), indent=2))
+            return 0
         print(f"scope={kind}")
         print(f"reason={reason}")
         for package in packages:
@@ -875,11 +1154,15 @@ def main() -> int:
             command, selected, reason = compile_scope(metadata, changed, original, ROOT, target_reason)
             commands = [command]
         else:
-            selected, reason = affected_packages(metadata, changed, ROOT)
+            runtime_inputs, static_inputs = rust_execution_inputs(base, changed, ROOT)
+            selected, reason = affected_packages(metadata, runtime_inputs, ROOT)
             errors = crate_test.companion_errors(metadata, companions, ROOT)
             if errors:
                 raise crate_test.PlanError("; ".join(errors))
             commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
+            if static_inputs:
+                commands.insert(0, [sys.executable, "scripts/ci/_native_shell.py",
+                                    "scripts/ci/check-all.sh", "--group", "static"])
             command = commands[-1] if commands else []
         plan = {"schema_version": 1, "kind": "local-affected", "revision": facts["revision"].decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False,
                 "source_kind": "working-tree", "source_digest": fingerprint, "index_tree": facts["index_tree"].decode().strip(),
@@ -887,6 +1170,8 @@ def main() -> int:
         if original is not None:
             plan.update(kind="local-affected-check", original_command=original)
         plan["commands"] = commands
+        if original is None:
+            plan.update(static_inputs=static_inputs, static_scope="whole" if static_inputs else None)
         # Metadata projects the first capture. This fresh final fence still
         # refuses any late source axis, including no-run/no-work plans.
         if source_snapshot()[0] != fingerprint:
@@ -894,7 +1179,7 @@ def main() -> int:
         if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
             raise ValueError("Compile target admission changed during planning; no execution started")
         print(json.dumps(plan, indent=2), flush=True)
-        if not args.run or not selected:
+        if not args.run or not commands:
             return 0
         directory = Path(environment["CARGO_TARGET_DIR"]) / "test-timings"
         directory.mkdir(parents=True, exist_ok=True)

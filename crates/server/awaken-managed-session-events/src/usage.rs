@@ -2,7 +2,7 @@
 //! Usage of Managed Session events over one committed evidence prefix.
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_runtime_contract::llm::ThreadUsage;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_execution_contract::ProjectionThreadSnapshots;
 use awaken_session_state_contract::SessionRuntimeInterval;
@@ -105,7 +105,7 @@ mod usage_as_of_tests {
         Command::set(
             Scope::Thread,
             MergePolicy::Commutative,
-            awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+            awaken_agent_contract::thread::usage::THREAD_USAGE_STATE_KEY,
             serde_json::to_value(usage).unwrap(),
         )
     }

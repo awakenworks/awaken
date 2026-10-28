@@ -183,7 +183,7 @@ impl CommittedReads {
             .map_err(RunError::internal)?;
         Ok(
             awaken_session_application_contract::session_usage_from_thread_usage(
-                awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
+                awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(&state),
             ),
         )
     }

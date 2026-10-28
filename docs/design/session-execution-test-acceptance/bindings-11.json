@@ -98,22 +98,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 243,
-        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+        "line": 240,
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 257
+        "line": 254
       },
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 266
+        "line": 263
       },
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 282
+        "line": 279
       }
     ],
     "execution_witnesses": [
@@ -140,7 +140,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
     "id": "B208"
   },
   {
@@ -148,22 +148,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 375,
-        "file_sha256": "c7b93952ad4321851cfa6b8d3985b15eb4a880f3b93553ed88cd7e4fd2cf3901"
+        "line": 372,
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 390
+        "line": 387
       },
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 414
+        "line": 411
       },
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 415
+        "line": 412
       }
     ],
     "execution_witnesses": [
@@ -190,7 +190,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
     "id": "B209"
   },
   {

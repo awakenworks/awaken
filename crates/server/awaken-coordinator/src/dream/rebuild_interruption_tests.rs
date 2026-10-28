@@ -145,20 +145,17 @@ async fn fixture_over(
     seed: bool,
 ) -> Fixture {
     let authorities = resources.authorities();
-    let dependencies = awaken_session_executor_testkit::volatile_dependencies(
-        Arc::new(awaken_scenario_host::EchoModel),
-        "stub",
+    let assembled = crate::test_session_fixture::session_read_fixture(
+        authorities.resource_registry(),
+        awaken_time::system_clock(),
     )
     .await;
-    let assembled =
-        awaken_scenario_host::local_managed_state(dependencies, authorities.resource_registry())
-            .await;
     let result = format!("caller-output-{job}");
     if seed {
         seed_caller_stores(&resources, &result).await;
     }
     let agent = BuiltInDreamAgent::new(
-        assembled.state.sessions.clone(),
+        assembled.sessions.clone(),
         &authorities,
         authorities.resource_registry(),
         resources.memory_stores(),
