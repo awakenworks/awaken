@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ratchet the shape of the contract layer so it can only get simpler.
+"""Ratchet structural contract rules and report module size for review.
 
 A crate whose Cargo metadata declares ``layer = "contract"`` is the published
 seam between bounded contexts (ADR-0059, ADR-0081). Five shapes make such a
@@ -12,9 +12,9 @@ seam harder to consume and evolve, and every one of them predates this gate:
    Size is measured per module, one source file (ADR-0091 D3, amending ADR-0081
    §7): a module whose production code declares a trait carrying methods holds
    ports (budget ``PORT_LINE_BUDGET``); any other module is vocabulary and its
-   laws (budget ``TYPES_LINE_BUDGET``). Growth is free under the budget; above
-   it a module may not exceed its recorded line count. A crate's total size is
-   not a reason to split it into another crate: the fix is to split the module.
+   laws (budget ``TYPES_LINE_BUDGET``). Growth above the budget and its recorded
+   line count is advisory. A crate's total size or a module's line count alone
+   is not a reason to split an ownership boundary.
 3. **Backend nouns** -- a type, trait or variant name spelling a backend or
    topology (``Docker``, ``Postgres``, ...) is adapter vocabulary living in the
    neutral core (ADR-0059 §1). Comments and string literals do not count.
@@ -29,14 +29,15 @@ seam harder to consume and evolve, and every one of them predates this gate:
    gate counts it as a capability that should be a supertrait instead. A default
    that refuses on purpose (any other ``Err``) is neither.
 
-Every count is compared with ``scripts/ci/contract_shape_baseline.json``. A
-count above its baseline fails and names the instances. A fall is admitted;
+Every count is compared with ``scripts/ci/contract_shape_baseline.json``.
+Structural growth fails and names the instances; module-line growth warns.
+A fall is admitted;
 ``--tighten`` records it so the gained ground is held (line counts only once
 they shrink by ``LINE_SLACK`` or fall under budget, so ordinary edits do not
-churn the file). Default/``--check`` reads without writing.
-``--write-baseline`` records the current tree; it refuses to raise a number
-unless ``--reason`` explains the growth, and that
-reason is kept next to the number for review.
+churn the file). Tightening never adds or raises a module-line record.
+Default/``--check`` reads without writing. ``--write-baseline`` records the
+current tree; structural growth needs ``--reason``, kept next to the number
+for review. Recording advisory line measurements needs no reason.
 
 Production source is the structural module graph from each Cargo target root,
 with ``cfg(test)`` and ``cfg(kani)`` items and all comments removed -- the same
@@ -48,6 +49,7 @@ from __future__ import annotations
 import subprocess
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -394,8 +396,8 @@ def kind_errors(name: str, kinds: frozenset[str] | None, measurement: Measuremen
 
 HOW_TO_FIX = {
     "depth": "depend on the lower contract that owns the vocabulary instead of one that re-exports it",
-    "module_lines": "split the module (ADR-0091 D3: size is measured per module; a crate's total size is "
-    "not a reason to split the crate)",
+    "module_lines": "review module cohesion and ownership (ADR-0091 D3: line counts are advisory; "
+    "size alone is not a reason to split a module or crate)",
     "backend_nouns": "move the backend-named type into its provider/adapter crate and keep a neutral "
     "name in the contract (ADR-0059 §1)",
     "catch_all_errors": "give the failure a typed variant the caller can classify instead of a message",
@@ -404,7 +406,10 @@ HOW_TO_FIX = {
 }
 
 
-def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
+def compare(
+    measurements: dict[str, Measurement], baseline: dict, *, warnings: list[str] | None = None
+) -> list[str]:
+    """Structural failures, with advisory size findings in the optional sink."""
     recorded: dict[str, dict] = baseline.get("crates", {})
     max_depth = max((entry.get("depth", 0) for entry in recorded.values()), default=0)
     errors: list[str] = []
@@ -420,11 +425,11 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
         for rel, lines in current.over_budget().items():
             role = current.modules[rel][1]
             base_lines = recorded_modules.get(rel)
-            if base_lines is None or lines > base_lines:
+            if (base_lines is None or lines > base_lines) and warnings is not None:
                 limit = budget_of(role) if base_lines is None else base_lines
-                errors.append(_architecture_ratchet.diagnostic(
+                warnings.append(_architecture_ratchet.diagnostic(
                     "module_lines", f"{name}::{rel}", limit, lines,
-                    f"{HOW_TO_FIX['module_lines']}; reviewed growth uses python3 scripts/ci/check_contract_shape.py --write-baseline --reason '<why>'",
+                    HOW_TO_FIX["module_lines"],
                     details=f"{role} module budget {budget_of(role)}"))
         # counted instances
         for rule in RULES[2:]:
@@ -444,7 +449,7 @@ def tightenable(measurements: dict[str, Measurement], baseline: dict) -> list[st
     its 42 edits in 500 commits only lowered a number). A fall is now admitted
     here and recorded mechanically by ``--tighten``, which the pre-commit hook
     runs and stages, so the gain is still kept and no person edits the file for
-    it. Only growth needs a human, with ``--write-baseline --reason``.
+    it. Only structural growth needs a human, with ``--write-baseline --reason``.
     """
 
     recorded: dict[str, dict] = baseline.get("crates", {})
@@ -469,9 +474,13 @@ def tightenable(measurements: dict[str, Measurement], baseline: dict) -> list[st
 
 
 def render_baseline(
-    measurements: dict[str, Measurement], previous: dict, reason: str | None
+    measurements: dict[str, Measurement], previous: dict, reason: str | None, *, tighten: bool = False
 ) -> tuple[dict, list[str]]:
-    """New baseline plus the growths that ``reason`` must justify."""
+    """New baseline plus structural growths that ``reason`` must justify.
+
+    Tightening reuses the same renderer but cannot add or raise advisory line
+    allowances when another rule shrinks. Explicit writes record actual lines.
+    """
     old = previous.get("crates", {})
     growth: list[str] = []
     crates: dict[str, dict] = {}
@@ -480,8 +489,12 @@ def render_baseline(
         entry: dict = {key: value for key, value in prior.items()
                        if key not in (*RULES, "growth_reasons", "production_lines")}
         entry["depth"] = current.depth
-        if current.over_budget():
-            entry["module_lines"] = current.over_budget()
+        modules = current.over_budget()
+        if tighten:
+            held = prior.get("module_lines", {})
+            modules = {rel: min(lines, held[rel]) for rel, lines in modules.items() if rel in held}
+        if modules:
+            entry["module_lines"] = modules
         for rule in RULES[2:]:
             if current.count(rule):
                 entry[rule] = current.count(rule)
@@ -503,8 +516,9 @@ def render_baseline(
             else:
                 grown = [(rule, prior.get(rule, 0), entry[rule])]
             grown = [(label, before, now) for label, before, now in grown if before is not None and now > before]
-            for label, before, now in grown:
-                growth.append(f"{name}.{label}: {before} -> {now}")
+            if rule != "module_lines":
+                for label, before, now in grown:
+                    growth.append(f"{name}.{label}: {before} -> {now}")
             if grown and reason:
                 # Each growth keeps the reasons recorded for earlier growth:
                 # the baseline is the history of why a number may be this high.
@@ -516,8 +530,9 @@ def render_baseline(
     document = {
         **previous,
         "$comment": (
-            "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0081). Numbers may "
-            "only fall; raising one requires --write-baseline --reason, recorded in growth_reasons."
+            "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0081). Structural counts "
+            "may only fall; raising one requires --write-baseline --reason, recorded in growth_reasons. "
+            "Module lines are advisory; --tighten only lowers their records."
         ),
         "crates": crates,
     }
@@ -580,12 +595,14 @@ def self_test() -> None:
     | G2   | C2 chain a -> b -> c                             | depths 2/1/0                 |
     | D1   | C2 depth > baseline                              | reject                       |
     | D2   | C2 depth < recorded baseline                     | admit; --tighten records it  |
-    | L1   | C3 ports module over budget, no baseline         | reject, advice: split module |
+    | L1   | C3 ports module over budget, no baseline         | warn; admit                  |
     | L2   | C3 over budget, <= baseline                      | admit                        |
     | L3   | C3 shrinks by >= LINE_SLACK / under budget / gone | admit; --tighten records it |
     | L5   | recorded crate no longer a contract crate        | admit; --tighten drops it    |
     | L4   | C3 trait-free module under TYPES budget          | admit, role types            |
     | L6   | C3 crate over a budget in total, every module under | admit (no crate budget)   |
+    | L7   | C3 module above its recorded count              | warn; admit                  |
+    | L8   | C3 line growth + structural growth              | warn + structural rejection  |
     | N1   | C4 struct/enum/trait/variant names               | counted                      |
     | N2   | C4 comment, string literal, fn, cfg(test) item   | not counted                  |
     | E1   | C5 Storage(String), Backend { message: String }  | counted                      |
@@ -597,7 +614,7 @@ def self_test() -> None:
     | R2   | C7 count < baseline                              | admit; --tighten records it  |
     | W1   | C8 raise without reason                          | growth reported              |
     | W2   | C8 raise with reason                             | reason retained in baseline  |
-    | W4   | C8 module rises above its budget                 | growth reported per module   |
+    | W4   | C8 module rises above its budget                 | record actual lines, no gate |
     | W5   | C8 reason recorded for a rule no longer measured | dropped                      |
     | K1   | C9 no kinds metadata                             | reject                       |
     | K2   | C9 unknown kind                                  | reject                       |
@@ -636,8 +653,10 @@ def self_test() -> None:
 
     port = "pub trait Port {\n    fn call(&self);\n}\n"
     big = Measurement(depth=0, role="ports", modules={"p.rs": (PORT_LINE_BUDGET + 10, "ports")})
-    rejected = compare({"p": big}, {"crates": {}})
-    assert rejected and "module_lines: p::p.rs 2000 -> 2010" in rejected[0] and "split the module" in rejected[0], "L1"
+    warnings: list[str] = []
+    assert not compare({"p": big}, {"crates": {}}, warnings=warnings), "L1 lines never reject"
+    assert len(warnings) == 1 and "module_lines: p::p.rs 2000 -> 2010" in warnings[0] \
+        and "advisory" in warnings[0], "L1 original measurement, advisory review"
     recorded = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 10}}}}
     assert not compare({"p": big}, recorded), "L2"
     shrunk = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 10 + LINE_SLACK}}}}
@@ -680,6 +699,28 @@ def self_test() -> None:
     marker = "pub trait Marker {}\npub struct Value;\n"
     assert measure_sources({"x.rs": project(marker)}).role == "types", "L4 marker trait is not a port"
     assert not compare({"t": vocabulary}, {"crates": {}}), "L4"
+
+    # L7/L8 decision table: each role keeps its numeric budget and recorded
+    # allowance. Above either -> one warning, no error. Adding any structural
+    # growth -> that original error and the same line warning, never a waiver.
+    for role, budget in (("types", TYPES_LINE_BUDGET), ("ports", PORT_LINE_BUDGET)):
+        for held, lines in ((None, budget), (None, budget + 1), (budget + 1, budget + 1),
+                            (budget + 1, budget + 2)):
+            baseline = {"crates": {"p": {"depth": 0}}}
+            if held is not None:
+                baseline["crates"]["p"]["module_lines"] = {"p.rs": held}
+            warnings = []
+            current = Measurement(modules={"p.rs": (lines, role)})
+            assert not compare({"p": current}, baseline, warnings=warnings), "L7 advisory for both roles"
+            assert bool(warnings) == (lines > (budget if held is None else held)), "L7 exact boundary"
+    for rule, value in (("depth", 1), ("backend_nouns", ["p.rs:1: struct DockerHandle"]),
+                        ("catch_all_errors", ["p.rs:2: StoreError::Storage(String)"]),
+                        ("capability_defaults", ["p.rs:3: Port::unsupported"])):
+        warnings = []
+        current = Measurement(**{rule: value}, modules=big.modules)
+        errors = compare({"p": current}, {"crates": {}}, warnings=warnings)
+        assert len(errors) == 1 and errors[0].startswith(rule + ":") and len(warnings) == 1, \
+            f"L8 line advisory cannot waive {rule}"
 
     nouns = project(
         "pub struct DockerHandle;\npub enum Backend { Podman, Local }\npub trait SqliteStore {}\n"
@@ -748,8 +789,13 @@ def self_test() -> None:
     assert document["crates"]["k"]["growth_reasons"] == {"catch_all_errors": "first; then: second"}, "W3 keeps history"
     oversized = Measurement(depth=0, modules={"x.rs": (PORT_LINE_BUDGET + 10, "ports")})
     document, growth = render_baseline({"k": oversized}, previous, "module split pending")
-    assert growth == [f"k.module_lines[x.rs]: {PORT_LINE_BUDGET} -> {PORT_LINE_BUDGET + 10}"], f"W4 {growth}"
+    assert not growth, f"W4 advisory line growth never needs a reason: {growth}"
     assert document["crates"]["k"]["module_lines"] == {"x.rs": PORT_LINE_BUDGET + 10}, "W4 recorded"
+    assert document["crates"]["k"]["growth_reasons"]["module_lines"] == "module split pending", \
+        "W4 optional reason still uses original history"
+    document, growth = render_baseline({"k": oversized}, previous, None)
+    assert not growth and document["crates"]["k"]["module_lines"] == {"x.rs": PORT_LINE_BUDGET + 10}, \
+        "W4 actual line measurement needs no reason"
     legacy = {"crates": {"k": {"depth": 0, "growth_reasons": {"production_lines": "per-crate budget"}}}}
     assert "growth_reasons" not in render_baseline({"k": Measurement(depth=0)}, legacy, None)[0]["crates"]["k"], \
         "W5 a reason for a retired rule is dropped"
@@ -773,7 +819,14 @@ def _selftest_cli() -> None:
     check nor tighten borrows this authorization.
     D8: the formatter changes only returned rule messages. This table owns
     unchanged statuses, root/crate bytes, gain staging, report and init rules.
+    SCLI6 line-only growth -> WARN/exit0, read-only checks and no tighten/stage
+    write; explicit write records actual lines without a growth reason.
+    SCLI7 structural fall + line growth/new module -> stage only the fall,
+    clamp existing line allowances and omit new ones; a large line fall still
+    tightens. Structural growth or DAG/kind errors stay exit1 with no writes.
     """
+    import contextlib
+    import io
     from types import SimpleNamespace
 
     foreign = "  foreign review; expiry unchanged  "
@@ -782,11 +835,22 @@ def _selftest_cli() -> None:
             "future-counter": 8,
             "owner": "contract", "expiry": "extraction", "growth_reasons": {"catch_all_errors": "first", "future-counter": foreign}}}}
     stage_calls = []
+    diagnostics: list[str] = []
 
-    def invoke(argv, count=2, baseline=held, errors=()):
-        return _architecture_ratchet._cli_fixture(
-            main, argv, baseline, "measure", (list(errors), {"c": Measurement(depth=0, catch_all_errors=["x"] * count)}),
+    def invoke(argv, count=2, baseline=held, errors=(), measurement=None):
+        stderr = io.StringIO()
+
+        def captured_main(argv):
+            with contextlib.redirect_stderr(stderr):
+                return main(argv)
+
+        diagnostics.clear()
+        result = _architecture_ratchet._cli_fixture(
+            captured_main, argv, baseline, "measure",
+            (list(errors), {"c": measurement or Measurement(depth=0, catch_all_errors=["x"] * count)}),
             load_contract_crates=lambda: {}, subprocess=SimpleNamespace(run=lambda *a, **kw: stage_calls.append((a, kw))))
+        diagnostics.append(stderr.getvalue())
+        return result
 
     for argv in ([], ["--check"], ["--report"], ["--report", "--check"]):
         status, before, after, observed, output = invoke(argv, 1)
@@ -845,15 +909,95 @@ def _selftest_cli() -> None:
         status, before, after, observed, _ = invoke(argv)
         assert status == 2 and before == after and not observed, f"SCLI4 {argv}"
 
+    # SCLI6: new and recorded line growth use exactly the check_all/hook main
+    # and canonical compare. Baseline bytes stay unchanged for checks and
+    # line-only tightening; warnings retain the original module/old/new counts.
+    line_held = {**held, "crates": {"c": {**held["crates"]["c"],
+        "module_lines": {"held.rs": PORT_LINE_BUDGET + 10},
+        "growth_reasons": {**held["crates"]["c"]["growth_reasons"], "module_lines": "earlier line review"}}}}
+    modules = {"held.rs": (PORT_LINE_BUDGET + 20, "ports"), "new.rs": (TYPES_LINE_BUDGET + 1, "types")}
+    line_only = Measurement(catch_all_errors=["x", "x"], modules=modules)
+    for baseline in (held, line_held):
+        for argv in ([], ["--check"], ["--report"], ["--report", "--check"],
+                     ["--tighten", "--stage"], ["--report", "--tighten", "--stage"]):
+            stage_calls.clear()
+            status, before, after, observed, _ = invoke(argv, baseline=baseline, measurement=line_only)
+            assert status == 0 and before == after and observed and not stage_calls, f"SCLI6 line-only {argv}"
+            warning = diagnostics[0]
+            old = PORT_LINE_BUDGET + 10 if baseline is line_held else PORT_LINE_BUDGET
+            assert f"WARN: module_lines: c::held.rs {old} -> {PORT_LINE_BUDGET + 20}" in warning \
+                and f"WARN: module_lines: c::new.rs {TYPES_LINE_BUDGET} -> {TYPES_LINE_BUDGET + 1}" in warning \
+                and "ERROR:" not in warning, "SCLI6 warnings preserve both role measurements"
+    status, _, after, _, _ = invoke(["--write-baseline"], baseline=line_held, measurement=line_only)
+    document = json.loads(after)
+    assert status == 0 and document["crates"]["c"]["module_lines"] == {
+        rel: lines for rel, (lines, _) in modules.items()}, "SCLI6 explicit write records actual advisory lines"
+    assert document["crates"]["c"]["growth_reasons"] == line_held["crates"]["c"]["growth_reasons"], \
+        "SCLI6 historical line/structural/foreign reasons survive unreasoned line writes"
+
+    # SCLI7: each existing/new line allowance, including a newly measured crate,
+    # may grow while an independent structural rule falls. The one renderer
+    # must record only falls, retain historical metadata/reasons, and stage once.
+    for baseline in (held, line_held):
+        stage_calls.clear()
+        shrinking = Measurement(catch_all_errors=["x"], modules=modules)
+        status, _, after, _, _ = invoke(["--tighten", "--stage"], baseline=baseline, measurement=shrinking)
+        document = json.loads(after)
+        assert status == 0 and len(stage_calls) == 1 and document["crates"]["c"]["catch_all_errors"] == 1, \
+            "SCLI7 structural fall still stages"
+        assert document["crates"]["c"].get("module_lines", {}) == baseline["crates"]["c"].get("module_lines", {}), \
+            "SCLI7 no new/raised line record during structural tightening"
+        assert "WARN: module_lines:" in diagnostics[0], "SCLI7 clamped growth still warns"
+        assert document["crates"]["c"]["growth_reasons"] == baseline["crates"]["c"]["growth_reasons"], \
+            "SCLI7 original line and foreign history retained"
+        assert document["owner"] == baseline["owner"] and document["growth_reasons"] == baseline["growth_reasons"], \
+            "SCLI7 foreign root metadata unchanged"
+    new_crate = {"c": Measurement(catch_all_errors=["x"]), "new": Measurement(modules=modules)}
+    document, growth = render_baseline(new_crate, line_held, None, tighten=True)
+    assert not growth and "module_lines" not in document["crates"]["new"], "SCLI7 no new crate line allowance"
+    falling = {**line_held, "crates": {"c": {**line_held["crates"]["c"],
+        "module_lines": {"held.rs": PORT_LINE_BUDGET + 10 + LINE_SLACK}}}}
+    stage_calls.clear()
+    status, _, after, _, _ = invoke(["--tighten", "--stage"], baseline=falling,
+        measurement=Measurement(catch_all_errors=["x", "x"], modules={"held.rs": (PORT_LINE_BUDGET + 10, "ports")}))
+    assert status == 0 and len(stage_calls) == 1 and json.loads(after)["crates"]["c"]["module_lines"] == {
+        "held.rs": PORT_LINE_BUDGET + 10}, "SCLI7 original slack fall still tightens"
+
+    # SCLI8: adding line growth never downgrades a structural refusal. Even a
+    # reviewed explicit write cannot waive hard DAG/kind errors; reasonless
+    # structural growth still fails the original write admission.
+    for argv in (["--check"], ["--tighten", "--stage"], ["--write-baseline"]):
+        stage_calls.clear()
+        status, before, after, _, _ = invoke(argv, baseline=line_held,
+            measurement=Measurement(catch_all_errors=["x"] * 3, modules=modules))
+        assert status == 1 and before == after and not stage_calls, "SCLI8 structural growth remains hard"
+        assert "ERROR:" in diagnostics[0], "SCLI8 original structural diagnostic"
+        if "--write-baseline" not in argv:
+            assert "WARN: module_lines:" in diagnostics[0], "SCLI8 mixed growth still warns"
+    for error in ("cycle", "wrong kind"):
+        for argv in (["--check"], ["--tighten", "--stage"],
+                     ["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")]):
+            stage_calls.clear()
+            status, before, after, _, _ = invoke(argv, baseline=line_held, errors=(error,), measurement=line_only)
+            assert status == 1 and before == after and not stage_calls and error in diagnostics[0], \
+                "SCLI8 line advisory cannot waive hard measurement rules"
+
 
 # --------------------------------------------------------------------------- main
 
 
 def main(argv: list[str] | None = None) -> int:
+    def check(measurements, previous):
+        warnings: list[str] = []
+        errors = compare(measurements, previous, warnings=warnings)
+        for warning in warnings:
+            print(f"WARN: {warning}", file=sys.stderr)
+        return errors
+
     def lower(measurements, previous):
         if compare(measurements, previous) or not tightenable(measurements, previous):
             return previous
-        document, growth = render_baseline(measurements, previous, None)
+        document, growth = render_baseline(measurements, previous, None, tighten=True)
         # The original comparison admitted the tree. A disagreement with its
         # existing renderer must never silently write a higher allowance.
         assert not growth, growth
@@ -861,7 +1005,7 @@ def main(argv: list[str] | None = None) -> int:
 
     return _architecture_ratchet.baseline_cli(
         argv, prog="check_contract_shape.py", description=__doc__, baseline_path=BASELINE, self_test=self_test,
-        measure=lambda: measure(load_contract_crates()), check=compare, tighten=lower, write=render_baseline,
+        measure=lambda: measure(load_contract_crates()), check=check, tighten=lower, write=render_baseline,
         report=table, is_initialization=lambda previous: not previous.get("crates"),
         stage=lambda: subprocess.run(["git", "add", str(BASELINE)], cwd=ROOT, check=True),
     )

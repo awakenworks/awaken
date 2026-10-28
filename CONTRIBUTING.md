@@ -153,9 +153,11 @@ Use each owning script:
 - public API snapshots: `scripts/ci/check_public_api.sh --bless`, on the
   nightly pinned as `PUBLIC_API_NIGHTLY` in
   [`check_public_api.sh`](scripts/ci/check_public_api.sh), never a rolling one.
-- file limits: an oversized legacy file carries an
+- line measurements: file, function, module and crate sizes are diagnostic;
+  exceeding a threshold or a recorded line count warns without blocking a
+  check or commit. Structural and dependency rules remain enforced. A legacy file may carry an
   `awaken-allow(file-limit-ceiling): N` marker in the first five lines, excluding
-  an opening formal header. The ceiling may only fall against its HEAD value.
+  an opening formal header; it remains a historical measurement, not a size permission.
 
 For a guard with a writer, use its owning flag instead of hand-editing its baseline.
 The context/SPI/expiry/registry helpers have no writer: their source or metadata
@@ -179,7 +181,8 @@ trailers, no plan markers such as slice ids. Commit with
 which runs that validator in seconds before any hook, then calls `git commit -m`
 (extra arguments are passed on). Never skip hooks. A commit that touches no
 Rust may set `LEFTHOOK_EXCLUDE=rust-quick`. The file-limit hook measures staged
-Rust as rustfmt will leave it, so a reflow cannot push a file over its limit.
+Rust as rustfmt will leave it and reports the resulting line measurements as
+diagnostics. Source selection, parsing and evidence-anchor errors still fail.
 
 ## Known false reds
 

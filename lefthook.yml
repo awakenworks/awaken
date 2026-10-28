@@ -120,8 +120,8 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_secrets.py --staged
 
-    # 3. Keep modules and design docs bounded. Tests, generated code, lockfiles,
-    #    and build output are excluded by policy.
+    # 3. Report file-length diagnostics for source, tests, config and design.
+    #    Size findings warn; source selection and input failures remain checked.
     file-limits:
       # >>> generated glob from check_file_limits.py INPUT_GLOBS — do not edit
       # no glob: check_file_limits.py reads every staged file, so this command
@@ -297,10 +297,9 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py
 
-    # The contract layer may only get simpler: no contract cycle, no deeper
-    # contract chain, no growth above the line budget, and no new backend-noun
-    # type names, catch-all String errors or capability-style Err defaults
-    # (ADR-0081). A lowered number must be recorded in the checked-in baseline.
+    # Contract structure stays constrained: no cycle, deeper dependency chain,
+    # new backend-noun types, catch-all String errors or capability-style Err
+    # defaults (ADR-0081). Module line measurements are diagnostic (ADR-0091 D8).
     contract-shape:
       # >>> generated glob from check_contract_shape.py INPUT_GLOBS — do not edit
       glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_architecture_ratchet.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
