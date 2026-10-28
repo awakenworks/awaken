@@ -802,6 +802,17 @@ This is a bounded refusal, not transparent long-context compaction. No aggregate
 file is written outside a receipted Runtime effect, and physical SDK exit remains
 mandatory before the original execution owner proceeds.
 
+The existing ACP SDK lookup projection retains each explicitly presented builtin's
+canonical ID as well as its declared alias. Both spellings resolve in the same
+single-hop table to the same registered in-Session MCP tool; explicit aliases
+keep `ToolPresentation::resolve` precedence. Already addressable MCP identities
+never acquire self-aliases, and unknown case/spelling is not inferred. SDK-native
+tools stay disabled/disallowed, argument schemas and permissions stay with their
+original owners, and the MCP invocation still enters the original Runtime
+ToolBatch/operation-token path. This closes the transport gap where a published
+canonical `read` could fail SDK name lookup although its declared `Read` alias
+already routed to that same capability; it creates no additional tool registry.
+
 
 Known failed Environment image attempts are reported immediately by the existing
 blocking `EnvironmentImageReadiness::ready_image` query as unavailable. The query
