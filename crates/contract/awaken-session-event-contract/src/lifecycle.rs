@@ -120,6 +120,7 @@ pub struct SessionRuntimeInterval {
 /// A secret-free lifecycle fact committed beside a Managed aggregate. Its
 /// stable id is both the durable outbox key and the receiver idempotency key.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManagedLifecycleFact {
     pub id: String,
     #[serde(alias = "session_id")]

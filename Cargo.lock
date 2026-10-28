@@ -630,6 +630,7 @@ dependencies = [
  "awaken-config-service",
  "awaken-config-store",
  "awaken-credential-contract",
+ "awaken-credential-envelope",
  "awaken-credential-store",
  "awaken-credential-vault",
  "awaken-data-governance-contract",
@@ -865,6 +866,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-runtime-contract",
  "schemars 1.2.1",
  "serde",
@@ -1872,11 +1874,13 @@ dependencies = [
  "awaken-provisioning-contract",
  "libc",
  "nix 0.29.0",
+ "process-wrap",
  "rustix 1.1.4",
  "seccompiler",
  "serde",
  "tempfile",
  "tokio",
+ "winsafe",
  "zeroize",
 ]
 
@@ -1934,6 +1938,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -2240,6 +2245,7 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
+ "awaken-mcp-wire",
  "awaken-provisioning-contract",
  "awaken-session-environment-contract",
  "serde",
@@ -3009,13 +3015,16 @@ dependencies = [
  "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-testkit",
  "awaken-dream-application",
  "awaken-environment-application",
+ "awaken-environment-contract",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-execution-composition",
  "awaken-ext-builtin-tools",
+ "awaken-ext-mcp",
  "awaken-ext-memory",
  "awaken-ext-skills",
  "awaken-iam-contract",
@@ -3025,6 +3034,7 @@ dependencies = [
  "awaken-iam-server",
  "awaken-inference-endpoint",
  "awaken-installation-workspace",
+ "awaken-mcp-wire",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -3050,8 +3060,10 @@ dependencies = [
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-run-delivery",
+ "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
+ "awaken-store-inmem",
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
@@ -3066,6 +3078,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
+ "url",
 ]
 
 [[package]]
@@ -8705,7 +8718,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -9865,6 +9878,12 @@ checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "winsafe"
+version = "0.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "winx"

@@ -1111,7 +1111,6 @@ export interface ConfigCapabilitiesView {
 export interface CooldownRequest {
   kind: string;
   retry_after_secs?: number | null;
-  [k: string]: unknown;
 }
 /**
  * A pool of interchangeable credential sources for one provider principal
@@ -1404,7 +1403,6 @@ export interface PutModelAttributesRequest {
  */
 export interface ResolveProfileRequest {
   workspace_id: string;
-  [k: string]: unknown;
 }
 /**
  * A dry-run resolve request. An unqualified target is valid when the model id
@@ -1499,5 +1497,4 @@ export interface ValidateCredentialRequest {
    */
   provider_ref?: string | null;
   workspace_id: string;
-  [k: string]: unknown;
 }

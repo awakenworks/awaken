@@ -24,12 +24,12 @@ use serde_json::{Value, json};
 use awaken_dispatch::WorkerIdentity;
 use awaken_worker_transport_security::VerifiedWorkerContext;
 
-use super::session_realization::{
-    SessionCleanupPollReq, terminal_cleanup_control, verify_terminal_cleanup_authority,
-};
+use super::session_realization::{terminal_cleanup_control, verify_terminal_cleanup_authority};
+use super::session_requests::SessionCleanupPollReq;
 use super::{RealizationHttpError, WorkerDispatchService, respond_realization};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SessionRepositoryPublicationCompleteReq {
     identity: WorkerIdentity,
     session_id: String,
@@ -38,6 +38,7 @@ pub(super) struct SessionRepositoryPublicationCompleteReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SessionRepositoryPublicationRejectReq {
     identity: WorkerIdentity,
     session_id: String,

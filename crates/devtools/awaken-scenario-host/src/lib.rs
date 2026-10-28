@@ -1550,6 +1550,7 @@ pub async fn build_config_router() -> Router {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SessionReservationScenarioRequest {
     request: awaken_dispatch::RunDispatch,
     reservation_ttl_ms: u64,

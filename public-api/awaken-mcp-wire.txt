@@ -2,6 +2,7 @@ pub mod awaken_mcp_wire
 pub mod awaken_mcp_wire::http
 pub const awaken_mcp_wire::http::MCP_PROTOCOL_VERSION_HEADER: &str
 pub const awaken_mcp_wire::http::MCP_SESSION_ID_HEADER: &str
+pub fn awaken_mcp_wire::http::execution_context_enabled(&str) -> bool
 pub fn awaken_mcp_wire::http::relay_response_headers<'a>(impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a [u8])>) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
 pub mod awaken_mcp_wire::jsonrpc
 pub struct awaken_mcp_wire::jsonrpc::JsonRpcNotifier

@@ -930,11 +930,15 @@ mod tests {
         let mut sink = RecordingSink::default();
         let mut config = TurnConfig::new(&AllowAll);
         config.session_id = Some("sess-resume".into());
+        config.mcp_execution_context = Some(awaken_acp_contract::McpExecutionContext {
+            run_id: "current-run".into(),
+            agent_id: "current-agent".into(),
+        });
         config.mcp_servers = vec![crate::SessionMcpServer {
             name: "pilot".into(),
             command: None,
             args: Vec::new(),
-            url: Some("http://pilot.internal/mcp".into()),
+            url: Some("http://pilot.internal/mcp?awaken_execution_context=run-agent-v1".into()),
             auth: None,
         }];
         let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
@@ -949,8 +953,23 @@ mod tests {
         );
         assert_eq!(
             loaded_params.lock().unwrap()["mcpServers"][0]["url"],
-            "http://pilot.internal/mcp",
+            "http://pilot.internal/mcp?awaken_execution_context=run-agent-v1",
             "R1"
+        );
+        let headers = loaded_params.lock().unwrap()["mcpServers"][0]["headers"].clone();
+        assert!(
+            headers
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["name"] == "x-awaken-run-id" && h["value"] == "current-run")
+        );
+        assert!(
+            headers
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["name"] == "x-awaken-agent-id" && h["value"] == "current-agent")
         );
         assert_eq!(
             config.session_id.as_deref(),

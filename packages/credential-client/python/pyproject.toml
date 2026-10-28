@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awaken-credential-client"
+version = "0.1.4"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28,<1", "cryptography>=45,<47"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["awaken_credentials*"]

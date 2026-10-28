@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::StructuredCredentialMaterial;
+use awaken_agent_contract::credential::CredentialHandlingMode;
 use serde::{Deserialize, Serialize};
 
 // The credential reference vocabulary is a Runtime SDK value (ADR-0086 §7).
@@ -70,6 +71,10 @@ pub use http_basic::{HTTP_BASIC_MATERIAL_TYPE, http_basic_material};
 mod descriptor;
 pub use descriptor::*;
 mod custody;
+mod execution_binding;
+pub use execution_binding::{CredentialExecutionAuthority, CredentialExecutionBinding};
+#[cfg(test)]
+mod handling_tests;
 pub use custody::{
     CredentialCustodyPublication, CredentialMaterialBinding, CredentialMaterialCustodian,
     CredentialMaterialDelivery, credential_envelope_payload_fingerprint,
@@ -372,6 +377,13 @@ impl CredentialAccessAdmission for CredentialAccess {
         self.usage
             .validate()
             .map_err(|_| CredentialAdmissionError::InvalidCredentialUsage)?;
+        if self.policy.handling_mode == CredentialHandlingMode::ApplicationManaged
+            && (self.policy.model_exposure != ModelExposurePolicy::Forbidden
+                || requested_holder.boundary != PlaintextBoundary::Workload
+                || !matches!(&self.usage, CredentialUsage::Extension {consumer_id, ..} if !is_core_delivery_consumer(consumer_id)))
+        {
+            return Err(CredentialAdmissionError::InvalidHandlingPolicy);
+        }
         validate_credential_target_usage(self.target.as_ref(), &self.usage)
             .map_err(|_| CredentialAdmissionError::InvalidCredentialTarget)?;
         if self.policy.allowed_plaintext_holders.is_empty() {
@@ -486,6 +498,10 @@ pub struct CredentialRealizationPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CredentialAdmissionError {
+    #[error(
+        "application-managed credentials require an installed Workload consumer and forbidden model exposure"
+    )]
+    InvalidHandlingPolicy,
     #[error("credential policy has no allowed plaintext holder")]
     EmptyAllowedHolders,
     #[error("selected plaintext holder is not authorized")]
@@ -934,6 +950,7 @@ mod tests {
             CredentialMaterialSource::ControlPlaneReference,
             CredentialUsage::ProviderAdapter,
             CredentialExecutionPolicy {
+                handling_mode: CredentialHandlingMode::PlatformManaged,
                 allowed_plaintext_holders: allowed,
                 model_exposure: ModelExposurePolicy::Forbidden,
             },

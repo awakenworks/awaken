@@ -16,7 +16,9 @@ pub mod managed_credential;
 mod session;
 mod worker_profile;
 pub use adapter_policy::AcpAdapterPolicy;
-pub use session::{AcpLaunchEvent, AcpLaunchStage, LaunchObserver, SessionMcpServer};
+pub use session::{
+    AcpLaunchEvent, AcpLaunchStage, LaunchObserver, McpExecutionContext, SessionMcpServer,
+};
 pub use worker_profile::AcpWorkerProfile;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

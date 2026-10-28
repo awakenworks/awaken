@@ -17,6 +17,7 @@ separation = "protocol"
 protocol = "acp"
 
 [dependencies]
+awaken-mcp-wire.workspace = true
 awaken-agent-contract.workspace = true
 awaken-agent-channel.workspace = true
 awaken-acp-contract.workspace = true

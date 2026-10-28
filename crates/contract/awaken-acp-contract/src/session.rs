@@ -9,6 +9,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Runtime-owned correlation, never a grant or model prompt. Delivered only
+/// to an MCP endpoint whose configured URL explicitly opts in.
+#[derive(Debug, Clone)]
+pub struct McpExecutionContext {
+    pub run_id: String,
+    pub agent_id: String,
+}
+
 /// A neutral MCP server for the ACP `session/new` `mcpServers` param. A stdio
 /// child carries `command` and `args`; an HTTP endpoint carries `url`.
 #[derive(Clone, PartialEq, Eq)]

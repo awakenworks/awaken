@@ -28,6 +28,7 @@ use super::{
 };
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ClaimedSessionReq {
     claim: RunClaim,
     identity: WorkerIdentity,
@@ -35,6 +36,7 @@ pub(super) struct ClaimedSessionReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ClaimedModelRequestReq {
     claim: RunClaim,
     identity: WorkerIdentity,
@@ -44,6 +46,7 @@ pub(super) struct ClaimedModelRequestReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ClaimedRunActivityReq {
     claim: RunClaim,
     identity: WorkerIdentity,
@@ -54,6 +57,7 @@ pub(super) struct ClaimedRunActivityReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ClaimedSessionMessageReq {
     claim: RunClaim,
     identity: WorkerIdentity,
@@ -61,6 +65,7 @@ pub(super) struct ClaimedSessionMessageReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ClaimedSessionBoundaryReq {
     claim: RunClaim,
     identity: WorkerIdentity,

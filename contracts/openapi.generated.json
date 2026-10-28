@@ -523,6 +523,7 @@
       },
       "CooldownRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "description": "A cooldown signal an operator (or an external rate-limit integration) records\nagainst a credential source. `kind` maps to a failure\n[`Disposition`](awaken_agent_contract::resilience::Disposition): `quota` cools\nuntil `retry_after_secs` (or a default window); `exhausted` cools until cleared;\n`available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on\navailability (they are retry/next-binding decisions, not identity cooldowns).",
         "properties": {
           "kind": {
@@ -5175,6 +5176,7 @@
       },
       "ResolveProfileRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "description": "Resolve an authored profile within a workspace's credential scope.",
         "properties": {
           "workspace_id": {
@@ -6106,6 +6108,7 @@
       },
       "ValidateCredentialRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
         "description": "Live-validate a credential against a model's resolved provider endpoint.",
         "properties": {
           "model_id": {

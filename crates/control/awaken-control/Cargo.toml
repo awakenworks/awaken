@@ -20,6 +20,7 @@ enables = ["awaken-model-catalog-store"]
 # NOT depend on the awaken-coordinator data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
@@ -54,6 +55,7 @@ awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres
 awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
 awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
 awaken-credential-contract.workspace = true
+awaken-credential-envelope.workspace = true
 awaken-data-subject-application.workspace = true
 # Embedded IAM (ADR-0042/0043 P1): the authorizer, the argon2id token directory +
 # minter + default-deny PolicySet evaluator, the seeded Anthropic role catalog, the
@@ -108,8 +110,6 @@ awaken-worker-registry = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-awaken-lease-contract.workspace = true
-
 [lints]
 workspace = true
 

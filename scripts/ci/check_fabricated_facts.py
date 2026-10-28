@@ -299,6 +299,10 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         "crates/devtools/awaken-scenario-host/src/main.rs",
         "crates/devtools/awaken-scenario-host/src/deployment.rs",
         "crates/devtools/awaken-scenario-host/src/lib.rs",
+        # Standalone qualification processes: each main chooses one clock for
+        # its Session/Dispatch/Vault or ACP graph; helpers receive that clock.
+        "crates/devtools/awaken-scenario-host/examples/application_credential_fixture.rs",
+        "crates/devtools/awaken-scenario-host/examples/application_credential_acp_fixture.rs",
         "crates/devtools/awaken-eval/src/acp_runner.rs",
         "crates/devtools/awaken-eval/src/replay.rs",
         # Clock selection moved from CodingSession's library constructor to
@@ -860,6 +864,15 @@ def selftest() -> None:
     assert not defaulted_clock_violations({coding_main: "fn main() { system_clock(); }"}), "D8 root"
     assert defaulted_clock_violations({coding_library: "fn new() { system_clock(); }"}), "D8 library"
     assert not defaulted_clock_violations({coding_library: "fn new(clock: Arc<dyn WallClock>) { store(clock); }"}), "D8 injected"
+    # Register only the two actual process roots, never their helper subtree.
+    for qualification_main in (
+        "crates/devtools/awaken-scenario-host/examples/application_credential_fixture.rs",
+        "crates/devtools/awaken-scenario-host/examples/application_credential_acp_fixture.rs",
+    ):
+        assert not defaulted_clock_violations({qualification_main: "fn main() { system_clock(); }"})
+    qualification_helper = "crates/devtools/awaken-scenario-host/examples/application_credential_fixture/execution.rs"
+    assert defaulted_clock_violations({qualification_helper: "fn open() { system_clock(); }"})
+    assert not defaulted_clock_violations({qualification_helper: "fn open(clock: Arc<dyn WallClock>) { store(clock); }"})
 
     # ── R5 ──
     assert shadow_clock_violations({"a.rs": "fn now_ms() -> u64 { 0 }\n"}), "S1/E2"

@@ -89,6 +89,7 @@ struct StoredConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Delivery {
     id: String,
     task_id: String,

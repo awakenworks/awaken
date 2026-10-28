@@ -519,6 +519,11 @@ pub fn awaken_agent_contract::credential::CredentialEnvelope::envelope_ref(&self
 pub fn awaken_agent_contract::credential::CredentialEnvelope::expires_at_unix_ms(&self) -> u64
 pub fn awaken_agent_contract::credential::CredentialEnvelope::recipient(&self) -> &awaken_agent_contract::credential::TrustDomainRef
 pub fn awaken_agent_contract::credential::CredentialEnvelope::required_boundary(&self) -> awaken_agent_contract::credential::PlaintextBoundary
+pub enum awaken_agent_contract::credential::CredentialHandlingMode
+pub awaken_agent_contract::credential::CredentialHandlingMode::ApplicationManaged
+pub awaken_agent_contract::credential::CredentialHandlingMode::PlatformManaged
+impl awaken_agent_contract::credential::CredentialHandlingMode
+pub const fn awaken_agent_contract::credential::CredentialHandlingMode::is_platform_managed(&self) -> bool
 pub enum awaken_agent_contract::credential::CredentialMaterialSource
 pub awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference
 pub awaken_agent_contract::credential::CredentialMaterialSource::WorkerReference
@@ -621,8 +626,10 @@ impl core::convert::From<alloc::string::String> for awaken_agent_contract::crede
 pub fn awaken_agent_contract::credential::CredentialAudienceRef::from(alloc::string::String) -> Self
 pub struct awaken_agent_contract::credential::CredentialExecutionPolicy
 pub awaken_agent_contract::credential::CredentialExecutionPolicy::allowed_plaintext_holders: alloc::collections::btree::set::BTreeSet<awaken_agent_contract::credential::PlaintextHolder>
+pub awaken_agent_contract::credential::CredentialExecutionPolicy::handling_mode: awaken_agent_contract::credential::CredentialHandlingMode
 pub awaken_agent_contract::credential::CredentialExecutionPolicy::model_exposure: awaken_agent_contract::credential::ModelExposurePolicy
 impl awaken_agent_contract::credential::CredentialExecutionPolicy
+pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::application_managed(awaken_agent_contract::credential::PlaintextHolder) -> Self
 pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::exact(awaken_agent_contract::credential::PlaintextHolder, awaken_agent_contract::credential::ModelExposurePolicy) -> Self
 pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::new(impl core::iter::traits::collect::IntoIterator<Item = awaken_agent_contract::credential::PlaintextHolder>, awaken_agent_contract::credential::ModelExposurePolicy) -> Self
 pub fn awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_mcp() -> Self
