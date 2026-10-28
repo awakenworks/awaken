@@ -16,6 +16,7 @@ description = "Shared MCP wire layer (JSON-RPC peer, SSE, progress) for the MCP 
 separation = "publish"
 
 [dependencies]
+url.workspace = true
 awaken-time.workspace = true
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }

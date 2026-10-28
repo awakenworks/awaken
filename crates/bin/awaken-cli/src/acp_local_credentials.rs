@@ -1238,6 +1238,21 @@ mod tests {
         )
         .unwrap();
 
+        #[cfg(windows)]
+        let entry = {
+            let package = directory
+                .path()
+                .join("codex/node_modules/@agentclientprotocol/codex-acp");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                r#"{"version":"1.10.0","bin":{"codex-acp":"main.js"}}"#,
+            )
+            .unwrap();
+            let entry = package.join("main.js");
+            std::fs::write(&entry, "process.exit(0)").unwrap();
+            entry
+        };
         let cli = acp_cli("codex").unwrap();
         let first = awaken_acp_application::NpmWrapperInstaller
             .resolved_argv(cli, directory.path())
@@ -1250,10 +1265,17 @@ mod tests {
             .expect("R2")
             .expect("R2 wrapper argv");
         assert_eq!(first, restarted, "R2");
+        #[cfg(not(windows))]
         assert_eq!(
             first,
             vec![executable.canonicalize().unwrap().to_string_lossy()]
         );
+        #[cfg(windows)]
+        {
+            assert_eq!(first.len(), 2);
+            assert!(std::path::Path::new(&first[0]).is_absolute());
+            assert_eq!(first[1], entry.canonicalize().unwrap().to_string_lossy());
+        }
     }
 
     #[tokio::test]

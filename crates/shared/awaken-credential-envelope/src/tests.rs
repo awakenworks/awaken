@@ -61,6 +61,80 @@ fn request(boundary: PlaintextBoundary) -> CredentialEnvelopeIssuance {
     }
 }
 
+fn application_request() -> CredentialEnvelopeIssuance {
+    let mut r = request(PlaintextBoundary::Workload);
+    r.access.usage = CredentialUsage::Extension {
+        consumer_id: "application-test".into(),
+        material_type: "opaque-test/v1".into(),
+        public_config: json!({}),
+    };
+    r.access.target = Some(awaken_credential_contract::CredentialTarget::new(
+        CredentialPurpose::Extension,
+        "application://application-test/account-a",
+    ));
+    r.binding =
+        CredentialMaterialBinding::for_target("workspace-a", &"operation-a", &r.access.usage);
+    r
+}
+
+/// An installed opaque consumer may receive only its admitted Workload tuple.
+/// This does not enroll that consumer in the built-in plaintext resolver.
+#[tokio::test]
+async fn application_seal_keeps_the_builtin_resolver_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("keys.json");
+    write(&file, &document());
+    let issuer = RecipientKeyEnvelope::open(file, awaken_time::system_clock()).unwrap();
+    let consumer = awaken_credential_contract::CredentialExtensionDescriptor {
+        consumer_id: "application-test".into(),
+        material_types: ["opaque-test/v1".into()].into_iter().collect(),
+    };
+    let request = application_request();
+    let access = request.access.clone().with_envelope(
+        issuer
+            .seal_for_consumer(application_request(), &consumer)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        !serde_json::to_string(&access)
+            .unwrap()
+            .contains("synthetic-provider-material")
+    );
+    assert!(
+        opened(&issuer, &access, &request.selected_holder, &request.binding)
+            .await
+            .is_err()
+    );
+    for case in 0..6 {
+        let mut r = application_request();
+        match case {
+            0 => r.selected_holder = holder(PlaintextBoundary::Worker),
+            1 => r.access.policy.model_exposure = ModelExposurePolicy::VirtualOnly,
+            2 => r.access.target.as_mut().unwrap().purpose = CredentialPurpose::ProviderAdapter,
+            3 => r.access.usage = CredentialUsage::ProviderAdapter,
+            4 => {
+                r.access.usage = CredentialUsage::Extension {
+                    consumer_id: "foreign".into(),
+                    material_type: "opaque-test/v1".into(),
+                    public_config: json!({}),
+                }
+            }
+            _ => {
+                r.access.usage = CredentialUsage::Extension {
+                    consumer_id: "application-test".into(),
+                    material_type: "foreign/v1".into(),
+                    public_config: json!({}),
+                }
+            }
+        }
+        assert!(
+            issuer.seal_for_consumer(r, &consumer).await.is_err(),
+            "case {case}"
+        );
+    }
+}
+
 async fn opened(
     adapter: &RecipientKeyEnvelope,
     access: &CredentialAccess,

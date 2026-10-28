@@ -57,6 +57,10 @@ pub use provider_connections::{
 };
 use provider_connections::{list_executable_models, list_provider_connections};
 
+mod credential_requests;
+use credential_requests::ListCredentialsQuery;
+pub use credential_requests::{CooldownRequest, ResolveProfileRequest, ValidateCredentialRequest};
+
 mod credential_wire;
 pub use credential_wire::{
     ArchiveCredentialRequest, CredentialSourceView, EnterCredentialRequest, RotateCredentialRequest,
@@ -968,20 +972,6 @@ async fn credential_in_scope(
     Ok(source)
 }
 
-/// A cooldown signal an operator (or an external rate-limit integration) records
-/// against a credential source. `kind` maps to a failure
-/// [`Disposition`](awaken_agent_contract::resilience::Disposition): `quota` cools
-/// until `retry_after_secs` (or a default window); `exhausted` cools until cleared;
-/// `available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on
-/// availability (they are retry/next-binding decisions, not identity cooldowns).
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CooldownRequest {
-    kind: String,
-    #[serde(default)]
-    retry_after_secs: Option<u64>,
-}
-
 async fn cooldown_credential(
     State(state): State<AdminState>,
     RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
@@ -1186,13 +1176,6 @@ async fn get_profile(
     .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
     .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
     Ok(Json(profile))
-}
-
-/// Resolve an authored profile within a workspace's credential scope.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ResolveProfileRequest {
-    workspace_id: String,
 }
 
 /// Resolve an authored profile: the same resolution as `inference/resolve`, but the
@@ -1434,19 +1417,6 @@ async fn archive_credential(
     .await
     .map_err(|e| cred_problem(&e, &rid))?;
     Ok(Json(source.into()))
-}
-
-/// Live-validate a credential against a model's resolved provider endpoint.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ValidateCredentialRequest {
-    workspace_id: String,
-    #[serde(default)]
-    model_id: Option<String>,
-    /// Generic hosted-governance validation mode. The durable source id is the
-    /// path identity, so this field is mutually exclusive with `model_id`.
-    #[serde(default)]
-    provider_ref: Option<String>,
 }
 
 /// The secret-free result of a live credential probe.
@@ -1744,18 +1714,6 @@ async fn get_credential(
     )
     .await
     .map(|source| Json(source.into()))
-}
-
-#[derive(serde::Deserialize)]
-struct ListCredentialsQuery {
-    #[serde(default)]
-    workspace_id: String,
-    #[serde(default)]
-    provider_ref: Option<String>,
-    #[serde(default)]
-    idempotency_key: Option<String>,
-    #[serde(default)]
-    hosted_only: bool,
 }
 
 async fn list_credentials(

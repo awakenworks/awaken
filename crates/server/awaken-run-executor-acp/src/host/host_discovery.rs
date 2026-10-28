@@ -234,18 +234,15 @@ impl AcpProcessProbe for TokioAcpProcessProbe {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        for key in ["PATH", "HOME"] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        let output = tokio::time::timeout(self.timeout, command.output())
+        super::npm_launch::inherit_host_environment(&mut command);
+        let output = super::process_output::output(&mut command, self.timeout)
             .await
-            .map_err(|_| AcpProcessProbeError::TimedOut {
-                executable: probe.executable.to_string(),
-            })?
             .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
+                if error.kind() == std::io::ErrorKind::TimedOut {
+                    AcpProcessProbeError::TimedOut {
+                        executable: probe.executable.to_string(),
+                    }
+                } else if error.kind() == std::io::ErrorKind::NotFound {
                     AcpProcessProbeError::ExecutableNotFound {
                         executable: probe.executable.to_string(),
                     }
@@ -256,7 +253,7 @@ impl AcpProcessProbe for TokioAcpProcessProbe {
                 }
             })?;
         Ok(AcpProbeOutput {
-            exit_code: output.status.code(),
+            exit_code: output.exit_code,
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })

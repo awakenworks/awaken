@@ -253,7 +253,7 @@
     "awaken-config-service::registration_reconciliation.rs::reconcile_registrations_for_execution_workspace": 158,
     "awaken-control::authz.rs::management_guard": 186,
     "awaken-control::authz/profiles.rs::workspace_authorization_profile": 198,
-    "awaken-control::component.rs::build_control_component": 256,
+    "awaken-control::component.rs::build_control_component": 255,
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,
     "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 334,

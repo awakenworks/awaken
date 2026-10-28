@@ -12,6 +12,8 @@ use awaken_acp_contract::{
     NegotiatedAcpCapabilities,
 };
 use awaken_agent_channel::{AgentChannel, SplitChannel};
+use awaken_local_process::LocalProcess;
+use awaken_provisioning_contract::{ProcessHandle, Signal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpCapabilityState {
@@ -118,21 +120,14 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        for key in ["PATH", "HOME"] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        let mut child = command
-            .spawn()
+        super::npm_launch::inherit_host_environment(&mut command);
+        let mut child = LocalProcess::spawn(&mut command)
             .map_err(|error| format!("spawn ACP capability probe `{program}`: {error}"))?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| "ACP capability probe has no stdout".to_string())?;
         let stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| "ACP capability probe has no stdin".to_string())?;
         let mut channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
         let config = AcpCapabilityProbeConfig {
@@ -147,7 +142,7 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
         .map_err(|_| format!("ACP capability probe `{program}` timed out"))
         .and_then(|result| result);
         drop(channel);
-        let _ = child.kill().await;
+        let _ = child.signal(Signal::Kill).await;
         let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
         negotiated
     }

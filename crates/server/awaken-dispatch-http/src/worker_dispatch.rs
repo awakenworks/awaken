@@ -57,11 +57,13 @@ use registry_endpoints::{
 mod run_dispatch_endpoints;
 mod session_coordination;
 mod session_realization;
+mod session_requests;
 mod terminal_repository_publication;
 
 /// Private Worker transport DTO. The retry hint is deliberately absent from
 /// the public ingress and Anthropic Managed API contracts.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RelinquishReq {
     claim: RunClaim,
     #[serde(default)]

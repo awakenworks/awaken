@@ -5,11 +5,13 @@
 //!
 //! Protocol supervisors own *when* to terminate. This adapter owns the
 //! OS-specific termination boundary: Unix targets the private process group;
-//! other platforms currently target the direct child only.
+//! Windows owns a kill-on-close Job; other platforms target the direct child.
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+#[cfg(not(windows))]
+use tokio::process::Child;
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 /// Await a process through its provider-owned, nonblocking status port.
@@ -56,6 +58,8 @@ pub fn bubblewrap_seccomp_args() -> Vec<String> {
 pub mod podman;
 
 mod execution_identity;
+#[cfg(windows)]
+mod windows_job;
 pub use execution_identity::{ProcessExecutionIdentity, ProcessNamespaceIdentity};
 
 /// One process-lifetime profile shared by Namespace and host-view rendering.
@@ -169,7 +173,10 @@ pub struct LocalProcess {
     process_group: Option<nix::unistd::Pid>,
     #[cfg(unix)]
     graceful_group: Option<nix::unistd::Pid>,
+    #[cfg(not(windows))]
     child: Mutex<Child>,
+    #[cfg(windows)]
+    child: Mutex<windows_job::OwnedChild>,
 }
 
 impl LocalProcess {
@@ -177,11 +184,15 @@ impl LocalProcess {
     /// Callers configure argv, cwd, environment and pipes, but cannot bypass or
     /// subsequently overwrite the private process-group and drop policy.
     ///
-    /// Drop requests direct-child termination; it is NOT an owner-crash or
-    /// whole-tree quiescence guarantee. In particular SIGKILL does not run Drop.
+    /// Windows assigns the suspended child to a private kill-on-close Job before
+    /// any workload executes. Unix Drop requests direct-child termination; it
+    /// is not an owner-crash guarantee, since SIGKILL does not run Drop.
     pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
         configure_process_group(command);
         command.kill_on_drop(true);
+        #[cfg(windows)]
+        let child = windows_job::spawn(command)?;
+        #[cfg(not(windows))]
         let child = command.spawn()?;
         let pid = child.id();
         Ok(Self {
@@ -197,11 +208,25 @@ impl LocalProcess {
     /// Detach a configured pipe before sharing the lifecycle handle. There is
     /// deliberately no raw Child accessor or constructor: ownership stays here.
     pub fn take_stdin(&mut self) -> Option<ChildStdin> {
-        self.child.get_mut().stdin.take()
+        #[cfg(windows)]
+        {
+            self.child.get_mut().stdin().take()
+        }
+        #[cfg(not(windows))]
+        {
+            self.child.get_mut().stdin.take()
+        }
     }
 
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.child.get_mut().stdout.take()
+        #[cfg(windows)]
+        {
+            self.child.get_mut().stdout().take()
+        }
+        #[cfg(not(windows))]
+        {
+            self.child.get_mut().stdout.take()
+        }
     }
     /// Bind the private session group reported by an owned isolating launcher.
     /// The caller must obtain this identity from that launcher's private control
@@ -243,7 +268,14 @@ impl LocalProcess {
     }
 
     pub fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.child.get_mut().stderr.take()
+        #[cfg(windows)]
+        {
+            self.child.get_mut().stderr().take()
+        }
+        #[cfg(not(windows))]
+        {
+            self.child.get_mut().stderr.take()
+        }
     }
 }
 
@@ -279,12 +311,20 @@ impl ProcessHandle for LocalProcess {
     }
 
     async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError> {
-        self.child
-            .lock()
-            .await
+        let mut child = self.child.lock().await;
+        let status = child
             .try_wait()
-            .map(|status| status.map(exit))
-            .map_err(|error| SandboxError::backend("poll", error))
+            .map_err(|error| SandboxError::backend("poll", error))?;
+        #[cfg(windows)]
+        if status.is_some() {
+            // A natural leader exit must not leave its owned descendants
+            // running. This requests teardown; exit still observes the leader,
+            // as in the existing ProcessHandle contract.
+            child
+                .start_kill()
+                .map_err(|error| SandboxError::backend("poll_job", error))?;
+        }
+        Ok(status.map(exit))
     }
 
     async fn signal(&self, signal: Signal) -> Result<(), SandboxError> {
@@ -305,7 +345,18 @@ impl ProcessHandle for LocalProcess {
             };
             return group_signal_result(nix::sys::signal::killpg(group, signal));
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let _ = signal;
+            // Windows has no POSIX TERM here; preserve forceful cancellation,
+            // extending its scope to the exact owned Job rather than one child.
+            self.child
+                .lock()
+                .await
+                .start_kill()
+                .map_err(|error| SandboxError::backend("signal_job", error))
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = signal;
             self.child
