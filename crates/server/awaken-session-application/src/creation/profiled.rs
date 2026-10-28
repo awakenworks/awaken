@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use awaken_session_configuration_contract::mcp::McpAttachmentOrigin;
 use awaken_session_configuration_contract::{
     ApplicationOriginBinding, ControlSessionCreationInputs, SessionContextSeed,
     SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
@@ -18,8 +17,8 @@ use super::SessionCreationCompletion;
 use crate::run_admission::preparation_error;
 use crate::{
     ConfiguredSessionRepository, CreateSessionCommand, McpAttachmentCandidate,
-    McpAttachmentCandidateTarget, SessionCreationCommands, SessionCreationError,
-    SessionRepositoryOwner, SessionRepositoryResourceInput,
+    SessionCreationCommands, SessionCreationError, SessionRepositoryOwner,
+    SessionRepositoryResourceInput,
 };
 
 /// Protocol-independent request to create a Session from one published Agent
@@ -63,6 +62,31 @@ pub struct CreateProfiledSessionCommand {
 pub struct ProfiledSessionRepositoryInput {
     pub binding_id: awaken_resource_contract::BindingId,
     pub repository: SessionRepositoryResourceInput,
+}
+
+/// Supply already selected values to the canonical pre-insert presentation
+/// recorder. No catalog lookup, execution selection or compatibility fallback.
+fn profiled_creation_presentation(
+    control: &ControlSessionCreationInputs,
+    profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
+    multiagent: Option<awaken_session_configuration_contract::SessionAgentRoster>,
+) -> awaken_session_configuration_contract::SessionAgentConfiguration {
+    use awaken_session_configuration_contract::SessionModelSource;
+    let mut configuration = crate::agent_configuration::agent_configuration_from_profile(
+        &control.agent_id,
+        profile.cloned().unwrap_or_default(),
+    );
+    configuration.model.model_id = control.model.clone();
+    if let Some(selected) = &control.model_override {
+        configuration.model.inference = selected.inference.clone();
+        configuration.model.source = SessionModelSource::Override;
+    } else if profile.is_none_or(|value| value.model.is_none()) {
+        configuration.model.inference = Default::default();
+        configuration.model.source = SessionModelSource::Default;
+    }
+    // The pre-insert recorder supplies the root's canonical tools and MCP set.
+    configuration.multiagent = multiagent;
+    configuration
 }
 
 fn profiled_repository_attachment(
@@ -283,6 +307,14 @@ impl SessionCreationCommands {
                     .map(str::to_owned)
             });
         let capabilities = queries.capabilities_for(&session_id)?;
+        let multiagent = admission.enter(|| {
+            crate::agent_configuration::resolve_session_multiagent(
+                profile.as_ref(),
+                &capabilities,
+                None,
+                |id, revision| queries.selected_session_profile(&owner_scope, id, revision),
+            )
+        })?;
         let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
         let inherited_tools =
             crate::tool_compilation::inherit_profile_tools(capability_tools, profile.as_ref());
@@ -292,34 +324,10 @@ impl SessionCreationCommands {
             .map(|profile| profile.skills.clone())
             .unwrap_or_default();
         self.validate_session_skill_total(&owner_scope, &agent_id, profile.as_ref(), &skills)?;
-        mcp_candidates.extend(
-            profile
-                .as_ref()
-                .into_iter()
-                .flat_map(|profile| &profile.mcp_servers)
-                .map(|server| {
-                    let published_credential = match (
-                        server.credential_source_id.as_ref(),
-                        server.credential_revision,
-                    ) {
-                        (None, None) => Ok(None),
-                        (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
-                            Ok(Some((id.clone(), revision)))
-                        }
-                        _ => Err(RunError::bad_request(
-                            "published MCP credential pin is incomplete",
-                        )),
-                    }?;
-                    Ok(McpAttachmentCandidate {
-                        name: server.name.clone(),
-                        target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
-                        prompts_as_skills: server.prompts_as_skills,
-                        published_credential,
-                        origin: McpAttachmentOrigin::Agent,
-                    })
-                })
-                .collect::<Result<Vec<_>, RunError>>()?,
-        );
+        mcp_candidates.extend(super::request::initial_mcp_candidates(
+            profile.as_ref(),
+            None,
+        )?);
         let (mcp_candidates, mcp_targets) =
             crate::SessionCredentials::normalize_mcp_candidate_targets(mcp_candidates)?;
         let mut environment = self
@@ -458,7 +466,9 @@ impl SessionCreationCommands {
                 environment,
                 runtime_placement: self.runtime_placement(),
                 agent_id,
-                agent_revision: profile.as_ref().map(|profile| profile.source_revision),
+                agent_revision: profile.as_ref().and_then(|profile| {
+                    (profile.source_revision > 0).then_some(profile.source_revision)
+                }),
                 model,
                 execution_model_ref,
                 model_override,
@@ -466,15 +476,10 @@ impl SessionCreationCommands {
                 runtime: published_backend_ref,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 delegate_ids: profile
-                    .as_ref()
-                    .map(|profile| {
-                        profile
-                            .delegates
-                            .iter()
-                            .map(|delegate| delegate.agent_id.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                    .iter()
+                    .flat_map(|profile| &profile.delegates)
+                    .map(|delegate| delegate.agent_id.clone())
+                    .collect(),
                 toolsets: tools.toolsets.clone(),
                 mounts,
                 env,
@@ -484,9 +489,11 @@ impl SessionCreationCommands {
                 initial_mcp,
             },
         };
+        let configuration =
+            profiled_creation_presentation(&intent.control, profile.as_ref(), multiagent);
         self.create_session_with_completion(
             CreateSessionCommand {
-                initial_agent_configuration: None,
+                initial_agent_configuration: Some(Box::new(configuration)),
                 owner_scope,
                 session_id,
                 intent,
