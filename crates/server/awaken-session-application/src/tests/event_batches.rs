@@ -35,8 +35,8 @@ use awaken_session_execution_contract::{
 use super::*;
 
 #[derive(Default)]
-struct EventBatchRuntime {
-    admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+pub(super) struct EventBatchRuntime {
+    pub(super) admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     reservation_barriers: Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
     reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
     projected_resources: Mutex<Option<(u64, crate::session_resource::ResolvedSessionResources)>>,

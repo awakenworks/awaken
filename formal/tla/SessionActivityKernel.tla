@@ -23,16 +23,22 @@ Init ==
     /\ kSettledActivities = {}
     /\ kNextActivityEpoch = 1
 
-Open(activity) ==
+\* The exact form also serves root-CAS compositions: policy-only mutations may
+\* advance the root revision without issuing an activity. The sole receipt
+\* update accepts that later coordinate without introducing another clock.
+OpenAt(activity, epoch) ==
     /\ activity \in ActivityIds
     /\ kActivityEpoch[activity] = 0
-    /\ kNextActivityEpoch <= MaxActivityEpoch
+    /\ epoch \in kNextActivityEpoch..MaxActivityEpoch
     /\ kActivityEpoch' =
-         [kActivityEpoch EXCEPT ![activity] = kNextActivityEpoch]
+         [kActivityEpoch EXCEPT ![activity] = epoch]
     /\ kActiveActivityEpochs' =
-         kActiveActivityEpochs \cup {kNextActivityEpoch}
-    /\ kNextActivityEpoch' = kNextActivityEpoch + 1
+         kActiveActivityEpochs \cup {epoch}
+    /\ kNextActivityEpoch' = epoch + 1
     /\ UNCHANGED kSettledActivities
+
+\* Expansion is exactly the original Next-epoch action and standalone Spec.
+Open(activity) == OpenAt(activity, kNextActivityEpoch)
 
 ReplayOpen(activity) ==
     /\ activity \in ActivityIds

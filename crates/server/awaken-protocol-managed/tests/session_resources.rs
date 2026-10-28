@@ -12,6 +12,8 @@ use awaken_session_types::SessionId;
 use std::sync::Arc;
 #[path = "session_resources/accepting_fake.rs"]
 mod accepting_fake;
+#[path = "session_resources/capability_capture.rs"]
+mod capability_capture;
 #[path = "session_resources/creation_inputs.rs"]
 mod creation_inputs;
 #[path = "session_resources/input_mounts.rs"]

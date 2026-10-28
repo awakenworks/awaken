@@ -149,12 +149,22 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
         )
         .await
         .unwrap();
+    // Q2: this paused exact loser must use SnapshotCommit's original reload.
+    // Reuse the existing cut: the first get is allowed, a second get fails.
+    // The shared replay operation receives a ready snapshot, so that second
+    // read must remain unconsumed. No new repository or fault rule is added.
+    faulting.fail_get_after_next_reload_once();
     pause.release.notify_one();
     let (loser, losing_epoch) = tokio::time::timeout(std::time::Duration::from_secs(5), delayed)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
+    let unconsumed_extra_read = faulting.fail_get_on_call_once.swap(0, Ordering::SeqCst);
+    assert_ne!(
+        unconsumed_extra_read, 0,
+        "Q2 no extra root get after SnapshotCommit reload"
+    );
     assert_eq!(losing_epoch, epoch, "R2 original receipt epoch");
     assert_eq!(loser, winner, "R2 durable winner, not detached candidate");
     let (records, unknown) = winner.run_activities().unwrap();

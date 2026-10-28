@@ -5,14 +5,36 @@
 //! Skill bindings and the provider-effective Sandbox layout gate.
 
 use awaken_agent_contract::McpTarget;
-use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_configuration_contract::{
-    is_native_session_runtime, validate_sandbox_provisioning_runtime,
+    SessionModelOverride, is_native_session_runtime, validate_sandbox_provisioning_runtime,
 };
 use awaken_session_types::{RunError, SessionRuntimePlacement};
 
 use crate::{ResolvedSessionEnvironment, SessionCreationCommands, runtime_placement_for_topology};
+
+/// Project already selected route facts. Each caller supplies its original
+/// profile-backend spelling; a complete override always owns both coordinates
+/// verbatim, without inheriting or normalizing either profile value.
+pub(super) fn creation_model_route(
+    model_override: Option<&SessionModelOverride>,
+    profile_execution_model_ref: Option<&str>,
+    profile_backend_ref: Option<&str>,
+    selected_model: &str,
+) -> (String, Option<String>) {
+    if let Some(publication) = model_override.and_then(|selected| selected.publication.as_deref()) {
+        let (_, model, backend) = publication.primary.binding().identity();
+        return (model.to_owned(), Some(backend.to_owned()));
+    }
+    (
+        profile_execution_model_ref
+            .unwrap_or(selected_model)
+            .to_owned(),
+        profile_backend_ref
+            .filter(|backend| !backend.trim().is_empty())
+            .map(str::to_owned),
+    )
+}
 
 impl SessionCreationCommands {
     /// Exact immutable fact written into a newly compiled Session baseline.
@@ -308,23 +330,6 @@ impl SessionCreationCommands {
         Ok(())
     }
 
-    pub fn validate_session_skill_total(
-        &self,
-        workspace_id: &str,
-        root_agent_id: &str,
-        root_view: Option<&ExecutableAgentSessionProfile>,
-        root_skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<(), RunError> {
-        crate::runtime_commands::validate_session_skill_total(
-            &self.queries,
-            workspace_id,
-            root_agent_id,
-            root_view,
-            root_skills,
-            &[],
-        )
-    }
-
     pub async fn runtime_owns_thread(&self, thread: &str) -> Result<bool, RunError> {
         let thread_reads = self.thread_reads.as_ref();
 
@@ -344,5 +349,86 @@ impl SessionCreationCommands {
     #[must_use]
     pub fn model(&self) -> String {
         self.default_model.clone()
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    #[test]
+    fn creation_route_selection_preserves_override_priority_and_entry_backend_spelling() {
+        // Causes: C1 no override/equal override without publication/complete
+        // override; C2 no profile execution ref/Some empty/Some value; C3 profile
+        // backend absent/empty/all whitespace/padded/nonempty; C4 Managed raw
+        // versus Profiled trim projection. Decision table: 3x3x5x2=90 rows.
+        // R1 complete override => its exact model AND backend, never a mixture;
+        // R2 other C1 => profile execution ref including Some empty, else selected
+        // default. R3 blank profile backend => None; R4 padded profile backend
+        // => original raw Managed text versus trimmed Profiled text. No errors,
+        // I/O, parsing or runtime selection belong to this pure projection.
+        // Constraint: ModelBinding's sole parser rejects padded coordinates;
+        // an invalid padded override cannot be fabricated as a publication.
+        use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+        let binding = ModelBinding::parse("override-account", "override-upstream", "acp:Codex")
+            .expect("valid original override identity");
+        assert!(
+            ModelBinding::parse("override-account", "override-upstream", " acp:Codex ").is_err()
+        );
+        let publication = awaken_session_configuration_contract::SessionModelPublication {
+            primary: ResolvedModelCandidate::host(binding),
+            candidates: Vec::new(),
+        };
+        let equal = SessionModelOverride {
+            publication: None,
+            inference: Default::default(),
+        };
+        let complete = SessionModelOverride {
+            publication: Some(Box::new(publication)),
+            inference: Default::default(),
+        };
+        let mut rows = 0;
+        for (selected, override_route) in [
+            (None, None),
+            (Some(&equal), None),
+            (
+                Some(&complete),
+                Some(("override-upstream", Some("acp:Codex"))),
+            ),
+        ] {
+            for (execution_ref, inherited_model) in [
+                (None, "selected-default"),
+                (Some(""), ""),
+                (Some("profile-execution"), "profile-execution"),
+            ] {
+                for (raw_backend, managed_backend, profiled_backend) in [
+                    (None, None, None),
+                    (Some(""), None, None),
+                    (Some(" \t "), None, None),
+                    (Some(" acp:codex "), Some(" acp:codex "), Some("acp:codex")),
+                    (Some("native"), Some("native"), Some("native")),
+                ] {
+                    for (entry, input, expected_backend) in [
+                        ("Managed", raw_backend, managed_backend),
+                        ("Profiled", raw_backend.map(str::trim), profiled_backend),
+                    ] {
+                        let expected =
+                            override_route.unwrap_or((inherited_model, expected_backend));
+                        assert_eq!(
+                            creation_model_route(
+                                selected,
+                                execution_ref,
+                                input,
+                                "selected-default"
+                            ),
+                            (expected.0.to_owned(), expected.1.map(str::to_owned)),
+                            "R1-R4 {entry}, execution={execution_ref:?}, backend={raw_backend:?}"
+                        );
+                        rows += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(rows, 90, "every constrained decision-table row");
     }
 }

@@ -152,11 +152,13 @@ impl SessionCoordination {
                 "Session activity operation identity is required",
             ));
         }
+        let activity_error =
+            |error| crate::SessionActivities::activity_operation_error(operation_id, error);
         if let Some(committed) = self
             .activities
             .recover_activity_for_operation(session_id, operation_id, Some(source))
             .await
-            .map_err(crate::SessionActivityError::run_error)?
+            .map_err(activity_error)?
         {
             return Ok(committed);
         }
@@ -165,7 +167,7 @@ impl SessionCoordination {
             .owner(session_id)
             .await
             .map_err(crate::SessionActivityError::mutation)
-            .map_err(crate::SessionActivityError::run_error)?;
+            .map_err(activity_error)?;
         self.run_admissions
             .admit_run_session(&owner_scope, session_id.as_str(), agent_id)
             .await?;
@@ -179,7 +181,7 @@ impl SessionCoordination {
                 Some(source),
             )
             .await
-            .map_err(crate::SessionActivityError::run_error)
+            .map_err(activity_error)
     }
 
     async fn recover_coordinated_admission(
@@ -669,7 +671,9 @@ impl SessionAgentCoordination for SessionCoordination {
                     Some((&thread_id, run_id)),
                 )
                 .await
-                .map_err(crate::SessionActivityError::run_error),
+                .map_err(|error| {
+                    crate::SessionActivities::activity_operation_error(&operation_id, error)
+                }),
         };
         match admitted {
             Ok(None) => Ok(SessionRunActivityAdmission::Rejected),
