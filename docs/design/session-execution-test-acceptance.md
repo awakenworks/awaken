@@ -68,6 +68,9 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 
 ## 执行证据和签收规则
 
+以下记录要求用于 CI、发布和正式验收，由对应工具自动生成。日常直接运行
+`cargo check`、`cargo test` 不强制生成、保留或提交这些记录。
+
 证据分四层：测试声明存在、实际执行通过、断言覆盖条款、条款在声明切片完成验收。前一层不自动推出后一层。`current_subset`、`historical_subset` 和套件计数都是证明范围，不是整个场景已验收。
 
 每次资格记录至少包含：源码 SHA/tree 及未提交差异摘要、测试和配套脚本输入、OS/target、features/编译器/链接器、backend/fixture/companion、完整 argv 和环境变量名称（不记录凭据值）、列出与实际执行的具名病例及 occurrence、exit/result/duration/skip、stdout/harness 日志摘要、预期负控、清理结果及源码前后身份。期望失败的负控和子用例必须保留原退出码及预期结果。
