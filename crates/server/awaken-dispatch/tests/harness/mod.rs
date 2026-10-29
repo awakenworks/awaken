@@ -18,6 +18,7 @@
 pub mod attempt_binding;
 pub mod attempt_retirement;
 pub mod capacity_deferral;
+pub mod execution_observation;
 #[cfg(feature = "test-support")]
 mod flaky_capabilities;
 
