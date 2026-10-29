@@ -526,10 +526,9 @@ impl ManagedState {
                         record.session.agent.model.inference_geo,
                     )
                 };
-                // The owner index is written together with the session record
-                // above, so a cached session always has one. Treat a missing
-                // owner as an unknown session rather than admitting the event
-                // against a compiled-in tenant's Agent availability.
+                // Every cached record carries its durable owner. An evicted
+                // record cannot supply authority: refuse it as unknown before
+                // checking the owning Workspace's Agent availability.
                 let (access, owner_scope) = owned_session_access(self, session_id).await?;
                 if self.roles.events.agent_unavailable(&owner_scope, &agent_id) {
                     return Err(StateError::Run(RunError::bad_request(format!(

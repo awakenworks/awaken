@@ -6,6 +6,12 @@
 use super::*;
 use awaken_session_application::SessionRecoveryPurpose;
 
+#[cfg(test)]
+pub(super) struct ColdPublicationPause {
+    pub(super) published: tokio::sync::oneshot::Sender<()>,
+    pub(super) resume: tokio::sync::oneshot::Receiver<()>,
+}
+
 impl ManagedState {
     pub(super) async fn project_replayed_session(
         &self,
@@ -120,6 +126,7 @@ impl ManagedState {
             }
         };
         let record = SessionRecord::new(
+            owner_scope,
             agent_id,
             session,
             session_revision,
@@ -132,11 +139,16 @@ impl ManagedState {
             .unwrap()
             .entry(id.to_string())
             .or_insert(record);
-        self.owners
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(owner_scope);
+        // The lock publishes owner and content together; no reader can observe
+        // a warm record while its authorization projection is still missing.
+        #[cfg(test)]
+        {
+            let pause = self.cold_publication_pause.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause.published.send(()).expect("cold publication observer");
+                pause.resume.await.expect("resume cold publication");
+            }
+        }
         Ok(())
     }
 
@@ -595,7 +607,11 @@ mod tests {
                     !state.sessions.lock().unwrap().contains_key(id),
                     "{rule}/E2 no record"
                 );
+                assert!(state.owner_scope(id).is_none(), "{rule}/E2 no owner");
             }
         }
     }
 }
+
+#[cfg(test)]
+mod cache_publication_tests;
