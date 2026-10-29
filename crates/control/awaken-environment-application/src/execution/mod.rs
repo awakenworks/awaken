@@ -87,14 +87,14 @@ impl EnvironmentExecutionApplication {
         self
     }
 
-    /// Read exact incarnation-qualified WorkQueue occupancy across every
-    /// Environment. Expired but unreleased claims still count; the caller must
-    /// preserve an error as unavailable rather than infer an empty owner.
-    pub async fn has_worker_owner_claims(
+    /// Observe the original WorkQueue's incarnation-qualified Worker claims.
+    /// Expired but unreleased claims still count. A read failure stays
+    /// unavailable; this capability grants no claim or mutation operation.
+    #[must_use]
+    pub fn worker_lease_observation(
         &self,
-        worker_owner: &str,
-    ) -> Result<bool, WorkQueueError> {
-        self.work.observation.has_owner_claims(worker_owner).await
+    ) -> Arc<dyn awaken_executable_environment_contract::WorkerLeaseObservation> {
+        self.work.observation()
     }
 
     pub async fn get(

@@ -1,3 +1,6 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: This complete root read consumes positive no-Create history or Worker source reports;
+// @formal reason: the Worker-domain owner separately gates physical/Work admission. No root or receipt is written.
 //! The Worker-owned Session realization read.
 //!
 //! One complete, fail-closed read of the Sessions whose realization lease a
@@ -166,11 +169,30 @@ impl SessionWorkerOccupancy {
                             | SessionExecutionState::Running
                             | SessionExecutionState::Rescheduling
                     )
-                    || !matches!(
-                        session.environment,
-                        SessionEnvironmentState::Resident { .. }
-                    )
                 {
+                    return Ok(None);
+                }
+                if awaken_session_state_contract::session_has_no_create_evidence(&session)
+                    && session.execution == SessionExecutionState::Idle
+                    && !session.has_active_activities()
+                    && session.running_interval.is_none()
+                    && lease.expires_at_unix_ms == 0
+                    && session.resources.pending.is_none()
+                    && !session.resources.has_references()
+                {
+                    // Positive write-ahead history, not a missing binding. A
+                    // closed assignment cannot admit Create, and the domain
+                    // owner requires Registry drain and zero physical/Work
+                    // admission before using this read. Keep occupancy/root
+                    // ownership, but there is no original provider source.
+                    // The terminal source-Dispatch port requires a frozen
+                    // cleanup scope and cannot qualify this live root.
+                    continue;
+                }
+                if !matches!(
+                    session.environment,
+                    SessionEnvironmentState::Resident { .. }
+                ) {
                     return Ok(None);
                 }
                 false

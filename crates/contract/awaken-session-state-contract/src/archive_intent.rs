@@ -14,19 +14,19 @@ use crate::{
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::BindingId;
 
-/// A terminal fence plus modern, explicitly empty materialization history
-/// proves that no Environment Create was admitted, including model-only
-/// lazy Sessions. Missing historical facts do not prove absence.
+/// Modern, explicitly empty materialization history proves that no Environment
+/// Create was admitted, including model-only lazy Sessions. This is a historical
+/// fact, not a fence: terminal cleanup still requires terminality, and live
+/// Worker retirement separately requires closed assignment and work admission.
+/// Missing historical facts do not prove absence.
 #[must_use]
-pub fn session_has_terminal_no_create_evidence(session: &PersistedSession) -> bool {
-    session.is_terminal()
-        && matches!(
-            session.environment,
-            crate::SessionEnvironmentState::Unmaterialized
-        )
-        && session
-            .environment_materialization()
-            .is_some_and(crate::SessionEnvironmentMaterialization::is_empty)
+pub fn session_has_no_create_evidence(session: &PersistedSession) -> bool {
+    matches!(
+        session.environment,
+        crate::SessionEnvironmentState::Unmaterialized
+    ) && session
+        .environment_materialization()
+        .is_some_and(crate::SessionEnvironmentMaterialization::is_empty)
 }
 
 /// The existing archive entrances, selected and rechecked by the root mutation.
