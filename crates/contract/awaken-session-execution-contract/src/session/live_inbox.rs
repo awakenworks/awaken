@@ -53,7 +53,7 @@ pub enum LiveInboxError {
 }
 
 /// Protocol-neutral application failure for the editable in-flight inbox.
-/// Wire adapters decide how these three domain outcomes map to their envelopes.
+/// Wire adapters decide how these four domain outcomes map to their envelopes.
 #[derive(Debug, thiserror::Error)]
 pub enum LiveInboxApplicationError {
     #[error("session not found")]
@@ -62,6 +62,10 @@ pub enum LiveInboxApplicationError {
     Edit(#[from] LiveInboxError),
     #[error("live inbox authority unavailable: {detail}")]
     AuthorityUnavailable { detail: String },
+    #[error("live inbox authority state is invalid: {detail}")]
+    /// The authoritative Session state violates a durable-state invariant.
+    /// An inbox edit cannot repair it; callers must preserve a permanent failure.
+    InvalidSessionState { detail: String },
 }
 
 /// Driving port for Awaken's live-inbox protocol. The Session application is

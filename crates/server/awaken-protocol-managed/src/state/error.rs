@@ -82,7 +82,26 @@ impl From<awaken_session_state_contract::SessionRepositoryError> for StateError 
                 message,
             ) => Self::Run(RunError::unavailable(message)),
             awaken_session_state_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
-            error => Self::Run(RunError::internal(error.to_string())),
+            error => Self::Run(RunError::classified(
+                "session_repository_invalid",
+                error.to_string(),
+            )),
+        }
+    }
+}
+
+// Preserve the application classification at the protocol boundary. Keeping
+// this conversion beside the direct repository conversion makes every caller
+// use the same typed adapter instead of an ad hoc transport decision.
+impl From<awaken_session_application::SessionMutationError> for StateError {
+    fn from(error: awaken_session_application::SessionMutationError) -> Self {
+        use awaken_session_application::SessionMutationError;
+        match error {
+            SessionMutationError::NotFound => Self::NotFound,
+            SessionMutationError::Conflict => Self::Conflict,
+            SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
+            SessionMutationError::Unavailable(message) => Self::Run(RunError::unavailable(message)),
+            error @ SessionMutationError::Internal(_) => Self::Run(error.into()),
         }
     }
 }

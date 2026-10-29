@@ -63,17 +63,11 @@ pub(crate) fn unavailable(error: impl std::fmt::Display) -> SessionRealizationCo
 pub(crate) fn repository_control(
     error: SessionRepositoryError,
 ) -> SessionRealizationControlFailure {
-    match error {
-        SessionRepositoryError::NotFound => SessionRealizationControlFailure::NotFound,
-        error => unavailable(error),
-    }
+    mutation_control(error.into())
 }
 
 pub(crate) fn mutation_control(error: SessionMutationError) -> SessionRealizationControlFailure {
-    match error {
-        SessionMutationError::NotFound => SessionRealizationControlFailure::NotFound,
-        error => unavailable(error),
-    }
+    error.into()
 }
 
 pub(crate) fn validate_realization_target(

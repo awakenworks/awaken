@@ -290,7 +290,7 @@ impl SessionLifecycle {
                 .frozen_baseline()
                 .map(|baseline| baseline.execution_model_ref.clone())
                 .ok_or_else(|| {
-                    SessionMutationError::Unavailable(
+                    SessionMutationError::Internal(
                         "Session baseline is not frozen while settling budget".into(),
                     )
                 })?;
@@ -305,10 +305,10 @@ impl SessionLifecycle {
                 .max(usage.active_seconds);
             let mut usage_cursor =
                 ManagedBudgetUsageCursor::from_session_usage(&usage, Some(fallback_model.as_str()))
-                    .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+                    .map_err(|error| SessionMutationError::Internal(error.to_string()))?;
             usage_cursor.active_seconds = active_seconds;
             if !usage_cursor.is_at_least(&session.usage_cursor) {
-                return Err(SessionMutationError::Unavailable(
+                return Err(SessionMutationError::Internal(
                     "cumulative usage cannot move backwards".into(),
                 ));
             }
@@ -316,16 +316,16 @@ impl SessionLifecycle {
             let budget_usage_changed = session
                 .budget()
                 .reconcile_cumulative_usage(usage_cursor)
-                .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+                .map_err(|error| SessionMutationError::Internal(error.to_string()))?;
             let reached_now = was_admissible && !session.budget.can_admit_model_request();
             let reach_transition = if reached_now {
                 Some(
                     session
                         .budget()
                         .record_reach_transition()
-                        .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?
+                        .map_err(|error| SessionMutationError::Internal(error.to_string()))?
                         .ok_or_else(|| {
-                            SessionMutationError::Unavailable(
+                            SessionMutationError::Internal(
                                 "reached Session budget did not append transition provenance"
                                     .into(),
                             )

@@ -47,6 +47,8 @@ pub enum SessionActivityError {
     Conflict,
     #[error("Session activity persistence is unavailable: {0}")]
     Unavailable(String),
+    #[error("Session activity durable state is invalid: {0}")]
+    Internal(String),
 }
 
 use awaken_session_state_contract::SessionActivityAdmissionPlan as SessionActivityOpenPlan;
@@ -281,10 +283,11 @@ impl SessionActivityError {
         match error {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
-            SessionMutationError::IdempotencyMismatch => Self::Unavailable(
+            SessionMutationError::IdempotencyMismatch => Self::Internal(
                 "activity mutation idempotency key unexpectedly changed payload".into(),
             ),
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::Internal(message) => Self::Internal(message),
         }
     }
 
@@ -300,9 +303,13 @@ impl SessionActivityError {
                 "budget_reached",
                 "Session list-cost budget has been reached",
             ),
-            Self::EpochExhausted => RunError::internal("Session activity epoch is exhausted"),
+            Self::EpochExhausted => RunError::classified(
+                "session_activity_epoch_exhausted",
+                "Session activity epoch is exhausted",
+            ),
             Self::Conflict => RunError::unavailable("Session activity changed concurrently"),
             Self::Unavailable(message) => RunError::unavailable(message),
+            Self::Internal(message) => SessionMutationError::Internal(message).into(),
         }
     }
 }
@@ -370,7 +377,7 @@ impl SessionActivities {
             .map_err(SessionActivityError::mutation)?;
         match receipt {
             Some(receipt) if receipt.payload_hash != record.payload_hash => {
-                Err(SessionActivityError::Unavailable(
+                Err(SessionActivityError::Internal(
                     "Session activity operation id was reused with another payload".into(),
                 ))
             }
@@ -464,7 +471,7 @@ impl SessionActivities {
             Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                 return Err(SessionActivityError::NotFound);
             }
-            Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
+            Err(error) => return Err(SessionActivityError::mutation(repository_failure(error))),
         }
         self.ensure_activity_environment_resident(session_id)
             .await?;

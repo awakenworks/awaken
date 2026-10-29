@@ -44,7 +44,10 @@ pub use exclusion::{
 mod generation_authority;
 pub use generation_authority::realization_generation_authorizes;
 mod lease_receipt;
-pub use control_failure::{SessionRealizationControlDisposition, SessionRealizationControlFailure};
+pub use control_failure::{
+    SESSION_REALIZATION_NOT_READY_CODE, SessionRealizationControlDisposition,
+    SessionRealizationControlFailure,
+};
 mod effect_failure;
 pub use effect_failure::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,

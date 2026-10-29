@@ -1572,9 +1572,11 @@ fn mutation_run_error(error: SessionMutationError) -> RunError {
             RunError::unavailable("Session Event state changed concurrently")
         }
         SessionMutationError::IdempotencyMismatch => {
-            RunError::internal("Session Event mutation identity changed payload")
+            SessionMutationError::Internal("Session Event mutation identity changed payload".into())
+                .into()
         }
         SessionMutationError::Unavailable(message) => RunError::unavailable(message),
+        error @ SessionMutationError::Internal(_) => error.into(),
     }
 }
 
