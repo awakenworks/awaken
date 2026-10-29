@@ -1,0 +1,31 @@
+[package]
+name = "awaken-process-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Owned Windows process trees with independent control and observed quiescence"
+
+[package.metadata.awaken]
+api_snapshot = true
+api_snapshot_target = "x86_64-pc-windows-msvc"
+context = "shared"
+product = "sdk"
+bounded_context = "agent-runtime"
+layer = "infrastructure"
+authority = "native-process-win32"
+separation = "isolation"
+isolates = ["windows-sys"]
+
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "=10.0.1", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+tokio = { workspace = true, features = ["process", "time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Native calls are isolated here; the ordinary SDK and Worker crates retain
+# unsafe_code=forbid. Only this crate's private sys module permits unsafe.
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

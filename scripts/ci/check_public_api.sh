@@ -117,6 +117,7 @@ if ! metadata_json="$(cargo metadata --no-deps --format-version 1)"; then
   exit 1
 fi
 crates=$(printf '%s' "$metadata_json" | python3 scripts/ci/public_api_selection.py)
+snapshot_targets=$(printf '%s' "$metadata_json" | python3 scripts/ci/public_api_selection.py --targets)
 
 # A snapshot file for a crate that is not selected is an orphan: nothing checks
 # it, so it would silently rot while looking like a reviewed surface.
@@ -196,7 +197,15 @@ compute_stderr="$(mktemp)"
 trap 'rm -f "$compute_stderr"' EXIT
 for c in $compared_crates; do
   snap="public-api/$c.txt"
-  if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags 2>"$compute_stderr"); then
+  # Render platform-only SDK APIs for the same authored target on every host.
+  # Install its pinned nightly std component before this gate:
+  # rustup target add --toolchain "$PUBLIC_API_NIGHTLY" <target>
+  target_args=()
+  snapshot_target=$(printf '%s\n' "$snapshot_targets" | awk -v name="$c" '$1 == name {print $2}')
+  if [ -n "$snapshot_target" ]; then
+    target_args=(--target "$snapshot_target")
+  fi
+  if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags "${target_args[@]}" 2>"$compute_stderr"); then
     echo "✗ failed to compute public API for $c"
     # The reason is the actionable part (a missing build tool, a rustdoc error);
     # hiding it turned an environment fault into an unexplained gate failure.

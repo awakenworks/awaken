@@ -121,14 +121,16 @@ impl Tool for BashTool {
 }
 
 async fn discard_session(session: &mut Option<BashSession>) -> Result<(), ToolError> {
-    if let Some(mut previous) = session.take() {
+    if let Some(previous) = session.as_mut() {
+        // Keep cleanup ownership across cancellation or a refused exit proof.
+        // The next invocation must retry this fence before starting a shell.
+        previous.invalidated.store(true, Ordering::SeqCst);
         #[cfg(windows)]
         previous.child.shutdown().await.map_err(|error| {
             ToolError::DefinitiveFailure(format!("bash: stop process tree: {error}"))
         })?;
-        #[cfg(not(windows))]
-        let _ = &mut previous;
     }
+    *session = None;
     Ok(())
 }
 

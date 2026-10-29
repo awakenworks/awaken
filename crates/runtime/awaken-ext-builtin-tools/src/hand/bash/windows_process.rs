@@ -2,32 +2,32 @@
 // @formal reason: Private Windows process ownership for the existing Bash tool.
 // @formal reason: Native teardown is qualified by real descendant regression tests.
 //! A kill-on-close Job Object owns Bash and every descendant from spawn.
-use process_wrap::tokio::{ChildWrapper, CommandWrap, JobObject, KillOnDrop};
+use awaken_process_win32::{OwnedProcessTree, ProcessTreeControl};
 use std::io;
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
-type OwnedChild = Box<dyn ChildWrapper>;
+type OwnedChild = OwnedProcessTree;
 
 #[derive(Clone)]
-pub(crate) struct ProcessTree(Arc<Mutex<Option<OwnedChild>>>);
+pub(crate) struct ProcessTree {
+    child: Arc<Mutex<Option<OwnedChild>>>,
+    control: ProcessTreeControl,
+}
 
 impl ProcessTree {
     fn slot(&self) -> MutexGuard<'_, Option<OwnedChild>> {
         // This mutex holds only an owned native process capability. Taking it
         // or requesting termination cannot invalidate application data; even
         // after a panic, cleanup must retain the capability rather than leak it.
-        self.0
+        self.child
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn start_kill(&self) -> io::Result<()> {
-        match self.slot().as_mut() {
-            Some(child) => child.start_kill(),
-            None => Ok(()),
-        }
+        self.control.start_kill()
     }
 
     fn take(&self) -> Option<OwnedChild> {
@@ -43,12 +43,9 @@ pub(crate) struct Child {
 }
 
 impl Child {
-    pub(crate) fn spawn(command: Command) -> io::Result<Self> {
-        let mut command = CommandWrap::from(command);
-        // JobObject suspends before user code, assigns the whole lifetime,
-        // then resumes. No descendant can race an after-spawn PID attachment.
-        command.wrap(KillOnDrop).wrap(JobObject);
-        let mut child = command.spawn()?;
+    pub(crate) fn spawn(mut command: Command) -> io::Result<Self> {
+        let mut child = OwnedProcessTree::spawn(&mut command)?;
+        let control = child.process_tree_control();
         let stdin = child.stdin().take();
         let stdout = child.stdout().take();
         let stderr = child.stderr().take();
@@ -56,7 +53,10 @@ impl Child {
             stdin,
             stdout,
             stderr,
-            tree: ProcessTree(Arc::new(Mutex::new(Some(child)))),
+            tree: ProcessTree {
+                child: Arc::new(Mutex::new(Some(child))),
+                control,
+            },
         })
     }
 
@@ -74,10 +74,21 @@ impl Child {
     }
 
     pub(crate) async fn shutdown(&mut self) -> io::Result<()> {
+        self.tree.start_kill()?;
         if let Some(mut child) = self.tree.take() {
-            child.start_kill()?;
             child.wait().await?;
         }
-        Ok(())
+        self.tree.control.wait_for_quiescence().await
     }
 }
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        // A cancellation source may outlive its owner. Retaining that clone
+        // must not keep the workload alive after the Bash owner is dropped.
+        let _ = self.tree.start_kill();
+    }
+}
+
+#[cfg(test)]
+mod tests;

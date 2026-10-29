@@ -55,5 +55,8 @@ serde_json.workspace = true
 # dev-only: the session-home reference impl's recovery tests use temp dirs.
 tempfile = "3"
 
+[target.'cfg(windows)'.dev-dependencies]
+winsafe = { version = "=0.0.19", features = ["kernel"] }
+
 [lints]
 workspace = true
