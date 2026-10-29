@@ -656,6 +656,132 @@ fn host_live_input_projection_has_one_stable_read_only_bind_and_atomic_generatio
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn host_live_input_projection_repairs_private_parents_without_widening_the_stage() {
+    use std::os::unix::fs::PermissionsExt;
+    // HLI2 cause/effect graph: a valid live-input path + a new or existing
+    // private directory -> cross-UID traversal; the Host must retain write
+    // access for atomic replacement while the Agent sees the existing RO bind.
+    // P1 nested parents inherited 0700 (the result of umask077), P2 newly added
+    // Unicode parents, P3 replacement -> every projection directory0755 and
+    // file0444, exact bytes. P4 private staging parent/secret sibling -> unchanged.
+    // P5 invalid lexical path -> reject before touching even the projection root.
+    // Existing HLI1 owns initial/empty stable binds and remove semantics. Modes
+    // are seeded directly, avoiding a process-global umask race in parallel tests;
+    // the real Docker E2E runs with077 and UID10001 as the cross-UID witness.
+    let stage = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(stage.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let secret = stage.path().join("private-secret");
+    std::fs::write(&secret, b"private").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let root = stage.path().join("live-inputs");
+    let private = root.join("mnt/files");
+    std::fs::create_dir_all(&private).unwrap();
+    for path in [&root, &root.join("mnt"), &private] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let path = "/mnt/session/uploads/mnt/files/客户 甲/资料.txt";
+    for bytes in [b"first".as_slice(), b"replacement".as_slice()] {
+        live_inputs::project_host_input(&root, path, bytes).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("mnt/files/客户 甲/资料.txt")).unwrap(),
+            bytes
+        );
+        for relative in ["", "mnt", "mnt/files", "mnt/files/客户 甲"] {
+            assert_eq!(
+                std::fs::metadata(root.join(relative))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755,
+                "P1/P2/P3 {relative}"
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(root.join("mnt/files/客户 甲/资料.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o444
+        );
+    }
+    assert_eq!(
+        std::fs::metadata(stage.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "P4 staging parent remains private"
+    );
+    assert_eq!(
+        std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "P4 unrelated secret remains private"
+    );
+    let untouched = stage.path().join("invalid-root");
+    std::fs::create_dir(&untouched).unwrap();
+    std::fs::set_permissions(&untouched, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        live_inputs::project_host_input(&untouched, "/mnt/session/uploads/../escape", b"no")
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::metadata(&untouched).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "P5 admission precedes permission effects"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn host_live_input_projection_rejects_directory_links_and_files_without_outside_effects() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    // HLI3 decision rows: S1 a destination ancestor is a symlink; S2 the root
+    // is a symlink; S3 an ancestor is a file -> refuse without following a link,
+    // creating outside children, changing outside permissions, or replacing that
+    // file. These constraints prevent permission repair from widening a foreign
+    // tree. A normal target file is still atomically replaced by HLI1/HLI2.
+    let stage = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(outside.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = stage.path().join("live-inputs");
+    std::fs::create_dir(&root).unwrap();
+    symlink(outside.path(), root.join("linked")).unwrap();
+    assert!(
+        live_inputs::project_host_input(&root, "/mnt/session/uploads/linked/new/file", b"no")
+            .is_err(),
+        "S1"
+    );
+    let linked_root = stage.path().join("linked-root");
+    symlink(outside.path(), &linked_root).unwrap();
+    assert!(
+        live_inputs::project_host_input(&linked_root, "/mnt/session/uploads/new/file", b"no")
+            .is_err(),
+        "S2"
+    );
+    assert!(!outside.path().join("new").exists());
+    assert_eq!(
+        std::fs::metadata(outside.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let file = root.join("file-parent");
+    std::fs::write(&file, b"existing").unwrap();
+    assert!(
+        live_inputs::project_host_input(&root, "/mnt/session/uploads/file-parent/child", b"no")
+            .is_err(),
+        "S3"
+    );
+    assert_eq!(std::fs::read(file).unwrap(), b"existing");
+}
+
 #[tokio::test]
 async fn memory_store_realizes_as_copy_on_the_container_tier() {
     // Cause/effect graph: C1 a Memory requirement names an exact protocol path;

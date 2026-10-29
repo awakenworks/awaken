@@ -27,19 +27,45 @@ fn host_projection_path(
     let relative = live_input_relative_path(path).ok_or_else(|| {
         RuntimeError::Backend("live input path escaped its projection root".into())
     })?;
+    if std::path::Path::new(relative)
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(RuntimeError::Backend(
+            "live input path escaped its projection root".into(),
+        ));
+    }
     Ok(root.join(relative))
 }
 
-fn set_projected_file_permissions(path: &std::path::Path) -> Result<(), RuntimeError> {
+fn set_projected_permissions(path: &std::path::Path, directory: bool) -> std::io::Result<()> {
     #[cfg(not(unix))]
-    let _ = path;
+    let _ = (path, directory);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))
-            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let mode = if directory { 0o755 } else { 0o444 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
     }
     Ok(())
+}
+
+fn ensure_projected_directory(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "live input projection parent is a symlink or not a directory",
+        ));
+    }
+    // The Agent's bind stays read-only; the Host needs owner-write access for
+    // later atomic generations. Never normalize the private staging ancestors.
+    set_projected_permissions(path, true)
 }
 
 /// Atomically replace one file below a trusted Host projection root. The root is
@@ -56,7 +82,16 @@ pub(crate) fn project_host_input(
     let parent = target
         .parent()
         .ok_or_else(|| RuntimeError::Backend("live input has no projection parent".into()))?;
-    std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    let relative_parent = parent
+        .strip_prefix(root)
+        .map_err(|_| RuntimeError::Backend("live input path escaped its projection root".into()))?;
+    ensure_projected_directory(root).map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    let mut directory = root.to_path_buf();
+    for part in relative_parent.components() {
+        directory.push(part);
+        ensure_projected_directory(&directory)
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    }
     let temp = parent.join(format!(
         ".awaken-live-input-{}-{}.tmp",
         std::process::id(),
@@ -64,7 +99,8 @@ pub(crate) fn project_host_input(
     ));
     let result = (|| {
         std::fs::write(&temp, bytes).map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        set_projected_file_permissions(&temp)?;
+        set_projected_permissions(&temp, false)
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         std::fs::rename(&temp, &target).map_err(|error| RuntimeError::Backend(error.to_string()))
     })();
     if result.is_err() {
@@ -105,15 +141,8 @@ pub(super) fn stage_host_projection(
     guard: &mut Option<StagingGuard>,
 ) -> Result<(), pc::SandboxError> {
     let root = staging_dir(guard, scope)?.join("live-inputs");
-    std::fs::create_dir_all(&root)
+    ensure_projected_directory(&root)
         .map_err(|error| pc::SandboxError::backend("stage_host_projection", error.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).map_err(
-            |error| pc::SandboxError::backend("stage_host_projection", error.to_string()),
-        )?;
-    }
 
     let mut retained = Vec::with_capacity(binds.len() + 1);
     for bind in std::mem::take(binds) {
