@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_dispatch::{
     AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
     ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt, PostgresDispatchStore, RunClaim,
@@ -469,6 +470,27 @@ impl Fixture {
         (response.status(), response.json().await.unwrap())
     }
 
+    async fn relinquish(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: Option<u64>,
+        attempt_failed: bool,
+    ) -> (reqwest::StatusCode, Value) {
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/worker/dispatch/relinquish", self.address))
+            .header("x-awaken-worker-id", &self.worker.worker_id)
+            .json(&json!({
+                "identity": self.worker,
+                "claim": claim,
+                "retry_after_ms": retry_after_ms,
+                "attempt_failed": attempt_failed
+            }))
+            .send()
+            .await
+            .unwrap();
+        (response.status(), response.json().await.unwrap())
+    }
+
     async fn settle(&self) -> (reqwest::StatusCode, Value) {
         let response = reqwest::Client::new()
             .post(format!("{}/v1/worker/dispatch/settle", self.address))
@@ -521,6 +543,315 @@ impl Fixture {
 
 fn request_thread_id(tag: &str) -> awaken_agent_contract::agent::thread::Id {
     awaken_agent_contract::agent::thread::Id(format!("thread-{tag}"))
+}
+
+#[tokio::test]
+async fn resolution_backoff_observes_predecessor_without_reaching_physical_begin() {
+    // Cause/effect graph: C1 exact live successor claim; C2 failed resolution
+    // requests backoff; C3 predecessor Worker expired; C4 local process exit;
+    // C5 complete original execution closure. E1 observe through the canonical
+    // stop application before releasing C1; E2 return only the mutation claim;
+    // E3 retire the old physical slot iff C4+C5. No begin/handoff is invoked:
+    // a Session Sandbox resolution failure never reaches those endpoints.
+    // Exercise the actual HttpDispatchQueue defer call used by the Pool,
+    // including its retry-hint serialization, rather than a test-only sender.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | Effects |
+    // | B1   | Y  | Y  | Y  | N  | N  | E1+E2, retain original open slot |
+    // | B2   | Y  | Y  | Y  | Y  | N  | E1+E2, retain original closing slot |
+    // | B3   | Y  | Y  | Y  | Y  | Y  | E1+E2+E3, no successor execution |
+    // The existing Memory/SQLite/PostgreSQL adapter selection owns persistence
+    // coverage. These deterministic trusted-provider fixtures prove HTTP
+    // ordering and receipt consumption, not actual Kubernetes termination.
+    for store in dispatch_stores().await {
+        for (local_exit, scope_closed) in [(false, false), (true, false), (true, true)] {
+            let f = Fixture::with_store(
+                store.clone(),
+                Arc::new(MemoryWorkerDirectory::new()),
+                true,
+                50,
+                5_000,
+            )
+            .await;
+            let probe = AttemptStopProbe::install(&f);
+            if local_exit {
+                *f.stop.result.lock().unwrap() = Ok(Some("original-process-exit".into()));
+            }
+            if scope_closed {
+                *probe.result.lock().unwrap() = Ok(Some("complete-original-scope".into()));
+            }
+            f.stop.release.add_permits(1);
+            probe.release.add_permits(1);
+            let queue = HttpDispatchQueue::new(f.address.clone(), f.worker.clone());
+            assert!(queue.defer_claim(&f.next, 1_000).await.unwrap().applied());
+            assert!(!f.store.claim_is_current(&f.next).await.unwrap(), "E2");
+            assert_eq!(
+                f.stop.calls.lock().unwrap().as_slice(),
+                std::slice::from_ref(&f.binding),
+                "E1"
+            );
+            let slot = f.store.load_physical_attempt(&f.old.run_id).await.unwrap();
+            if scope_closed {
+                assert!(slot.is_none(), "B3 exact complete closure");
+            } else {
+                let slot = slot.expect("B1/B2 retain physical occupancy");
+                assert_eq!(slot.claim, f.old);
+                assert_eq!(slot.closing, local_exit);
+            }
+            assert_eq!(probe.calls.lock().unwrap().len(), usize::from(local_exit));
+        }
+    }
+}
+
+#[tokio::test]
+async fn resolution_backoff_returns_mutation_claim_even_if_stop_observation_fails() {
+    // Extend B1: C6 provider query fails or exceeds the owned request budget;
+    // C7 release is defer/retry. B4=C6(error)+C7(defer), B5=C6(timeout)+C7(retry):
+    // return 503 visibly, still release the exact mutation claim, retain the
+    // original physical slot. Both keep its existing recovery count: the next
+    // recovery claim spends that attempt, so release must not count it twice.
+    // No permit in B5 forces an actually blocked provider Future; timeout is
+    // never interpreted as a positive stop or complete-scope receipt.
+    for timed_out in [false, true] {
+        let f = Fixture::new(
+            Arc::new(MemoryWorkerDirectory::new()),
+            true,
+            50,
+            if timed_out { 100 } else { 5_000 },
+        )
+        .await;
+        let before = f
+            .store
+            .dispatch_summary(&f.next.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if !timed_out {
+            *f.stop.result.lock().unwrap() = Err("provider stop query failed".into());
+            f.stop.release.add_permits(1);
+        }
+        let (status, body) = f.relinquish(&f.next, Some(1_000), timed_out).await;
+        assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(body.to_string().contains(if timed_out {
+            "predecessor stop observation timed out"
+        } else {
+            "provider stop query failed"
+        }));
+        assert!(
+            !f.store.claim_is_current(&f.next).await.unwrap(),
+            "B4/B5 release"
+        );
+        assert_eq!(
+            f.stop.calls.lock().unwrap().as_slice(),
+            std::slice::from_ref(&f.binding)
+        );
+        let slot = f
+            .store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(slot.claim, f.old);
+        assert!(!slot.closing, "query failure is not exit evidence");
+        let after = f
+            .store
+            .dispatch_summary(&f.next.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.attempt_count, before.attempt_count);
+    }
+}
+
+#[tokio::test]
+async fn resolution_backoff_reuses_existing_authority_and_no_stop_boundaries() {
+    // Causes: C1 authenticated claim owner; C2 current claim; C3 retry hint;
+    // C4 failed attempt; C5 expired predecessor; C6 original binding/slot.
+    // | Rule | Boundary                         | Effect |
+    // | B6   | !C1                              | 400, claim unchanged, no I/O |
+    // | B7   | !C2                              | false, no I/O |
+    // | B8   | !C3 + !C4                        | ordinary release, no I/O |
+    // | B9   | !C3 + C4                         | 400, claim unchanged, no I/O |
+    // | B10  | !C5                              | release, no predecessor stop |
+    // | B11  | missing binding                  | release, occupied, no I/O |
+    // | B12  | absent slot                      | release, no I/O |
+    // | B13  | C1+C2+C3+C4+C5+C6, Unknown stop | recovery count unchanged, occupied |
+    // | B14  | failed release with absent slot | spend one through existing reducer |
+    // These are decision-table partitions, not the Cartesian product: B1-B5
+    // own the interactions once provider observation is authorized. The
+    // existing durable-handoff tests retain their execution path unchanged.
+    for rule in [
+        "foreign",
+        "stale",
+        "ordinary",
+        "invalid",
+        "live",
+        "unbound",
+        "vacant",
+        "retry",
+        "retry-vacant",
+    ] {
+        let f = Fixture::new(
+            Arc::new(MemoryWorkerDirectory::new()),
+            rule != "unbound",
+            if rule == "live" { 10_000 } else { 50 },
+            5_000,
+        )
+        .await;
+        let mut claim = f.next.clone();
+        if rule == "foreign" {
+            claim.owner = "foreign-owner".into();
+        }
+        let replacement = if rule == "stale" {
+            f.store.relinquish_claim(&f.next).await.unwrap();
+            AuthoritativeWallClock.advance_past(0).await;
+            let mut snapshot = f
+                .directory
+                .current(&f.worker.worker_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .snapshot;
+            snapshot.expires_at_ms = u64::MAX;
+            Some(RunClaim::from(
+                &f.store
+                    .claim_run_compatible(&f.next.run_id, &snapshot, 60_000)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .lease,
+            ))
+        } else {
+            None
+        };
+        if matches!(rule, "vacant" | "retry-vacant") {
+            f.store.finish_attempt(&f.old, None).await.unwrap();
+        }
+        let before = f
+            .store
+            .dispatch_summary(&f.next.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let retry_after = (!matches!(rule, "ordinary" | "invalid")).then_some(1_000);
+        let failed = matches!(rule, "invalid" | "retry" | "retry-vacant");
+        f.stop.release.add_permits(1);
+        let (status, body) = f.relinquish(&claim, retry_after, failed).await;
+        let rejected = matches!(rule, "foreign" | "invalid");
+        assert_eq!(
+            status,
+            if rejected {
+                reqwest::StatusCode::BAD_REQUEST
+            } else {
+                reqwest::StatusCode::OK
+            },
+            "{rule}: {body}"
+        );
+        assert_eq!(
+            f.store.claim_is_current(&f.next).await.unwrap(),
+            rejected,
+            "{rule}"
+        );
+        if !rejected {
+            assert_eq!(body["relinquished"], rule != "stale", "{rule}");
+        }
+        if let Some(replacement) = &replacement {
+            assert!(
+                f.store.claim_is_current(replacement).await.unwrap(),
+                "B7 retains replacement"
+            );
+        }
+        assert_eq!(
+            f.stop.calls.lock().unwrap().len(),
+            usize::from(rule == "retry"),
+            "{rule}"
+        );
+        let slot = f.store.load_physical_attempt(&f.old.run_id).await.unwrap();
+        assert_eq!(
+            slot.is_some(),
+            !matches!(rule, "vacant" | "retry-vacant"),
+            "{rule}"
+        );
+        if let Some(slot) = slot {
+            assert_eq!(slot.claim, f.old, "{rule}");
+            assert!(!slot.closing, "{rule}");
+        }
+        let after = f
+            .store
+            .dispatch_summary(&f.next.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.attempt_count,
+            before.attempt_count + u64::from(rule == "retry-vacant"),
+            "{rule}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resolution_backoff_cannot_release_a_newer_claim_after_provider_io() {
+    // B15: C1 exact backoff request enters the trusted predecessor observation;
+    // C2 its mutation lease expires and another claim is durably acquired while
+    // provider I/O is blocked; C3 the original observation returns Unknown.
+    // Effect: the old HTTP release is fenced, the replacement stays current,
+    // and the original physical slot remains occupied. No database/Thread lock
+    // may span provider I/O: the public reclaim must complete before C3.
+    // The semaphore/Notify orders the race; wall-clock waits only advance the
+    // existing real store's explicit zero-deadline renewal, never fake expiry.
+    let f = Arc::new(Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await);
+    let pending = tokio::spawn({
+        let f = f.clone();
+        async move { f.relinquish(&f.next, Some(1_000), false).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), f.stop.entered.notified())
+        .await
+        .expect("B15 stop observation entered");
+    assert_eq!(
+        f.store.renew_lease(&f.next, 0).await.unwrap(),
+        awaken_dispatch::LeaseRenewalOutcome::Current
+    );
+    AuthoritativeWallClock.advance_past(0).await;
+    let mut snapshot = f
+        .directory
+        .current(&f.worker.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    snapshot.expires_at_ms = u64::MAX;
+    let replacement = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.store
+            .claim_run_compatible(&f.next.run_id, &snapshot, 60_000),
+    )
+    .await
+    .expect("B15 no provider I/O lock blocks claim")
+    .unwrap()
+    .unwrap();
+    let replacement = RunClaim::from(&replacement.lease);
+    assert!(replacement.epoch > f.next.epoch);
+    f.stop.release.add_permits(1);
+    let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .expect("B15 old HTTP request returns")
+        .unwrap();
+    assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+    assert_eq!(body["relinquished"], false);
+    assert!(f.store.claim_is_current(&replacement).await.unwrap());
+    assert!(!f.store.claim_is_current(&f.next).await.unwrap());
+    let slot = f
+        .store
+        .load_physical_attempt(&f.old.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(slot.claim, f.old);
+    assert!(!slot.closing);
+    assert_eq!(
+        f.stop.calls.lock().unwrap().as_slice(),
+        std::slice::from_ref(&f.binding)
+    );
 }
 
 #[tokio::test]

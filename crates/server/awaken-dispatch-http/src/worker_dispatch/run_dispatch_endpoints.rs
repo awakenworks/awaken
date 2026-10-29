@@ -490,6 +490,22 @@ pub(super) async fn relinquish(
                 "authenticated worker does not own the relinquished claim",
             ));
         }
+        if request.attempt_failed && request.retry_after_ms.is_none() {
+            return Err(ApplicationError::invalid(
+                "a failed attempt is released behind a retry deadline",
+            ));
+        }
+        // Session resolution can fail before physical begin/handoff is reached.
+        // Reuse its exact-claim stop application while this mutation lease is
+        // still current; otherwise an occupied predecessor can prevent reaching
+        // the only recovery opportunity on every subsequent resolution retry.
+        // Keep the result until after release: provider failure/timeout must not
+        // strand this claim, and Unknown must not clear physical occupancy.
+        let observation = if request.retry_after_ms.is_some() {
+            observe_expired_predecessor(&service, &request.claim, authority.lease_ms).await
+        } else {
+            Ok(None)
+        };
         let relinquished = match (request.retry_after_ms, request.attempt_failed) {
             (Some(retry_after_ms), true) => {
                 service
@@ -503,15 +519,12 @@ pub(super) async fn relinquish(
                     .defer_claim(&request.claim, retry_after_ms)
                     .await
             }
-            (None, true) => {
-                return Err(ApplicationError::invalid(
-                    "a failed attempt is released behind a retry deadline",
-                ));
-            }
-            (None, false) => service.dispatch.relinquish_claim(&request.claim).await,
+            (None, _) => service.dispatch.relinquish_claim(&request.claim).await,
         }
         .map_err(|error| ApplicationError::internal(error.to_string()))?
         .applied();
+        let observation = observation?;
+        tracing::debug!(?observation, "backoff predecessor process stop observation");
         Ok(json!({ "relinquished": relinquished }))
     }
     .await;
