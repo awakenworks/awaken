@@ -565,8 +565,8 @@ async fn verify_session_realization_authority(
 }
 
 /// Progress one exact blocked claim through the canonical independent-stop
-/// application service. Both physical admission and terminal recovery use this
-/// helper so HTTP routing cannot grow two subtly different stop protocols.
+/// application service. Physical admission, resolution backoff and terminal
+/// recovery share this helper instead of growing separate stop protocols.
 async fn observe_expired_predecessor(
     service: &WorkerDispatchService,
     successor: &RunClaim,
