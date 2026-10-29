@@ -1,18 +1,10 @@
-//! Safe dependency adapter for the one Windows process-tree boundary.
-use process_wrap::tokio::{ChildWrapper, CommandWrap, JobObject, KillOnDrop};
+//! One shared native mechanism owns launch, control and observed tree exit.
 use tokio::process::Command;
 
-pub(super) type OwnedChild = Box<dyn ChildWrapper>;
+pub(super) type OwnedChild = awaken_process_win32::OwnedProcessTree;
 
 pub(super) fn spawn(command: &mut Command) -> std::io::Result<OwnedChild> {
-    // Restore the configured Command even on refusal; callers retain the same
-    // argv, environment and pipe configuration after the ordinary spawn edge.
-    let original = std::mem::replace(command, Command::new(""));
-    let mut wrapped = CommandWrap::from(original);
-    wrapped.wrap(JobObject).wrap(KillOnDrop);
-    let result = wrapped.spawn();
-    *command = wrapped.into_command();
-    result
+    OwnedChild::spawn(command)
 }
 
 #[cfg(test)]

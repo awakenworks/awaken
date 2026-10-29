@@ -720,7 +720,7 @@
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 228,
-        "file_sha256": "1cb246c88ebcc99cc71fc7ed3f1fdd6a3d34397fa813bac6f36a68d10590586e"
+        "file_sha256": "e9b93b3de1e7355d0d9da2f8fb32d93c3ada6fbaa9bfcd82d39d0567dac5cd3a"
       }
     ],
     "assertion_locations": [
@@ -750,11 +750,15 @@
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 259
+        "line": 262
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 264
+        "line": 265
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 266
       }
     ],
     "execution_witnesses": [
@@ -770,7 +774,7 @@
         "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
       }
     ],
-    "relation": "covers_case_clauses",
+    "relation": "supports_subset_only",
     "covers": {
       "T10-C02": {
         "oracles": [
@@ -779,8 +783,8 @@
         "negative_control": true
       }
     },
-    "review": "The owned leader is gated until its exact kernel handle is retained and the descendant authenticates. Kernel exit observation leaves the descendant alive for a leader-only stopped mutant, which the real TCP echo refutes; only then does production polling request Job teardown, followed by observed EOF/reset.",
-    "limitation": "2026-10-29: source coordinates follow the independent Windows kernel exit observation. E16 retains its original source head and log; that retained witness does not claim execution of the changed fixture. Full T10-C02 acceptance remains pending.",
+    "review": "Enabled native Windows production probe: original leader identity, real live descendant, and real owned-tree reaping. Retained handles plus fresh Job accounting fence terminal status; the test also requires successful reap and a stopped descendant.",
+    "limitation": "2026-10-30: enabled and strengthened for the Windows process-tree fix. Historical E16/E17 source identities and results are retained; they do not certify the changed implementation or all T10-C02 adapter/platform facets. Current native commands are in check-trusted-host-portability.sh; no whole-scenario acceptance is claimed.",
     "id": "B235"
   }
 ]

@@ -143,6 +143,9 @@ SDK_ALLOWED_SHARED_LIBRARIES = {
     # MCP from an embedded runtime.
     "awaken-mcp-wire",
     "awaken-outbound-http",
+    # Publishable safe native SDK mechanism: no Host/Coordinator/Worker state
+    # or serving dependency. The Worker consumes this same original-Job owner.
+    "awaken-process-win32",
 }
 ACTIVE_BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
@@ -1709,6 +1712,9 @@ def selftest_sdk_tier_is_standalone() -> None:
     assert not _sdk_tier_dependency_errors(
         "awaken-ext-mcp", {"awaken-mcp-wire": ("shared", "infrastructure")}
     ), "S3/E1"
+    assert not _sdk_tier_dependency_errors(
+        "awaken-ext-builtin-tools", {"awaken-process-win32": ("shared", "infrastructure")}
+    ), "S3/E1 native standalone mechanism"
     assert _sdk_tier_dependency_errors(
         "awaken-ext-permission", {"awaken-session-executor": ("shared", "infrastructure")}
     ), "S4/E2 a serving assembly is not admitted by its context"

@@ -1094,3 +1094,49 @@ The separate PostgreSQL construction test checks real backend rejection and
 frozen configuration persistence. It does not qualify every SQLite reopen/race
 clause on PostgreSQL. These bindings add no whole-group acceptance claim to the
 historical 42-requirement catalog and do not alter the Managed HTTP DTOs.
+
+## Windows Process Ownership
+
+The SDK Bash tool and the Worker local-process adapter use
+[`awaken-process-win32`](../../crates/shared/awaken-process-win32/src/lib.rs)
+for one native mechanism. Its separate crate isolates Win32 unsafe calls while
+the SDK remains independently publishable and ordinary consumers keep
+`unsafe_code=forbid`. It adds no application port or protocol DTO.
+
+`OwnedProcessTree` privately owns the leader and original supervision Job.
+`ProcessTreeControl` clones control of that same Job without taking the child
+from an active waiter. The pinned registry `process-wrap` dependency still
+suspends, assigns its nested Job, and resumes; the supervision Job is assigned
+first, while the child is suspended. This costs one additional kernel Job per
+launch and avoids a Git-only dependency or custom thread-resumption code.
+
+The crate declares `api_snapshot_target = "x86_64-pc-windows-msvc"`. The API gate
+passes that literal target to the pinned rustdoc on every host, so a host with
+no Windows exports cannot replace the reviewed Windows surface with an empty
+snapshot. Install the matching standard library with
+`rustup target add --toolchain nightly-2026-07-14 x86_64-pc-windows-msvc`.
+This task executes the comparison locally on Windows; cross-host rendering
+remains outside its execution evidence.
+
+The first termination retains current member wait handles after checking their
+membership in the original Job. Completion requires those objects to signal,
+fresh Job accounting to report zero, and no new lifetime admission during the
+snapshot/termination interval. A changed or uninspectable member, native query
+failure or poisoned observation remains unconfirmed. There is no fallback to
+leader-only status or a foreign PID signal. Cancellation preserves the original
+observation. Owner Drop requests termination even if control clones survive.
+
+This distinguishes an asynchronous termination request from an exit wait;
+see Microsoft's [process termination contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+and [nested Job accounting](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs).
+Bash retains its Session and invalidates it before awaiting disposal. A cancelled
+or failed disposal cannot admit a replacement shell before retrying cleanup.
+
+Native Windows tests cover control during wait, cancellation and retry, natural
+leader exit with a retained live descendant, owner Drop with a surviving clone,
+Session disposal cancellation, Worker cancellation/owner death, and ACP reaping.
+The ACP leader-only mutant is refuted by the same real descendant connection.
+The existing portability gate requires the named cases; private helper functions
+are launched by their parents rather than counted as independent passing tests.
+These Windows observations do not qualify Linux/FUSE, remote stop semantics or
+T10-C03 actionable recovery. Historical acceptance receipts retain their source.

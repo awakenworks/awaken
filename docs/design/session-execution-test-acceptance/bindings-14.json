@@ -244,21 +244,35 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 275,
-        "file_sha256": "1cb246c88ebcc99cc71fc7ed3f1fdd6a3d34397fa813bac6f36a68d10590586e"
+        "line": 276,
+        "file_sha256": "e9b93b3de1e7355d0d9da2f8fb32d93c3ada6fbaa9bfcd82d39d0567dac5cd3a"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T10-C02": {
         "oracles": [],
         "negative_control": false
       }
     },
-    "review": "Ignored residual probe, not a current execution claim. Windows LocalProcess now owns a Job and requests teardown after leader exit; ProcessHandle still exposes the leader exit rather than a directly observed whole-tree exit.",
-    "limitation": "Not execution evidence. E17 retains the former no-Job reproducer at its original source revision. Follow-up: directly observed local-process and protocol-acp tree termination (L).",
-    "id": "B259"
+    "review": "Enabled native Windows production probe: original leader identity, real live descendant, and real owned-tree reaping. Retained handles plus fresh Job accounting fence terminal status; the test also requires successful reap and a stopped descendant.",
+    "limitation": "2026-10-30: enabled and strengthened for the Windows process-tree fix. Historical E16/E17 source identities and results are retained; they do not certify the changed implementation or all T10-C02 adapter/platform facets. Current native commands are in check-trusted-host-portability.sh; no whole-scenario acceptance is claimed.",
+    "id": "B259",
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 283
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 284
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 285
+      }
+    ]
   },
   {
     "name": "memory_writer",

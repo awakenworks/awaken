@@ -110,6 +110,7 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-process-win32",
  "awaken-runtime-contract",
  "awaken-tool-contract",
  "awaken-web-policy-contract",
@@ -117,7 +118,6 @@ dependencies = [
  "glob",
  "ignore",
  "nix 0.29.0",
- "process-wrap",
  "regex",
  "schemars 1.2.2",
  "serde",
@@ -144,6 +144,15 @@ dependencies = [
 name = "awaken-fs-win32"
 version = "1.0.0"
 dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "awaken-process-win32"
+version = "1.0.0"
+dependencies = [
+ "process-wrap",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 

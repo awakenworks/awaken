@@ -42,6 +42,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+awaken-process-win32 = { path = "crates/shared/awaken-process-win32", version = "1.0.0" }
 awaken-plugin-composition = { path = "crates/bin/awaken-plugin-composition" }
 awaken-web-policy-contract = { path = "crates/contract/awaken-web-policy-contract", version = "1.0.0" }
 awaken-ui-artifact = { git = "https://github.com/awakenworks/awaken-ui.git", rev = "15ab31ef4943042ac4795c27f0e82c78586a214e" }

@@ -28,6 +28,23 @@ fi
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     AWAKEN_NATIVE_BASH="$(cygpath -w "$BASH")" python3 scripts/ci/test_deadline.py WindowsDeadlineTests
+    # Real original-Job ownership, active-wait control and cancellation. Named
+    # floors refuse disappearing/ignored cases; helpers run only via parents.
+    run_required_rust_tests --locked -p awaken-process-win32 --lib \
+      --require-case=sys::tests::invalid_object_query_preserves_the_native_error_instead_of_empty_job \
+      --require-case=sys::tests::poisoned_member_observation_refuses_a_successful_stop \
+      --require-case=sys::members::tests::active_members_and_changed_membership_cannot_be_confirmed_as_quiescent
+    run_required_rust_tests --locked -p awaken-ext-builtin-tools --lib \
+      --require-case=hand::bash::windows_process::tests::cloned_control_terminates_the_original_tree_while_wait_owns_the_child \
+      --require-case=hand::bash::windows_process::tests::cancelled_wait_retains_shutdown_control_and_joins_original_quiescence \
+      --require-case=hand::bash::windows_process::tests::natural_leader_exit_returns_only_after_its_retained_leaf_has_exited \
+      --require-case=hand::bash::windows_process::tests::owner_drop_terminates_its_tree_even_when_a_control_clone_survives \
+      --require-case=hand::bash::windows_process::tests::cancelled_session_discard_retains_the_cleanup_owner_until_confirmation \
+      -- hand::bash::windows_process::tests:: --skip hand::bash::windows_process::tests::process_tree_child
+    run_required_rust_tests --locked -p awaken-run-executor-acp --test windows_descendant \
+      --require-case=t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant \
+      --require-case=t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives \
+      -- --skip fixture_descendant_echoes_until_eof --skip fixture_leader_spawns_descendant_then_exits
     ;;
 esac
 
@@ -124,7 +141,16 @@ cargo test -p awaken-session-environment --lib
 # The authority clock's Linux BOOTTIME and non-Linux Instant paths both need
 # every matrix runner; the local-process scoped cutoff reads the same Linux clock.
 cargo test -p awaken-authority-clock --lib
-cargo test -p awaken-local-process --lib
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    run_required_rust_tests --locked -p awaken-local-process --lib \
+      --require-case=windows_job::tests::job_cancellation_and_drop_close_owned_descendants \
+      --require-case=windows_job::tests::natural_leader_exit_requests_owned_descendant_teardown \
+      --require-case=windows_job::tests::kernel_job_closes_when_owner_is_terminated_without_drop \
+      -- --skip tests::lifecycle_child --skip windows_job::tests::tree_child
+    ;;
+  *) cargo test -p awaken-local-process --lib ;;
+esac
 # Run the actual Hand binary with an explicit resource root and a nested cwd,
 # not just a renderer/unit fixture. Non-Linux builds exercise native path parsing.
 cargo test -p awaken-sandbox --features hand --lib --test hand_stdio_role

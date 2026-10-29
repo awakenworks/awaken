@@ -315,15 +315,6 @@ impl ProcessHandle for LocalProcess {
         let status = child
             .try_wait()
             .map_err(|error| SandboxError::backend("poll", error))?;
-        #[cfg(windows)]
-        if status.is_some() {
-            // A natural leader exit must not leave its owned descendants
-            // running. This requests teardown; exit still observes the leader,
-            // as in the existing ProcessHandle contract.
-            child
-                .start_kill()
-                .map_err(|error| SandboxError::backend("poll_job", error))?;
-        }
         Ok(status.map(exit))
     }
 
@@ -696,7 +687,10 @@ mod tests {
             let mut input = [0_u8; 1];
             std::io::stdin().read_exact(&mut input).unwrap();
             assert_eq!(input, [42]);
-            println!("AWAKEN_CHILD_READY");
+            // libtest may print its progress prefix without a newline when
+            // RUST_TEST_THREADS=1. Keep the private acknowledgement on its own
+            // complete line; the parent still requires exact marker equality.
+            println!("\nAWAKEN_CHILD_READY");
             std::io::stdout().flush().unwrap();
             // Parent deliberately keeps this pipe open during the Drop oracle.
             // If that oracle fails, unwinding closes stdin and releases the

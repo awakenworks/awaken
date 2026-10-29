@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 
 def selected_crates(packages: list[dict]) -> tuple[list[str], list[str]]:
+    snapshot_targets(packages)
     sdk = [p for p in packages
            if ((p.get("metadata") or {}).get("awaken") or {}).get("product") == "sdk"
            and p.get("publish") != []]
@@ -19,17 +21,35 @@ def selected_crates(packages: list[dict]) -> tuple[list[str], list[str]]:
     return selected, sorted(p["name"] for p in sdk)
 
 
+def snapshot_targets(packages: list[dict]) -> dict[str, str]:
+    """A platform API is rendered for its authored target on every host."""
+    targets = {}
+    for package in packages:
+        metadata = ((package.get("metadata") or {}).get("awaken") or {})
+        if "api_snapshot_target" not in metadata:
+            continue
+        target = metadata["api_snapshot_target"]
+        if (metadata.get("api_snapshot") is not True or not isinstance(target, str)
+                or not re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+)+", target)):
+            raise ValueError(package["name"] + ": api_snapshot_target requires a selected API and a literal target triple")
+        targets[package["name"]] = target
+    return targets
+
+
 def main() -> int:
-    if len(sys.argv) != 1:
-        print("usage: public_api_selection.py < Cargo-metadata-json", file=sys.stderr)
+    if sys.argv[1:] not in ([], ["--targets"]):
+        print("usage: public_api_selection.py [--targets] < Cargo-metadata-json", file=sys.stderr)
         return 2
     try:
-        selected, _ = selected_crates(json.load(sys.stdin)["packages"])
+        packages = json.load(sys.stdin)["packages"]
+        selected, _ = selected_crates(packages)
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         print(str(error), file=sys.stderr)
         return 1
     # Preserve the original Windows UTF-8/LF shell protocol.
-    sys.stdout.buffer.write(("\n".join(selected) + "\n").encode("utf-8"))
+    output = ([name + " " + target for name, target in sorted(snapshot_targets(packages).items())]
+              if sys.argv[1:] else selected)
+    sys.stdout.buffer.write(("\n".join(output) + "\n").encode("utf-8"))
     return 0
 
 

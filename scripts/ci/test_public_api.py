@@ -54,6 +54,10 @@ elif args == ["metadata", "--no-deps", "--format-version", "1"]:
         print(json.dumps({"packages": []}))
         sys.exit(0)
     packages = [{"name": "fixture", "metadata": {"awaken": {"api_snapshot": True}}}]
+    if os.environ.get("API_TEST_SECOND_SELECTED_MEMBER"):
+        packages.append({"name": "zzsecond", "metadata": {"awaken": {"api_snapshot": True}}})
+    if "API_TEST_SNAPSHOT_TARGET" in os.environ:
+        packages[0]["metadata"]["awaken"]["api_snapshot_target"] = os.environ["API_TEST_SNAPSHOT_TARGET"]
     if os.environ.get("API_TEST_SELECTED_PRODUCT"):
         packages[0]["metadata"]["awaken"].update(
             product=os.environ["API_TEST_SELECTED_PRODUCT"], separation="contract")
@@ -68,12 +72,20 @@ elif args == ["metadata", "--no-deps", "--format-version", "1"]:
                          "publish": json.loads(os.environ.get("API_TEST_UNSELECTED_PUBLISH", "null"))})
     print(json.dumps({"packages": packages}))
 else:
-    assert args == ["+nightly-2026-07-14", "public-api", "-p", "fixture",
-                    "--simplified", "--omit", "blanket-impls,auto-trait-impls,auto-derived-impls"], args
-    Path(os.environ["API_TEST_COMPUTED"]).touch()
+    package = args[3] if len(args) > 3 else ""
+    assert package == "fixture" or (package == "zzsecond" and os.environ.get("API_TEST_SECOND_SELECTED_MEMBER")), args
+    expected = ["+nightly-2026-07-14", "public-api", "-p", package,
+                "--simplified", "--omit", "blanket-impls,auto-trait-impls,auto-derived-impls"]
+    if package == "fixture" and os.environ.get("API_TEST_SNAPSHOT_TARGET"):
+        expected += ["--target", os.environ["API_TEST_SNAPSHOT_TARGET"]]
+    assert args == expected, args
+    Path(os.environ["API_TEST_COMPUTED"]).write_text(json.dumps(args))
+    if os.environ.get("API_TEST_ARGV_LOG"):
+        with Path(os.environ["API_TEST_ARGV_LOG"]).open("a") as log:
+            log.write(json.dumps(args) + "\\n")
     if os.environ.get("API_TEST_COMPUTE_ERROR"):
         sys.exit(74)
-    print("pub mod fixture")
+    print("pub mod " + package)
 ''', encoding="utf-8", newline="\n")
         tool.chmod(0o755)
         for name in ("cargo", "cargo-public-api", "rustc"):
@@ -104,6 +116,50 @@ else:
             API_TEST_COMPUTED=str(self.root / "computed"),
             API_TEST_BIN=binary.as_posix(), BASH_ENV=setup.as_posix(),
         )
+
+    def test_authored_platform_target_is_passed_literally_and_invalid_targets_never_bless(self):
+        import json
+        self.seed(SURFACE)
+        result = self.invoke("--require-tools", API_TEST_SNAPSHOT_TARGET="x86_64-pc-windows-msvc")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.root / "computed").read_text())[-2:],
+                         ["--target", "x86_64-pc-windows-msvc"])
+        for target in ("", "--target", "x86_64;touch injected", "x86_64\nother", "$(false)"):
+            for mode in ("--require-tools", "--bless"):
+                with self.subTest(target=target, mode=mode):
+                    (self.root / "computed").unlink(missing_ok=True)
+                    result = self.invoke(mode, API_TEST_SNAPSHOT_TARGET=target)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("literal target triple", result.stderr)
+                    self.assertFalse((self.root / "computed").exists())
+                    self.assertEqual(self.snapshot.read_bytes(), SURFACE)
+        with self.assertRaises(ValueError):
+            selected_crates([{"name": "unselected", "metadata": {"awaken": {
+                "api_snapshot_target": "x86_64-pc-windows-msvc"}}}])
+
+    def test_platform_target_does_not_leak_to_the_next_selected_crate(self):
+        import json
+        self.seed(SURFACE)
+        second = self.root / "public-api/zzsecond.txt"
+        second.write_bytes(b"pub mod zzsecond\n")
+        log = self.root / "api-argv.jsonl"
+        environment = dict(API_TEST_SNAPSHOT_TARGET="x86_64-pc-windows-msvc",
+                           API_TEST_SECOND_SELECTED_MEMBER="1", API_TEST_ARGV_LOG=str(log))
+        result = self.invoke("--require-tools", **environment)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([call[3] for call in calls], ["fixture", "zzsecond"])
+        self.assertEqual(calls[0][-2:], ["--target", "x86_64-pc-windows-msvc"])
+        self.assertNotIn("--target", calls[1])
+        # Executed negative control: keep the previous member's target. The
+        # exact tool-argv oracle must reject it and preserve both baselines.
+        code = self.script.read_text()
+        self.assertEqual(code.count("  target_args=()\n"), 1)
+        self.script.write_text(code.replace("  target_args=()\n", ""), encoding="utf-8", newline="\n")
+        result = self.invoke("--require-tools", **environment)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.snapshot.read_bytes(), SURFACE)
+        self.assertEqual(second.read_bytes(), b"pub mod zzsecond\n")
 
     def test_python_interpreter_path_preserves_spaces_quotes_and_arguments(self):
         # H1 real interpreter in a spaced/quoted path; H2 empty, quoted, trailing

@@ -255,12 +255,14 @@ async fn t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant(
     );
     // Only now invoke production polling: unlike the independent kernel
     // observation above, this edge requests owned descendant teardown.
+    // A poll may request termination while the Job still has live members.
+    // Only a completed owned-tree observation is allowed to expose status.
     let observed = tree.leader.poll().await.unwrap();
-    assert_eq!(
-        observed.map(|status| status.code),
-        Some(Some(0)),
-        "D1: exit observed"
-    );
+    if observed.is_some() {
+        assert!(!descendant_alive(&mut tree.descendant));
+    }
+    let observed = tree.leader.wait().await.unwrap();
+    assert_eq!(observed.code, Some(0), "D1: exit observed");
     assert_eq!(
         tree.leader.id(),
         identity,
@@ -271,7 +273,6 @@ async fn t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "product gap: Windows requests Job teardown, but ProcessHandle still exposes leader exit without an owned-tree exit observation"]
 async fn t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives() {
     let mut tree = leader_exited_with_live_descendant().await;
     let identity = tree.leader.id().to_owned();
@@ -279,6 +280,8 @@ async fn t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_
         .await
         .map_err(|error| error.to_string());
     let alive = descendant_alive(&mut tree.descendant);
+    assert!(claim.is_ok(), "D3: real reaping must succeed: {claim:?}");
+    assert!(!alive, "D3: real reaping must stop the owned descendant");
     assert_eq!(
         tree.leader.id(),
         identity,
