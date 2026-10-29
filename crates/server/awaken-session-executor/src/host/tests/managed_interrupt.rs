@@ -164,7 +164,7 @@ async fn interrupt_with_admission_suspended(
     let host = (host).build().expect("validated Host dependencies");
     install_recording_session_application(&host);
     let managed = host.clone();
-    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+    crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 

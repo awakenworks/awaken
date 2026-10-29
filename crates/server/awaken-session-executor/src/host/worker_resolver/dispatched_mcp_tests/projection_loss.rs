@@ -205,6 +205,7 @@ async fn managed_claim_projection_loss_never_enters_ordinary_mcp_staging() {
         source
     }));
     let host = dependencies.build().unwrap();
+    crate::test_application_bindings::select_standalone(&host).unwrap();
     let source = observed.get().unwrap();
     assert!(Arc::ptr_eq(
         &source.original,

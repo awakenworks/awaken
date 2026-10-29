@@ -1702,7 +1702,7 @@ impl WorkerNode {
         let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerSupervisor {
             authority,
-            roles: awaken_session_executor::WorkerRoles::of(&host),
+            roles: awaken_session_executor::WorkerRoles::of(&host, awaken_session_run_delivery::SessionApplications::ClaimedWorker)?,
             control: control.clone(),
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,

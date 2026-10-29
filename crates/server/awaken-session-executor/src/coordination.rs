@@ -55,24 +55,26 @@ pub(crate) enum CoordinationEndpoint {
 }
 
 impl crate::RunCapabilities {
-    /// Select the one Session coordination authority for every consumer. A live
-    /// co-located application wins; an expired Weak falls through to the claimed
-    /// remote control instead of becoming a dead local endpoint.
+    /// Select the immutable authority chosen by service construction. An
+    /// expired local application remains a failed local endpoint; it never
+    /// falls through to a different remote authority.
     pub(crate) fn coordination_endpoint(&self) -> Option<CoordinationEndpoint> {
-        let local = self
-            .session_application
-            .agent_coordination()
-            .cloned()
-            .filter(|application| application.strong_count() > 0);
-        local.map(CoordinationEndpoint::Local).or_else(|| {
-            self.worker
+        match self.session_application.mode()? {
+            awaken_session_run_delivery::SessionApplicationMode::Local => self
+                .session_application
+                .agent_coordination()
+                .cloned()
+                .map(CoordinationEndpoint::Local),
+            awaken_session_run_delivery::SessionApplicationMode::Standalone => None,
+            awaken_session_run_delivery::SessionApplicationMode::ClaimedWorker => self
+                .worker
                 .session_coordination_control
                 .as_ref()
                 .map(|control| CoordinationEndpoint::Remote {
                     control: control.clone(),
                     installed_sessions: Arc::downgrade(&self.installed_sessions),
-                })
-        })
+                }),
+        }
     }
 
     /// Select the endpoint once and share its immutable observer across the
@@ -715,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn commit_boundary_binds_late_coordination_without_retaining_run_assembly() {
         // Causes: C1 the Coordinator has no local pool; C2 its commit factory
-        // predates application binding; C3 the bound application stays live or
+        // predates application binding; the resolver follows complete binding; C3 the bound application stays live or
         // drops after Worker construction; C4 the composing executor drops;
         // C5 an exact exhausted child claim carries parent affinity/epoch;
         // C6 the actual Coordinator resolver remains live across Host drop,
@@ -749,8 +751,6 @@ mod tests {
             dependencies.execution.ingress = crate::RunIngress::Durable;
             dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
             let host = dependencies.build().expect("Coordinator components");
-            let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
-                .expect("original Coordinator resolver");
             let assembly = Arc::downgrade(&host.run_assembly);
             let boundaries = crate::host::boundary_run::commit_boundary_workers(&host.run_assembly);
             let parent = ThreadId("boundary-parent".into());
@@ -762,9 +762,10 @@ mod tests {
                 .expect("original commit");
             let application = Arc::new(RecordingSessionAgentCoordination::default());
             let port: Arc<dyn SessionAgentCoordination> = application.clone();
-            host.session_application_bindings()
-                .bind_agent_coordination(port.clone())
+            crate::test_application_bindings::select_coordination(&host, port.clone())
                 .expect("late application binding");
+            let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
+                .expect("complete applications precede resolver construction");
             queue
                 .enqueue(
                     RunDispatch::new(RunActivation::new(
@@ -849,20 +850,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dead_local_coordination_falls_through_to_the_remote_authority() {
-        // Constraint/Invariant: the authoritative inputs and ownership boundaries
-        // documented here remain the only decision source; no parallel path is admitted.
-        // Decision rule: execute every reachable cause partition documented here and
-        // require its stated effects, including each fail-closed outcome.
-        // Cause/effect graph: C1 a local Weak coordination edge exists but its
-        // application is dropped; C2 a claimed remote control exists. Effects:
-        // E1 every tool/availability/settlement consumer selects Remote; E2 no
-        // consumer captures the dead Local endpoint. Decision table:
-        // R1(live local,C2)->Local; R2(C1+C2)->E1+E2; !local+!remote is covered by
-        // Managed build's fail-closed authority test.
-        // Readiness companion B1 unbound => Unavailable; B2 bound/live => Ok;
-        // B3 bound/dead => Unavailable while the existing remote selection owns
-        // routing. A cloned binding cannot silently hold a second connection.
+    async fn expired_local_coordination_refuses_without_selecting_remote_authority() {
+        // R1 local selection/live owner => Local for both observer roles.
+        // R2 same immutable selection/expired owner/remote transport present =>
+        // failed Local for every consumer; no authority switch or rebind.
         let local = Arc::new(RecordingSessionAgentCoordination::default());
         let local_port: Arc<dyn SessionAgentCoordination> = local.clone();
         let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(EndpointModel), "stub")
@@ -872,13 +863,12 @@ mod tests {
         .expect("validated Host dependencies");
         let shared = host.session_application_bindings().clone();
         assert!(shared.require_agent_coordination().is_err(), "B1");
-        host.session_application_bindings()
-            .bind_agent_coordination(local_port.clone())
+        crate::test_application_bindings::select_coordination(&host, local_port.clone())
             .expect("test coordination port binds once");
         assert!(shared.require_agent_coordination().is_ok(), "B2");
         // O1a live Local -> the sole factory selects Local once, then both
         // existing roles project the same allocation. Retained observer Weak
-        // cannot prevent the following B3 drop/fallback transition.
+        // cannot keep the application alive after its final owner drops.
         let observer = host
             .run_assembly
             .capabilities
@@ -897,22 +887,34 @@ mod tests {
         assert!(
             matches!(
                 host.run_assembly.capabilities.coordination_endpoint(),
-                Some(CoordinationEndpoint::Remote { .. })
+                Some(CoordinationEndpoint::Local(_))
             ),
             "R2/E1-E2"
         );
-        // O1 one selected endpoint/allocation serves both existing observer
-        // roles. Sharing data does not merge their admission/settlement commands.
-        // C1 local Weak dead + remote live => Remote for both; C2 both role
-        // projections come from one factory Arc => identical allocation, no
-        // second endpoint selection can change between the two installations.
+        let endpoint = host
+            .run_assembly
+            .capabilities
+            .coordination_endpoint()
+            .unwrap();
+        let error = endpoint
+            .list(
+                &awaken_session_types::SessionId::from("expired"),
+                "source-run",
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ToolError::DefinitiveFailure(message) if message == "Session coordination application is unavailable"),
+            "dead local authority refuses before remote claim lookup or RPC"
+        );
+        // Both existing observer roles keep the same failed Local endpoint.
         let observer = host
             .run_assembly
             .capabilities
             .dispatch_settlement_observer()
             .expect("R2/E1");
         assert!(
-            matches!(&observer.endpoint, CoordinationEndpoint::Remote { .. }),
+            matches!(&observer.endpoint, CoordinationEndpoint::Local(_)),
             "R2/E1"
         );
         assert_one_observer_roles(&observer);
@@ -1134,3 +1136,11 @@ mod test_support;
 
 #[cfg(test)]
 mod lifetime_tests;
+
+#[cfg(test)]
+pub(crate) fn test_claimed_control() -> Arc<
+    impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+    + awaken_session_execution_contract::ClaimedSessionCoordinationControl<RunClaim>,
+> {
+    Arc::new(test_support::RemoteControl::default())
+}

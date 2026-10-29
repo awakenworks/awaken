@@ -122,7 +122,9 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
         let roles = awaken_session_executor::session_dispatch_lifecycle(
             host.as_ref(),
             host.worker_completion_sink(),
-        );
+            awaken_session_run_delivery::SessionApplications::Standalone,
+        )
+        .unwrap();
         if remote {
             assert!(roles.start_terminal_reconciliation(), "C4 scanner started");
         } else {
@@ -137,13 +139,10 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
             "C4 immutable completion selection"
         );
         let bindings = host.session_application_bindings();
-        assert!(
-            bindings.require_agent_coordination().is_err(),
-            "C4 no coordination bound"
-        );
-        assert!(
-            bindings.require_background_run_submission().is_err(),
-            "C4 no background bound"
+        assert_eq!(
+            bindings.mode(),
+            Some(awaken_session_run_delivery::SessionApplicationMode::Standalone),
+            "C4 neither application role installed and original mode unchanged"
         );
         assert!(
             roles.drain(std::time::Duration::from_secs(2)).await,

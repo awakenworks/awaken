@@ -84,8 +84,12 @@ pub use child_run_coordination::ChildRunCoordination;
 mod outcomes;
 pub use outcomes::Outcomes;
 mod process_roles;
-pub use process_roles::{WorkerRoles, session_dispatch_lifecycle};
+pub use process_roles::{
+    SessionExecutionLifecycle, WorkerRoles, drain_session_dispatch, session_dispatch_lifecycle,
+};
 mod session_runs;
+#[cfg(test)]
+mod test_application_bindings;
 pub use session_runs::SessionRuns;
 mod run_exec;
 mod session_memory_tools;

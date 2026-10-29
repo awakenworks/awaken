@@ -83,7 +83,8 @@ pub use completion::{
     activate_and_await_session_run, await_completion_state,
 };
 pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
-pub use dispatch_lifecycle::SessionDispatchLifecycle;
+pub use dispatch_lifecycle::{SessionDispatchLifecycle, drain_session_dispatch};
+mod session_applications;
 pub use hub::{ThreadEvent, ThreadEventHub};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use memory_binding::MemoryBinding;
@@ -102,6 +103,10 @@ pub use session_activation::{
     ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
     project_session_tool_override, project_session_tools, session_activation_snapshot,
     session_client_tool_descriptor,
+};
+pub use session_applications::{
+    SessionApplicationConnections, SessionApplicationLifetime, SessionApplicationMode,
+    SessionApplications,
 };
 pub use session_budgets::SessionBudgets;
 pub use session_capabilities::{

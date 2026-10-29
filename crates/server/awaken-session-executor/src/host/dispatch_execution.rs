@@ -29,6 +29,11 @@ pub(crate) fn session_worker_resolver(
     run_assembly: &Arc<crate::RunAssembly>,
     dispatch: &awaken_dispatch_execution::ProcessDispatch,
 ) -> Result<SessionWorkerResolver, SessionExecutionError> {
+    let _applications = run_assembly
+        .capabilities
+        .session_application
+        .acquire()
+        .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
     let queue = run_assembly
         .authority
         .dispatch_binding()

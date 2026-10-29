@@ -314,12 +314,8 @@ async fn exercise_background_attention(
     .await;
     let events = wait_for_completion(&app, &session, &accepted_receipt, timeout).await;
     assert!(
-        awaken_session_executor::session_dispatch_lifecycle(
-            host.as_ref(),
-            host.worker_completion_sink()
-        )
-        .drain(Duration::from_secs(2))
-        .await,
+        awaken_session_executor::drain_session_dispatch(host.as_ref(), Duration::from_secs(2))
+            .await,
         "BackgroundTask execution and attention publication drain"
     );
     events

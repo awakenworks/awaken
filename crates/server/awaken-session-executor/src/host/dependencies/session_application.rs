@@ -1,89 +1,71 @@
 // @formal surface exclude=composition_wiring
 // @formal owner crates/contract/awaken-session-execution-contract/src/coordination.rs
 // @formal owner crates/contract/awaken-session-application-contract/src/run_application.rs
-// @formal reason: Process-local weak connections to existing application authorities; no state, queue,
-// @formal reason: receipt or admission law is implemented here. Readiness observes only these connections.
-//! Startup connections from the execution Host to its existing Session applications.
-
-use std::sync::{Arc, OnceLock, Weak};
-
+// @formal reason: One immutable complete process selection; no domain admission, queue or durable state.
+//! Host-owned atomic selection of the existing application capabilities.
 use awaken_session_application_contract::SessionRunBackgroundApplication;
 use awaken_session_execution_contract::SessionAgentCoordination;
+use awaken_session_run_delivery::{
+    SessionApplicationConnections, SessionApplicationLifetime, SessionApplicationMode,
+};
+use std::sync::{Arc, OnceLock, Weak};
 
-/// Failure to connect a selected Session application before its service starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SessionApplicationBindingError {
     #[error("this Session application connection is already bound")]
     AlreadyBound,
     #[error("required Session application connection is unavailable: {0}")]
     RequiredApplicationUnavailable(&'static str),
+    #[error("select complete Session applications before constructing execution services")]
+    NotSelected,
+    #[error("compose Session execution before starting dispatch services")]
+    ServicesAlreadyStarted,
+    #[error("invalid Session execution topology: {0}")]
+    InvalidTopology(&'static str),
 }
 
-/// Shared single-assignment storage, private to Host composition.
-struct ApplicationPortBinding<T> {
-    value: Arc<OnceLock<T>>,
-}
-
-impl<T> ApplicationPortBinding<T> {
-    fn bind(&self, value: T) -> Result<(), SessionApplicationBindingError> {
-        self.value
-            .set(value)
-            .map_err(|_| SessionApplicationBindingError::AlreadyBound)
-    }
-
-    fn get(&self) -> Option<&T> {
-        self.value.get()
-    }
-}
-
-impl<T> Clone for ApplicationPortBinding<T> {
-    fn clone(&self) -> Self {
-        Self {
-            value: self.value.clone(),
-        }
-    }
-}
-
-impl<T> Default for ApplicationPortBinding<T> {
-    fn default() -> Self {
-        Self {
-            value: Arc::new(OnceLock::new()),
-        }
-    }
-}
-
-/// The Host's connections to existing Session use cases. The composition owns
-/// the applications strongly; the Host never prolongs their lifetimes. Clones
-/// share the same connections, not independently configurable copies.
+/// Clones share one immutable complete selection. Only checked execution
+/// service construction may publish it; callers cannot bind individual roles.
 #[derive(Clone, Default)]
 pub struct SessionApplicationBindings {
-    agent_coordination: ApplicationPortBinding<Weak<dyn SessionAgentCoordination>>,
-    background_run_submission: ApplicationPortBinding<Weak<dyn SessionRunBackgroundApplication>>,
+    selected: Arc<OnceLock<SessionApplicationConnections>>,
 }
-
 impl SessionApplicationBindings {
-    /// Connect the existing coordination application. The passed startup clone
-    /// is downgraded here; the composition retains the strong owner.
-    pub fn bind_agent_coordination(
+    pub(crate) fn select_connections(
         &self,
-        application: Arc<dyn SessionAgentCoordination>,
+        connections: SessionApplicationConnections,
     ) -> Result<(), SessionApplicationBindingError> {
-        self.agent_coordination.bind(Arc::downgrade(&application))
+        self.selected
+            .set(connections)
+            .map_err(|_| SessionApplicationBindingError::AlreadyBound)
     }
-
-    /// Connect the existing Run admission application without creating a
-    /// BackgroundTask owner or another Run submission path.
-    pub fn bind_background_run_submission(
+    #[must_use]
+    pub fn mode(&self) -> Option<SessionApplicationMode> {
+        self.selected.get().map(SessionApplicationConnections::mode)
+    }
+    pub(crate) fn acquire(
         &self,
-        application: Arc<dyn SessionRunBackgroundApplication>,
-    ) -> Result<(), SessionApplicationBindingError> {
-        self.background_run_submission
-            .bind(Arc::downgrade(&application))
+    ) -> Result<SessionApplicationLifetime, SessionApplicationBindingError> {
+        self.selected
+            .get()
+            .ok_or(SessionApplicationBindingError::NotSelected)?
+            .acquire()
+            .ok_or(
+                SessionApplicationBindingError::RequiredApplicationUnavailable(
+                    "local coordination and background Run submission",
+                ),
+            )
     }
-
-    /// Validate the local coordination service selected by this composition.
-    /// Runtime callers still upgrade and authorize at their actual use point.
-    pub fn require_agent_coordination(&self) -> Result<(), SessionApplicationBindingError> {
+    pub(crate) fn agent_coordination(&self) -> Option<&Weak<dyn SessionAgentCoordination>> {
+        self.selected.get()?.agent_coordination()
+    }
+    pub(crate) fn background_run_submission(
+        &self,
+    ) -> Option<&Weak<dyn SessionRunBackgroundApplication>> {
+        self.selected.get()?.background_run_submission()
+    }
+    #[cfg(test)]
+    pub(crate) fn require_agent_coordination(&self) -> Result<(), SessionApplicationBindingError> {
         self.agent_coordination()
             .and_then(Weak::upgrade)
             .map(|_| ())
@@ -93,9 +75,10 @@ impl SessionApplicationBindings {
                 ),
             )
     }
-
-    /// Validate an enabled local background-Run submission service.
-    pub fn require_background_run_submission(&self) -> Result<(), SessionApplicationBindingError> {
+    #[cfg(test)]
+    pub(crate) fn require_background_run_submission(
+        &self,
+    ) -> Result<(), SessionApplicationBindingError> {
         self.background_run_submission()
             .and_then(Weak::upgrade)
             .map(|_| ())
@@ -104,15 +87,5 @@ impl SessionApplicationBindings {
                     "background Run submission",
                 ),
             )
-    }
-
-    pub(crate) fn agent_coordination(&self) -> Option<&Weak<dyn SessionAgentCoordination>> {
-        self.agent_coordination.get()
-    }
-
-    pub(crate) fn background_run_submission(
-        &self,
-    ) -> Option<&Weak<dyn SessionRunBackgroundApplication>> {
-        self.background_run_submission.get()
     }
 }

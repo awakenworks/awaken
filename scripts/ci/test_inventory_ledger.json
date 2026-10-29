@@ -62,6 +62,7 @@
     "session_projection_active_future_holds_original_slots_until_success_or_error": "session_projection_active_future_holds_original_installed_sessions_until_success_or_error",
     "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots": "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_installed_sessions",
     "observation_runtime_does_not_read_package_write_credentials": "podman_builder_validates_package_write_credentials",
-    "registered_worker_observation_does_not_install_execution": "only_a_local_placement_installs_the_colocated_execution"
+    "registered_worker_observation_does_not_install_execution": "only_a_local_placement_installs_the_colocated_execution",
+    "dead_local_coordination_falls_through_to_the_remote_authority": "expired_local_coordination_refuses_without_selecting_remote_authority"
   }
 }

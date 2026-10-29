@@ -58,7 +58,6 @@ pub fn coordinator_execution(
 ) -> Result<awaken_coordinator::ExecutionPorts, CoordinatorExecutionError> {
     let dispatch = host.coordination().dispatch_observation_source()?;
     verify_composition(host.dispatch(), &dispatch, sessions)?;
-    install_managed_agent_coordination(host, sessions)?;
     let runs: Arc<dyn RunApplication> = host.session_runs().clone();
     let (workspace, projected_agent) = host.capabilities().session_run_projection_callbacks();
     let session_runs = Arc::new(SessionRunApplication::new(
@@ -69,9 +68,6 @@ pub fn coordinator_execution(
         projected_agent,
     ));
     let background: Arc<dyn SessionRunBackgroundApplication> = session_runs.clone();
-    let bindings = host.session_application_bindings();
-    bindings.bind_background_run_submission(background)?;
-    bindings.require_background_run_submission()?;
     let coordinator_dispatch = host
         .session_runs()
         .coordinator_dispatch()
@@ -80,8 +76,23 @@ pub fn coordinator_execution(
         host.worker_completion_sink(),
         sessions.lifecycle().reconciliation_wakeup(),
     ));
-    let roles =
-        awaken_session_executor::session_dispatch_lifecycle(host.as_ref(), completion.clone());
+    let roles = awaken_session_executor::session_dispatch_lifecycle(
+        host.as_ref(),
+        completion.clone(),
+        awaken_session_run_delivery::SessionApplications::Local {
+            coordination: sessions.coordination(),
+            background_runs: background,
+        },
+    )
+    .map_err(|error| match error {
+        SessionApplicationBindingError::AlreadyBound => {
+            CoordinatorExecutionError::Coordination(AgentCoordinationInstallError::AlreadyInstalled)
+        }
+        SessionApplicationBindingError::ServicesAlreadyStarted => {
+            CoordinatorExecutionError::DispatchAlreadyStarted
+        }
+        error => CoordinatorExecutionError::Binding(error),
+    })?;
     Ok(awaken_coordinator::ExecutionPorts {
         session_runs,
         durable_runs: host.session_runs().clone(),
@@ -115,21 +126,4 @@ fn verify_composition(
             }
         }
     })
-}
-
-/// Connect the executor's fixed coordination tools to the one canonical
-/// Session application, after verifying both observe the same dispatch.
-fn install_managed_agent_coordination(
-    host: &ExecutorComponents,
-    application: &Arc<SessionApplication>,
-) -> Result<(), AgentCoordinationInstallError> {
-    let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
-        application.coordination();
-    let bindings = host.session_application_bindings();
-    bindings
-        .bind_agent_coordination(coordination)
-        .map_err(|_| AgentCoordinationInstallError::AlreadyInstalled)?;
-    bindings
-        .require_agent_coordination()
-        .map_err(|_| AgentCoordinationInstallError::ApplicationUnavailable)
 }

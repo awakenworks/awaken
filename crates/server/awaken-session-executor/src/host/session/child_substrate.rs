@@ -191,6 +191,7 @@ mod tests {
             )
             .build()
             .expect("validated Host dependencies");
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let managed = host.clone();
         let mut initial = empty_frozen_projection_for_snapshot(
             host.local_workspace(),

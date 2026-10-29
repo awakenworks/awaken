@@ -1853,14 +1853,10 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
 
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(RejectingSessionAgentCoordination);
-    managed
-        .session_application_bindings()
-        .bind_agent_coordination(coordination.clone())
+    crate::test_application_bindings::select_coordination(&managed, coordination.clone())
         .expect("L9 one coordination application");
     assert_eq!(
-        managed
-            .session_application_bindings()
-            .bind_agent_coordination(coordination.clone()),
+        crate::test_application_bindings::select_coordination(&managed, coordination.clone()),
         Err(crate::SessionApplicationBindingError::AlreadyBound),
         "L9/E5"
     );
@@ -1922,11 +1918,11 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await)
             .build()
             .expect("validated Host dependencies");
-    direct_with_endpoint
-        .clone()
-        .session_application_bindings()
-        .bind_agent_coordination(coordination.clone())
-        .unwrap();
+    crate::test_application_bindings::select_coordination(
+        &direct_with_endpoint,
+        coordination.clone(),
+    )
+    .unwrap();
     let direct_context = direct_with_endpoint
         .run_assembly
         .ctx_for("gate-direct-present", None)
@@ -1957,9 +1953,7 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         .install_test_session_init("gate-managed-present", session_init())
         .await
         .unwrap();
-    managed_runtime
-        .session_application_bindings()
-        .bind_agent_coordination(coordination.clone())
+    crate::test_application_bindings::select_coordination(&managed_runtime, coordination.clone())
         .unwrap();
     let managed_context = managed
         .run_assembly

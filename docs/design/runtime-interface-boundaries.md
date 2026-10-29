@@ -212,8 +212,28 @@ is implemented. Production services still start before request traffic.
 Run delivery and coordinated Threads hold this value without a `ProcessDispatch`;
 budgets reuse their original Thread publication without another injected publisher.
 A retained publisher therefore cannot keep a pool or terminal scanner alive. The
-SDK still owns dispatch for actual resident execution/lifecycle operations; the
-remaining application bindings are still open.
+SDK owns dispatch for actual resident execution/lifecycle operations. Its
+application capabilities are selected as one immutable value before execution
+services are constructed. `SessionApplications::Local` supplies coordination and
+background Run submission together; `Standalone` selects ordinary local Thread
+execution; `ClaimedWorker` requires upstream authority and both realization and
+coordination control capabilities. The checked constructor rejects a missing
+capability or incompatible topology before publishing either local role.
+
+Host stores weak observations of the complete selection. The returned
+`SessionExecutionLifecycle` owns the strong local capabilities outside Host and
+the lazy resolver. Clones retain that ownership through drain; dropping the final
+owner releases both roles. An expired local selection remains local and refuses
+work without selecting another authority. The composition root retains the
+lifecycle, including when the supplied Arcs had no other owners.
+
+`ProcessDispatch::configure_before_services_start` publishes capabilities within
+the same synchronization boundary that pool and terminal-scanner constructors
+hold through service publication. In-flight construction refuses a late binding
+without waiting for its resolver. Failed or unwound initialization releases the
+boundary and remains retryable. Dispatch owns this mechanism; the Session
+constructor owns topology and required-role policy. Drain continues to fence
+admission independently of a resolver that is still being constructed.
 
 The preparation compiler retains no process service: its one adapter implementation
 moves from `ProcessDispatch` to the pure `PreparationPlacement` component in the

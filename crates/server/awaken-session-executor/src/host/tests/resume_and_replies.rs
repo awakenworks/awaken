@@ -381,7 +381,7 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     .build()
     .expect("validated Host dependencies");
     let _managed = host.clone();
-    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+    crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
@@ -2117,7 +2117,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     .build()
     .expect("validated Host dependencies");
     let _managed = host.clone();
-    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+    crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 
@@ -2194,7 +2194,7 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     .build()
     .expect("validated Host dependencies");
     let _managed = host.clone();
-    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+    crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
     assert!(host.dispatch.pool().is_none(), "Q2/E2");

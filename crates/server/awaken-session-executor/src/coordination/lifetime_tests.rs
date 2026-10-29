@@ -7,14 +7,24 @@ use awaken_dispatch_execution::SessionRunAdmissionObserver as _;
 use std::time::Duration;
 
 async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponents> {
-    let mut deps = crate::SessionExecutorBuilder::ephemeral(
+    let deps = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::NoModelConfiguredExecutor),
         "stub",
     )
-    .await;
-    deps.worker.session_coordination_control = Some(control);
-    deps.build()
-        .expect("normal Host composition with the existing coordination port")
+    .await
+    .with_authority(crate::host::test_upstream_authority())
+    .with_session_control(control);
+    let host = deps
+        .build()
+        .expect("complete claimed coordination composition");
+    drop(
+        crate::WorkerRoles::of(
+            &host,
+            awaken_session_run_delivery::SessionApplications::ClaimedWorker,
+        )
+        .unwrap(),
+    );
+    host
 }
 
 #[tokio::test]

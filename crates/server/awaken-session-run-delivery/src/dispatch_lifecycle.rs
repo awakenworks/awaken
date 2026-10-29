@@ -20,13 +20,15 @@ type ResolverFactory = dyn Fn(&ProcessDispatch) -> Result<Arc<dyn WorkerResolver
 /// The resolver remains lazy, so an absent binding, a disabled service or a
 /// drained process never constructs execution or observation capabilities.
 #[derive(Clone)]
-pub struct SessionDispatchLifecycle {
+#[must_use = "retain the lifecycle and its application owners until drain completes"]
+pub struct SessionDispatchLifecycle<T = ()> {
     dispatch: Arc<ProcessDispatch>,
     binding: Option<DispatchBinding>,
     completion: Arc<dyn CompletionSink>,
     terminal_owner: Option<Arc<AnyCoordinatorDispatch>>,
     background: Arc<BackgroundRuns>,
     resolver: Arc<ResolverFactory>,
+    _lifetime: T,
 }
 
 impl SessionDispatchLifecycle {
@@ -52,9 +54,25 @@ impl SessionDispatchLifecycle {
             terminal_owner,
             background,
             resolver: Arc::new(resolver),
+            _lifetime: (),
         }
     }
 
+    /// Retain process-owned application capabilities outside the resolver.
+    pub fn retaining<T>(self, lifetime: T) -> SessionDispatchLifecycle<T> {
+        SessionDispatchLifecycle {
+            dispatch: self.dispatch,
+            binding: self.binding,
+            completion: self.completion,
+            terminal_owner: self.terminal_owner,
+            background: self.background,
+            resolver: self.resolver,
+            _lifetime: lifetime,
+        }
+    }
+}
+
+impl<T> SessionDispatchLifecycle<T> {
     #[must_use]
     pub fn dispatch(&self) -> &Arc<ProcessDispatch> {
         &self.dispatch
@@ -83,17 +101,29 @@ impl SessionDispatchLifecycle {
     /// registry within the remaining deadline. A Run can register extraction
     /// just before releasing its claim capacity; reversing this order loses it.
     pub async fn drain(&self, timeout: Duration) -> bool {
-        let deadline = awaken_time::mono::MonoDeadline::after(timeout);
-        let Some(_claimed_runs) = self.dispatch.drain_claimed_runs(&deadline).await else {
-            return false;
-        };
-        let remaining = deadline.remaining();
-        !remaining.is_zero() && self.background.drain(remaining).await
+        drain_session_dispatch(&self.dispatch, &self.background, timeout).await
     }
 }
 
+/// Close admission and drain the existing process without constructing or
+/// replacing startup ports. One deadline and ordering serve every caller.
+pub async fn drain_session_dispatch(
+    dispatch: &ProcessDispatch,
+    background: &BackgroundRuns,
+    timeout: Duration,
+) -> bool {
+    let deadline = awaken_time::mono::MonoDeadline::after(timeout);
+    let Some(_claimed_runs) = dispatch.drain_claimed_runs(&deadline).await else {
+        return false;
+    };
+    let remaining = deadline.remaining();
+    !remaining.is_zero() && background.drain(remaining).await
+}
+
 #[async_trait::async_trait]
-impl awaken_dispatch_execution::ProcessDispatchLifecycle for SessionDispatchLifecycle {
+impl<T: Send + Sync + 'static> awaken_dispatch_execution::ProcessDispatchLifecycle
+    for SessionDispatchLifecycle<T>
+{
     fn start(&self) -> Result<(), Error> {
         self.start_local_pool()?;
         self.start_terminal_reconciliation();

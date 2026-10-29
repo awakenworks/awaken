@@ -28,7 +28,7 @@
 //! either service. Its absorbing drain fences a cold or still-constructing
 //! service without waiting for its synchronous resolver factory.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, TryLockError};
 
 use once_cell::sync::OnceCell;
 
@@ -55,6 +55,10 @@ pub struct ProcessDispatch {
     publication: crate::DispatchPublication,
     admission: Arc<PoolAdmission>,
     pool: OnceCell<Arc<DispatchPool<AnyDispatchStore>>>,
+    /// Configuration readers publish capabilities before either service may
+    /// choose immutable construction ports. Service initialization owns the
+    /// writer through OnceCell publication, including failure and unwind.
+    service_configuration: RwLock<()>,
     /// The scan state the claimed-Run resolver shares.
     terminal_reconciliation: Arc<TerminalReconciliationState>,
     /// The coordinator-side maintenance loop (rules T1-T4 above).
@@ -137,6 +141,7 @@ impl ProcessDispatch {
             publication,
             admission,
             pool: OnceCell::new(),
+            service_configuration: RwLock::new(()),
             terminal_reconciliation: Arc::default(),
             terminal_reconciler: OnceCell::new(),
             preparation: Arc::new(crate::PreparationPlacement),
@@ -177,10 +182,40 @@ impl ProcessDispatch {
         self.pool.get()
     }
 
-    /// Whether a service has already selected its immutable construction
-    /// ports. A stopped service still counts: its ports cannot be replaced.
+    /// Whether a service is selecting, or has selected, its immutable ports.
+    /// Observation never waits for a resolver factory. A failed initializer
+    /// releases its selection; a stopped published service still counts.
     #[must_use]
     pub fn has_started_services(&self) -> bool {
+        let Some(_configuration) = self.read_service_configuration() else {
+            return true;
+        };
+        self.service_ports_selected()
+    }
+
+    /// Atomically publish configuration before service port selection begins.
+    /// Concurrent configuration publishers may arbitrate their own immutable
+    /// value. An in-flight or published service refuses the callback entirely.
+    /// Only publish capabilities here; never start a service in this callback.
+    #[must_use = "None means service construction already selected its ports"]
+    pub fn configure_before_services_start<T>(&self, publish: impl FnOnce() -> T) -> Option<T> {
+        let _configuration = self.read_service_configuration()?;
+        if self.service_ports_selected() {
+            None
+        } else {
+            Some(publish())
+        }
+    }
+
+    fn read_service_configuration(&self) -> Option<RwLockReadGuard<'_, ()>> {
+        match self.service_configuration.try_read() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    fn service_ports_selected(&self) -> bool {
         self.pool.get().is_some() || self.terminal_reconciler.get().is_some()
     }
 
@@ -202,6 +237,10 @@ impl ProcessDispatch {
             return Ok(());
         };
         let binding = binding.expect("a spawn decision requires the bound authority");
+        let _construction = self
+            .service_configuration
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.pool
             .get_or_try_init(|| {
                 self.admission.require_startable()?;
@@ -243,6 +282,10 @@ impl ProcessDispatch {
         ) {
             return false;
         }
+        let _construction = self
+            .service_configuration
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut started = false;
         self.terminal_reconciler
             .get_or_try_init(|| {
