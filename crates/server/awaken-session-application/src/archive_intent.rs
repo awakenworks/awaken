@@ -26,8 +26,7 @@ pub(crate) async fn terminal_environment_creation_not_attempted(
     owner_scope: &str,
     session: &PersistedSession,
 ) -> Result<bool, awaken_session_state_contract::SessionRepositoryError> {
-    Ok(
-        awaken_session_state_contract::session_has_terminal_no_create_evidence(session)
-            || unattempted_profiled_archive_witness(repository, owner_scope, session).await?,
-    )
+    Ok((session.is_terminal()
+        && awaken_session_state_contract::session_has_no_create_evidence(session))
+        || unattempted_profiled_archive_witness(repository, owner_scope, session).await?)
 }

@@ -11,6 +11,12 @@ def check_retained_worker_retirement_model_mutants(tlc_jar: Path) -> None:
     unknown = (ROOT / "formal/tla/RetainedWorkerRetirementUnknown.cfg").read_text()
     live = (ROOT / "formal/tla/RetainedWorkerRetirementLive.cfg").read_text()
     live_header = live.split("INVARIANTS\n", 1)[0]
+    # C1 the root owner has positively excluded every no-Create source; C2
+    # Actor exit/Create closure are still separate. R1 zero sources transfers
+    # without inventing cleanup; R2 requiring Resident/nonempty sources strands
+    # it. The model takes C1 as a premise; Rust decision tables establish it.
+    no_create = live.replace("{a, b}", "{}")
+    no_create_header = no_create.split("INVARIANTS\n", 1)[0]
     header = config.split("INVARIANTS\n", 1)[0]
     unknown_header = unknown.split("INVARIANTS\n", 1)[0]
     # M1 waiting for cleanup before retiring the old-code Actor recreates
@@ -41,6 +47,8 @@ def check_retained_worker_retirement_model_mutants(tlc_jar: Path) -> None:
          "temporal:QualifiedRetirementEventuallyTransfers", live_header),
         (r'Prepare(s) == /\ SessionTerminal /\ s \in Sources',
          r'Prepare(s) == /\ s \in Sources', "LiveSourcesNeverCleaned", live_header),
+        (r'/\ ~oldStopped /\ ~permit', r'/\ ~oldStopped /\ ~permit /\ Sources # {}',
+         "temporal:QualifiedRetirementEventuallyTransfers", no_create_header),
     ])
     mutations = []
     for anchor, broken, invariant, case_header in changes:
@@ -51,6 +59,6 @@ def check_retained_worker_retirement_model_mutants(tlc_jar: Path) -> None:
     for witness in ("NoRetirementReached", "NoCleanupReached"):
         mutations.append((model, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "RetainedWorkerRetirement", model, config, mutations)
-    for case in (prepared, unknown, live):
+    for case in (prepared, unknown, live, no_create):
         check_tlc_model_mutations(tlc_jar, "RetainedWorkerRetirement", model, case, [])
-    print("retained Worker retirement: 4 bounded configurations, 9/9 semantic counterexamples")
+    print("retained Worker retirement: 5 bounded configurations, 10/10 semantic counterexamples")

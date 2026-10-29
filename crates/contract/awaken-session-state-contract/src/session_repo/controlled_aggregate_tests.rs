@@ -551,6 +551,13 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
     // R5 missing C2/drift/rewritten receipt -> no root mutation. Receipt
     // admission remains the old pure authority for genuine legacy outcomes.
     let mut fresh = fresh_root(SessionExecutionState::Preparing, 0);
+    // N0 no-Create is explicit immutable history, independently of terminality:
+    // fresh-empty -> true, historical missing -> false, admitted -> false.
+    // Execution/Worker closure remains the consuming application's own gate.
+    assert!(crate::session_has_no_create_evidence(fresh.snapshot()));
+    assert!(!crate::session_has_no_create_evidence(
+        root(SessionExecutionState::Preparing, 0).snapshot()
+    ));
     let fingerprint = fresh
         .frozen_baseline()
         .unwrap()
@@ -616,6 +623,11 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
                 .admit_environment_effect("workspace", &intent, 1)
                 .unwrap();
         }
+        assert_eq!(
+            crate::session_has_no_create_evidence(subject.snapshot()),
+            !pending,
+            "N0 admitted Create is never mistaken for no-Create",
+        );
         for kind in [
             crate::SessionEnvironmentEffectKind::Adopt,
             crate::SessionEnvironmentEffectKind::ResourceProjectionReservation {

@@ -6,9 +6,11 @@ EXTENDS FiniteSets
    An owned cleanup lease may remain live: forced stop is safe only because
    bytes are independent OR preparation is durable. Actual exit, Create closure
    and lease succession remain separate before the SAME roots move to a new
-   Actor. This bounded model does not prove APIs, clocks or Rust refinement. *)
+   Actor. Sources may be empty only as an owner-qualified input: the Rust
+   root scan proves positive no-Create history and closed assignment, not this
+   model. This bounded model does not prove APIs, clocks or Rust refinement. *)
 CONSTANTS Sources, IndependentSources, KnownSources, InitiallyPrepared, NeedsNewCode, SessionTerminal
-ASSUME /\ Sources # {} /\ IndependentSources \subseteq Sources
+ASSUME /\ IndependentSources \subseteq Sources
        /\ KnownSources \subseteq Sources /\ InitiallyPrepared \subseteq Sources
        /\ NeedsNewCode \subseteq Sources
 ASSUME /\ SessionTerminal \in BOOLEAN /\ (~SessionTerminal => InitiallyPrepared = {})

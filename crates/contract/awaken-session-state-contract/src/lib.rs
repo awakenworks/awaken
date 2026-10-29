@@ -64,7 +64,7 @@ pub(crate) use {
 pub use archive_intent::{
     SessionArchiveAdmission, SessionArchiveBusinessIntent, SessionTerminalCleanupAffinity,
     failed_profiled_activity_matches, failed_profiled_run_for_archive,
-    session_archive_idempotency_record, session_has_terminal_no_create_evidence,
+    session_archive_idempotency_record, session_has_no_create_evidence,
     session_terminal_cleanup_affinity_for, session_unattempted_profiled_archive_record,
 };
 pub use environment::{
