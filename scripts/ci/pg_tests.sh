@@ -145,6 +145,10 @@ backend_parity() {
     --require-case=in_memory_conforms --require-case=sqlite_conforms --require-case=postgres::postgres_conforms \
     --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
     -- --test-threads=1 || record_failure "$?"
+  # Ordinary real-backend correctness; heavy scale observations stay separate.
+  pg_required_test --locked -p awaken-dispatch --features test-support --test dispatch_queries postgres_exact_physical_execution_observations_use_the_original_store_clock \
+    --require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock \
+    -- --exact --test-threads=1 || record_failure "$?"
 }
 
 work_store_evidence() {

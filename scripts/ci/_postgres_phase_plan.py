@@ -119,7 +119,7 @@ def self_test(root: Path) -> None:
     selectors = ("backend_parity", "work_store_evidence", "http_transport_evidence",
                  "critical_durability_evidence", "storage_observation_evidence", "resources_evidence", "storage_evidence")
     phases = read_phases(root, selectors)
-    assert len(phases) == 37, "P6 current required selector inventory"
+    assert len(phases) == 38, "P6 current required selector inventory"
     startup = [phase for phase in phases if phase.package == "awaken-process-startup"]
     assert len(startup) == 2 and startup[0].arguments != startup[1].arguments, "P7 distinct process bootstrap phases"
     assert all(phase.environment == (("AWAKEN_CRASH_BACKEND", "postgres"),)

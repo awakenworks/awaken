@@ -131,7 +131,7 @@ class NativeReceiptIdentityTests(unittest.TestCase):
     def test_same_source_receipt_requires_this_service_and_this_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary);paths=postgres_receipts(base,"core")
-            self.assertEqual(len(self.verify(base,paths)),17)
+            self.assertEqual(len(self.verify(base,paths)),18)
             path=paths[0]/"results.json";original=json.loads(path.read_text())
             for fixture in (None,{"kind":"postgres","owner":"older-fixture"},
                             {"kind":"nats","owner":FIXTURE_OWNER}):
@@ -234,8 +234,8 @@ class ExecutionReceiptTests(unittest.TestCase):
             base=Path(directory);receipts=postgres_receipts(base,"core")
             log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)),17)
-                with self.assertRaisesRegex(ValueError,"all 17"):gate.reconcile_postgres("","source",fixture_owner=FIXTURE_OWNER)
+                self.assertEqual(len(gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)),18)
+                with self.assertRaisesRegex(ValueError,"all 18"):gate.reconcile_postgres("","source",fixture_owner=FIXTURE_OWNER)
                 path=receipts[0]/"results.json";original=json.loads(path.read_text())
                 for key in ("postgres_fixture_required","postgres_fixture_configured"):
                     for invalid in (False,"1"):
@@ -633,7 +633,7 @@ class IndependentPostgresDomainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);path=root/"scripts/ci/pg_tests.sh";path.parent.mkdir(parents=True)
             path.write_text(source,encoding="utf-8")
-            self.assertEqual(len(postgres_phases("core",root)),17)
+            self.assertEqual(len(postgres_phases("core",root)),18)
             for phases in replacements:
                 replacement="backend_parity() {\n"+"\n".join(
                     "  pg_required_test "+shlex.join(phase.arguments)+' || record_failure "$?"'
@@ -654,6 +654,88 @@ class IndependentPostgresDomainTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"independent crash backend policy"):
                 postgres_phases("core",root)
 
+
+
+class DispatchObservationSelectionTests(unittest.TestCase):
+    def verify(self, text):
+        from _native_postgres_scopes import postgres_phases
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'scripts/ci/pg_tests.sh';source.parent.mkdir(parents=True)
+            source.write_text(text,encoding='utf-8')
+            return postgres_phases('core',root)
+
+    def test_dispatch_observation_is_ordinary_core_and_not_a_heavy_storage_phase(self):
+        from _native_postgres_scopes import postgres_phases
+        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        phases=self.verify(text)
+        dispatch=[phase for phase in phases if phase.package=='awaken-dispatch']
+        self.assertEqual(len(phases),18)
+        self.assertEqual(len(dispatch),1)
+        self.assertEqual(dispatch[0].selector,'backend_parity')
+        self.assertIn('--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock',dispatch[0].arguments)
+        self.assertNotIn('--ignored',dispatch[0].arguments)
+        self.assertEqual(len(postgres_phases('storage-observations',gate.ROOT)),2)
+
+    def test_same_package_substitution_cannot_erase_the_real_dispatch_outcome(self):
+        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        original='--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock'
+        self.assertEqual(text.count(original),1)
+        mutations=(
+            ('missing-floor',text.replace(original,'',1),'nonempty required case floors'),
+            ('different-floor',text.replace(original,'--require-case=another_case',1),'independent Dispatch observation outcome'),
+        )
+        for name,changed,expected in mutations:
+            self.assertNotEqual(changed,text)
+            with self.subTest(mutation=name),self.assertRaisesRegex(ValueError,expected):
+                self.verify(changed)
+
+    def test_dispatch_target_and_feature_and_ordinary_runtime_shape_are_required(self):
+        import re
+        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        marker='--test dispatch_queries postgres_exact_physical_execution_observations_use_the_original_store_clock'
+        self.assertEqual(text.count(marker),1)
+        expression=r'(?ms)(pg_required_test --locked -p awaken-dispatch .*?-- )--exact( --test-threads=1)'
+        ignored,count=re.subn(expression,r'\1--exact --ignored\2',text,count=1)
+        self.assertEqual(count,1)
+        no_exact,count=re.subn(expression,r'\1\2',text,count=1)
+        self.assertEqual(count,1)
+        mutations={
+            'target':text.replace(marker,marker.replace('dispatch_queries','other_target'),1),
+            'features':text.replace('--features test-support --test dispatch_queries','--features other --test dispatch_queries',1),
+            'filter':text.replace(marker,marker.replace('postgres_exact_physical_execution_observations_use_the_original_store_clock','another_filter'),1),
+            'skip':ignored.replace('--ignored','--skip postgres_exact_physical_execution_observations_use_the_original_store_clock',1),
+            'ignored':ignored,
+            'no-exact':no_exact,
+        }
+        for name,changed in mutations.items():
+            self.assertNotEqual(changed,text)
+            with self.subTest(mutation=name),self.assertRaisesRegex(ValueError,'independent Dispatch observation outcome'):
+                self.verify(changed)
+
+    def test_dispatch_runtime_flag_aliases_cannot_hide_or_include_other_cases(self):
+        import re
+        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        expression=r'(?ms)(pg_required_test --locked -p awaken-dispatch .*?-- --exact)( --test-threads=1)'
+        for flag in ('--include-ignored','--include-ignored=true',
+                     '--skip=postgres_exact_physical_execution_observations_use_the_original_store_clock'):
+            changed,count=re.subn(expression,lambda match:match.group(1)+' '+flag+match.group(2),text,count=1)
+            self.assertEqual(count,1)
+            with self.subTest(flag=flag),self.assertRaisesRegex(ValueError,'independent Dispatch observation outcome'):
+                self.verify(changed)
+
+    def test_dispatch_same_package_cannot_move_out_of_backend_parity(self):
+        import re
+        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        expression=r'(?ms)^  pg_required_test --locked -p awaken-dispatch .*?record_failure "\$\?"\n'
+        statements=list(re.finditer(expression,text))
+        self.assertEqual(len(statements),1)
+        statement=statements[0].group(0)
+        changed=text.replace(statement,'',1)
+        critical=re.search(r'(?ms)^critical_durability_evidence\(\) \{\n.*?^\}',changed)
+        self.assertIsNotNone(critical)
+        changed=changed[:critical.end()-1]+statement+changed[critical.end()-1:]
+        with self.assertRaisesRegex(ValueError,'independent Dispatch observation outcome'):
+            self.verify(changed)
 
 if __name__=="__main__":
     unittest.main(verbosity=2)

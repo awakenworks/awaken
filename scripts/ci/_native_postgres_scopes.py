@@ -10,7 +10,7 @@ POSTGRES_PACKAGES = {
     "core": (
         "awaken-reliability-testkit", "awaken-model-catalog-store", "awaken-credential-store",
         "awaken-data-subject-store", "awaken-captured-content-store", "awaken-work-store",
-        "awaken-session-store", "awaken-memory-store", "awaken-skill-store", "awaken-work-store",
+        "awaken-session-store", "awaken-memory-store", "awaken-dispatch", "awaken-skill-store", "awaken-work-store",
         "awaken-dispatch-http", "awaken-config-store", "awaken-session-store",
         "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator"),
     "storage": (
@@ -37,6 +37,9 @@ RESOURCE_APPLICATION_CASE_FLOORS = frozenset({
 })
 
 
+CORE_DISPATCH_OBSERVATION_CASE = 'postgres_exact_physical_execution_observations_use_the_original_store_clock'
+
+
 POSTGRES_SELECTORS = {
     "core": ("backend_parity", "work_store_evidence", "http_transport_evidence", "critical_durability_evidence"),
     "storage": ("storage_evidence",),
@@ -51,6 +54,22 @@ def postgres_phases(scope, root=None):
     phases = read_phases(root or Path(__file__).resolve().parents[2], POSTGRES_SELECTORS[scope])
     if Counter(phase.package for phase in phases) != Counter(POSTGRES_PACKAGES[scope]):
         raise ValueError("PostgreSQL selector changed independent required domain coverage")
+    if scope == 'core':
+        dispatch = [phase for phase in phases if phase.package == 'awaken-dispatch']
+        if len(dispatch) != 1:
+            raise ValueError('PostgreSQL selector changed independent Dispatch observation phase')
+        arguments = dispatch[0].arguments
+        pairs = tuple(zip(arguments, arguments[1:]))
+        runtime = arguments[arguments.index('--') + 1:] if '--' in arguments else ()
+        runtime_flags = {argument.partition('=')[0] for argument in runtime if argument.startswith('--')}
+        if (dispatch[0].selector != 'backend_parity'
+                or ('--test', 'dispatch_queries') not in pairs
+                or ('--features', 'test-support') not in pairs
+                or '--require-case=' + CORE_DISPATCH_OBSERVATION_CASE not in arguments
+                or CORE_DISPATCH_OBSERVATION_CASE not in arguments
+                or '--exact' not in runtime_flags
+                or {'--ignored', '--include-ignored', '--skip'} & runtime_flags):
+            raise ValueError('PostgreSQL selector changed independent Dispatch observation outcome')
     for phase in phases:
         if (phase.selector == "critical_durability_evidence"
                 and phase.package in ("awaken-config-store", "awaken-session-store", "awaken-credential-store")
