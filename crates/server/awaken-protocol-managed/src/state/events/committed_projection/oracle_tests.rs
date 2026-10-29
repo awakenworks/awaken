@@ -118,6 +118,11 @@ impl ManagedState {
         if cold.checkpoint.source != warm.checkpoint.source {
             return;
         }
+        assert_eq!(
+            warm.owner_scope(),
+            cold.owner_scope(),
+            "warm/cold oracle: Session owner must come from the same durable root"
+        );
         let warm_history = durable_history(&warm.events);
         let cold_history = durable_history(&cold.events);
         if warm_history == cold_history {

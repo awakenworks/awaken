@@ -71,8 +71,6 @@ pub struct ManagedState {
     pub(super) application: Arc<SessionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Mutex<HashMap<String, SessionRecord>>,
-    /// Edge-owned Session-to-Workspace wire projection.
-    pub(super) owners: Mutex<HashMap<String, String>>,
     pub(super) session_seq: AtomicU64,
     /// Per-Session committed wire-event channels. Runtime live observations use
     /// the ThreadEventHub subscription and never enter this map.
@@ -89,6 +87,9 @@ pub struct ManagedState {
     /// it off, because the check reads the prefix a second time.
     #[cfg(test)]
     pub(super) warm_cold_oracle: std::sync::atomic::AtomicBool,
+    /// One-shot test observation after the complete cold cache entry is visible.
+    #[cfg(test)]
+    pub(super) cold_publication_pause: Mutex<Option<super::rehydration::ColdPublicationPause>>,
 }
 
 impl ManagedState {

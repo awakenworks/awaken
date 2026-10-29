@@ -108,3 +108,123 @@ fn projection_publish_decision_covers_cache_and_source_fences() {
         "all four decisions are reached"
     );
 }
+
+/// The frame includes the CAS token and every visible/continuation field.
+/// Exhaustive destructuring makes adding a SessionRecord field require an
+/// oracle decision. This deliberately does not call the publisher's content
+/// comparator: that comparator excludes the CAS token and is itself subject
+/// to the independent frame assertion.
+pub(in crate::state) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionRecord) {
+    let SessionRecord {
+        cache_revision,
+        committed_projection_ready,
+        owner_scope,
+        agent_id,
+        session,
+        root_time,
+        event_times,
+        child_times,
+        resource_state,
+        events,
+        event_page_index,
+        checkpoint,
+        event_thread_owners,
+        child_threads,
+        primary_thread_usage,
+        permission_decisions,
+    } = actual;
+    assert_eq!(*cache_revision, expected.cache_revision, "frame: cache CAS");
+    assert_eq!(owner_scope, &expected.owner_scope, "frame: Session owner");
+    assert!(
+        Arc::ptr_eq(event_page_index, &expected.event_page_index),
+        "frame: published event index"
+    );
+    // The recorded gate decisions change what the wire reports for a tool call,
+    // so they are projected content and belong in the frame oracle.
+    assert_eq!(
+        permission_decisions, &expected.permission_decisions,
+        "frame: recorded permission decisions"
+    );
+    assert_eq!(
+        *committed_projection_ready, expected.committed_projection_ready,
+        "frame: complete committed-prefix availability"
+    );
+    assert_eq!(agent_id, &expected.agent_id, "frame: agent identity");
+    assert_eq!(root_time, &expected.root_time, "frame: root time evidence");
+    assert_eq!(
+        event_times, &expected.event_times,
+        "frame: event time evidence"
+    );
+    assert_eq!(
+        child_times, &expected.child_times,
+        "frame: child time evidence"
+    );
+    assert!(
+        resource_state == &expected.resource_state,
+        "frame: resources"
+    );
+    assert!(
+        checkpoint == &expected.checkpoint,
+        "frame: source/progress pair"
+    );
+    assert_eq!(
+        event_thread_owners, &expected.event_thread_owners,
+        "frame: event owners"
+    );
+    for (label, actual, expected) in [
+        (
+            "session",
+            serde_json::to_value(session),
+            serde_json::to_value(&expected.session),
+        ),
+        (
+            "events",
+            serde_json::to_value(events),
+            serde_json::to_value(&expected.events),
+        ),
+        (
+            "child threads",
+            serde_json::to_value(child_threads),
+            serde_json::to_value(&expected.child_threads),
+        ),
+        (
+            "primary usage",
+            serde_json::to_value(primary_thread_usage),
+            serde_json::to_value(&expected.primary_thread_usage),
+        ),
+    ] {
+        assert_eq!(actual.unwrap(), expected.unwrap(), "frame: {label}");
+    }
+}
+
+#[tokio::test]
+async fn owner_is_part_of_projection_equality_without_changing_the_wire_dto() {
+    let state = ManagedState::new(crate::state::test_support::RehydrateFake::default()).await;
+    let created = state
+        .create_session(
+            serde_json::from_value(
+                serde_json::json!({"agent":"coder", "environment_id":"env_local"}),
+            )
+            .unwrap(),
+            "workspace-a",
+        )
+        .await
+        .unwrap();
+    let original = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&created.id)
+        .unwrap()
+        .clone();
+    let mut other = original.clone();
+    assert!(original.same_projected_content(&other).unwrap());
+    other.owner_scope = "workspace-b".into();
+    assert!(!original.same_projected_content(&other).unwrap());
+    assert!(!other.same_projected_content(&original).unwrap());
+    assert_eq!(
+        serde_json::to_value(original.session_projection()).unwrap(),
+        serde_json::to_value(other.session_projection()).unwrap(),
+        "the owner is a private cache projection, never another wire field"
+    );
+}

@@ -92,6 +92,7 @@ impl ManagedState {
             SessionRecoveryPurpose::CollectionRead,
         )?;
         let mut record = SessionRecord::new(
+            owner_scope.to_owned(),
             agent_id,
             session,
             persisted.revision,

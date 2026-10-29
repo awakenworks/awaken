@@ -260,6 +260,9 @@ pub(crate) struct ThreadTimeEvidence {
 
 #[derive(Clone)]
 pub(super) struct SessionRecord {
+    /// Disposable authorization projection from the same durable root as this
+    /// record. Required at construction and never independently published.
+    owner_scope: String,
     /// Process-local compare-and-swap coordinate. It is advanced by every
     /// visible cache mutation and is never persisted or treated as domain truth.
     pub(super) cache_revision: u64,
@@ -323,6 +326,7 @@ impl SessionRecord {
         let Self {
             cache_revision,
             committed_projection_ready: _,
+            owner_scope: _,
             agent_id: _,
             session: _,
             root_time: _,
@@ -382,7 +386,8 @@ impl SessionRecord {
             &other.primary_thread_usage,
         ))
         .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-        Ok(self.agent_id == other.agent_id
+        Ok(self.owner_scope == other.owner_scope
+            && self.agent_id == other.agent_id
             && self.committed_projection_ready == other.committed_projection_ready
             && self.resource_state == other.resource_state
             && self.checkpoint == other.checkpoint
@@ -607,6 +612,7 @@ impl SessionRecord {
     }
 
     pub(super) fn new(
+        owner_scope: String,
         agent_id: String,
         session: Session,
         session_revision: awaken_session_types::SessionRevision,
@@ -625,6 +631,7 @@ impl SessionRecord {
         Self {
             cache_revision: 0,
             committed_projection_ready: false,
+            owner_scope,
             agent_id,
             session,
             root_time,
@@ -639,6 +646,10 @@ impl SessionRecord {
             child_threads: Vec::new(),
             primary_thread_usage: None,
         }
+    }
+
+    pub(super) fn owner_scope(&self) -> &str {
+        &self.owner_scope
     }
 
     /// Project the HTTP Session DTO from typed aggregate state. The stored
@@ -658,3 +669,6 @@ impl SessionRecord {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::state) use tests::assert_record_frame_eq;

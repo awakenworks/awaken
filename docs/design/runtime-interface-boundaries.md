@@ -1025,3 +1025,24 @@ Before changing runtime interfaces, name:
 6. the first vertical slice.
 
 If any answer is "several things", split the proposal before implementing it.
+
+
+## Atomic Disposable Session Cache Entries
+
+The durable Session root owns tenancy and state. Managed HTTP projects its cached
+owner scope, Session model and cache revision into one `SessionRecord`. Owner
+scope is required at construction and read through the record; a separate owner
+map cannot outlive, precede or lag the cached content.
+
+Creation, cold recovery and committed-event projection publish the same complete
+entry. Scoped collection reads filter and project under the Session-cache lock.
+Warm owner reads observe that entry, while a cache miss resolves ownership through
+the canonical root. Eviction removes the disposable owner with its content; an
+ownership-only durable lookup does not create a partial cache entry.
+
+A racing cold candidate preserves an entry another reader already published.
+Existing source and cache revision fences continue to protect warm publication;
+frame equality includes owner scope. The HTTP Session DTO keeps its original
+shape. Tests cover each recovery purpose, a warm reader while the first hydrator
+has published but not returned, stale-candidate refusal, read failure and recovery,
+eviction and rehydration, and unchanged wire projection with distinct ownership.
