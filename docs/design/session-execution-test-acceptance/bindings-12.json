@@ -707,22 +707,42 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 174,
-        "file_sha256": "70cecdb82ecac1a0a682a2df40fa2ca4905f67287a02de618fdcc4f7e66f3cef"
+        "line": 228,
+        "file_sha256": "1cb246c88ebcc99cc71fc7ed3f1fdd6a3d34397fa813bac6f36a68d10590586e"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 177
+        "line": 231
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 182
+        "line": 235
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 187
+        "line": 242
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 244
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 250
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 251
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 259
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 264
       }
     ],
     "execution_witnesses": [
@@ -747,8 +767,8 @@
         "negative_control": true
       }
     },
-    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "review": "The owned leader is gated until its exact kernel handle is retained and the descendant authenticates. Kernel exit observation leaves the descendant alive for a leader-only stopped mutant, which the real TCP echo refutes; only then does production polling request Job teardown, followed by observed EOF/reset.",
+    "limitation": "2026-10-29: source coordinates follow the independent Windows kernel exit observation. E16 retains its original source head and log; that retained witness does not claim execution of the changed fixture. Full T10-C02 acceptance remains pending.",
     "id": "B235"
   }
 ]

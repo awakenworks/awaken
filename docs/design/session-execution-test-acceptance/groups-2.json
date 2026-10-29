@@ -556,7 +556,7 @@
           ]
         },
         "product_gap": {
-          "reason": "LocalProcess 在 Windows 没有 Job Object，leader 退出即被视为 stopped",
+          "reason": "Windows LocalProcess 已持有 Job Object 并在观察到 leader 退出后请求树清理；ProcessHandle 仍仅报告 leader 退出，尚无整个原操作树退出的直接观察端口",
           "follow_up": "local-process 与 protocol-acp 进程树（L）",
           "reproducers": [
             "t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives"

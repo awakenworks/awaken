@@ -2671,6 +2671,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "winsafe",
 ]
 
 [[package]]

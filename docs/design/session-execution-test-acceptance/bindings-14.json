@@ -193,8 +193,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 219,
-        "file_sha256": "70cecdb82ecac1a0a682a2df40fa2ca4905f67287a02de618fdcc4f7e66f3cef"
+        "line": 275,
+        "file_sha256": "1cb246c88ebcc99cc71fc7ed3f1fdd6a3d34397fa813bac6f36a68d10590586e"
       }
     ],
     "execution_witnesses": [],
@@ -205,8 +205,8 @@
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: LocalProcess has no Windows Job Object and reap treats leader exit as stopped",
-    "limitation": "Not execution evidence. Follow-up: local-process and protocol-acp process tree (L)",
+    "review": "Ignored residual probe, not a current execution claim. Windows LocalProcess now owns a Job and requests teardown after leader exit; ProcessHandle still exposes the leader exit rather than a directly observed whole-tree exit.",
+    "limitation": "Not execution evidence. E17 retains the former no-Job reproducer at its original source revision. Follow-up: directly observed local-process and protocol-acp tree termination (L).",
     "id": "B259"
   },
   {

@@ -359,7 +359,7 @@
 - 必须断言：不伪造 stopped/quiesced；保留原操作观察责任和稳定身份。
 - 反向控制：unknown 映射为 stopped 的负控必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives`（忽略，不计证据；E17 为预期失败）：LocalProcess 在 Windows 没有 Job Object，leader 退出即被视为 stopped。完整场景：待验收。
+- 绑定及状态：`t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant`（E16 保留原始源码头与日志；当前夹具独立保留 Windows 内核句柄观察 leader 退出，执行真实后代存活负控，再观测生产 Job 清理的连接关闭）。忽略的残余探针 `t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives` 不计执行证据；E17 保留旧无 Job 实现的预期失败记录。当前 Windows LocalProcess 已持有 Job Object 并在 poll 观察到 leader 退出后请求树清理；ProcessHandle 仍只报告 leader 退出，尚无整个原操作树退出的直接观察端口。完整场景：待验收。
 
 ### T10-C03 恢复原操作
 
