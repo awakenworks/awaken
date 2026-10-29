@@ -327,13 +327,15 @@ fn compile_update_tool_settings(
     if command.if_match.unwrap_or(session.revision) != session.revision {
         return Err(SessionUpdateError::Conflict);
     }
-    let tools = crate::tool_compilation::compile_tool_settings(
-        compiler,
-        command.tools.as_ref().unwrap_or(&session.tools).clone(),
-    )
-    .map_err(SessionUpdateError::Rejected)?;
+    // Omission preserves the already frozen settings. Unrelated authoring or
+    // credential commands must not depend on recompiling those old settings.
+    let Some(authored_tools) = &command.tools else {
+        return Ok(command.clone());
+    };
+    let tools = crate::tool_compilation::compile_tool_settings(compiler, authored_tools.clone())
+        .map_err(SessionUpdateError::Rejected)?;
     Ok(SessionUpdateCommand {
-        tools: command.tools.as_ref().map(|_| tools),
+        tools: Some(tools),
         ..command.clone()
     })
 }

@@ -1061,3 +1061,36 @@ authentication mode or a signing fallback.
 The Rust gate executes the real dependency-only feature graph with named test
 floors. Default and full Worker feature profiles retain their existing negative
 and positive paths; tests also cover missing projections and DTO mutation.
+
+## Authored Tool Updates
+
+A Session update compiles only an explicitly supplied `tools` value. Omission
+preserves the previously frozen settings; explicit empty settings clear them.
+The original phase and revision fences precede this decision. Credential-only
+adoption in an unattempted Profile also requires known empty materialization
+history, including when logical activity is already reserved. Legacy absence
+remains unknown. The compiler remains a required construction capability.
+
+The durable command receipt is checked before compilation and again after the
+root read. Exact replay retains the original command revision while reconciling
+from current durable truth. An authored override is compiled once per tested CAS
+attempt; this makes no command-wide once-only claim across CAS retries.
+
+The [update compilation tests](../../crates/server/awaken-session-application/src/tests/update_compilation.rs)
+exercise the real application with SQLite and an observed, rejecting or
+normalizing compiler. Their `tests::update_compilation::` entries are:
+
+| Test suffix | Acceptance rule |
+| --- | --- |
+| `title_and_metadata_preserve_frozen_tools_without_compilation` | Commit requested fields, preserve frozen tools, zero compiler or tool projection calls |
+| `preparing_credential_revocation_preserves_tools_and_reserved_activity` | Commit actual credential revocation with and without reserved activity, preserve tools and physical preparation facts |
+| `explicit_tool_update_normalizes_before_one_commit_and_projects_committed_value` | Replace or explicitly clear tools under exact If-Match; persist and project the same result |
+| `rejected_explicit_compilation_preserves_root_receipt_and_effects` | Preserve classified diagnostic, complete root and absent command receipt; zero projection |
+| `admission_precedence_still_rejects_stale_nonidle_and_mixed_commands_without_compilation` | Preserve version, phase, mixed-authoring and unknown-history refusals without compilation |
+| `exact_replay_after_reopen_and_later_write_never_recompiles_original_payload` | Reopen file SQLite after an independent root write; preserve title, credential and tool command receipts without recompilation |
+| `receipt_committed_after_initial_miss_precedes_compilation_of_delayed_update` | Gate the first root read after a receipt miss; a concurrent exact commit and later root win before the delayed compiler |
+
+The separate PostgreSQL construction test checks real backend rejection and
+frozen configuration persistence. It does not qualify every SQLite reopen/race
+clause on PostgreSQL. These bindings add no whole-group acceptance claim to the
+historical 42-requirement catalog and do not alter the Managed HTTP DTOs.

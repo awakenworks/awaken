@@ -15,6 +15,7 @@ mod effect_counting_runtime;
 mod observation_refinement;
 mod observed_commit;
 mod recording_cleanup_terminal;
+mod update_compilation;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex,

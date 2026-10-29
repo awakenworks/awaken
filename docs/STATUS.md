@@ -47,8 +47,9 @@ decisions stay in their ADRs and code. Line, dependency and method counts are
 review diagnostics; line-count findings are warnings, not completion gates.
 Repository-wide W23 directory migration into `crates/sdk/` and
 `crates/platform/<context>/` is explicitly deferred. Complete ownership and
-functional changes in the existing layout with local Linux qualification;
-physical directory migration is not a completion gate for this continuation.
+functional changes in the existing layout with local Windows/MSVC qualification;
+Linux-only facets remain unverified in this continuation.
+Physical directory migration is not a completion gate for this continuation.
 
 `main` remains un-checked-out in every worktree. Its protected local fast-forward
 uses the detached integration writer without checking out `main`; remote push is
