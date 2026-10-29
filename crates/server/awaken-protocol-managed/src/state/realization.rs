@@ -5,6 +5,7 @@
 
 use super::*;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
+#[cfg(test)]
 use awaken_session_types::RunError;
 
 impl ManagedState {
@@ -14,10 +15,7 @@ impl ManagedState {
             SessionRealizationControlFailure::Conflict
             | SessionRealizationControlFailure::Retired
             | SessionRealizationControlFailure::Terminal => StateError::Conflict,
-            SessionRealizationControlFailure::Invalid(message) => {
-                StateError::Run(RunError::bad_request(message))
-            }
-            error => StateError::Run(RunError::internal(error.to_string())),
+            error => StateError::Run(error.into()),
         }
     }
 
@@ -28,12 +26,7 @@ impl ManagedState {
             awaken_session_realization_contract::SessionRealizationDriveError::Control(error) => {
                 Self::map_realization_failure(error)
             }
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error) => {
-                StateError::Run(error.into())
-            }
-            awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
-                StateError::Run(RunError::internal("Session realization did not converge"))
-            }
+            error => StateError::Run(error.into()),
         }
     }
 }

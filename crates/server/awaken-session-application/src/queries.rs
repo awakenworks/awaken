@@ -218,6 +218,9 @@ impl SessionRootReads for SessionQueries {
                 Ok(crate::SessionAccess::verified(owner_scope, session_id))
             }
             Ok(_) | Err(SessionMutationError::NotFound) => Err(crate::SessionAccessError::NotFound),
+            Err(SessionMutationError::Internal(message)) => {
+                Err(crate::SessionAccessError::Internal(message))
+            }
             Err(error) => Err(crate::SessionAccessError::Unavailable(error.to_string())),
         }
     }

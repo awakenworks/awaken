@@ -24,16 +24,20 @@ use crate::creation::{
 };
 
 pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutationError {
-    match error {
-        SessionRepositoryError::NotFound => SessionMutationError::NotFound,
-        SessionRepositoryError::Conflict(SessionRepositoryConflict::IdempotencyMismatch) => {
-            SessionMutationError::IdempotencyMismatch
-        }
-        SessionRepositoryError::Conflict(_conflict) => SessionMutationError::Conflict,
-        SessionRepositoryError::AuthorityUnavailable(message)
-        | SessionRepositoryError::Corrupt(message)
-        | SessionRepositoryError::InvalidMutation(message) => {
-            SessionMutationError::Unavailable(message)
+    error.into()
+}
+
+impl From<SessionRepositoryError> for SessionMutationError {
+    fn from(error: SessionRepositoryError) -> Self {
+        match error {
+            SessionRepositoryError::NotFound => SessionMutationError::NotFound,
+            SessionRepositoryError::Conflict(SessionRepositoryConflict::IdempotencyMismatch) => {
+                SessionMutationError::IdempotencyMismatch
+            }
+            SessionRepositoryError::Conflict(_conflict) => SessionMutationError::Conflict,
+            SessionRepositoryError::AuthorityUnavailable(message) => Self::Unavailable(message),
+            SessionRepositoryError::Corrupt(message)
+            | SessionRepositoryError::InvalidMutation(message) => Self::Internal(message),
         }
     }
 }
@@ -119,8 +123,45 @@ pub enum SessionMutationError {
     Conflict,
     #[error("Session idempotency key was reused with another payload")]
     IdempotencyMismatch,
+    /// A dependency outage may be retried without changing the command.
     #[error("Session mutation repository is unavailable: {0}")]
     Unavailable(String),
+    /// Invalid durable state or a violated application invariant. Repeating the
+    /// same command cannot repair this failure; adapters must preserve 500.
+    #[error("Session mutation failed because durable state is invalid: {0}")]
+    Internal(String),
+}
+
+impl From<SessionMutationError> for awaken_session_types::RunError {
+    fn from(error: SessionMutationError) -> Self {
+        match error {
+            SessionMutationError::NotFound => Self::bad_request("Session was not found"),
+            SessionMutationError::Conflict => Self::conflict("Session revision conflict"),
+            SessionMutationError::IdempotencyMismatch => {
+                Self::bad_request("Session idempotency key was reused with another payload")
+            }
+            SessionMutationError::Unavailable(message) => Self::unavailable(message),
+            SessionMutationError::Internal(message) => {
+                Self::classified("session_application_invalid", message)
+            }
+        }
+    }
+}
+
+/// Project a canonical mutation failure at the existing realization interface.
+/// Phase commands delegate to this conversion instead of owning error policy.
+impl From<SessionMutationError>
+    for awaken_session_realization_contract::SessionRealizationControlFailure
+{
+    fn from(error: SessionMutationError) -> Self {
+        match error {
+            SessionMutationError::NotFound => Self::NotFound,
+            SessionMutationError::Conflict => Self::Conflict,
+            SessionMutationError::Unavailable(detail) => Self::Unavailable(detail),
+            SessionMutationError::Internal(detail) => Self::Internal(detail),
+            error @ SessionMutationError::IdempotencyMismatch => Self::Internal(error.to_string()),
+        }
+    }
 }
 
 /// Update only the existing root observation. The caller compiles idempotency
@@ -405,7 +446,7 @@ impl SessionMutations {
         let session = if transitioned {
             session
                 .into_applied_snapshot(committed_revision)
-                .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?
+                .map_err(|error| SessionMutationError::Internal(error.to_string()))?
         } else {
             self.repository
                 .get(&session_id)

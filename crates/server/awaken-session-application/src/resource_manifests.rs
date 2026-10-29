@@ -102,6 +102,7 @@ impl SessionResourceManifestError {
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            error @ SessionMutationError::Internal(_) => Self::Rejected(error.into()),
         }
     }
 }

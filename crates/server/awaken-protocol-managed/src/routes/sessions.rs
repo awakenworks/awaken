@@ -1578,6 +1578,10 @@ async fn stream_events(
 }
 
 #[cfg(test)]
+#[path = "sessions/repository_errors.rs"]
+mod repository_errors;
+
+#[cfg(test)]
 mod managed_json_tests {
     use axum::Router;
     use axum::body::Body;
