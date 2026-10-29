@@ -719,22 +719,46 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 174,
-        "file_sha256": "70cecdb82ecac1a0a682a2df40fa2ca4905f67287a02de618fdcc4f7e66f3cef"
+        "line": 228,
+        "file_sha256": "e9b93b3de1e7355d0d9da2f8fb32d93c3ada6fbaa9bfcd82d39d0567dac5cd3a"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 177
+        "line": 231
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 182
+        "line": 235
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
-        "line": 187
+        "line": 242
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 244
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 250
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 251
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 262
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 265
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "line": 266
       }
     ],
     "execution_witnesses": [
@@ -750,7 +774,7 @@
         "log_sha256": "b8550ac648cf2c4a82f737644116b13f0720677498458f812295b03dc68f8694"
       }
     ],
-    "relation": "covers_case_clauses",
+    "relation": "supports_subset_only",
     "covers": {
       "T10-C02": {
         "oracles": [
@@ -759,8 +783,8 @@
         "negative_control": true
       }
     },
-    "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "review": "Enabled native Windows production probe: original leader identity, real live descendant, and real owned-tree reaping. Retained handles plus fresh Job accounting fence terminal status; the test also requires successful reap and a stopped descendant.",
+    "limitation": "2026-10-30: enabled and strengthened for the Windows process-tree fix. Historical E16/E17 source identities and results are retained; they do not certify the changed implementation or all T10-C02 adapter/platform facets. Current native commands are in check-trusted-host-portability.sh; no whole-scenario acceptance is claimed.",
     "id": "B235"
   }
 ]

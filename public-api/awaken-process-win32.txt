@@ -1,0 +1,19 @@
+pub mod awaken_process_win32
+pub struct awaken_process_win32::OwnedProcessTree
+impl awaken_process_win32::OwnedProcessTree
+pub fn awaken_process_win32::OwnedProcessTree::id(&self) -> core::option::Option<u32>
+pub fn awaken_process_win32::OwnedProcessTree::process_tree_control(&self) -> awaken_process_win32::ProcessTreeControl
+pub fn awaken_process_win32::OwnedProcessTree::spawn(&mut tokio::process::Command) -> core::io::error::Result<Self>
+pub fn awaken_process_win32::OwnedProcessTree::start_kill(&mut self) -> core::io::error::Result<()>
+pub fn awaken_process_win32::OwnedProcessTree::stderr(&mut self) -> &mut core::option::Option<tokio::process::ChildStderr>
+pub fn awaken_process_win32::OwnedProcessTree::stdin(&mut self) -> &mut core::option::Option<tokio::process::ChildStdin>
+pub fn awaken_process_win32::OwnedProcessTree::stdout(&mut self) -> &mut core::option::Option<tokio::process::ChildStdout>
+pub fn awaken_process_win32::OwnedProcessTree::try_wait(&mut self) -> core::io::error::Result<core::option::Option<std::process::ExitStatus>>
+pub async fn awaken_process_win32::OwnedProcessTree::wait(&mut self) -> core::io::error::Result<std::process::ExitStatus>
+impl core::ops::drop::Drop for awaken_process_win32::OwnedProcessTree
+pub fn awaken_process_win32::OwnedProcessTree::drop(&mut self)
+pub struct awaken_process_win32::ProcessTreeControl(_)
+impl awaken_process_win32::ProcessTreeControl
+pub fn awaken_process_win32::ProcessTreeControl::is_quiescent(&self) -> core::io::error::Result<bool>
+pub fn awaken_process_win32::ProcessTreeControl::start_kill(&self) -> core::io::error::Result<()>
+pub async fn awaken_process_win32::ProcessTreeControl::wait_for_quiescence(&self) -> core::io::error::Result<()>

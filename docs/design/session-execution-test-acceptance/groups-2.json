@@ -536,7 +536,7 @@
           "B235",
           "B259"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -556,11 +556,16 @@
           ]
         },
         "product_gap": {
-          "reason": "LocalProcess 在 Windows 没有 Job Object，leader 退出即被视为 stopped",
-          "follow_up": "local-process 与 protocol-acp 进程树（L）",
+          "reason": "The Windows leader-only gap is repaired by retained original Job/member observation; this subset does not qualify other native/remote adapter facets.",
+          "follow_up": "Keep acceptance pending until the remaining applicable adapter/platform clauses and shared gates are qualified; T10-C03 recovery is separate.",
           "reproducers": [
             "t10_c02_reap_after_leader_exit_does_not_claim_stopped_while_descendant_lives"
           ]
+        },
+        "windows_follow_up": {
+          "implementation": "crates/shared/awaken-process-win32",
+          "gate": "scripts/ci/check-trusted-host-portability.sh",
+          "scope": "Local native Windows/MSVC only; original tree control, retained member exit, cancellation/cleanup-owner retry and ACP reaping. No full-group acceptance or new historical receipt claim."
         }
       },
       {

@@ -169,18 +169,23 @@ async fn timed_out_call_stops_ready_descendants_before_returning() {
     let tool = tool_at("bash", root.path());
     prime(&tool).await;
     let child = Descendant::new().await;
-    let running = tool.clone();
-    let command = child.command(true);
-    let task = tokio::spawn(async move {
-        running
-            .invoke(call(
-                "bash",
-                serde_json::json!({ "command": command, "timeout_ms": 1000 }),
-            ))
-            .await
-    });
+    // Authenticate the session-owned descendant before arming the one-second
+    // request deadline. The blocked wait must terminate this ready descendant
+    // and close its connection before the timed-out call returns.
+    tool.invoke(call(
+        "bash",
+        serde_json::json!({ "command": child.command(false), "timeout_ms": 1000 }),
+    ))
+    .await
+    .unwrap();
     let mut connection = child.ready().await;
-    let error = task.await.unwrap().unwrap_err();
+    let error = tool
+        .invoke(call(
+            "bash",
+            serde_json::json!({ "command": "wait", "timeout_ms": 1000 }),
+        ))
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("timed out after 1000ms"));
     let terminated = stopped(&mut connection).await;
     drop(connection);

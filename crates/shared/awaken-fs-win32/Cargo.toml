@@ -17,7 +17,7 @@ isolates = ["windows-sys"]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 # The repository's ordinary crates inherit unsafe_code=forbid. This leaf is
-# the sole audited Win32 FFI boundary; its crate root denies unsafe everywhere
+# the audited filesystem Win32 FFI boundary; its crate root denies unsafe everywhere
 # except the narrow `sys` module, and exports only checked safe functions.
 [lints.rust]
 unsafe_code = "allow"
