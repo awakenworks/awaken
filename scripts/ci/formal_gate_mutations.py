@@ -326,6 +326,9 @@ def mutate_false_production_grade(case_root: Path) -> None:
 
 
 def mutate_missing_boundary(case_root: Path) -> None:
+    # C1 a classified requirement-only surface or declared residual exists;
+    # C2 its canonical boundary row is removed. E1 the exact missing RID must
+    # reject the mutation; adjacent kernel proofs cannot discharge that tail.
     path = case_root / "formal" / "proof-boundaries.json"
     ledger = json.loads(path.read_text())
     removed = ledger["boundaries"].pop()
@@ -345,6 +348,8 @@ def mutate_false_refinement_grade(case_root: Path) -> None:
 
 
 def mutate_invented_boundary(case_root: Path) -> None:
+    # C1 a row names no classified surface or declared residual. E1 reject its
+    # exact extra RID; copying a valid row cannot authorize an arbitrary baseline.
     path = case_root / "formal" / "proof-boundaries.json"
     ledger = json.loads(path.read_text())
     mutant = dict(ledger["boundaries"][0])
