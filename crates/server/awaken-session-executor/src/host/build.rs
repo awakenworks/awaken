@@ -124,10 +124,11 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         mcp,
         execution,
         capture,
-        session_application,
         session_execution,
         skill_bundle_source,
     } = dependencies;
+    // Selection is process state, never a dependency shared by distinct builds.
+    let session_application = SessionApplicationBindings::default();
     let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
     let realizations = realization_view(
         &installed_sessions,

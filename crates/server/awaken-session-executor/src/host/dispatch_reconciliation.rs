@@ -149,6 +149,7 @@ mod tests {
         )))
         .build()
         .expect("validated Host dependencies");
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let source = Arc::new(IdleEvidence {
             released: Default::default(),
             fail_first: std::sync::atomic::AtomicBool::new(true),
@@ -421,6 +422,7 @@ mod tests {
         ))
         .build()
         .expect("validated Host dependencies");
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
@@ -544,6 +546,7 @@ mod tests {
         .with_ephemeral_dispatch(dispatch.clone()))
         .build()
         .expect("validated Host dependencies");
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         host.dispatch
             .bind_worker_evidence(
                 directory.clone(),
@@ -808,6 +811,7 @@ mod tests {
                 dependencies.execution.ingress = crate::RunIngress::Durable;
                 dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
                 let host = dependencies.build().unwrap();
+                crate::test_application_bindings::select_standalone(&host).unwrap();
                 if rule != "nonterminal" {
                     let commit = host
                         .run_assembly
@@ -1009,7 +1013,7 @@ mod tests {
         local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
         assert!(
-            !crate::session_dispatch_lifecycle(
+            !crate::test_application_bindings::lifecycle(
                 local_pool.as_ref(),
                 local_pool.worker_completion_sink()
             )
@@ -1090,12 +1094,18 @@ mod tests {
         .expect("record exact terminal truth");
 
         assert!(
-            crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
-                .start_terminal_reconciliation()
+            crate::test_application_bindings::lifecycle(
+                host.as_ref(),
+                host.worker_completion_sink()
+            )
+            .start_terminal_reconciliation()
         );
         assert!(
-            !crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
-                .start_terminal_reconciliation(),
+            !crate::test_application_bindings::lifecycle(
+                host.as_ref(),
+                host.worker_completion_sink()
+            )
+            .start_terminal_reconciliation(),
             "one coordinator daemon"
         );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1187,7 +1197,10 @@ mod tests {
     async fn terminal_reconciliation_ends_with_the_executor_or_its_drain() {
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink());
+        let roles = crate::test_application_bindings::lifecycle(
+            host.as_ref(),
+            host.worker_completion_sink(),
+        );
         assert!(roles.start_terminal_reconciliation(), "L1 start");
         let scan_state = Arc::downgrade(host.dispatch().terminal_reconciliation());
         let dispatch = Arc::downgrade(host.dispatch());
@@ -1209,7 +1222,10 @@ mod tests {
 
         let storage = tempfile::tempdir().expect("storage");
         let host = coordinator_only_executor(storage.path()).await;
-        let roles = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink());
+        let roles = crate::test_application_bindings::lifecycle(
+            host.as_ref(),
+            host.worker_completion_sink(),
+        );
         assert!(roles.start_terminal_reconciliation(), "L3 start");
         let scan_state = host.dispatch().terminal_reconciliation().clone();
         assert!(
@@ -1269,6 +1285,7 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver");
 
@@ -1401,6 +1418,7 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let fresh = claim(
             &store,
             "thread-exhausted",
@@ -1496,6 +1514,7 @@ mod tests {
         coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let parent = ThreadId("parent-session".into());
         let child = ThreadId("logical-child".into());
         let run = RunId("child-terminal".into());

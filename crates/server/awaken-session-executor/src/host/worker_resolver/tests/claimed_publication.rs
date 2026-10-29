@@ -157,6 +157,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .with_ephemeral_coordinator_dispatch(coordinator_store.clone()))
     .build()
     .expect("validated Host dependencies");
+    crate::test_application_bindings::select_standalone(&coordinator).unwrap();
     let coordinator_thread = "coordinator-only-claimed-root";
     let coordinator_claim = claim(
         &coordinator_store,
@@ -322,6 +323,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .expect("missing dispatch store"),
     );
     let missing_host = adoption_host_over(missing_store.clone()).await;
+    crate::test_application_bindings::select_standalone(&missing_host).unwrap();
     let _missing_managed = missing_host.clone();
     let missing_resolver =
         crate::host::session_worker_resolver(&missing_host.run_assembly, &missing_host.dispatch)

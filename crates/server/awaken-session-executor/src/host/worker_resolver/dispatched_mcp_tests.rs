@@ -187,6 +187,7 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
         .with_ephemeral_dispatch(store.clone()))
     .build()
     .expect("validated Host dependencies");
+    crate::test_application_bindings::select_standalone(&host).unwrap();
     let mut request = with_empty_session_resources(
         awaken_dispatch_contract::RunDispatch::new(test_activation(
             "corrupt-projection",

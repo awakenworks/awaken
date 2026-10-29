@@ -79,7 +79,6 @@ pub struct SessionExecutorBuilder {
     /// This process's part in Run execution; see [`crate::ExecutionTopology`].
     pub(crate) execution: crate::ExecutionTopology,
     pub(crate) capture: capability::ContentCaptureCapability,
-    pub(crate) session_application: SessionApplicationBindings,
     pub(crate) session_execution: SessionExecutionDependencies,
     pub(crate) skill_bundle_source:
         Option<Arc<dyn SkillBundleSource<crate::ResourceOperationFence>>>,
@@ -139,7 +138,6 @@ fn select(
         mcp: awaken_session_mcp::McpSessions::new(mcp_relay, clock.clone()),
         execution,
         capture: capability::ContentCaptureCapability::new(content_capture),
-        session_application: SessionApplicationBindings::default(),
         session_execution: SessionExecutionDependencies::default(),
         skill_bundle_source,
         local_workspace,

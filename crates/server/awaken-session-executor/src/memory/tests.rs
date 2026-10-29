@@ -1219,7 +1219,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         "R2/R3/R4 E3,E6,E7 next wake schedules one matching writable binding"
     );
     assert!(
-        crate::session_dispatch_lifecycle(
+        crate::test_application_bindings::lifecycle(
             recovered_host.as_ref(),
             recovered_host.worker_completion_sink()
         )

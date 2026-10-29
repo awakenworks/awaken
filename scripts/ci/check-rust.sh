@@ -9,6 +9,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 source scripts/ci/_provider_environment.sh
+source scripts/ci/_rust_test_execution.sh
 awaken_configure_cargo_target "$PWD"
 export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
 awaken_unset_ambient_api_keys
@@ -333,6 +334,19 @@ scoped_step "cli-production" "keep fixture-only CLI helpers out of its ordinary 
   "awaken-cli" cargo clippy -p awaken-cli --lib "${locked[@]}" -- -D warnings
 scoped_step "process-startup-production" "keep fixture-only startup helpers out of its ordinary product graph" \
   "awaken-process-startup" cargo clippy -p awaken-process-startup --lib "${locked[@]}" -- -D warnings
+
+# Feature admission table: W1 this Worker lacks its Kubernetes integration;
+# W2 a different consumer enables the transport dependency's Kubernetes parser;
+# W3 a complete Pod projection is supplied. W1+W2+W3 must reject at Worker
+# configuration admission, while the full Worker feature retains Pod transport.
+# A workspace/all-feature graph makes W1 false and cannot prove this refusal.
+# Use the shared named-execution owner: an omitted, ignored or empty selection
+# cannot qualify the process capability boundary.
+scoped_step "worker-bootstrap-feature-union" "reject Pod identities when the Worker integration is absent, regardless of dependency feature unification" \
+  "awaken-worker" run_required_rust_tests "${locked[@]}" -p awaken-worker --no-default-features \
+  --features awaken-worker-transport-security/kubernetes --lib bootstrap::tests:: \
+  --require-case=bootstrap::tests::pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing \
+  --require-case=bootstrap::tests::unavailable_pod_identity_rejects_before_projection_io_and_after_dto_mutation
 
 # The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);

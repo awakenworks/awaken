@@ -9,6 +9,9 @@ mod startup_drain;
 #[path = "tests/publication.rs"]
 mod publication;
 
+#[path = "tests/construction.rs"]
+mod construction;
+
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{
