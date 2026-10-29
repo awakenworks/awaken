@@ -1046,3 +1046,18 @@ frame equality includes owner scope. The HTTP Session DTO keeps its original
 shape. Tests cover each recovery purpose, a warm reader while the first hydrator
 has published but not returned, stale-candidate refusal, read failure and recovery,
 eviction and rehydration, and unchanged wire projection with distinct ownership.
+
+
+## Worker Identity Feature Admission
+
+The Worker composition admits its own compiled identity integration before
+reading a projected Pod identity or publishing a validated process configuration.
+Cargo may enable a transport dependency's Kubernetes parser through another
+consumer; that does not enable the Worker's `container-k8s` integration. Projection
+parsing remains transport-owned. The upstream factory independently rechecks the
+compatibility DTO, so later public-field mutation cannot select an unavailable
+authentication mode or a signing fallback.
+
+The Rust gate executes the real dependency-only feature graph with named test
+floors. Default and full Worker feature profiles retain their existing negative
+and positive paths; tests also cover missing projections and DTO mutation.
