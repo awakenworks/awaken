@@ -39,6 +39,13 @@ RESOURCE_APPLICATION_CASE_FLOORS = frozenset({
 
 CORE_DISPATCH_OBSERVATION_CASE = 'postgres_exact_physical_execution_observations_use_the_original_store_clock'
 
+# The race requires a live database; the integer conversion is a pure unit
+# boundary retained here as an independently named outcome, not DB evidence.
+STORAGE_SESSION_EXTRACTION_CASE_FLOORS = frozenset({
+    'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence',
+    'extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure',
+})
+
 
 POSTGRES_SELECTORS = {
     "core": ("backend_parity", "work_store_evidence", "http_transport_evidence", "critical_durability_evidence"),
@@ -48,12 +55,34 @@ POSTGRES_SELECTORS = {
 }
 
 
+def _require_session_extraction_phase(phases):
+    store = [phase for phase in phases if phase.selector == 'storage_evidence'
+             and phase.package == 'awaken-session-store']
+    if len(store) != 1:
+        raise ValueError('PostgreSQL selector changed independent Session extraction phase')
+    arguments = store[0].arguments
+    pairs = tuple(zip(arguments, arguments[1:]))
+    before_runtime = arguments[:arguments.index('--')] if '--' in arguments else arguments
+    runtime = arguments[arguments.index('--') + 1:] if '--' in arguments else ()
+    runtime_flags = {argument.partition('=')[0] for argument in runtime if argument.startswith('--')}
+    floors = {value.removeprefix('--require-case=') for value in before_runtime
+              if value.startswith('--require-case=')}
+    if (not STORAGE_SESSION_EXTRACTION_CASE_FLOORS <= floors
+            or '--lib' not in before_runtime or 'postgres_' not in before_runtime
+            or {'--test', '--tests', '--all-targets'} & set(before_runtime)
+            or ('--features', 'test-support') not in pairs
+            or {'--ignored', '--include-ignored', '--skip', '--exact'} & runtime_flags):
+        raise ValueError('PostgreSQL selector changed independent Session extraction outcomes')
+
+
 def postgres_phases(scope, root=None):
     if scope not in POSTGRES_SELECTORS:
         raise ValueError("unsupported native PostgreSQL scope")
     phases = read_phases(root or Path(__file__).resolve().parents[2], POSTGRES_SELECTORS[scope])
     if Counter(phase.package for phase in phases) != Counter(POSTGRES_PACKAGES[scope]):
         raise ValueError("PostgreSQL selector changed independent required domain coverage")
+    if scope == 'storage':
+        _require_session_extraction_phase(phases)
     if scope == 'core':
         dispatch = [phase for phase in phases if phase.package == 'awaken-dispatch']
         if len(dispatch) != 1:

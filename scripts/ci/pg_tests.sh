@@ -311,6 +311,7 @@ storage_evidence() {
     -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"
   pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ \
     --require-case=dream::tests::postgres_dream_store_conforms_and_reopens \
+    --require-case=extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence \
     --require-case=extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure \
     --require-case=tests::keyset_query_plans::postgres_cached_recovery_and_startup_cursors_keep_the_index_condition \
     --require-case=tests::postgres_normalization_and_index_repair_share_one_crash_boundary \

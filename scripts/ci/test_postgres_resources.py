@@ -202,4 +202,83 @@ class ApplicationCaseFloorTests(unittest.TestCase):
         self.assertEqual(len(policy.postgres_phases('storage', gate.ROOT)), 8)
         self.assertEqual(len(policy.postgres_phases('storage-observations', gate.ROOT)), 2)
 
+
+class SessionExtractionFloorTests(unittest.TestCase):
+    # Independent test literals: changes to the policy cannot redefine the oracle.
+    expected = frozenset({
+        'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence',
+        'extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure',
+    })
+    prefix = '  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ '
+
+    def setUp(self):
+        self.source = (gate.ROOT / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+
+    def check(self, text):
+        with tempfile.TemporaryDirectory(prefix='pg-extraction-policy-') as directory:
+            root = Path(directory)
+            target = root / 'scripts/ci/pg_tests.sh'
+            target.parent.mkdir(parents=True)
+            target.write_text(text, encoding='utf-8')
+            return policy.postgres_phases('storage', root)
+
+    def statement(self):
+        expression = r'(?ms)^  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ .*?record_failure "\$\?"\n'
+        found = list(re.finditer(expression, self.source))
+        self.assertEqual(len(found), 1)
+        return found[0].group(0)
+
+    def test_storage_keeps_race_and_pure_conversion_as_distinct_required_outcomes(self):
+        self.assertEqual(policy.STORAGE_SESSION_EXTRACTION_CASE_FLOORS, self.expected)
+        phases = self.check(self.source)
+        self.assertEqual(len(phases), 8)
+        phase = next(p for p in phases if p.selector == 'storage_evidence' and p.package == 'awaken-session-store')
+        floors = {a.removeprefix('--require-case=') for a in phase.arguments if a.startswith('--require-case=')}
+        self.assertTrue(self.expected <= floors)
+
+    def test_each_extraction_outcome_cannot_be_deleted(self):
+        for name in self.expected:
+            line = '    --require-case=' + name + ' \\\n'
+            self.assertEqual(self.source.count(line), 1)
+            with self.subTest(case=name), self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
+                self.check(self.source.replace(line, '', 1))
+
+    def test_other_package_cannot_supply_the_extraction_outcome(self):
+        name = 'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence'
+        line = '    --require-case=' + name + ' \\\n'
+        text = self.source.replace(line, '', 1)
+        marker = '    --require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock \\\n'
+        self.assertEqual(text.count(marker), 1)
+        with self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
+            self.check(text.replace(marker, marker + line, 1))
+
+    def test_target_features_and_filter_must_reach_the_required_tests(self):
+        statement = self.statement()
+        self.assertEqual(statement.count(self.prefix), 1)
+        for replacement in (self.prefix.replace('--lib', '--test other_target'),
+                            self.prefix.replace('test-support', 'other'),
+                            self.prefix.replace('postgres_', 'unrelated_')):
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
+                self.check(self.source.replace(statement, statement.replace(self.prefix, replacement, 1), 1))
+
+    def test_runtime_aliases_cannot_skip_ignore_or_exact_filter_the_race(self):
+        statement = self.statement()
+        marker = '-- --test-threads=1'
+        self.assertEqual(statement.count(marker), 1)
+        for flag in ('--skip unrelated', '--skip=postgres_', '--ignored', '--ignored=true',
+                     '--include-ignored', '--include-ignored=true', '--exact'):
+            changed = statement.replace(marker, '-- ' + flag + ' --test-threads=1', 1)
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
+                self.check(self.source.replace(statement, changed, 1))
+
+    def test_same_package_other_scope_cannot_supply_the_storage_outcome(self):
+        name = 'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence'
+        line = '    --require-case=' + name + ' \\\n'
+        marker = '  pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \\\n'
+        self.assertEqual(self.source.count(line), 1)
+        self.assertEqual(self.source.count(marker), 1)
+        text = self.source.replace(line, '', 1).replace(marker, marker + line, 1)
+        with self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
+            self.check(text)
+
 if __name__=='__main__':unittest.main(verbosity=2)
