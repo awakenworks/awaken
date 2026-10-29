@@ -129,7 +129,6 @@ fn terminal_driver_failure(
     };
 
     match error {
-        DriveError::Effect(error) => SessionPreparationError::Rejected(error.into()),
         DriveError::Control(ControlFailure::NotFound) => SessionPreparationError::NotFound,
         DriveError::Control(
             ControlFailure::NotReady
@@ -147,6 +146,7 @@ fn terminal_driver_failure(
         DriveError::DidNotConverge => SessionPreparationError::Unavailable(
             "Session terminal cleanup protocol did not converge".into(),
         ),
+        error => SessionPreparationError::Rejected(error.into()),
     }
 }
 
@@ -1475,14 +1475,34 @@ mod tests {
         // | M4 | Control | Unavailable | E4 Unavailable |
         // | M5 | Control | Invalid | E5 Rejected |
         // | M6 | driver | DidNotConverge | E6 Unavailable |
-        assert!(matches!(
-            terminal_driver_failure(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    (RunError::internal("effect")).into()
-                )
-            ),
-            SessionPreparationError::Rejected(_)
-        ));
+        // | M7 | Control | Internal | permanent Rejected, no unknown retry budget |
+        for effect in [
+            RunError::internal("effect"),
+            RunError::classified("known", "effect"),
+            RunError::unavailable("effect"),
+        ] {
+            let expected = (effect.kind, effect.code.clone(), effect.message.clone());
+            let SessionPreparationError::Rejected(actual) =
+                terminal_driver_failure(SessionRealizationDriveError::Effect(effect.into()))
+            else {
+                panic!("effect was flattened")
+            };
+            assert_eq!((actual.kind, actual.code, actual.message), expected);
+        }
+        let SessionPreparationError::Rejected(internal) =
+            terminal_driver_failure(SessionRealizationDriveError::Control(
+                SessionRealizationControlFailure::Internal("offline".into()),
+            ))
+        else {
+            panic!("permanent durable error was made retryable")
+        };
+        assert_eq!(internal.kind, awaken_session_types::RunErrorKind::Internal);
+        assert_eq!(internal.message, "offline");
+        assert!(!internal.is_unclassified_internal());
+        assert_eq!(
+            awaken_session_realization_contract::effect_failure_disposition(&internal),
+            awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal
+        );
         assert!(matches!(
             terminal_driver_failure(
                 awaken_session_realization_contract::SessionRealizationDriveError::Control(

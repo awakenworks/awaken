@@ -1627,8 +1627,9 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         matches!(
             &foreign_outcome,
-            Err(SessionPreparationError::Unavailable(message))
-                if message == "Session terminal cleanup is inconsistent with its root: Session cleanup operation does not match its Session identity"
+            Err(SessionPreparationError::Rejected(error))
+                if error.kind == awaken_session_types::RunErrorKind::Internal
+                    && error.message == "Session terminal cleanup is inconsistent with its root: Session cleanup operation does not match its Session identity"
         ),
         "R5 foreign Completed outcome fails closed at aggregate import: {foreign_outcome:?}"
     );

@@ -14,7 +14,7 @@
 //! | equal | owner | `SessionAccess` |
 //! | another Workspace | owner | `NotFound` |
 //! | none (missing) | owner | `NotFound`, byte-equal to the foreign row |
-//! | read fails | owner | `Unavailable` |
+//! | dependency outage / invalid durable state | owner | `Unavailable` / `Internal` |
 
 use awaken_session_types::{RunError, RunErrorKind, SessionId};
 
@@ -53,6 +53,8 @@ pub enum SessionAccessError {
     NotFound,
     #[error("Session ownership is unavailable: {0}")]
     Unavailable(String),
+    #[error("Session ownership durable state is invalid: {0}")]
+    Internal(String),
 }
 
 impl From<SessionAccessError> for RunError {
@@ -64,6 +66,9 @@ impl From<SessionAccessError> for RunError {
                 code: "session_not_found".into(),
             },
             SessionAccessError::Unavailable(message) => RunError::unavailable(message),
+            SessionAccessError::Internal(message) => {
+                crate::SessionMutationError::Internal(message).into()
+            }
         }
     }
 }
@@ -73,6 +78,9 @@ impl From<SessionAccessError> for crate::SessionProjectionRecoveryError {
         match error {
             SessionAccessError::NotFound => Self::NotFound,
             SessionAccessError::Unavailable(message) => Self::Unavailable(message),
+            SessionAccessError::Internal(message) => {
+                Self::Rejected(crate::SessionMutationError::Internal(message).into())
+            }
         }
     }
 }

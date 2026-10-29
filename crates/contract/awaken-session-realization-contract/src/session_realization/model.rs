@@ -588,3 +588,17 @@ impl From<RunError> for SessionRealizationDriveError {
         Self::Effect(error.into())
     }
 }
+
+/// Preserve an effect's exact kind/code/message, or the Control disposition,
+/// when an application presents the existing phase protocol as a Run failure.
+impl From<SessionRealizationDriveError> for RunError {
+    fn from(error: SessionRealizationDriveError) -> Self {
+        match error {
+            SessionRealizationDriveError::Effect(error) => error.into(),
+            SessionRealizationDriveError::Control(error) => error.into(),
+            SessionRealizationDriveError::DidNotConverge => {
+                Self::unavailable("Session realization did not converge")
+            }
+        }
+    }
+}

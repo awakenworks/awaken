@@ -244,20 +244,7 @@ impl SessionCredentials {
                         .map_err(repository_failure)
                         .map_err(mutation_failure)?;
                 }
-                Err(SessionMutationError::Conflict) => {
-                    return Err(SessionPreparationError::Conflict);
-                }
-                Err(SessionMutationError::NotFound) => {
-                    return Err(SessionPreparationError::NotFound);
-                }
-                Err(SessionMutationError::IdempotencyMismatch) => {
-                    return Err(SessionPreparationError::Unavailable(
-                        "credential pin idempotency mismatch".into(),
-                    ));
-                }
-                Err(SessionMutationError::Unavailable(message)) => {
-                    return Err(SessionPreparationError::Unavailable(message));
-                }
+                Err(error) => return Err(mutation_failure(error)),
             }
         }
         Err(SessionPreparationError::Conflict)
@@ -268,10 +255,16 @@ pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparatio
     match error {
         SessionMutationError::NotFound => SessionPreparationError::NotFound,
         SessionMutationError::Conflict => SessionPreparationError::Conflict,
-        SessionMutationError::IdempotencyMismatch => SessionPreparationError::Unavailable(
-            "Session idempotency key was reused with another payload".into(),
+        SessionMutationError::IdempotencyMismatch => SessionPreparationError::Rejected(
+            SessionMutationError::Internal(
+                "Session idempotency key was reused with another payload".into(),
+            )
+            .into(),
         ),
         SessionMutationError::Unavailable(message) => SessionPreparationError::Unavailable(message),
+        error @ SessionMutationError::Internal(_) => {
+            SessionPreparationError::Rejected(error.into())
+        }
     }
 }
 

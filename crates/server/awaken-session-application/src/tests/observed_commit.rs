@@ -1,6 +1,7 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 //! Direct execution of the existing asynchronous replacement boundary.
 use crate::SessionMutations;
+mod classification;
 use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,

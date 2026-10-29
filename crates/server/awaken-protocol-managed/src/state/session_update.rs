@@ -64,7 +64,7 @@ impl ManagedState {
                 ..
             } => StateError::Run(source),
             awaken_session_application::SessionUpdateError::Unavailable(message) => {
-                StateError::Run(RunError::internal(message))
+                StateError::Run(RunError::unavailable(message))
             }
         }
     }
@@ -106,3 +106,6 @@ impl ManagedState {
         self.get_session_with_revision(id)
     }
 }
+
+#[cfg(test)]
+mod error_classification_tests;

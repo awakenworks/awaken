@@ -896,6 +896,7 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
                 | SessionRealizationControlFailure::StaleOwnership
                 | SessionRealizationControlFailure::Conflict => StatusCode::CONFLICT,
                 SessionRealizationControlFailure::Invalid(_) => StatusCode::BAD_REQUEST,
+                SessionRealizationControlFailure::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 SessionRealizationControlFailure::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             };
             (
@@ -1687,3 +1688,6 @@ mod application_response_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod error_classification_tests;

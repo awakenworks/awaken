@@ -12,8 +12,9 @@
 
 use crate::{SessionProjectionReads as _, SessionRootReads as _};
 
+#[cfg(test)]
+mod error_classification_tests;
 mod events;
-use awaken_session_realization_contract::SessionRealizationDriveError;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
@@ -48,13 +49,12 @@ pub enum SessionProjectionRecoveryError {
     Unavailable(String),
 }
 
-fn mutation_error(error: SessionMutationError) -> RunError {
+pub(crate) fn mutation_error(error: SessionMutationError) -> RunError {
     match error {
-        SessionMutationError::NotFound => RunError::bad_request("Session was not found"),
-        SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
+        SessionMutationError::Conflict => {
             RunError::unavailable("Session changed while it was being admitted")
         }
-        SessionMutationError::Unavailable(message) => RunError::unavailable(message),
+        error => error.into(),
     }
 }
 
@@ -65,16 +65,6 @@ pub(crate) fn preparation_error(error: SessionPreparationError) -> RunError {
         SessionPreparationError::NotFound => RunError::bad_request("Session was not found"),
         SessionPreparationError::Conflict => {
             RunError::unavailable("Session changed while it was being admitted")
-        }
-    }
-}
-
-fn realization_error(error: SessionRealizationDriveError) -> RunError {
-    match error {
-        SessionRealizationDriveError::Effect(error) => error.into(),
-        SessionRealizationDriveError::Control(error) => RunError::unavailable(error.to_string()),
-        SessionRealizationDriveError::DidNotConverge => {
-            RunError::unavailable("Session realization did not converge")
         }
     }
 }
@@ -90,7 +80,7 @@ fn creation_error(error: SessionCreationError) -> RunError {
             RunError::bad_request("Session creation idempotency mismatch")
         }
         SessionCreationError::Unavailable(message) => RunError::unavailable(message),
-        SessionCreationError::Internal(message) => RunError::internal(message),
+        SessionCreationError::Internal(message) => SessionMutationError::Internal(message).into(),
     }
 }
 
@@ -443,9 +433,7 @@ impl SessionRunAdmissions {
             self.realizations
                 .install_dispatch_projection(&owner, &session)
                 .await
-                .map_err(|error| {
-                    SessionProjectionRecoveryError::Rejected(realization_error(error))
-                })?;
+                .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?;
             self.work_assignments
                 .dispatch(&session)
                 .await
@@ -466,17 +454,13 @@ impl SessionRunAdmissions {
             self.realizations
                 .install_dispatch_projection(&owner, &session)
                 .await
-                .map_err(|error| {
-                    SessionProjectionRecoveryError::Rejected(realization_error(error))
-                })?;
+                .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?;
             session
         } else {
             self.realizations
                 .realize_session_after_refresh(&awaken_session_types::SessionId::from(thread_id))
                 .await
-                .map_err(|error| {
-                    SessionProjectionRecoveryError::Rejected(realization_error(error))
-                })?
+                .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?
         };
         Ok(Some(RecoveredSessionProjection {
             owner_scope: owner,

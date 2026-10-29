@@ -28,6 +28,8 @@ use std::sync::Arc;
 use super::SessionMutationError;
 
 mod baseline;
+#[cfg(test)]
+mod error_classification_tests;
 mod profiled;
 mod request;
 
@@ -480,45 +482,27 @@ pub enum SessionCreationError {
 impl SessionCreationError {
     pub(crate) fn repository(error: awaken_session_state_contract::SessionRepositoryError) -> Self {
         match error {
-            awaken_session_state_contract::SessionRepositoryError::NotFound => {
-                Self::Internal("newly created Session disappeared".into())
-            }
-            awaken_session_state_contract::SessionRepositoryError::Conflict(conflict) => match conflict {
-                awaken_session_state_contract::SessionRepositoryConflict::AlreadyExists => Self::Conflict,
-                awaken_session_state_contract::SessionRepositoryConflict::Tombstoned => Self::Tombstoned,
-                awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch => {
-                    Self::IdempotencyMismatch
-                }
-            },
-            awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(message) => {
-                Self::Unavailable(message)
-            }
-            awaken_session_state_contract::SessionRepositoryError::Corrupt(message)
-            | awaken_session_state_contract::SessionRepositoryError::InvalidMutation(message) => {
-                Self::Internal(message)
-            }
+            awaken_session_state_contract::SessionRepositoryError::Conflict(
+                awaken_session_state_contract::SessionRepositoryConflict::Tombstoned,
+            ) => Self::Tombstoned,
+            error => Self::mutation(error.into()),
         }
     }
 
     fn mutation(error: SessionMutationError) -> Self {
         match error {
             SessionMutationError::NotFound => {
-                Self::Unavailable("newly created Session disappeared".into())
+                Self::Internal("newly created Session disappeared".into())
             }
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::Internal(message) => Self::Internal(message),
         }
     }
 
     fn realization(error: SessionRealizationDriveError) -> Self {
-        match error {
-            SessionRealizationDriveError::Effect(error) => Self::Rejected(error.into()),
-            SessionRealizationDriveError::Control(error) => Self::Unavailable(error.to_string()),
-            SessionRealizationDriveError::DidNotConverge => {
-                Self::Unavailable("Session realization did not converge".into())
-            }
-        }
+        Self::Rejected(error.into())
     }
 }
 

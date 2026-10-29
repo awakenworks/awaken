@@ -415,12 +415,7 @@ impl SessionCoordination {
             .queries
             .session(session_id)
             .await
-            .map_err(|error| match error {
-                awaken_session_state_contract::SessionRepositoryError::NotFound => {
-                    RunError::bad_request("Session was not found")
-                }
-                other => RunError::unavailable(other.to_string()),
-            })?;
+            .map_err(crate::session_repository_error)?;
         if session.is_terminal() || session.terminal_cleanup.is_fenced() {
             return Err(RunError::bad_request(
                 "Session no longer accepts Agent coordination",
@@ -436,12 +431,7 @@ impl SessionCoordination {
             .mutations
             .owner(session_id)
             .await
-            .map_err(|error| match error {
-                crate::SessionMutationError::NotFound => {
-                    RunError::bad_request("Session was not found")
-                }
-                other => RunError::unavailable(other.to_string()),
-            })?;
+            .map_err(crate::run_admission::mutation_error)?;
         Ok((owner, session))
     }
 }

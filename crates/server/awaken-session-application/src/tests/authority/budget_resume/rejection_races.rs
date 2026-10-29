@@ -542,8 +542,14 @@ async fn accepted_and_rejected_receipt_payload_mismatches_fail_closed_without_ad
     // H1/H2: capture the actual positive/negative CAS key, then let the same
     // canonical mutation owner persist that key with another payload first.
     // The interrupted command and later RecoverOnly/RecoverOrAdmit must fail
-    // closed through the shared hash checker; no receipt is treated as absence
-    // and no activity/root write follows. There is no copied key/hash compiler.
+    // closed through the shared hash checker as a known permanent authority
+    // fault; no receipt is treated as absence and no activity/root write follows.
+    // There is no copied key/hash compiler or transient retry classification.
+    let assert_corruption = |error: awaken_session_types::RunError| {
+        assert_eq!(error.kind, awaken_session_types::RunErrorKind::Internal);
+        assert_eq!(error.code, "session_application_invalid");
+        assert!(!error.is_unclassified_internal());
+    };
     for positive in [false, true] {
         let id = format!("budget-receipt-hash-{positive}");
         let fixture = race_fixture(&id).await;
@@ -599,10 +605,7 @@ async fn accepted_and_rejected_receipt_payload_mismatches_fail_closed_without_ad
             .unwrap();
         assert_eq!(receipt.payload_hash, wrong.payload_hash);
         capture.release.notify_one();
-        assert_eq!(
-            pending.await.unwrap_err().code,
-            "session_run_admission_pending"
-        );
+        assert_corruption(pending.await.unwrap_err());
         let thread = ThreadId(id.clone());
         let operation = awaken_session_execution_contract::session_run_activity_operation_id(
             &command.session_id,
@@ -622,9 +625,10 @@ async fn accepted_and_rejected_receipt_payload_mismatches_fail_closed_without_ad
                         Some((&thread, &command.run_id))
                     )
                     .await,
-                Err(SessionActivityError::Unavailable(_))
+                Err(SessionActivityError::Internal(detail))
+                    if detail == "Session activity operation id was reused with another payload"
             ),
-            "H1/H2 mismatch is not absence"
+            "H1/H2 mismatch is a permanent fault, never absence or pending admission"
         );
         assert_eq!(
             fixture.repository.observed_gets.lock().unwrap().len(),
@@ -635,15 +639,13 @@ async fn accepted_and_rejected_receipt_payload_mismatches_fail_closed_without_ad
             SessionRunActivityAdmissionMode::RecoverOnly,
             SessionRunActivityAdmissionMode::RecoverOrAdmit,
         ] {
-            assert_eq!(
+            assert_corruption(
                 fixture
                     .app
                     .coordination
                     .admit_session_run_activity(&command.session_id, "agent", &command.run_id, mode)
                     .await
-                    .unwrap_err()
-                    .code,
-                "session_run_admission_pending"
+                    .unwrap_err(),
             );
         }
         assert_eq!(

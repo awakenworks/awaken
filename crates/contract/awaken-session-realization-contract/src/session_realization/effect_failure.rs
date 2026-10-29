@@ -119,12 +119,14 @@ pub fn provisioning_disposition(
 }
 
 /// Whether `code` names a request-local "not yet" rather than a failure: a
-/// capacity refusal or a provision still within its deadline.
+/// capacity refusal, a provision within its deadline, or Control not ready.
 #[must_use]
 pub fn is_not_ready_code(code: &str) -> bool {
     matches!(
         code,
-        ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE | ENVIRONMENT_PROVISIONING_CODE
+        ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE
+            | ENVIRONMENT_PROVISIONING_CODE
+            | super::control_failure::SESSION_REALIZATION_NOT_READY_CODE
     )
 }
 
@@ -521,6 +523,7 @@ mod tests {
             for code in [
                 ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                 ENVIRONMENT_PROVISIONING_CODE,
+                super::super::control_failure::SESSION_REALIZATION_NOT_READY_CODE,
                 ENVIRONMENT_UNAVAILABLE_CODE,
                 ENVIRONMENT_REJECTED_CODE,
                 UNCLASSIFIED_INTERNAL_CODE,
@@ -534,7 +537,8 @@ mod tests {
                     code: code.into(),
                 };
                 let capacity = code == ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE
-                    || code == ENVIRONMENT_PROVISIONING_CODE;
+                    || code == ENVIRONMENT_PROVISIONING_CODE
+                    || code == super::super::control_failure::SESSION_REALIZATION_NOT_READY_CODE;
                 let unclassified = code == UNCLASSIFIED_INTERNAL_CODE;
                 let expected = match (kind, capacity, unclassified) {
                     (RunErrorKind::Unavailable, true, _) => {
@@ -667,9 +671,15 @@ mod tests {
         // The Kani harness exhausts duration arithmetic; these rows prove the
         // real error payload and its neutral projection compose with it.
         use std::time::Duration as D;
-        let errors: [fn() -> RunError; 7] = [
+        let errors: [fn() -> RunError; 8] = [
             || RunError::unavailable_classified(ENVIRONMENT_PROVISIONING_CODE, "original"),
             || RunError::unavailable_classified(ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, "original"),
+            || {
+                RunError::unavailable_classified(
+                    super::super::control_failure::SESSION_REALIZATION_NOT_READY_CODE,
+                    "original",
+                )
+            },
             || RunError::unavailable("original"),
             || RunError::conflict("original"),
             || RunError::internal("original"),
@@ -704,7 +714,8 @@ mod tests {
                         expected.3,
                         "E4 class"
                     );
-                    let projected = RunError::from(failure);
+                    let projected =
+                        RunError::from(super::super::SessionRealizationDriveError::Effect(failure));
                     assert_eq!(
                         (projected.kind, projected.code, projected.message),
                         (expected.0, expected.1, expected.2),

@@ -283,6 +283,9 @@ impl SessionProjectionReads for SessionQueries {
                 SessionMutationError::Unavailable(message) => {
                     SessionProjectionRecoveryError::Unavailable(message)
                 }
+                error @ SessionMutationError::Internal(_) => {
+                    SessionProjectionRecoveryError::Rejected(error.into())
+                }
             })?;
         if expected_owner.is_some_and(|expected| expected != owner) {
             return Err(SessionProjectionRecoveryError::NotFound);

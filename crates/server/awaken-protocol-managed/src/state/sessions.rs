@@ -114,25 +114,10 @@ impl ManagedState {
                 lifecycle_facts,
             )
             .await
-            .map_err(Self::map_application_mutation_error)?
+            .map_err(StateError::from)?
             .into_session();
         self.publish_persisted_session(&session)?;
         Ok(session)
-    }
-
-    pub(super) fn map_application_mutation_error(
-        error: awaken_session_application::SessionMutationError,
-    ) -> StateError {
-        match error {
-            awaken_session_application::SessionMutationError::NotFound => StateError::NotFound,
-            awaken_session_application::SessionMutationError::Conflict => StateError::Conflict,
-            awaken_session_application::SessionMutationError::IdempotencyMismatch => {
-                StateError::IdempotencyMismatch
-            }
-            awaken_session_application::SessionMutationError::Unavailable(message) => {
-                StateError::Run(RunError::internal(message))
-            }
-        }
     }
 
     pub(crate) fn map_creation_error(
@@ -152,9 +137,9 @@ impl ManagedState {
             awaken_session_application::SessionCreationError::Unavailable(message) => {
                 StateError::Run(RunError::unavailable(message))
             }
-            awaken_session_application::SessionCreationError::Internal(message) => {
-                StateError::Run(RunError::internal(message))
-            }
+            awaken_session_application::SessionCreationError::Internal(message) => StateError::Run(
+                awaken_session_application::SessionMutationError::Internal(message).into(),
+            ),
         }
     }
 
@@ -432,7 +417,7 @@ impl ManagedState {
         {
             Ok(owner) => Ok(Some(owner)),
             Err(awaken_session_application::SessionMutationError::NotFound) => Ok(None),
-            Err(error) => Err(Self::map_application_mutation_error(error)),
+            Err(error) => Err(StateError::from(error)),
         }
     }
 

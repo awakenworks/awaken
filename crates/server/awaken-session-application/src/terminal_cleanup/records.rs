@@ -485,7 +485,7 @@ impl SessionTerminalCleanups {
     ) -> Result<(), SessionMutationError> {
         let deleted_revision =
             SessionRevision(session.revision.0.checked_add(1).ok_or_else(|| {
-                SessionMutationError::Unavailable("Session revision exhausted".into())
+                SessionMutationError::Internal("Session revision exhausted".into())
             })?);
         let payload = SessionMutationPayload::Delete(SessionTombstone {
             session_id: session.session_id.clone(),

@@ -11,6 +11,8 @@ use awaken_session_types::SessionId;
 mod attempt_binding;
 #[path = "signed_worker_transport_http/cursor_protocol.rs"]
 mod cursor_protocol;
+#[path = "signed_worker_transport_http/error_classes.rs"]
+mod error_classes;
 #[path = "signed_worker_transport_http/registry_incarnation.rs"]
 mod registry_incarnation;
 
@@ -2076,18 +2078,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(session_control.renewals.lock().unwrap().len(), 1, "T24");
     session_work.retired.store(false, Ordering::SeqCst);
     *session_work.owner.lock().unwrap() = Some(registered.snapshot.identity.lease_owner());
-    *session_control.renewal_failure.lock().unwrap() =
-        Some(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady);
-    assert!(
-        matches!(
-            client
-                .renew_session_realization(&registered.snapshot.identity, renewal.clone())
-                .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
-        ),
-        "T16"
-    );
-    *session_control.renewal_failure.lock().unwrap() = None;
+    error_classes::assert_renewal_failure_classes(
+        &client,
+        &session_control,
+        &registered.snapshot.identity,
+        renewal.clone(),
+    )
+    .await;
     let mut implicit = renewal.clone();
     implicit.asserted_lease.owner = "another-worker".into();
     assert!(
@@ -2105,8 +2102,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("T12 bounded renewal");
     assert_eq!(
         session_control.renewals.lock().unwrap().len(),
-        3,
-        "T11/T12/T16"
+        11,
+        "T11/T12 plus exactly nine fault matrix requests"
     );
     assert_eq!(
         session_control
@@ -2129,7 +2126,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T15"
     );
-    assert_eq!(session_control.renewals.lock().unwrap().len(), 3, "T15/T16");
+    assert_eq!(
+        session_control.renewals.lock().unwrap().len(),
+        11,
+        "T15/T16 no extra request"
+    );
     // Continuation cause/effect table at the signed HTTP boundary:
     // RC1 exact live claim/Work/Worker + retained lease => exact renewal then
     // non-reassigning begin, preserving the generation. RC2 foreign owner or

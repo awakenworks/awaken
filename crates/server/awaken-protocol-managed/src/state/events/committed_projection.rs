@@ -276,7 +276,7 @@ impl ManagedState {
                 .roots
                 .owner(&awaken_session_types::SessionId::from(session_id))
                 .await
-                .map_err(Self::map_application_mutation_error)?;
+                .map_err(StateError::from)?;
             if !refresh_entrypoint::logical_deletion_is_proven(
                 true,
                 persisted.session_id == session_id,

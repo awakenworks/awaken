@@ -23,7 +23,12 @@ pub enum SessionRealizationControlFailure {
     Invalid(String),
     #[error("Session realization service is unavailable: {0}")]
     Unavailable(String),
+    #[error("Session realization durable state is invalid: {0}")]
+    Internal(String),
 }
+
+/// Stable code preserving a Control deferral through the neutral Run boundary.
+pub const SESSION_REALIZATION_NOT_READY_CODE: &str = "session_realization_not_ready";
 
 /// Stable effect class for one Control failure at a Worker/Run boundary.
 ///
@@ -44,9 +49,11 @@ impl SessionRealizationControlFailure {
             Self::StaleOwnership | Self::Conflict | Self::Unavailable(_) => {
                 SessionRealizationControlDisposition::Retryable
             }
-            Self::NotFound | Self::Retired | Self::Terminal | Self::Invalid(_) => {
-                SessionRealizationControlDisposition::Terminal
-            }
+            Self::NotFound
+            | Self::Retired
+            | Self::Terminal
+            | Self::Invalid(_)
+            | Self::Internal(_) => SessionRealizationControlDisposition::Terminal,
         }
     }
 
@@ -64,7 +71,40 @@ impl SessionRealizationControlFailure {
                 | Self::Terminal
                 | Self::StaleOwnership
                 | Self::Invalid(_)
+                | Self::Internal(_)
         )
+    }
+}
+
+/// Project one Control cause into a neutral Run fault without changing its
+/// effect disposition. HTTP adapters retain the typed Control value for their
+/// status/envelope; callers never need to parse its presentation string.
+///
+/// ```
+/// use awaken_session_realization_contract::{SessionRealizationControlFailure as C, effect_failure_disposition};
+/// use awaken_session_types::{RunError, RunErrorClassification};
+/// let missing: RunError = C::NotFound.into();
+/// assert_eq!(missing.classification(), RunErrorClassification::NotFound);
+/// let corrupt = C::Internal("damaged row".into());
+/// let expected = corrupt.disposition();
+/// let run: RunError = corrupt.into();
+/// assert_eq!(effect_failure_disposition(&run), expected);
+/// assert!(!run.is_unclassified_internal());
+/// ```
+impl From<SessionRealizationControlFailure> for awaken_session_types::RunError {
+    fn from(error: SessionRealizationControlFailure) -> Self {
+        use SessionRealizationControlFailure as C;
+        match error {
+            C::NotReady => {
+                Self::unavailable_classified(SESSION_REALIZATION_NOT_READY_CODE, error.to_string())
+            }
+            C::StaleOwnership | C::Conflict => Self::conflict(error.to_string()),
+            C::NotFound => Self::bad_request_classified("not_found", error.to_string()),
+            C::Retired | C::Terminal => Self::bad_request(error.to_string()),
+            C::Invalid(message) => Self::bad_request(message),
+            C::Unavailable(_) => Self::unavailable(error.to_string()),
+            C::Internal(message) => Self::classified("session_realization_invalid", message),
+        }
     }
 }
 
@@ -100,7 +140,7 @@ impl From<awaken_session_state_contract::SessionEnvironmentRejection>
 /// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 #[kani::proof]
 fn session_realization_control_failure_disposition_is_total_exact_and_fail_closed() {
-    let selector = kani::any::<u8>() % 8;
+    let selector = kani::any::<u8>() % 9;
     let failure = match selector {
         0 => SessionRealizationControlFailure::NotFound,
         1 => SessionRealizationControlFailure::NotReady,
@@ -109,7 +149,8 @@ fn session_realization_control_failure_disposition_is_total_exact_and_fail_close
         4 => SessionRealizationControlFailure::StaleOwnership,
         5 => SessionRealizationControlFailure::Conflict,
         6 => SessionRealizationControlFailure::Invalid(String::new()),
-        _ => SessionRealizationControlFailure::Unavailable(String::new()),
+        7 => SessionRealizationControlFailure::Unavailable(String::new()),
+        _ => SessionRealizationControlFailure::Internal(String::new()),
     };
     // This oracle is deliberately derived from the symbolic variant selector,
     // not from `failure.disposition()`: changing the production table cannot
@@ -127,7 +168,7 @@ fn session_realization_control_failure_disposition_is_total_exact_and_fail_close
 /// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 #[kani::proof]
 fn realization_ownership_loss_proof_is_total_and_exact() {
-    let selector = kani::any::<u8>() % 8;
+    let selector = kani::any::<u8>() % 9;
     let failure = match selector {
         0 => SessionRealizationControlFailure::NotFound,
         1 => SessionRealizationControlFailure::NotReady,
@@ -136,11 +177,12 @@ fn realization_ownership_loss_proof_is_total_and_exact() {
         4 => SessionRealizationControlFailure::StaleOwnership,
         5 => SessionRealizationControlFailure::Conflict,
         6 => SessionRealizationControlFailure::Invalid(String::new()),
-        _ => SessionRealizationControlFailure::Unavailable(String::new()),
+        7 => SessionRealizationControlFailure::Unavailable(String::new()),
+        _ => SessionRealizationControlFailure::Internal(String::new()),
     };
     assert_eq!(
         failure.proves_current_realization_cannot_continue(),
-        matches!(selector, 0 | 2 | 3 | 4 | 6)
+        matches!(selector, 0 | 2 | 3 | 4 | 6 | 8)
     );
 }
 
@@ -160,7 +202,7 @@ mod tests {
         // | T1 | not ready | NotReady | no |
         // | T2a | stale | Retryable | yes |
         // | T2b | conflict/unavailable | Retryable | no |
-        // | T3 | not found/retired/terminal/invalid | Terminal | yes |
+        // | T3 | not found/retired/terminal/invalid/internal | Terminal | yes |
         for (rule, failure, disposition, owner_disproved) in [
             (
                 "T3 not found",
@@ -210,12 +252,32 @@ mod tests {
                 SessionRealizationControlDisposition::Retryable,
                 false,
             ),
+            (
+                "T3 corrupt durable state",
+                SessionRealizationControlFailure::Internal("control offline".into()),
+                SessionRealizationControlDisposition::Terminal,
+                true,
+            ),
         ] {
             let wire = serde_json::to_value(&failure).expect(rule);
             let decoded: SessionRealizationControlFailure =
                 serde_json::from_value(wire).expect(rule);
             assert_eq!(decoded, failure, "{rule}");
             assert_eq!(decoded.disposition(), disposition, "{rule}");
+            let direct: awaken_session_types::RunError = decoded.clone().into();
+            let run: awaken_session_types::RunError =
+                super::super::SessionRealizationDriveError::Control(decoded.clone()).into();
+            assert_eq!(
+                (&run.kind, &run.code, &run.message),
+                (&direct.kind, &direct.code, &direct.message),
+                "{rule} Drive adapter"
+            );
+            assert_eq!(
+                super::super::effect_failure_disposition(&run),
+                disposition,
+                "{rule} neutral Run projection"
+            );
+            assert!(!run.is_unclassified_internal(), "{rule} known cause");
             assert_eq!(
                 decoded.proves_current_realization_cannot_continue(),
                 owner_disproved,

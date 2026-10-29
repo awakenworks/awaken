@@ -150,6 +150,9 @@ impl SessionInputs {
             Ok(_) | Err(crate::SessionMutationError::NotFound) => {
                 Err(LiveInboxApplicationError::NotFound)
             }
+            Err(crate::SessionMutationError::Internal(detail)) => {
+                Err(LiveInboxApplicationError::InvalidSessionState { detail })
+            }
             Err(error) => Err(LiveInboxApplicationError::AuthorityUnavailable {
                 detail: error.to_string(),
             }),
