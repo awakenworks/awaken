@@ -47,6 +47,7 @@ mod tests {
             .with_ephemeral_dispatch(store.clone()))
         .build()
         .expect("validated Host dependencies");
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let resolver = crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
             .expect("Host dispatch resolver");
 

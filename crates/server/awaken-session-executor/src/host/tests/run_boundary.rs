@@ -964,7 +964,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     .build()
     .expect("validated Host dependencies");
     let _managed = host.clone();
-    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+    crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 
@@ -1528,7 +1528,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         !ctx.foreground.has_run().unwrap(),
         "M1/C3 Managed admission has no foreground hint"
     );
-    crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+    crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
         .start_local_pool()
         .expect("valid test dispatch composition");
 

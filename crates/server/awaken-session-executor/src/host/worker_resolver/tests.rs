@@ -88,6 +88,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
         .with_ephemeral_dispatch(store))
     .build()
     .expect("validated Host dependencies");
+    crate::test_application_bindings::select_standalone(&host).unwrap();
     crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch)
         .expect("Host dispatch resolver")
         .worker_for_claimed(&claimed)
@@ -1034,6 +1035,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             })))
         .build()
         .expect("validated Host dependencies");
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         dispatch
             .enqueue(with_empty_session_resources(
                 ingress::RunDispatch::new(test_activation("conflict", "conflict-run"))
@@ -1084,6 +1086,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     // Decision rule: exercise the unequal-scope partition and require E1/E2.
     let storage = tempfile::tempdir().expect("storage");
     let host = adoption_host_at(storage.path()).await;
+    crate::test_application_bindings::select_standalone(&host).unwrap();
     let run = RunId("run-scope-mismatch".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -1129,6 +1132,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     // require fail-closed zero creation.
     let storage = tempfile::tempdir().expect("storage");
     let host = adoption_host_at(storage.path()).await;
+    crate::test_application_bindings::select_standalone(&host).unwrap();
     let run = RunId("run-malformed-resources".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -2368,6 +2372,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
     // realization. Decision rule: exercise C1 and require control-only success.
     let storage = tempfile::tempdir().expect("storage");
     let host = adoption_host_at(storage.path()).await;
+    crate::test_application_bindings::select_standalone(&host).unwrap();
     let thread = ThreadId("thread-control-only".to_string());
     let run = RunId("run-control-only".to_string());
     let fingerprint = CatalogFingerprint("control-only-catalog".to_string());

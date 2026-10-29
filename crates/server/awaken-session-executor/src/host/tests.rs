@@ -627,8 +627,7 @@ fn install_test_session_application(host: &Arc<ExecutorComponents>) {
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| Arc::new(RejectingSessionAgentCoordination));
-    host.session_application_bindings()
-        .bind_agent_coordination(application.clone())
+    crate::test_application_bindings::select_coordination(host, application.clone())
         .expect("install one test Session application authority");
 }
 
@@ -643,8 +642,7 @@ fn install_recording_session_application(host: &Arc<ExecutorComponents>) {
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
-    host.session_application_bindings()
-        .bind_agent_coordination(application.clone())
+    crate::test_application_bindings::select_coordination(host, application.clone())
         .expect("install recording Session application authority");
 }
 

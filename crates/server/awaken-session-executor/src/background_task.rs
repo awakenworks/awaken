@@ -1159,18 +1159,14 @@ mod tests {
         );
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
-        managed
-            .session_application_bindings()
-            .bind_background_run_submission(port.clone())
+        crate::test_application_bindings::select_background(&managed, port.clone())
             .expect("R8 first install");
         assert!(
             shared.require_background_run_submission().is_ok(),
             "R12 shared binding"
         );
         assert_eq!(
-            managed
-                .session_application_bindings()
-                .bind_background_run_submission(port.clone()),
+            crate::test_application_bindings::select_background(&managed, port.clone()),
             Err(crate::SessionApplicationBindingError::AlreadyBound),
             "R9 single assignment",
         );

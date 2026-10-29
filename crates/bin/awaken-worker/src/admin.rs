@@ -162,7 +162,11 @@ mod tests {
         .await;
         let lifecycle = Arc::new(crate::WorkerSupervisor {
             authority: Default::default(),
-            roles: awaken_session_executor::WorkerRoles::of(&host),
+            roles: awaken_session_executor::WorkerRoles::of(
+                &host,
+                awaken_session_run_delivery::SessionApplications::Standalone,
+            )
+            .unwrap(),
             control: awaken_coordinator_client::WorkerControlClient::new(
                 awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")
                     .with_worker_id("admin-test"),

@@ -95,13 +95,17 @@ async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provid
             idle_since_unix_ms: None,
         };
         let before = serde_json::to_value(&projection).unwrap();
-        let result = crate::WorkerRoles::of(&host)
-            .observe_source_retention(
-                &awaken_session_types::SessionId::from(id),
-                &projection,
-                prepared,
-            )
-            .await;
+        let result = crate::WorkerRoles::of(
+            &host,
+            awaken_session_run_delivery::SessionApplications::Standalone,
+        )
+        .unwrap()
+        .observe_source_retention(
+            &awaken_session_types::SessionId::from(id),
+            &projection,
+            prepared,
+        )
+        .await;
         assert_eq!(serde_json::to_value(&projection).unwrap(), before);
         assert_eq!(*events.lock().unwrap(), ["observe-source-retention"]);
         result
@@ -199,6 +203,11 @@ async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_reso
         .await
         .build()
         .expect("validated Host dependencies");
+    let roles = crate::WorkerRoles::of(
+        &host,
+        awaken_session_run_delivery::SessionApplications::Standalone,
+    )
+    .unwrap();
     for current_memory in [false, true] {
         let mut projection = terminal_memory_projection();
         if current_memory {
@@ -218,7 +227,7 @@ async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_reso
         };
         let before = serde_json::to_value(&projection).unwrap();
         assert!(
-            !crate::WorkerRoles::of(&host)
+            !roles
                 .observe_source_retention(
                     &awaken_session_types::SessionId::from("live-memory"),
                     &projection,

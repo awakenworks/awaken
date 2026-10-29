@@ -497,7 +497,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     .await
     .expect("Thread 1 Run");
     assert!(
-        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -814,9 +814,12 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         "D2/E2: {error:?}"
     );
     assert!(
-        crate::session_dispatch_lifecycle(second.as_ref(), second.worker_completion_sink())
-            .drain(std::time::Duration::from_secs(10))
-            .await
+        crate::test_application_bindings::lifecycle(
+            second.as_ref(),
+            second.worker_completion_sink()
+        )
+        .drain(std::time::Duration::from_secs(10))
+        .await
     );
 
     let repository = awaken_session_store::SqliteManagedSessionRepository::open(
@@ -943,7 +946,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .await
     .unwrap();
     assert!(
-        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1423,7 +1426,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .unwrap_or_default();
     assert_eq!(reply, "ok", "disabled recall does not inject store content");
     assert!(
-        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(1))
             .await
     );
@@ -1556,7 +1559,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
     );
 
     assert!(
-        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1645,7 +1648,7 @@ async fn extraction_cursor_only_processes_new_messages() {
         .await
         .expect("Run 1");
     assert!(
-        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1653,7 +1656,7 @@ async fn extraction_cursor_only_processes_new_messages() {
         .await
         .expect("Run 2");
     assert!(
-        crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await
     );
@@ -1701,9 +1704,10 @@ async fn run_end_fires_background_memory_extraction() {
         "Run should end"
     );
 
-    let drained = crate::session_dispatch_lifecycle(host.as_ref(), host.worker_completion_sink())
-        .drain(std::time::Duration::from_secs(10))
-        .await;
+    let drained =
+        crate::test_application_bindings::lifecycle(host.as_ref(), host.worker_completion_sink())
+            .drain(std::time::Duration::from_secs(10))
+            .await;
     assert!(drained, "memory extraction should drain");
 
     let saved = host

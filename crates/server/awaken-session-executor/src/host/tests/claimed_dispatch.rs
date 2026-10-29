@@ -35,6 +35,7 @@ async fn cancellation_resolution_keeps_execution_capabilities_on_the_claiming_wo
             .with_ephemeral_dispatch(dispatch.clone()))
         .build()
         .unwrap();
+        crate::test_application_bindings::select_standalone(&host).unwrap();
         let parent = ThreadId("cancellation-parent".into());
         let child = ThreadId("cancellation-child".into());
         let run = RunId("cancellation-run".into());

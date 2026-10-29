@@ -285,9 +285,7 @@ pub(super) fn complete_managed_test_host(
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
-    managed
-        .session_application_bindings()
-        .bind_agent_coordination(application.clone())
+    crate::test_application_bindings::select_coordination(&managed, application.clone())
         .expect("install one test Session application authority");
     managed
 }

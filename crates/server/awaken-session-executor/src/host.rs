@@ -143,9 +143,9 @@ pub(crate) use worker_resolver::test_support::{
 /// composition roots, which select a typed role set from it, and the
 /// protocol adapters and tests that drive individual components.
 ///
-/// The one constructor is `From<`[`SessionExecutorBuilder`]`>`: every dependency is
-/// selected on that value before the components exist, and nothing installs
-/// one into an assembled value.
+/// The builder fixes execution dependencies before these components exist.
+/// The checked [`crate::session_dispatch_lifecycle`] constructor selects all
+/// application capabilities together before process services start.
 pub struct ExecutorComponents {
     /// Platform-managed workspace for flat, no-login local requests. It is
     /// generated (and persisted with durable storage), never compiled in.

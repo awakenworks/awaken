@@ -267,7 +267,7 @@ async fn assert_completed_memory(
 ) {
     let (host, versions) = memory;
     assert!(
-        crate::session_dispatch_lifecycle(host, host.worker_completion_sink())
+        crate::test_application_bindings::lifecycle(host, host.worker_completion_sink())
             .drain(std::time::Duration::from_secs(10))
             .await,
         "{rule}: Memory extraction did not drain"
@@ -546,9 +546,7 @@ async fn cold_durable_context_defers_terminal_delivery_to_guarded_settlement() {
     let managed = host.clone();
     let application: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
-    managed
-        .session_application_bindings()
-        .bind_agent_coordination(application.clone())
+    crate::test_application_bindings::select_coordination(&managed, application.clone())
         .expect("C5 install canonical Session application authority");
     // Two original boundaries remain: ordinary Queue Work is produced from
     // its Resource carrier; the receiver is Managed and must own a real

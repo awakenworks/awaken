@@ -8,6 +8,20 @@ use std::sync::Arc;
 use awaken_worker_transport_security::{WorkerBootstrap, WorkerBootstrapInput};
 use serde::Deserialize;
 
+// Cargo features are additive across consumers. A transport dependency can
+// parse Pod identities while this Worker lacks its Kubernetes integration.
+// Admit the process-owned capability before projection I/O or publication of
+// a supposedly validated Worker configuration; parsing remains transport-owned.
+fn resolve_worker_bootstrap(
+    input: WorkerBootstrapInput,
+    data_dir: &Path,
+) -> Result<WorkerBootstrap, String> {
+    if input.kubernetes_identity_directory.is_some() && !cfg!(feature = "container-k8s") {
+        return Err("Pod-bound Worker transport requires the container-k8s build feature".into());
+    }
+    WorkerBootstrap::resolve(input, data_dir)
+}
+
 /// Explicit transport posture: embedding may use a trusted local channel;
 /// standalone Workers must use the canonical authenticated HTTPS constructor.
 pub enum WorkerUpstreamSecurity<'a> {
@@ -187,7 +201,7 @@ impl WorkerDaemonConfig {
             return Err("Worker server must be an http:// or https:// URL".into());
         }
         let data_dir = file.data_dir.unwrap_or_else(|| PathBuf::from("."));
-        let worker = WorkerBootstrap::resolve(
+        let worker = resolve_worker_bootstrap(
             WorkerBootstrapInput {
                 worker_id: file.worker_id,
                 request_credential_file: file.worker_request_credential_file,
@@ -536,7 +550,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            WorkerBootstrap::resolve(input(), directory.path()).is_err(),
+            resolve_worker_bootstrap(input(), directory.path()).is_err(),
             "P2 missing"
         );
         for (name, value) in [
@@ -575,7 +589,7 @@ mod tests {
                 "P5"
             );
         }
-        let resolved = WorkerBootstrap::resolve(input(), directory.path());
+        let resolved = resolve_worker_bootstrap(input(), directory.path());
         assert_eq!(
             resolved.is_ok(),
             cfg!(feature = "container-k8s"),
@@ -621,7 +635,7 @@ mod tests {
             let mut mismatch = input();
             mismatch.worker_id = Some("foreign".into());
             assert!(
-                WorkerBootstrap::resolve(mismatch, directory.path()).is_err(),
+                resolve_worker_bootstrap(mismatch, directory.path()).is_err(),
                 "P2 mismatch"
             );
             worker.request_credential_file = Some(directory.path().join("signer"));
@@ -651,9 +665,66 @@ mod tests {
         let mut mixed = input();
         mixed.request_credential_file = Some(directory.path().join("signer"));
         assert!(
-            WorkerBootstrap::resolve(mixed, directory.path()).is_err(),
+            resolve_worker_bootstrap(mixed, directory.path()).is_err(),
             "P3"
         );
+    }
+
+    #[cfg(not(feature = "container-k8s"))]
+    #[test]
+    fn unavailable_pod_identity_rejects_before_projection_io_and_after_dto_mutation() {
+        // U1 the Worker integration is absent; U2 another consumer may enable
+        // the transport dependency's Kubernetes parser; U3 the projection does
+        // not exist; U4 a caller mutates the compatibility DTO after parsing.
+        // U1+U2+U3 must reject for the Worker's capability before projection I/O.
+        // U1+U4 must also reject at use, without selecting signing or local auth.
+        // check-rust.sh executes this real dependency-only feature graph.
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-projection");
+        let error = resolve_worker_bootstrap(
+            WorkerBootstrapInput {
+                kubernetes_identity_directory: Some(missing.clone()),
+                ..Default::default()
+            },
+            directory.path(),
+        )
+        .unwrap_err();
+        assert!(error.contains("container-k8s"), "U1/U2/U3 {error}");
+        assert!(!missing.exists(), "the projection was never provisioned");
+
+        let config = directory.path().join("worker.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "role = \"worker\"\nmode = \"server\"\nworker_server = \"https://coordinator\"\nworker_kubernetes_identity_directory = {:?}",
+                missing.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        let error = WorkerDaemonConfig::load(&config, None).unwrap_err();
+        assert!(
+            error.contains("container-k8s"),
+            "configuration admission: {error}"
+        );
+
+        let mut forged = WorkerBootstrap::resolve(
+            WorkerBootstrapInput {
+                worker_id: Some("worker-a".into()),
+                ..Default::default()
+            },
+            directory.path(),
+        )
+        .unwrap();
+        forged.kubernetes_identity_directory = Some(missing);
+        let error = worker_upstream(
+            &forged,
+            "https://coordinator",
+            WorkerUpstreamSecurity::Local,
+            awaken_time::system_clock(),
+        )
+        .err()
+        .expect("U4 compatibility DTO mutation cannot grant an unavailable integration");
+        assert!(error.contains("container-k8s"), "U4 {error}");
     }
 
     #[test]
