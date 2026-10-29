@@ -224,7 +224,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
     let state = DomainState {
         directory: directory.clone(),
         dispatch,
-        environments,
+        work_claims: environments.worker_lease_observation(),
         session_queries: sessions.queries(),
         worker_occupancy: sessions.worker_occupancy(),
         relay_targets: Some(pod.clone()),

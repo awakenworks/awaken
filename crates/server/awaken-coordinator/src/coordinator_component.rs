@@ -351,7 +351,7 @@ pub async fn build_coordinator_component(
             crate::worker_observation_boundary::DomainState {
                 directory: worker_directory.clone(),
                 dispatch: execution.coordinator_dispatch.clone(),
-                environments: environments.clone(),
+                work_claims: environments.worker_lease_observation(),
                 session_queries: session_application.queries(),
                 worker_occupancy: session_application.worker_occupancy(),
                 relay_targets: worker_relay_targets.clone(),

@@ -640,6 +640,106 @@ mod retry_hint_tests {
     use std::sync::atomic::Ordering;
 
     #[tokio::test]
+    async fn idle_no_create_retirement_uses_real_coordination_reads_without_terminal_cleanup() {
+        // Cause/effect graph: C1 modern explicit no-Create root, Idle, exact
+        // closed Worker assignment and no retained Resources/activities; C2
+        // production CoordinatedThreads returns NotTerminal for its terminal
+        // source-Dispatch port; C3 the same complete Session read is used for
+        // retention subjects and qualification. R1 C1+C2+C3 -> retained, still
+        // occupied, no provider subject or root write. A scripted Settled reply
+        // for a live root violates the real port contract and hid the defect.
+        // Worker-domain physical/Work/Registry gates remain separately required;
+        // the existing Coordinator decision table covers each refusal.
+        use awaken_session_realization_contract::WorkerSourceRetentionSubjects as _;
+        use awaken_session_repository_contract::SessionRepository as _;
+        let roots = ManagedSessionRootFixture::new().await;
+        let host = roots
+            .configure(
+                crate::SessionExecutorBuilder::ephemeral(
+                    Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                    "stub",
+                )
+                .await,
+            )
+            .build()
+            .unwrap();
+        let identity = awaken_worker_contract::WorkerIdentity::new("idle-worker", "boot", 1);
+        let mut baseline = super::super::remote_terminal_cleanup_projection().baseline;
+        baseline.environment.self_hosted = false;
+        baseline.environment.sandbox_provisioning =
+            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse;
+        let mut root = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+            "live-no-create-composition",
+            baseline,
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        root.realization = Some(
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: identity.worker_id.clone(),
+                runtime_incarnation: identity.lease_owner(),
+                epoch: 7,
+                expires_at_unix_ms: 0,
+            },
+        );
+        let id = root.session_id.clone();
+        roots
+            .repository
+            .create(
+                "workspace",
+                root,
+                awaken_session_state_contract::IdempotencyRecord {
+                    key: "create-live-no-create-composition".into(),
+                    payload_hash: "same-create".into(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let before = roots.repository.get(&id).await.unwrap();
+        let application = roots.application(&host);
+        let source = host
+            .session_execution_roles()
+            .coordination_reads
+            .source_dispatch_observation(&before)
+            .await;
+        assert_eq!(
+            source,
+            awaken_session_execution_contract::SessionSourceDispatchObservation::NotProven {
+                reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::NotTerminal,
+            },
+            "the real port is deliberately terminal-only"
+        );
+        let occupancy = application.worker_occupancy();
+        assert!(
+            occupancy
+                .source_retention_subjects(&identity)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let observed = occupancy
+            .observe_worker_realizations(
+                awaken_session_application::WorkerRealizationRead::Retirement {
+                    identity: &identity,
+                    reported: &Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            observed.occupied && observed.sources_retained,
+            "live no-Create retirement cannot require terminal cleanup or its frozen Dispatch scope"
+        );
+        assert_eq!(roots.repository.get(&id).await.unwrap(), before);
+    }
+
+    #[tokio::test]
     async fn local_install_preserves_the_real_provider_hint_before_neutral_error_projection() {
         // L3-L6 use the actual provider adapter, R adoption, RunAssembly install,
         // LocalProjectionSynchronizer, phase driver and Root failure CAS.

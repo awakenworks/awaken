@@ -42,6 +42,7 @@ awaken-deployment-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-deployment-application.workspace = true
 awaken-environment-application.workspace = true
+awaken-executable-environment-contract.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-worker-contract.workspace = true
 awaken-tenancy = { workspace = true }
@@ -158,7 +159,6 @@ awaken-coordinator-client.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.
 awaken-process-startup = { workspace = true, features = ["container-k8s", "test-support"] }
-awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
 awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }
 awaken-lease-contract.workspace = true

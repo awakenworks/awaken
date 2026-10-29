@@ -86,7 +86,8 @@ async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
             modern.terminal_cleanup = root.terminal_cleanup;
             modern.realization = root.realization;
             root = modern;
-            assert!(awaken_session_state_contract::session_has_terminal_no_create_evidence(&root));
+            assert!(root.is_terminal());
+            assert!(awaken_session_state_contract::session_has_no_create_evidence(&root));
         }
         if mode != "no-create" && mode != "legacy" {
             root.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {

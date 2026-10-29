@@ -185,6 +185,239 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
 }
 
 #[tokio::test]
+async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_root_facts() {
+    // C1 modern explicit-empty Create history vs legacy unknown/admitted Create;
+    // C2 exact incarnation and explicitly closed assignment (zero, not expired);
+    // C3 frozen Idle + complete Events; C4 no retained Resource references or
+    // pending transition; C5 the terminal-source port is not a live-root gate.
+    // R1 all root facts -> occupied but retained,
+    // no provider subject. R2 each false -> occupied/refused, no partial report.
+    // R3 a mixed Resident source still needs its exact positive report. Every
+    // row preserves the entire original root and produces no effect/cleanup ACK.
+    for rule in [
+        "no-create",
+        "mcp-pending",
+        "legacy",
+        "admitted",
+        "live-lease",
+        "expired-lease",
+        "foreign",
+        "preparing",
+        "active-activity",
+        "running-interval",
+        "incomplete-events",
+        "active-resource",
+        "pending-resource",
+        "pending-empty",
+        "irrelevant-source-pending",
+        "source-unavailable",
+        "mixed",
+        "mixed-missing",
+    ] {
+        let identity = awaken_worker_contract::WorkerIdentity::new("lazy-worker", "boot", 1);
+        let id = SessionId::from(format!("no-create-{rule}"));
+        let fixture = retained_root(id.as_str(), &identity);
+        let mut baseline = fixture.frozen_baseline().unwrap().clone();
+        baseline.environment.self_hosted = false;
+        baseline.environment.sandbox_provisioning =
+            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse;
+        let mut root = PersistedSession::frozen_with_budget(
+            id.as_str(),
+            baseline,
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        root.realization = fixture.realization;
+        root.realization.as_mut().unwrap().expires_at_unix_ms = 0;
+        match rule {
+            "mcp-pending" => {
+                // Idle credential adoption can still await a successor. Its
+                // desired MCP generation is not an Environment Create effect.
+                root.mcp = awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::from_initial(
+                    vec![awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                        name: "flow".into(),
+                        target: awaken_agent_contract::McpTarget::parse_http("https://flow.example.test/mcp").unwrap(),
+                        prompts_as_skills: false,
+                        credential: None,
+                        origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                    }], None,
+                ).unwrap();
+            }
+            "legacy" => {
+                // Match the existing persisted historical fixture codec; no
+                // public mutation of private materialization history exists.
+                let mut wire = serde_json::to_value(&root).unwrap();
+                wire.as_object_mut()
+                    .unwrap()
+                    .remove("environment_materialization");
+                root = serde_json::from_value(wire).unwrap();
+            }
+            "admitted" => {
+                root.realization.as_mut().unwrap().expires_at_unix_ms = u64::MAX;
+                let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                    id.as_str(),
+                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                    root.realization.clone(),
+                )
+                .for_environment(
+                    root.frozen_baseline()
+                        .unwrap()
+                        .environment
+                        .config_fingerprint
+                        .0
+                        .clone(),
+                );
+                let mut aggregate =
+                    awaken_session_state_contract::SessionAggregate::try_from(root).unwrap();
+                aggregate
+                    .environment()
+                    .admit_environment_effect("workspace", &intent, 1)
+                    .unwrap();
+                aggregate.assignment().expire();
+                root = aggregate.into_snapshot();
+            }
+            "live-lease" => root.realization.as_mut().unwrap().expires_at_unix_ms = u64::MAX,
+            "expired-lease" => root.realization.as_mut().unwrap().expires_at_unix_ms = 1,
+            "foreign" => {
+                root.realization.as_mut().unwrap().runtime_incarnation = "other:1:boot".into()
+            }
+            "preparing" => {
+                root.execution = awaken_session_state_contract::SessionExecutionState::Preparing
+            }
+            "active-activity" => {
+                root.active_activity_epochs.insert(1);
+            }
+            "running-interval" => {
+                root.begin_activity_epoch_at(1, None);
+                root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+            }
+            "incomplete-events" => {
+                root.event_batches =
+                    crate::tests::authority::session_with_unsettled_event(id.as_str()).event_batches
+            }
+            "active-resource" => {
+                root.resources = awaken_session_state_contract::SessionResourceState::from_active(
+                    file_resources("active").clone(),
+                )
+            }
+            "pending-resource" | "pending-empty" => {
+                root.resources
+                    .prepare(
+                        &id,
+                        if rule == "pending-empty" {
+                            Default::default()
+                        } else {
+                            file_resources("pending")
+                        },
+                    )
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let repo = sqlite_session_repository("no-Create retirement").await;
+        create(repo.as_ref(), root).await;
+        let before = repo.get(&id).await.unwrap();
+        assert!(
+            !crate::archive_intent::terminal_environment_creation_not_attempted(
+                repo.as_ref(),
+                "workspace",
+                &before,
+            )
+            .await
+            .unwrap(),
+            "a live no-Create fact must not bypass terminal cleanup admission: {rule}",
+        );
+        let mixed = matches!(rule, "mixed" | "mixed-missing");
+        if mixed {
+            create(
+                repo.as_ref(),
+                retained_root("no-create-other-source", &identity),
+            )
+            .await;
+        }
+        let runtime = Arc::new(RecordingCleanupRuntime::default());
+        // The source port's real nonterminal answer is NotTerminal, not
+        // Settled. Sentinels also prove the live branch never consumes this
+        // unrelated dependency. Only the mixed TERMINAL root may consume two
+        // Settled reads, once per complete scan.
+        let sentinel = match rule {
+            "irrelevant-source-pending" => {
+                awaken_session_execution_contract::SessionSourceDispatchObservation::Pending
+            }
+            "source-unavailable" => Default::default(),
+            _ => awaken_session_execution_contract::SessionSourceDispatchObservation::NotProven {
+                reason: awaken_session_execution_contract::SessionExecutionRecoveryGap::NotTerminal,
+            },
+        };
+        {
+            let mut steps = runtime.source_observation_steps.lock().unwrap();
+            if mixed {
+                steps.extend([
+                    awaken_session_execution_contract::SessionSourceDispatchObservation::Settled,
+                    awaken_session_execution_contract::SessionSourceDispatchObservation::Settled,
+                ]);
+            }
+            steps.push_back(sentinel.clone());
+        }
+        let app = configured_application(
+            runtime.clone(),
+            crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+            Arc::new(RecordingEnvironmentSource::default()),
+            Default::default(),
+            None,
+        );
+        let (observed, subjects) = qualify_retirement(&app, &identity, |subjects| {
+            if rule == "mixed-missing" {
+                BTreeSet::new()
+            } else {
+                report(subjects, true)
+            }
+        })
+        .await;
+        let observed = observed.unwrap();
+        assert!(observed.occupied, "original ownership retained: {rule}");
+        assert_eq!(
+            observed.sources_retained,
+            matches!(
+                rule,
+                "no-create"
+                    | "mcp-pending"
+                    | "irrelevant-source-pending"
+                    | "source-unavailable"
+                    | "mixed"
+            ),
+            "R1-R3 {rule}"
+        );
+        assert_eq!(
+            subjects.len(),
+            usize::from(mixed),
+            "no partial source set: {rule}"
+        );
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            before,
+            "unchanged root: {rule}"
+        );
+        assert!(runtime.intents.lock().unwrap().is_empty());
+        assert_eq!(
+            *runtime.source_observation_steps.lock().unwrap(),
+            VecDeque::from([sentinel]),
+            "only a mixed terminal root may read its frozen source scope: {rule}",
+        );
+        assert!(runtime.acknowledged_completed.lock().unwrap().is_empty());
+        assert_eq!(
+            runtime.ordinary_resource_apply_calls.load(Ordering::SeqCst),
+            0
+        );
+    }
+}
+
+#[tokio::test]
 async fn worker_retirement_requires_each_terminal_source_without_mutating_roots() {
     // Causes: exact Actor incarnation; live/expired grant; terminal/frozen root;
     // settled source Dispatch; Worker report retained/not retained/missing/
