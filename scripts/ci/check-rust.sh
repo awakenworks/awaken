@@ -343,7 +343,7 @@ scoped_step "process-startup-production" "keep fixture-only startup helpers out 
 # Use the shared named-execution owner: an omitted, ignored or empty selection
 # cannot qualify the process capability boundary.
 scoped_step "worker-bootstrap-feature-union" "reject Pod identities when the Worker integration is absent, regardless of dependency feature unification" \
-  "awaken-worker" run_required_rust_tests -p awaken-worker --no-default-features \
+  "awaken-worker" run_required_rust_tests "${locked[@]}" -p awaken-worker --no-default-features \
   --features awaken-worker-transport-security/kubernetes --lib bootstrap::tests:: \
   --require-case=bootstrap::tests::pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing \
   --require-case=bootstrap::tests::unavailable_pod_identity_rejects_before_projection_io_and_after_dto_mutation
