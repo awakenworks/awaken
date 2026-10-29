@@ -109,13 +109,14 @@ impl ManagedState {
             #[cfg(any(test, feature = "test-support"))]
             application,
             sessions: Mutex::new(HashMap::new()),
-            owners: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
             live: Mutex::new(HashMap::new()),
             inference_geo_policy: None,
             capture_policy,
             #[cfg(test)]
             warm_cold_oracle: std::sync::atomic::AtomicBool::new(true),
+            #[cfg(test)]
+            cold_publication_pause: Mutex::new(None),
         }
     }
 
@@ -158,13 +159,14 @@ impl ManagedState {
             roles,
             mut application,
             sessions,
-            owners,
             session_seq,
             live,
             inference_geo_policy,
             capture_policy,
             #[cfg(test)]
             warm_cold_oracle,
+            #[cfg(test)]
+            cold_publication_pause,
         } = self;
         drop(roles);
         configure(
@@ -175,13 +177,14 @@ impl ManagedState {
             roles: super::SessionApplicationRoles::of(&application),
             application,
             sessions,
-            owners,
             session_seq,
             live,
             inference_geo_policy,
             capture_policy,
             #[cfg(test)]
             warm_cold_oracle,
+            #[cfg(test)]
+            cold_publication_pause,
         }
     }
 

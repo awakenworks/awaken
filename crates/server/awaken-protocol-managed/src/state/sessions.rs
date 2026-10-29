@@ -350,12 +350,9 @@ impl ManagedState {
                     ))
                 })?;
         let session = session_from_persisted_root(&persisted, baseline, &configuration)?;
-        self.owners
-            .lock()
-            .unwrap()
-            .insert(id.clone(), owner_scope.to_owned());
         let root_time = RootTimeEvidence::from(&persisted);
         let record = SessionRecord::new(
+            owner_scope.to_owned(),
             agent_id,
             session,
             persisted.revision,
@@ -391,18 +388,22 @@ impl ManagedState {
     }
 
     /// The owner scope of `session_id`, if this process created (or has cached) it —
-    /// the aspect-layer session→owner lookup the edge ownership guard consults
+    /// the cached session→owner projection the edge ownership guard consults
     /// (ADR-0051). `None` when the id is unknown to this process (e.g. a cross-
     /// process session before rehydration), where the guard falls through and the
     /// persistence layer remains the fence.
     #[must_use]
     pub fn owner_scope(&self, session_id: &str) -> Option<String> {
-        self.owners.lock().unwrap().get(session_id).cloned()
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|record| record.owner_scope().to_owned())
     }
 
     /// Resolve the owner scope of `session_id` for the edge ownership guard,
-    /// consulting the in-memory index first (same-process, no I/O) and then the
-    /// durable store (cross-process, after a restart lost the index). `None` when
+    /// consulting the cached record first (same-process, no I/O) and then the
+    /// durable store (cross-process, after a restart lost the cache). `None` when
     /// no backend knows the session — a genuinely unknown id, where the guard
     /// falls through and the handler's own `NotFound` answers.
     pub async fn resolve_owner(&self, session_id: &str) -> Result<Option<String>, StateError> {
@@ -519,23 +520,15 @@ impl ManagedState {
     }
 
     /// Sessions owned by `scope` — the tenancy-fenced list (ADR-0051), so a
-    /// workspace's `GET /v1/sessions` never sees another's. Creation records an
-    /// owner for every session, so a cached session with no owner index entry is
-    /// an internal inconsistency and belongs to no scope's list rather than to
-    /// the seeded one. Mirrors the per-id ownership guard, which the collection
-    /// route does not pass through.
+    /// workspace's `GET /v1/sessions` never sees another's. Every entry carries
+    /// its owner from the same durable root, so filtering and projection read
+    /// one coherent snapshot. Mirrors the per-id ownership guard, which the
+    /// collection route does not pass through.
     pub fn list_sessions_scoped(&self, scope: &str) -> Vec<Session> {
-        // Snapshot owners first (lock, clone, drop) so we never hold two locks at
-        // once — create_session takes `owners` on its own path.
-        let owners = self.owners.lock().unwrap().clone();
         let sessions = self.sessions.lock().unwrap();
         let mut out: Vec<Session> = sessions
             .values()
-            .filter(|r| {
-                owners
-                    .get(&r.session.id)
-                    .is_some_and(|owner| owner == scope)
-            })
+            .filter(|record| record.owner_scope() == scope)
             .map(SessionRecord::session_projection)
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -843,7 +836,7 @@ pub(crate) fn session_agent_from_configuration(
 }
 
 /// The one ownership verdict an Event command carries, with its Workspace:
-/// the owner index names the Workspace and the durable root decides.
+/// the cached record names the Workspace and the durable root decides.
 pub(crate) async fn owned_session_access(
     state: &ManagedState,
     session_id: &str,
