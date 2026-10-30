@@ -211,7 +211,9 @@ mod recovery;
 pub use queries::SessionQueries;
 pub use recovery::SessionRecovery;
 mod worker_occupancy;
-pub use worker_occupancy::SessionWorkerOccupancy;
+pub use worker_occupancy::{
+    SessionWorkerOccupancy, WorkerRetirementBlockReason, WorkerRetirementBlocker,
+};
 mod mcp;
 mod realization;
 mod resource_lowering;

@@ -720,3 +720,123 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
         );
     }
 }
+
+#[tokio::test]
+async fn worker_retirement_explains_every_refusing_session_without_changing_the_decision() {
+    // Causes: C1 Sessions held by one exact Worker: A Idle+Resident with a
+    // retainable source, B Idle but not Resident, C leased to another
+    // incarnation of the same Worker; C2 the Worker's retention report.
+    // Effects: E1 the decision (unchanged law: any refusal denies); E2 the
+    // explanation names every refusing Session with its reason, including
+    // Sessions after the first refusal; E3 reads mutate nothing.
+    // | Rule | Sessions | report      | decision  | explanation                     |
+    // | X1   | A,B,C    | any         | denied    | B=EnvironmentNotResident,       |
+    // |      |          |             |           | C=LeaseHeldByAnotherIncarnation |
+    // | X2   | A        | A retained  | permitted | empty                           |
+    // | X3   | A        | none        | denied    | A=SourceRetentionNotReported    |
+    use crate::WorkerRetirementBlockReason::{
+        EnvironmentNotResident, LeaseHeldByAnotherIncarnation, SourceRetentionNotReported,
+    };
+    let identity = awaken_worker_contract::WorkerIdentity::new("explained-actor", "boot", 2);
+    let idle = |id: &str| {
+        let mut root = retained_root(id, &identity);
+        root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        root.terminal_cleanup = Default::default();
+        root
+    };
+    let explain = |blockers: Vec<crate::WorkerRetirementBlocker>| {
+        blockers
+            .into_iter()
+            .map(|blocker| (blocker.session_id, blocker.reason))
+            .collect::<Vec<_>>()
+    };
+    let application = |repo| {
+        configured_application(
+            Arc::new(RecordingCleanupRuntime::default()),
+            crate::SessionPersistence::new(repo, awaken_time::system_clock()),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration {
+                execution_placement: SessionExecutionPlacement::RegisteredWorker,
+                ..Default::default()
+            },
+            None,
+        )
+    };
+
+    let repo = sqlite_session_repository("explained retirement").await;
+    create(repo.as_ref(), idle("a-resident")).await;
+    let mut unmaterialized = idle("b-unmaterialized");
+    unmaterialized.environment =
+        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+    create(repo.as_ref(), unmaterialized).await;
+    let mut foreign = idle("c-foreign");
+    foreign.realization = Some(crate::session_resource::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: awaken_worker_contract::WorkerIdentity::new(
+            "explained-actor",
+            "boot",
+            1,
+        )
+        .lease_owner(),
+        epoch: 7,
+        expires_at_unix_ms: 1,
+    });
+    create(repo.as_ref(), foreign).await;
+    let ids = ["a-resident", "b-unmaterialized", "c-foreign"];
+    let mut before = Vec::new();
+    for id in ids {
+        before.push(repo.get(&SessionId::from(id)).await.unwrap());
+    }
+    let app = application(repo.clone());
+    let (observed, subjects) =
+        qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
+    let observed = observed.unwrap();
+    assert!(observed.occupied, "X1");
+    assert!(!observed.sources_retained, "X1/E1 any refusal denies");
+    assert!(subjects.is_empty(), "X1 a refused read names no subject");
+    assert_eq!(
+        explain(
+            app.worker_occupancy()
+                .explain_worker_retirement(&identity, &BTreeSet::new())
+                .await
+                .unwrap()
+        ),
+        vec![
+            ("b-unmaterialized".to_owned(), EnvironmentNotResident),
+            ("c-foreign".to_owned(), LeaseHeldByAnotherIncarnation),
+        ],
+        "X1/E2 every refusal, sorted"
+    );
+    for (id, before) in ids.into_iter().zip(&before) {
+        assert_eq!(
+            &repo.get(&SessionId::from(id)).await.unwrap(),
+            before,
+            "E3 {id}"
+        );
+    }
+
+    let repo = sqlite_session_repository("explained retirement single").await;
+    create(repo.as_ref(), idle("a-resident")).await;
+    let app = application(repo);
+    let (observed, subjects) =
+        qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
+    assert!(observed.unwrap().sources_retained, "X2/E1");
+    assert!(
+        app.worker_occupancy()
+            .explain_worker_retirement(&identity, &report(&subjects, true))
+            .await
+            .unwrap()
+            .is_empty(),
+        "X2/E2"
+    );
+    assert_eq!(
+        explain(
+            app.worker_occupancy()
+                .explain_worker_retirement(&identity, &BTreeSet::new())
+                .await
+                .unwrap()
+        ),
+        vec![("a-resident".to_owned(), SourceRetentionNotReported)],
+        "X3/E2"
+    );
+}

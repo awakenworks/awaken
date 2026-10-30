@@ -406,7 +406,9 @@
         "binding_ids": [
           "B042",
           "B038",
-          "B039"
+          "B039",
+          "B263",
+          "B264"
         ],
         "evidence_state": "historical_subset",
         "acceptance_state": "pending",

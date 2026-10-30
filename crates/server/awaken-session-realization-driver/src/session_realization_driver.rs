@@ -109,31 +109,30 @@ pub async fn drive_session_realization(
     let session_id = permit.session_id();
     loop {
         let previous = directive.clone();
-        let prepare_session = match &directive.action {
-            SessionRealizationAction::Stage {
-                prepare_session, ..
-            } => *prepare_session,
-            SessionRealizationAction::Publish { .. } | SessionRealizationAction::Complete => false,
-        };
-        if let Err(error) = synchronizer
-            .synchronize_session_projection(
-                session_id,
-                &directive.projection,
-                &directive.authority.clone().observed(request_started),
-                prepare_session,
-            )
-            .await
+        let prepare_session = directive.action.prepares_session();
+        match awaken_session_realization_contract::synchronize_or_supersede(
+            synchronizer,
+            session_id,
+            source_run_id.as_ref(),
+            &directive,
+            request_started,
+        )
+        .await
         {
-            return Err(fail_realization_effect(
-                session_id,
-                source_run_id.as_ref(),
-                control,
-                synchronizer,
-                &directive.authority.lease,
-                prepare_session.then_some(directive.projection.resource_revision),
-                error,
-            )
-            .await);
+            Ok(false) => {}
+            Ok(true) => return Ok(()),
+            Err(error) => {
+                return Err(fail_realization_effect(
+                    session_id,
+                    source_run_id.as_ref(),
+                    control,
+                    synchronizer,
+                    &directive.authority.lease,
+                    prepare_session.then_some(directive.projection.resource_revision),
+                    error,
+                )
+                .await);
+            }
         }
         #[cfg(feature = "test-support")]
         {

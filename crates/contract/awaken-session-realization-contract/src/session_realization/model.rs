@@ -389,6 +389,20 @@ pub enum SessionRealizationAction {
     Complete,
 }
 
+impl SessionRealizationAction {
+    /// Whether this phase materializes the Session itself (a preparation Stage).
+    #[must_use]
+    pub const fn prepares_session(&self) -> bool {
+        matches!(
+            self,
+            Self::Stage {
+                prepare_session: true,
+                ..
+            }
+        )
+    }
+}
+
 /// Secret-free next action returned after every successful Control phase.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionRealizationDirective {

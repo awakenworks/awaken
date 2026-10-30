@@ -135,6 +135,21 @@ use this lane for an Idle MCP update only after a realization owner exists;
 its initial WorkQueue placement remains unchanged. The shared driver retains
 physical Environment admission and receipt verification.
 
+The per-incarnation preparation cursor advances past each examined root. A
+returned assignment retains that position rather than skipping the rest of its
+page or wrapping a short final page immediately. Retryable preparation remains
+root-owned work and is revisited after the other candidates; a failing first
+Session therefore cannot starve later MCP credential adoption. Concurrent
+polls share the same cursor lock while current-root and Worker checks still
+fence every assignment.
+
+A Run-free update is bounded by the Session's realization budget like initial
+preparation: a terminal failure, or retryable failures that spend the budget,
+fail exactly the Active generations whose publication was never acknowledged,
+which ends their preparation demand
+([worker retirement amendment 2026-10-31](worker-retirement.md#amendment-2026-10-31-bound-uncounted-failures-close-unissued-leases-explain-refusals)).
+A capacity or provisioning deferral never spends it.
+
 Credential rollout remains pending until the desired source revision is Active
 and publication-acknowledged, or a revoked source is absent from both desired
 configuration and every live generation. The existing source-reference index

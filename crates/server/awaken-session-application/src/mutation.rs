@@ -299,6 +299,54 @@ impl SessionMutations {
         }
     }
 
+    /// Explicitly close (expiry zero) exactly the assignment `attempted`, by
+    /// root CAS, when it is still the root's current lease.
+    ///
+    /// For a lease its caller minted but never issued: no directive left the
+    /// process, so no effect can run under it. An only time-expired lease is
+    /// not explicit closure, so leaving it would keep the Session leased.
+    ///
+    /// | current root lease | effect                      |
+    /// |--------------------|-----------------------------|
+    /// | `attempted`        | expired (explicitly closed) |
+    /// | another / none     | unchanged                   |
+    /// | Session absent     | unchanged                   |
+    pub(crate) async fn expire_exact_assignment(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        attempted: &crate::session_resource::SessionRealizationLease,
+    ) -> Result<(), SessionMutationError> {
+        for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let owner_scope = match self.owner(session_id).await {
+                Ok(owner_scope) => owner_scope,
+                Err(SessionMutationError::NotFound) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            let mut session = match self.session_aggregate(session_id).await {
+                Ok(session) => session,
+                Err(SessionRepositoryError::NotFound) => return Ok(()),
+                Err(error) => return Err(repository_failure(error)),
+            };
+            if session.realization.as_ref() != Some(attempted) {
+                return Ok(());
+            }
+            session.assignment().expire();
+            match self
+                .commit_session_snapshot_with_outcome(
+                    &owner_scope,
+                    session,
+                    "expire-exact-assignment",
+                    Vec::new(),
+                )
+                .await
+            {
+                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
+                result => return result.map(|_| ()),
+            }
+        }
+        Err(SessionMutationError::Conflict)
+    }
+
     pub async fn owner(
         &self,
         session_id: &awaken_session_types::SessionId,
