@@ -185,6 +185,37 @@ pub enum InsertOutcome {
     AlreadyRegistered,
 }
 
+/// The Registry policy required by a registration's existing consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositoryRegistrationMode {
+    Execution,
+    Preparation,
+}
+
+/// Exact replay is decided once by the Registry, never reconstructed by a caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryRegistration {
+    pub definition: RepositoryDefinition,
+    pub outcome: InsertOutcome,
+    pub preparation: Option<RepositoryPreparation>,
+}
+
+/// Opaque Registry observation carried by its staged registration result.
+/// An administrative mutation invalidates it; exact completion remains replayable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryPreparation {
+    revision: AggregateRevision,
+    request_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RepositoryPreparationPhase {
+    Pending,
+    Completed { prepared_revision: u64 },
+    Closed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplaceOutcome {
     Replaced { revision: AggregateRevision },
@@ -592,6 +623,9 @@ pub struct RepositoryAggregate {
     /// Atomic, immutable creation receipt; never exposed as editable metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     creation_request_sha256: Option<String>,
+    /// Only an untouched staged registration may resume while suspended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_preparation: Option<RepositoryPreparationPhase>,
 }
 
 impl RepositoryAggregate {
@@ -627,10 +661,16 @@ impl RepositoryAggregate {
             definition,
             configs,
             creation_request_sha256: None,
+            creation_preparation: None,
         })
     }
 
     pub fn validate_integrity(&self) -> Result<(), ResourceRegistryError> {
+        if self.creation_preparation.is_some() && self.creation_request_sha256.is_none() {
+            return Err(ResourceRegistryError::CorruptData(
+                "Repository preparation has no creation receipt".into(),
+            ));
+        }
         if self.creation_request_sha256.as_ref().is_some_and(|hash| {
             hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
         }) {
@@ -644,6 +684,7 @@ impl RepositoryAggregate {
     pub fn register_idempotent(
         mut definition: RepositoryDefinition,
         initial_config: RepositoryConfigVersion,
+        mode: RepositoryRegistrationMode,
     ) -> Result<Self, ResourceRegistryError> {
         let timestamps = definition.timestamps;
         definition.timestamps = ResourceTimestamps::default();
@@ -655,6 +696,10 @@ impl RepositoryAggregate {
         definition.timestamps = timestamps;
         let mut aggregate = Self::register(definition, initial_config)?;
         aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));
+        if mode == RepositoryRegistrationMode::Preparation {
+            aggregate.creation_preparation = Some(RepositoryPreparationPhase::Pending);
+        }
+        aggregate.validate_registration_replay(mode)?;
         Ok(aggregate)
     }
 
@@ -664,6 +709,93 @@ impl RepositoryAggregate {
             && self.creation_request_sha256 == candidate.creation_request_sha256
             && self.definition.id == candidate.definition.id
             && self.definition.workspace_id == candidate.definition.workspace_id
+            && self.creation_preparation.is_some() == candidate.creation_preparation.is_some()
+    }
+
+    /// Lifecycle policy is separate from the immutable creation fingerprint.
+    pub fn validate_registration_replay(
+        &self,
+        mode: RepositoryRegistrationMode,
+    ) -> Result<(), ResourceRegistryError> {
+        if mode == RepositoryRegistrationMode::Execution {
+            return self
+                .resolve_for_execution(&self.definition.workspace_id)
+                .map(|_| ());
+        }
+        if self.creation_preparation.is_none()
+            || self.definition.current_config_version != ConfigVersion::INITIAL
+        {
+            return Err(ResourceRegistryError::AlreadyRegistered(
+                self.definition.id.to_string(),
+            ));
+        }
+        if self.definition.state == ResourceState::Active
+            || (self.definition.state == ResourceState::Suspended
+                && self.creation_preparation == Some(RepositoryPreparationPhase::Pending))
+        {
+            Ok(())
+        } else {
+            Err(ResourceRegistryError::NotActive {
+                id: self.definition.id.to_string(),
+                state: self.definition.state,
+            })
+        }
+    }
+
+    #[must_use]
+    pub fn preparation(&self, revision: AggregateRevision) -> Option<RepositoryPreparation> {
+        if self.creation_preparation != Some(RepositoryPreparationPhase::Pending) {
+            return None;
+        }
+        Some(RepositoryPreparation {
+            revision,
+            request_sha256: self.creation_request_sha256.clone()?,
+        })
+    }
+
+    /// True applies one completion; false acknowledges that exact completion.
+    pub fn complete_preparation(
+        &mut self,
+        workspace_id: &str,
+        revision: AggregateRevision,
+        proof: &RepositoryPreparation,
+        target: ResourceState,
+        updated_at: u64,
+    ) -> Result<bool, ResourceRegistryError> {
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
+        if target != ResourceState::Active
+            || self.creation_request_sha256.as_ref() != Some(&proof.request_sha256)
+        {
+            return Err(ResourceRegistryError::ConcurrentModification(
+                self.definition.id.to_string(),
+            ));
+        }
+        if self.definition.state == ResourceState::Active
+            && revision.get() > proof.revision.get()
+            && self.creation_preparation
+                == Some(RepositoryPreparationPhase::Completed {
+                    prepared_revision: proof.revision.get(),
+                })
+        {
+            return Ok(false);
+        }
+        if self.creation_preparation != Some(RepositoryPreparationPhase::Pending)
+            || proof.revision != revision
+        {
+            return Err(ResourceRegistryError::ConcurrentModification(
+                self.definition.id.to_string(),
+            ));
+        }
+        self.definition.state = target;
+        self.definition.timestamps.transition_to(target, updated_at);
+        self.creation_preparation = Some(RepositoryPreparationPhase::Completed {
+            prepared_revision: proof.revision.get(),
+        });
+        Ok(true)
     }
 
     #[must_use]
@@ -748,6 +880,9 @@ impl RepositoryAggregate {
         }
         self.definition.current_config_version = config.version;
         self.configs.insert(config.version, config);
+        if self.creation_preparation.is_some() {
+            self.creation_preparation = Some(RepositoryPreparationPhase::Closed);
+        }
         self.definition.timestamps.touch(updated_at);
         Ok(())
     }
@@ -764,6 +899,9 @@ impl RepositoryAggregate {
             workspace_id,
         )?;
         self.definition.state = state;
+        if self.creation_preparation.is_some() {
+            self.creation_preparation = Some(RepositoryPreparationPhase::Closed);
+        }
         self.definition.timestamps.transition_to(state, updated_at);
         Ok(())
     }
@@ -891,6 +1029,9 @@ pub struct ChangeRepositoryState {
     pub workspace_id: String,
     pub id: RepositoryId,
     pub state: ResourceState,
+    /// None is an explicit administrative transition. A staged completion
+    /// carries the Registry's exact observation instead of reviving by state.
+    pub preparation: Option<RepositoryPreparation>,
 }
 
 /// Query definitions and immutable configuration history.
@@ -957,12 +1098,14 @@ pub trait ResourceAdministration: Send + Sync {
         &self,
         command: RegisterRepository,
     ) -> Result<(), ResourceRegistryError>;
-    /// Exact creation retries return the current active definition, without
-    /// overwriting later versions or reviving a retired repository.
+    /// Return the Registry's exact creation outcome under the explicit
+    /// execution/preparation policy. Neither lane overwrites configuration or
+    /// revives a resource after an administrative lifecycle transition.
     async fn register_repository_idempotent(
         &self,
         command: RegisterRepository,
-    ) -> Result<RepositoryDefinition, ResourceRegistryError>;
+        mode: RepositoryRegistrationMode,
+    ) -> Result<RepositoryRegistration, ResourceRegistryError>;
     async fn publish_repository_config(
         &self,
         command: PublishRepositoryConfig,
@@ -1088,7 +1231,12 @@ mod registry_tests {
         assert!(wire.get("creation_request_sha256").is_none());
         let legacy: RepositoryAggregate = serde_json::from_value(wire).unwrap();
         legacy.validate_integrity().unwrap();
-        let keyed = RepositoryAggregate::register_idempotent(definition, config).unwrap();
+        let keyed = RepositoryAggregate::register_idempotent(
+            definition,
+            config,
+            RepositoryRegistrationMode::Execution,
+        )
+        .unwrap();
         assert!(!keyed.is_creation_replay_of(&legacy));
         let mut wire = serde_json::to_value(&keyed).unwrap();
         let restored: RepositoryAggregate = serde_json::from_value(wire.clone()).unwrap();

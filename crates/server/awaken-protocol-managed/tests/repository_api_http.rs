@@ -273,6 +273,7 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
             workspace_id: "test".into(),
             id: ids[0].clone().into(),
             state: ResourceState::Deleted,
+            preparation: None,
         })
         .await
         .unwrap();

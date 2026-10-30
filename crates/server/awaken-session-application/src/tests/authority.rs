@@ -225,16 +225,17 @@ async fn register_replayed_token_repository(
         initial_commit: input.initial_commit.clone(),
         clone_policy: Default::default(),
     };
-    awaken_resource_contract::RepositoryAggregate::register(
-        definition.clone(),
-        initial_config.clone(),
-    )
-    .expect("valid replay fixture");
+    // S5/S9/S10: replay requires the Registry's original durable preparation
+    // receipt. An unkeyed legacy row is a different cause and must never grant
+    // continuation; the Registry contract tests own that refusal case.
     registry
-        .register_repository(awaken_resource_contract::RegisterRepository {
-            definition,
-            initial_config,
-        })
+        .register_repository_idempotent(
+            awaken_resource_contract::RegisterRepository {
+                definition,
+                initial_config,
+            },
+            awaken_resource_contract::RepositoryRegistrationMode::Preparation,
+        )
         .await
         .expect("register replay fixture");
 }
@@ -358,6 +359,7 @@ async fn register_retirement_repository(
             workspace_id: "workspace".into(),
             id: repository_id.into(),
             state: awaken_resource_contract::ResourceState::Active,
+            preparation: None,
         })
         .await
         .expect("activate retirement fixture");
@@ -393,8 +395,8 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // accept an exact post-registration crash replay without another authority;
     // E3 reject definition or config drift and retain the original aggregate.
     // Decision rules: R1 absent=>E1; R2 present+C2+C3=>E2; R3
-    // present+!C2+C3=>E3; R4 present+C2+!C3=>E3. Registry inventory is the one
-    // replay receipt; the Session application creates no side store or cache.
+    // present+!C2+C3=>E3; R4 present+C2+!C3=>E3. Registry registration owns the
+    // replay observation; the Session application creates no side store or cache.
     let registry = super::creation::ephemeral_resource_registry().await;
     let repository_id = managed_repository_id("repo-replay");
     let sessions: Arc<dyn crate::SessionStore> = authority_repository("Session repository").await;
