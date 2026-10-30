@@ -527,8 +527,8 @@ pub async fn build_acp_real_mcp_router() -> Router {
     let wrapper_root = store_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
     });
-    let launch_argv = awaken_acp_application::AcpWrapperInstaller::resolved_argv(
-        &awaken_acp_application::NpmWrapperInstaller,
+    let launch_argv = awaken_run_executor_acp::host::AcpWrapperInstaller::resolved_argv(
+        &awaken_run_executor_acp::host::NpmWrapperInstaller,
         &cli,
         &wrapper_root.join("acp-wrappers"),
     )

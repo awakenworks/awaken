@@ -10,9 +10,12 @@
 use crate::discovery_spec::{
     AcpDiscoverySpec, AcpLoginProbe, AcpLoginRule, AcpProbeCommand, AcpProbePredicate, AcpVersion,
 };
+#[cfg(feature = "execution")]
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
 use awaken_credential_contract::CredentialObservationState;
+#[cfg(feature = "execution")]
 use awaken_provisioning_contract as pc;
+#[cfg(feature = "execution")]
 use awaken_runtime_contract::resolved::BackendModelSelection;
 
 mod acquisition;
@@ -23,17 +26,20 @@ mod publication;
 pub use acquisition::AcpAcquisition;
 pub use catalog::known_acp_clis;
 pub use image_contract::{AcpImageRequirement, image_runtime_contract_json};
+#[cfg(feature = "execution")]
 use managed_delivery::project_acp_session;
 pub use managed_delivery::{
     CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
     ManagedCredentialDelivery, ManagedProviderConfigCodec, ManagedProviderConfigDelivery,
-    ModelDelivery, ProcessSecretRequirement, ResolvedModel,
+    ModelDelivery,
 };
+#[cfg(feature = "execution")]
+pub use managed_delivery::{ProcessSecretRequirement, ResolvedModel};
 pub use publication::known_acp_publication_capabilities;
 
 /// How a backend-owned CLI accepts an exact model selection. This is distinct
 /// from [`ModelDelivery`]: it never carries an endpoint or credential and is
-/// consulted only for [`ResolvedModel::BackendOwned`]. Adding an ACP client is a
+/// consulted only for `ResolvedModel::BackendOwned`. Adding an ACP client is a
 /// catalog row, not another launch branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendModelInterface {
@@ -277,6 +283,7 @@ impl AcpCli {
     /// exact model route. Provider identity, wire dialect, and launch support
     /// form one capability contract; OpenAI-compatible naming alone grants
     /// nothing.
+    #[cfg(feature = "execution")]
     pub fn validate_provider_server_tool_route(
         &self,
         provider_kind: &str,
@@ -312,6 +319,7 @@ impl AcpCli {
     /// API key (host-controlled, never overridable by passthrough). So a modeled
     /// fact (model/base_url) always wins over a stray passthrough key, and the key
     /// is always the host's.
+    #[cfg(feature = "execution")]
     pub fn try_project(
         &self,
         model: &ResolvedModel,
@@ -324,6 +332,7 @@ impl AcpCli {
     /// Project with an acquisition-resolved base argv. Product startup uses
     /// this for an absolute, already-installed wrapper path; callers without an
     /// override use the profile's preinstalled binary name.
+    #[cfg(feature = "execution")]
     pub fn try_project_with_argv(
         &self,
         model: &ResolvedModel,
@@ -656,7 +665,7 @@ impl AcpCli {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "execution"))]
     fn project(
         &self,
         model: &ResolvedModel,
@@ -675,6 +684,6 @@ pub fn acp_cli(id: &str) -> Option<&'static AcpCli> {
     known_acp_clis().iter().find(|c| c.id == id)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "execution"))]
 #[path = "acp_cli/tests.rs"]
 mod tests;

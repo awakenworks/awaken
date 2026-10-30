@@ -24,7 +24,7 @@ impl ResolvedDeployment {
     /// retained only in the diagnostic read model and never in Worker routes.
     pub fn apply_local_acp_observations(
         &mut self,
-        observations: Vec<awaken_acp_application::AcpHostObservation>,
+        observations: Vec<awaken_acp_contract::AcpHostObservation>,
         routable_cli_ids: Vec<String>,
     ) -> Result<(), String> {
         self.runtime.acp = if routable_cli_ids.is_empty() {

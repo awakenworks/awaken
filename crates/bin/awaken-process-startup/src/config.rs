@@ -110,21 +110,20 @@ mod tests {
 
     fn acp_observation(
         id: &str,
-        detection: awaken_acp_application::AcpDetectionState,
-    ) -> awaken_acp_application::AcpHostObservation {
-        awaken_acp_application::AcpHostObservation {
+        detection: awaken_acp_contract::AcpDetectionState,
+    ) -> awaken_acp_contract::AcpHostObservation {
+        awaken_acp_contract::AcpHostObservation {
             cli_id: id.to_string(),
             display_name: id.to_string(),
             detection,
-            version: (detection == awaken_acp_application::AcpDetectionState::Detected)
+            version: (detection == awaken_acp_contract::AcpDetectionState::Detected)
                 .then(|| "1.0".to_string()),
-            credential_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
+            credential_state: (detection == awaken_acp_contract::AcpDetectionState::Detected)
                 .then_some(awaken_credential_contract::CredentialObservationState::Available),
             reason_code: Some("fixture".to_string()),
-            capability_state: (detection == awaken_acp_application::AcpDetectionState::Detected)
-                .then_some(awaken_acp_application::AcpCapabilityState::Verified),
-            capability_fingerprint: (detection
-                == awaken_acp_application::AcpDetectionState::Detected)
+            capability_state: (detection == awaken_acp_contract::AcpDetectionState::Detected)
+                .then_some(awaken_acp_contract::AcpCapabilityObservationState::Verified),
+            capability_fingerprint: (detection == awaken_acp_contract::AcpDetectionState::Detected)
                 .then(|| "fixture".to_string()),
             capability_reason_code: None,
         }
@@ -263,12 +262,9 @@ mod tests {
         // A3 unconfigured + many detected -> all exact CLI routes, no selection
         // A4 explicit subset              -> only detected configured CLIs
         // A5 available + capability failure -> diagnostic only, no route
-        let missing = acp_observation("claude", awaken_acp_application::AcpDetectionState::Missing);
-        let codex = acp_observation("codex", awaken_acp_application::AcpDetectionState::Detected);
-        let claude = acp_observation(
-            "claude",
-            awaken_acp_application::AcpDetectionState::Detected,
-        );
+        let missing = acp_observation("claude", awaken_acp_contract::AcpDetectionState::Missing);
+        let codex = acp_observation("codex", awaken_acp_contract::AcpDetectionState::Detected);
+        let claude = acp_observation("claude", awaken_acp_contract::AcpDetectionState::Detected);
 
         let disabled = resolve(
             FileConfig {
@@ -307,7 +303,7 @@ mod tests {
 
         let mut incompatible = codex.clone();
         incompatible.capability_state =
-            Some(awaken_acp_application::AcpCapabilityState::ProbeFailed);
+            Some(awaken_acp_contract::AcpCapabilityObservationState::ProbeFailed);
         incompatible.capability_fingerprint = None;
         let mut failed = resolve(FileConfig::default(), ConfigOverrides::default());
         failed

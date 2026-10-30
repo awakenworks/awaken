@@ -8,17 +8,101 @@
 
 use awaken_time::WallClock;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use awaken_acp_application::AcpLocalCredentialResolver;
-use awaken_acp_application::{
-    AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpHostObservation,
-    AcpWrapperInstaller, LocalAcpPreparation, prepare_host_acp_with,
-};
+use awaken_acp_application::{ensure_workspace_bindings, project_local_credential_sources};
+use awaken_acp_contract::AcpHostObservation;
 use awaken_credential_contract::CredentialObservationState;
+use awaken_credential_vault::{CredentialSource, repo::CredentialRepo};
 use awaken_run_executor_acp::acp_cli;
+use awaken_run_executor_acp::host::{
+    AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpLocalCredentialResolver,
+    AcpWrapperInstaller, HostAcpPreparation, PreparedHostAcpCapabilities,
+    prepare_host_acp_capabilities_with,
+};
 
-/// One startup startup result for a trusted local ACP Worker. The durable
+/// Local CLI composition inputs; the Worker preparation has no repository.
+struct LocalAcpPreparation {
+    probe_cwd: PathBuf,
+    initial_workspace: Option<String>,
+    wrapper_root: PathBuf,
+    selected_cli_ids: Option<BTreeSet<String>>,
+    credentials: Arc<dyn CredentialRepo>,
+    clock: Arc<dyn WallClock>,
+}
+
+async fn prepare_host_acp_with(
+    input: LocalAcpPreparation,
+    discovery: Arc<dyn AcpDiscovery>,
+    installer: Arc<dyn AcpWrapperInstaller>,
+    negotiator: Arc<dyn AcpCapabilityNegotiator>,
+) -> Result<PreparedHostAcpCapabilities, String> {
+    let host = prepare_host_acp_capabilities_with(
+        HostAcpPreparation {
+            probe_cwd: input.probe_cwd,
+            wrapper_root: input.wrapper_root,
+            selected_cli_ids: input.selected_cli_ids,
+            clock: input.clock,
+        },
+        discovery,
+        installer,
+        negotiator,
+    )
+    .await?;
+    if let Some(workspace) = input.initial_workspace {
+        bind_workspace(&host, input.credentials.as_ref(), &workspace).await?;
+    }
+    Ok(host)
+}
+
+async fn bind_workspace(
+    prepared: &PreparedHostAcpCapabilities,
+    credentials: &dyn CredentialRepo,
+    workspace: &str,
+) -> Result<(), String> {
+    let catalog = awaken_run_executor_acp::known_acp_publication_capabilities();
+    ensure_workspace_bindings(
+        credentials,
+        workspace,
+        prepared.selected_cli_ids(),
+        &catalog,
+    )
+    .await?;
+    let sources = credentials
+        .list(workspace)
+        .await
+        .map_err(|error| format!("list local ACP bindings: {error}"))?;
+    add_sources(&prepared.resolver, sources)
+}
+
+/// Adapt stored metadata at the Coordinator boundary, never in a Worker.
+#[cfg(test)]
+fn resolver_from_sources(
+    discovery: Arc<dyn AcpDiscovery>,
+    sources: impl IntoIterator<Item = CredentialSource>,
+    clock: Arc<dyn WallClock>,
+) -> Result<AcpLocalCredentialResolver, String> {
+    AcpLocalCredentialResolver::from_bindings(
+        discovery,
+        project_local_credential_sources(
+            &awaken_run_executor_acp::known_acp_publication_capabilities(),
+            sources,
+        )?,
+        clock,
+    )
+}
+fn add_sources(
+    resolver: &AcpLocalCredentialResolver,
+    sources: impl IntoIterator<Item = CredentialSource>,
+) -> Result<(), String> {
+    resolver.add_bindings(project_local_credential_sources(
+        &awaken_run_executor_acp::known_acp_publication_capabilities(),
+        sources,
+    )?)
+}
+
+/// One startup result for a trusted local ACP Worker. The durable
 /// sources remain in the credential repository; this value carries only the
 /// already-configured dependencies needed to build the existing WorkerNode.
 pub struct PreparedLocalAcp {
@@ -128,7 +212,7 @@ async fn prepare_local_acp_with_workspace(
         // outside its Environment.
         return Ok(None);
     }
-    let adapters = awaken_acp_application::HostAcpAdapters::production(Arc::new(
+    let adapters = awaken_run_executor_acp::host::HostAcpAdapters::production(Arc::new(
         awaken_protocol_acp::ProtocolAcpCapabilityHandshake,
     ));
     let stores =
@@ -244,7 +328,7 @@ async fn prepare_local_acp_with(
     .await?;
     let routable_cli_ids = prepared.routable_cli_ids();
     let routable_launch_argv = prepared.routable_launch_argv();
-    deployment.apply_local_acp_observations(prepared.host.observations, routable_cli_ids)?;
+    deployment.apply_local_acp_observations(prepared.observations, routable_cli_ids)?;
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
@@ -255,7 +339,7 @@ async fn prepare_local_acp_with(
     deployment.runtime.disable_local_pool = true;
     deployment.run_local_pool = false;
     Ok(Some(PreparedLocalAcp {
-        resolver: prepared.host.resolver,
+        resolver: prepared.resolver,
         stores,
     }))
 }
@@ -415,7 +499,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use awaken_acp_application::AcpDetectionState;
+    use awaken_acp_contract::AcpDetectionState;
     use awaken_acp_contract::NegotiatedAcpCapabilities;
     use awaken_agent_contract::credential::{CredentialMaterialSource, CredentialRef};
     use awaken_credential_contract::{
@@ -744,7 +828,7 @@ mod tests {
             ]),
             calls: Mutex::new(Vec::new()),
         });
-        let resolver = awaken_acp_application::resolver_from_sources(
+        let resolver = resolver_from_sources(
             discovery.clone(),
             [codex, claude, gemini, opencode, disabled],
             awaken_time::system_clock(),
@@ -798,12 +882,8 @@ mod tests {
             )]),
             calls: Mutex::new(Vec::new()),
         });
-        let resolver = awaken_acp_application::resolver_from_sources(
-            discovery.clone(),
-            [codex],
-            awaken_time::system_clock(),
-        )
-        .unwrap();
+        let resolver =
+            resolver_from_sources(discovery.clone(), [codex], awaken_time::system_clock()).unwrap();
 
         assert!(
             resolver
@@ -834,12 +914,8 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         });
         assert!(
-            awaken_acp_application::resolver_from_sources(
-                discovery.clone(),
-                [missing],
-                awaken_time::system_clock(),
-            )
-            .is_err()
+            resolver_from_sources(discovery.clone(), [missing], awaken_time::system_clock(),)
+                .is_err()
         );
 
         let unrelated = ensure_worker_local(
@@ -850,12 +926,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver = awaken_acp_application::resolver_from_sources(
-            discovery,
-            [unrelated],
-            awaken_time::system_clock(),
-        )
-        .unwrap();
+        let resolver =
+            resolver_from_sources(discovery, [unrelated], awaken_time::system_clock()).unwrap();
         assert!(resolver.credential_observations().await.unwrap().is_empty());
     }
 
@@ -881,12 +953,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         });
         let resolver = Arc::new(
-            awaken_acp_application::resolver_from_sources(
-                discovery,
-                [source],
-                awaken_time::system_clock(),
-            )
-            .unwrap(),
+            resolver_from_sources(discovery, [source], awaken_time::system_clock()).unwrap(),
         );
         assert_eq!(
             resolver
@@ -1183,7 +1250,7 @@ mod tests {
             .expect("P1 codex observation");
         assert_eq!(
             codex_observation.capability_state,
-            Some(awaken_acp_application::AcpCapabilityState::Verified),
+            Some(awaken_acp_contract::AcpCapabilityObservationState::Verified),
             "P1"
         );
     }
@@ -1254,12 +1321,12 @@ mod tests {
             entry
         };
         let cli = acp_cli("codex").unwrap();
-        let first = awaken_acp_application::NpmWrapperInstaller
+        let first = awaken_run_executor_acp::host::NpmWrapperInstaller
             .resolved_argv(cli, directory.path())
             .await
             .expect("R1")
             .expect("R1 wrapper argv");
-        let restarted = awaken_acp_application::NpmWrapperInstaller
+        let restarted = awaken_run_executor_acp::host::NpmWrapperInstaller
             .resolved_argv(cli, directory.path())
             .await
             .expect("R2")
@@ -1414,3 +1481,6 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
         }
     }
 }
+
+#[cfg(test)]
+mod registration_tests;

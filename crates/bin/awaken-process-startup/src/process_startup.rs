@@ -34,7 +34,7 @@ pub(super) struct ProcessStartup {
     pub(super) model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     pub(super) brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     pub(super) cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
-    pub(super) local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
+    pub(super) local_acp_observations: Vec<awaken_acp_contract::AcpHostObservation>,
     pub(super) web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     pub(super) web_search_publication_resolver:
         Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,

@@ -1,6 +1,7 @@
 // @formal surface obligation=acp.permission_tool_identity_normalization_is_exact
 // @formal surface obligation=credential.http_effect_usage_binds_exact_fields_and_placements
 // @formal reason: Managed ACP credential delivery boundary.
+#[cfg(feature = "execution")]
 use super::*;
 pub use awaken_acp_contract::managed_credential::{
     CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
@@ -57,6 +58,7 @@ impl ModelDelivery {
     }
 }
 
+#[cfg(feature = "execution")]
 pub(super) fn project_acp_session(
     cli_id: &str,
     acp: Option<&awaken_runtime_contract::resolved::AcpExecutionProfile>,
@@ -100,11 +102,13 @@ impl super::AcpCli {
 /// resolved only by the final launch provider through `SecretBroker`; this type
 /// carries no material, policy, or credential-selection behavior.
 #[derive(Clone, PartialEq, Eq)]
+#[cfg(feature = "execution")]
 pub struct ProcessSecretRequirement {
     reference: String,
     environment_variable: Option<String>,
 }
 
+#[cfg(feature = "execution")]
 impl ProcessSecretRequirement {
     #[must_use]
     pub fn new(reference: impl Into<String>) -> Self {
@@ -136,6 +140,7 @@ impl ProcessSecretRequirement {
     }
 }
 
+#[cfg(feature = "execution")]
 impl std::fmt::Debug for ProcessSecretRequirement {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ProcessSecretRequirement(***)")
@@ -146,6 +151,7 @@ impl std::fmt::Debug for ProcessSecretRequirement {
 /// launches carry endpoint and broker requirements; backend-owned launches carry
 /// only an explicit default/exact policy and never have fields for material.
 #[derive(Debug, Clone)]
+#[cfg(feature = "execution")]
 pub enum ResolvedModel {
     Managed {
         base_url: String,
@@ -163,6 +169,7 @@ pub enum ResolvedModel {
     },
 }
 
+#[cfg(feature = "execution")]
 impl ResolvedModel {
     /// Cloud-managed egress (D-R2, ADR-0021 §9/R2). An ACP CLI runs inside the
     /// untrusted sandbox, so it must never hold a raw provider key: its egress is

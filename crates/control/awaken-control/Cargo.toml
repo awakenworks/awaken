@@ -104,7 +104,7 @@ awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
-awaken-run-executor-acp.workspace = true
+awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 http-body-util = "0.1"

@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use awaken_credential_contract::CredentialObservationState;
 use tokio::process::Command;
 
-use super::AcpCapabilityState;
+use awaken_acp_contract::{AcpDetectionState, AcpHostObservation};
 
 /// Raw, bounded output from the process-probe port.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,35 +257,6 @@ impl AcpProcessProbe for TokioAcpProcessProbe {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
-    }
-}
-
-/// Whether a supported catalog row is launchable on this host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpDetectionState {
-    Detected,
-    Missing,
-    ProbeFailed,
-}
-
-/// Secret-free join input for Worker capability publication and diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcpHostObservation {
-    pub cli_id: String,
-    pub display_name: String,
-    pub detection: AcpDetectionState,
-    pub version: Option<String>,
-    pub credential_state: Option<CredentialObservationState>,
-    pub reason_code: Option<String>,
-    pub capability_state: Option<AcpCapabilityState>,
-    pub capability_fingerprint: Option<String>,
-    pub capability_reason_code: Option<String>,
-}
-
-impl AcpHostObservation {
-    #[must_use]
-    pub fn detected(&self) -> bool {
-        self.detection == AcpDetectionState::Detected
     }
 }
 
