@@ -17,6 +17,7 @@ pub(crate) struct ManagedSessionRootFixture {
     pub(super) binding_sink:
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     application: std::sync::OnceLock<Arc<awaken_session_application::SessionApplication>>,
+    environments: Arc<environment_ports::UnusedEnvironmentPorts>,
     clock: Arc<dyn awaken_time::WallClock>,
     pub(super) incarnation: String,
 }
@@ -36,9 +37,15 @@ impl ManagedSessionRootFixture {
             binding_sink: persistence.environment_binding_sink(),
             persistence: std::sync::Mutex::new(Some(persistence)),
             application: std::sync::OnceLock::new(),
+            environments: Arc::default(),
             clock,
             incarnation: format!("runtime-host-fixture-{}", uuid::Uuid::new_v4()),
         }
+    }
+
+    /// Sessions whose Work projection the application requested.
+    pub(crate) fn enqueued_work(&self) -> Vec<awaken_session_types::SessionId> {
+        self.environments.enqueued()
     }
 
     pub(crate) fn configure(
@@ -302,8 +309,9 @@ impl ManagedSessionRootFixture {
             .get_or_init(|| {
                 // These private tests install their exact frozen projection below.
                 // Environment/Work composition is exercised by ScenarioHost.
-                // Any accidental use of an Environment role must fail here.
-                let environments = Arc::new(environment_ports::UnusedEnvironmentPorts);
+                // Any other use of an Environment role fails here; a requested
+                // Work enqueue is only recorded.
+                let environments = self.environments.clone();
                 let runtime = managed.session_execution_roles();
                 Arc::new(
                     awaken_session_application::SessionApplicationBuilder::new(

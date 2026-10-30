@@ -184,6 +184,13 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F4 actual preparation acknowledgement and aggregate-owned replacement");
     assert_eq!(
+        roots.enqueued_work(),
+        vec![awaken_session_types::SessionId::from(
+            "thread-cold-resource"
+        )],
+        "F4 the Worker-placed manifest replacement re-projects the Session's Work once"
+    );
+    assert_eq!(
         updated.resource_revision, cleared.revision,
         "F4 Root allocates next"
     );
@@ -448,6 +455,13 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         )
         .await
         .expect("R3 actual aggregate transition advances the prepared generation");
+    assert_eq!(
+        roots.enqueued_work(),
+        vec![awaken_session_types::SessionId::from(
+            "thread-generation-fence"
+        )],
+        "R3 the Worker-placed manifest replacement re-projects the Session's Work once"
+    );
     assert_eq!(
         updated.resource_revision, next_manifest.revision,
         "R3 actual next"
