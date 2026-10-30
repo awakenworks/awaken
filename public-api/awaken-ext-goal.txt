@@ -8,6 +8,7 @@ pub awaken_ext_goal::controller::CommittedOutcome::Errored::source_run_id: core:
 pub enum awaken_ext_goal::controller::Error
 pub awaken_ext_goal::controller::Error::ActiveDefinitionConflict
 pub awaken_ext_goal::controller::Error::ActiveDefinitionConflict::outcome_id: awaken_ext_goal::outcome::Id
+pub awaken_ext_goal::controller::Error::Admission(alloc::sync::Arc<awaken_runtime_contract::diagnostic::Error>)
 pub awaken_ext_goal::controller::Error::Busy
 pub awaken_ext_goal::controller::Error::Busy::outcome_id: awaken_ext_goal::outcome::Id
 pub awaken_ext_goal::controller::Error::Domain(alloc::string::String)
@@ -19,6 +20,7 @@ pub awaken_ext_goal::controller::Error::WorkerAwaiting::run_id: awaken_agent_con
 pub awaken_ext_goal::controller::Error::WorkerRunning
 pub awaken_ext_goal::controller::Error::WorkerRunning::run_id: awaken_agent_contract::agent::run::Id
 impl core::error::Error for awaken_ext_goal::controller::Error
+pub fn awaken_ext_goal::controller::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Display for awaken_ext_goal::controller::Error
 pub fn awaken_ext_goal::controller::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_ext_goal::controller::Controller<'a>
@@ -27,6 +29,7 @@ pub async fn awaken_ext_goal::controller::Controller<'a>::committed_projection(&
 pub async fn awaken_ext_goal::controller::Controller<'a>::committed_projection_from_state(&awaken_ext_goal::state::ThreadOutcomeState<'_>, &awaken_ext_goal::outcome::Id) -> core::result::Result<core::option::Option<awaken_ext_goal::controller::CommittedOutcome>, awaken_ext_goal::controller::Error>
 pub async fn awaken_ext_goal::controller::Controller<'a>::define_or_resume(&self, awaken_ext_goal::outcome::Id, awaken_ext_goal::outcome::Definition, awaken_ext_goal::state::Binding) -> core::result::Result<awaken_ext_goal::controller::Report, awaken_ext_goal::controller::Error>
 pub fn awaken_ext_goal::controller::Controller<'a>::new(&'a awaken_agent_contract::agent::thread::Id, &'a dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &'a dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource, &'a dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator, &'a dyn awaken_runtime_contract::execution::RunExecutor, awaken_runtime_contract::runtime_context::RuntimeRunContext, &'a dyn awaken_ext_goal::outcome::Grader) -> Self
+pub fn awaken_ext_goal::controller::Controller<'a>::preparation(&'a awaken_agent_contract::agent::thread::Id, &'a dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &'a dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource, &'a dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator, &'a dyn awaken_ext_goal::outcome::Grader) -> Self
 pub async fn awaken_ext_goal::controller::Controller<'a>::prepare(&self, awaken_ext_goal::outcome::Id, awaken_ext_goal::outcome::Definition, awaken_ext_goal::state::Binding) -> core::result::Result<u64, awaken_ext_goal::controller::Error>
 pub async fn awaken_ext_goal::controller::Controller<'a>::resume_active(&self) -> core::result::Result<core::option::Option<awaken_ext_goal::controller::Report>, awaken_ext_goal::controller::Error>
 pub struct awaken_ext_goal::controller::IterationReport

@@ -248,7 +248,11 @@ pub awaken_tool_contract::tool_batch::ToolCallPhase::Executing
 pub awaken_tool_contract::tool_batch::ToolCallPhase::Executing::attempt: u16
 pub awaken_tool_contract::tool_batch::ToolCallPhase::Indeterminate
 pub awaken_tool_contract::tool_batch::ToolCallPhase::Indeterminate::reason: alloc::string::String
+pub awaken_tool_contract::tool_batch::ToolCallPhase::KnownAborted
+pub awaken_tool_contract::tool_batch::ToolCallPhase::KnownAborted::output: awaken_tool_contract::tool::ToolOutput
+pub awaken_tool_contract::tool_batch::ToolCallPhase::KnownAborted::reason: alloc::string::String
 pub awaken_tool_contract::tool_batch::ToolCallPhase::Requested
+pub awaken_tool_contract::tool_batch::ToolCallPhase::Returned(awaken_tool_contract::tool::ToolOutput)
 impl awaken_tool_contract::tool_batch::ToolCallPhase
 pub fn awaken_tool_contract::tool_batch::ToolCallPhase::is_terminal(&self) -> bool
 pub enum awaken_tool_contract::tool_batch::ToolExecutionDomain
@@ -317,6 +321,7 @@ impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_tool_contract::tool_batch::DurableToolCall]
 pub fn awaken_tool_contract::tool_batch::ToolBatch::complete(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::complete_immediate(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::complete_returned(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::execution_admission(&self, &str) -> core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::finalize(&mut self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_tool_contract::tool::ToolCall, awaken_tool_contract::tool::ToolRecoveryPolicy)>) -> core::result::Result<Self, awaken_tool_contract::tool_batch::ToolBatchError>
@@ -329,12 +334,14 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(&awake
 pub fn awaken_tool_contract::tool_batch::ToolBatch::output(&self, &str) -> core::option::Option<awaken_tool_contract::tool::ToolOutput>
 pub const fn awaken_tool_contract::tool_batch::ToolBatch::phase(&self) -> awaken_tool_contract::tool_batch::ToolBatchPhase
 pub fn awaken_tool_contract::tool_batch::ToolBatch::publication(&self) -> core::result::Result<awaken_tool_contract::tool_batch::ToolBatchPublication<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::record_returned(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::recover_execution(&mut self, &str, awaken_tool_contract::tool::ToolRecoveryCapability) -> core::result::Result<awaken_tool_contract::tool_batch::ToolRecoveryAction<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::resume_executing(&mut self, &str, awaken_tool_contract::tool_batch::ToolWaitKind, &str) -> core::result::Result<awaken_tool_contract::tool_batch::PendingToolExecutionEntry<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_tool_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self, &str)
 pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_messages(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::set_returned_context(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate_awaiting_ticket(&self, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchWaitError>
 impl awaken_tool_contract::tool_batch::ToolBatch
@@ -411,7 +418,11 @@ pub awaken_tool_contract::ToolCallPhase::Executing
 pub awaken_tool_contract::ToolCallPhase::Executing::attempt: u16
 pub awaken_tool_contract::ToolCallPhase::Indeterminate
 pub awaken_tool_contract::ToolCallPhase::Indeterminate::reason: alloc::string::String
+pub awaken_tool_contract::ToolCallPhase::KnownAborted
+pub awaken_tool_contract::ToolCallPhase::KnownAborted::output: awaken_tool_contract::tool::ToolOutput
+pub awaken_tool_contract::ToolCallPhase::KnownAborted::reason: alloc::string::String
 pub awaken_tool_contract::ToolCallPhase::Requested
+pub awaken_tool_contract::ToolCallPhase::Returned(awaken_tool_contract::tool::ToolOutput)
 impl awaken_tool_contract::tool_batch::ToolCallPhase
 pub fn awaken_tool_contract::tool_batch::ToolCallPhase::is_terminal(&self) -> bool
 pub enum awaken_tool_contract::ToolConcurrency
@@ -502,6 +513,7 @@ impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_tool_contract::tool_batch::DurableToolCall]
 pub fn awaken_tool_contract::tool_batch::ToolBatch::complete(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::complete_immediate(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::complete_returned(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::execution_admission(&self, &str) -> core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::finalize(&mut self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_tool_contract::tool::ToolCall, awaken_tool_contract::tool::ToolRecoveryPolicy)>) -> core::result::Result<Self, awaken_tool_contract::tool_batch::ToolBatchError>
@@ -514,12 +526,14 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(&awake
 pub fn awaken_tool_contract::tool_batch::ToolBatch::output(&self, &str) -> core::option::Option<awaken_tool_contract::tool::ToolOutput>
 pub const fn awaken_tool_contract::tool_batch::ToolBatch::phase(&self) -> awaken_tool_contract::tool_batch::ToolBatchPhase
 pub fn awaken_tool_contract::tool_batch::ToolBatch::publication(&self) -> core::result::Result<awaken_tool_contract::tool_batch::ToolBatchPublication<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::record_returned(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::recover_execution(&mut self, &str, awaken_tool_contract::tool::ToolRecoveryCapability) -> core::result::Result<awaken_tool_contract::tool_batch::ToolRecoveryAction<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::resume_executing(&mut self, &str, awaken_tool_contract::tool_batch::ToolWaitKind, &str) -> core::result::Result<awaken_tool_contract::tool_batch::PendingToolExecutionEntry<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_tool_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self, &str)
 pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_messages(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::set_returned_context(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::validate_awaiting_ticket(&self, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchWaitError>
 impl awaken_tool_contract::tool_batch::ToolBatch
