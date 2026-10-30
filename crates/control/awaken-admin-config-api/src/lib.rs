@@ -1,11 +1,20 @@
-//! Admin config API (ADR-0043) — the self-hosted-only management surface the
-//! Anthropic wire does not define: CRUD over provider / protocol-endpoint /
-//! offering and credential entry. Built on `awaken-api-contract` (`ApiError`
-//! problem details / pagination / allowlisted queries) and generates the TS
-//! contract (P2).
+//! Admin configuration HTTP adapters and SQL persistence (ADR-0043).
+//! The self-hosted management surface covers provider connections, protocol
+//! endpoints, offerings and credential entry, using `awaken-api-contract` for
+//! problem details, pagination and allowlisted queries.
 //!
-//! The domain types it authors live in `awaken-model-catalog` / `awaken-credential-vault`;
-//! this crate is the HTTP adapter over their repos, storing nothing itself.
+//! Catalog and credential requests delegate to their existing domain repositories
+//! in `awaken-model-catalog` and `awaken-credential-vault`. Their data and migration
+//! bundles remain separate from this crate's secret-free admin persistence.
+//!
+//! The SQLite and PostgreSQL admin stores implement five existing ports:
+//! `AgentInputBindingRepository`, `InferenceProfileStore`, `WebhookStore`,
+//! `McpConfigurationRepository` and `WorkspaceTelemetryRepository`. Their schema
+//! and migrations are owned by [`schema`]. Process startup selects one physical
+//! admin store and shares its `Arc` through these five views; it does not open a
+//! second store for MCP configuration or telemetry. Catalog persistence remains
+//! owned by `awaken-model-catalog-store`; these adapters do not implement
+//! `CatalogRepo`.
 
 #![forbid(unsafe_code)]
 
