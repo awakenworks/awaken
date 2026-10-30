@@ -23,6 +23,7 @@ use credential_ingress::FaultInjectingCredentialMaterialIngress;
 mod activity_settlement_owner;
 mod archive_race;
 mod budget_resume;
+mod budget_tightening;
 mod file_authorization;
 mod first_materialization;
 mod input_mounts;

@@ -703,3 +703,6 @@ mod windows_capacity_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tier_refusal_tests;
