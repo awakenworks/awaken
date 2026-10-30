@@ -140,29 +140,97 @@ async fn rebuilt_executor_reattaches_the_original_operation_only_with_committed_
 }
 
 #[tokio::test]
-#[ignore = "product gap: an incapable A2A recovery is refused with an untyped Error::Execution string (kind Internal), not an actionable typed rejection"]
 async fn incapable_recovery_is_a_typed_actionable_rejection() {
-    let rec = Arc::new(Rec::default());
-    let activation = activation("a2a:http://remote.invalid");
-    let prepared =
-        prepare_remote_operation("http://remote.invalid", "ctx-9", None, "message-1", "go")
-            .unwrap();
-    commit_boundary(
-        &context_over(&rec),
-        &activation,
-        RunDisposition::running(activation.run_id.clone()),
-        Vec::new(),
-        vec![prepared_operation_state(&prepared).unwrap()],
-    )
-    .await
-    .unwrap();
-    let error = scripted_executor(Arc::new(ScriptedTransport::new(Vec::new())))
-        .execute(activation, context_over(&rec))
+    use awaken_runtime_contract::diagnostic::RuntimeErrorKind;
+
+    // R1 execute and R2 cancel over the same valid Running/Prepared shape.
+    // Neither may resolve credentials, send/observe a remote task, mutate the
+    // original commit, or let the refusal become an ACK/continuation proof.
+    // Resume requires an Awaiting ticket; do not fabricate an impossible
+    // Awaiting+Prepared fixture merely to reach a shared helper branch.
+    let mut diagnostic_gaps = Vec::new();
+    for operation in ["execute", "cancel"] {
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let prepared =
+            prepare_remote_operation("http://remote.invalid", "ctx-9", None, "message-1", "go")
+                .unwrap();
+        commit_boundary(
+            &context_over(&rec),
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![prepared_operation_state(&prepared).unwrap()],
+        )
         .await
-        .expect_err("refused");
-    assert!(
-        matches!(error, Error::Diagnostic(_)),
-        "expected a typed diagnostic the operator can act on, got {error:?} ({:?})",
-        error.kind()
-    );
+        .unwrap();
+        let before = rec.0.lock().unwrap().clone();
+        let transport = Arc::new(ScriptedTransport::new(Vec::new()));
+        let resolver = Arc::new(FixedTransportResolver::new(transport.clone()));
+        let executor = A2aRunExecutor::new(resolver.clone());
+        let context = context_over(&rec);
+        assert!(context.physical_quiescence.can_acknowledge_return());
+        let error = if operation == "execute" {
+            executor
+                .execute(activation, context.clone())
+                .await
+                .expect_err("unconfirmed recovery refused")
+        } else {
+            executor
+                .cancel(activation, context.clone())
+                .await
+                .expect_err("unconfirmed cancellation refused")
+        };
+        match &error {
+            Error::Diagnostic(diagnostic)
+                if diagnostic.kind() == RuntimeErrorKind::Conflict
+                    && diagnostic.code() == "a2a_operation_recovery_unconfirmed" =>
+            {
+                let cause = std::error::Error::source(diagnostic)
+                    .and_then(|source| source.downcast_ref::<Error>());
+                assert!(
+                    matches!(cause, Some(Error::Execution(_))),
+                    "{operation}: original cause preserved"
+                );
+            }
+            other => diagnostic_gaps.push(format!("{operation}: {other:?}")),
+        }
+        let message = error.to_string();
+        if !message.contains(&prepared.operation_id)
+            || !message.contains(&prepared.message_id)
+            || !message.contains(&prepared.context_id)
+            || !message.contains("peer")
+        {
+            diagnostic_gaps.push(format!(
+                "{operation}: missing actionable original-operation identity"
+            ));
+        }
+        assert!(
+            !message.contains("remote.invalid"),
+            "{operation}: peer address is not diagnostic identity"
+        );
+        assert_eq!(
+            resolver.resolutions.load(Ordering::SeqCst),
+            0,
+            "{operation}: no credential/transport resolution"
+        );
+        assert!(
+            paths(&transport).is_empty(),
+            "{operation}: no remote request"
+        );
+        assert_eq!(
+            *rec.0.lock().unwrap(),
+            before,
+            "{operation}: no new fact or terminal receipt"
+        );
+        assert!(
+            !context.physical_quiescence.can_acknowledge_return(),
+            "{operation}: no forged stop proof"
+        );
+        assert!(
+            !context.physical_quiescence.permits_execution(),
+            "{operation}: no automatic retry admission"
+        );
+    }
+    assert!(diagnostic_gaps.is_empty(), "{diagnostic_gaps:?}");
 }
