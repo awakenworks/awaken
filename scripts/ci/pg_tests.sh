@@ -941,6 +941,7 @@ fi
 POSTGRES_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run -d --name "$NAME" --label "io.awaken.ci.postgres-run=$PG_OWNER" \
+  --tmpfs /var/lib/postgresql/data \
   -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
   -v "$RECOVERY_MOUNT_ROOT/base:/recovery-base" \
   -v "$RECOVERY_MOUNT_ROOT/wal:/wal-archive" \

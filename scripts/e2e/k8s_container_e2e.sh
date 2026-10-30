@@ -43,7 +43,7 @@ FIXTURE_CONTAINER="awaken-bb-tmp-$$"
 log() { printf '\n=== %s ===\n' "$*"; }
 
 cleanup() {
-  docker rm -f "$FIXTURE_CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f -v "$FIXTURE_CONTAINER" >/dev/null 2>&1 || true
   if [ "${AWAKEN_K8S_KEEP:-0}" = "1" ]; then
     log "retaining cluster ${CLUSTER} and kubeconfig ${KUBECONFIG_FILE}"
   else
@@ -66,7 +66,7 @@ if ! docker image inspect busybox:1.36 >/dev/null 2>&1; then
 fi
 docker run --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true >/dev/null
 docker commit "$FIXTURE_CONTAINER" "$FIXTURE_IMAGE" >/dev/null
-docker rm -f "$FIXTURE_CONTAINER" >/dev/null
+docker rm -f -v "$FIXTURE_CONTAINER" >/dev/null
 # KQ0 no operator override => use the existing image owner's current-input
 # admission, resolve its real manifest digest, then run the mandatory control test.
 # KQ1 an explicit digest remains supported; malformed input fails above.

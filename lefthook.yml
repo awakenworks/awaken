@@ -467,6 +467,14 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_adr.py
 
+    # Harness containers never leak anonymous Docker volumes (explicit mounts,
+    # `docker rm -v`).
+    check-docker-volumes:
+      # >>> generated glob from check_docker_volumes.py INPUT_GLOBS — do not edit
+      glob: "{e2e/**/*.sh,scripts/**/*.sh,scripts/ci/check_docker_volumes.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_docker_volumes.py
+
     # 13. Active architecture docs use the ADR-0071 service vocabulary and keep
     #     the retired whole-catalog path historical. Canonical owners are English.
     check-architecture-vocabulary:
