@@ -511,7 +511,8 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     let first = environment(&provider, "aba-retirement").await;
     let second = Arc::new(
         provider
-            .adopt(
+            .adoption()
+            .adopt_unattached(
                 &crate::sandbox_layout::agent_run_sandbox_spec("aba-retirement"),
                 &first.lifecycle().handle(),
             )

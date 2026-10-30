@@ -38,7 +38,8 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
         clock,
     )
     .into_session_provider()
-    .create(&docker_spec)
+    .realizer()
+    .create_unattached(&docker_spec)
     .await
     .unwrap();
     let remote = "/workspace/remote.git";

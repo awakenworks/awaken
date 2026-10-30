@@ -2300,7 +2300,8 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
             .environments()
             .providers()
             .session_provider
-            .adopt(&spec, &observed.lifecycle().handle())
+            .adoption()
+            .adopt_unattached(&spec, &observed.lifecycle().handle())
             .await
             .expect("same-handle replacement"),
     );

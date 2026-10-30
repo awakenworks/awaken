@@ -264,9 +264,22 @@ mod tests {
                 "{row}: {error}"
             );
         };
-        refused(provider.create(&spec).await.err().expect("U1"), "U1");
         refused(
-            provider.adopt(&spec, &handle).await.err().expect("U2"),
+            provider
+                .realizer()
+                .create_unattached(&spec)
+                .await
+                .err()
+                .expect("U1"),
+            "U1",
+        );
+        refused(
+            provider
+                .adoption()
+                .adopt_unattached(&spec, &handle)
+                .await
+                .err()
+                .expect("U2"),
             "U2",
         );
         refused(

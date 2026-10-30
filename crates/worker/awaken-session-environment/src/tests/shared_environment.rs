@@ -19,7 +19,11 @@ async fn revoked_container_rebinds_only_a_proven_owned_path_successor() {
         "/usr/local/bin/awaken-sandbox",
     )
     .into_session_provider();
-    let environment = configured.create(&spec()).await.unwrap();
+    let environment = configured
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let before = environment.lifecycle().handle();
     let mut next_json = serde_json::to_value(&before).unwrap();
     next_json["payload"]["owned_paths"]
@@ -260,7 +264,11 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .unwrap();
     let relocated =
         crate::test_support::relocated_provider(&provider, base.path().join("relocated"));
-    let environment = relocated.create(&spec()).await.unwrap();
+    let environment = relocated
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     assert!(
         environment
             .agent_tools()
@@ -272,7 +280,8 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     environment.lifecycle().dispose().await.unwrap();
     let plain = SandboxEnvironmentProvider::workdir(base.path().join("plain"))
         .into_session_provider()
-        .create(&spec())
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap();
     assert!(
@@ -298,7 +307,11 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
     let provider =
         SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
             .into_session_provider();
-    let environment = provider.create(&spec()).await.unwrap();
+    let environment = provider
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let readonly = pc::MountRequirement {
         mount_id: "late-file".into(),
         source: pc::MountSource::Inline {
@@ -386,7 +399,11 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
     let provider =
         SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
             .into_session_provider();
-    let environment = provider.create(&spec()).await.unwrap();
+    let environment = provider
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let root = environment.agent_process().workspace_cwd();
 
     let default = environment
@@ -679,7 +696,11 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
                 provider.into_session_provider()
             }
         };
-        let environment = provider.create(&spec()).await.unwrap();
+        let environment = provider
+            .realizer()
+            .create_unattached(&spec())
+            .await
+            .unwrap();
         for client in [
             AgentFilesystemClient::NativeTools,
             AgentFilesystemClient::AcpProcess,
@@ -757,7 +778,8 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
         "/usr/local/bin/awaken-sandbox",
     )
     .into_session_provider()
-    .create(&spec())
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     assert_eq!(
@@ -870,7 +892,8 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
         "/usr/local/bin/awaken-sandbox",
     )
     .into_session_provider()
-    .create(&spec())
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     environment.skills().register_skill_dir("skills");
@@ -948,7 +971,8 @@ async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
         "/usr/local/bin/awaken-sandbox",
     )
     .into_session_provider()
-    .create(&spec())
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     environment.skills().register_skill_dir("skills");

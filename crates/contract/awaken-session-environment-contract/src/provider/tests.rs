@@ -256,7 +256,12 @@ impl pc::SandboxInstallation for RecordingAdapter {
 async fn unattached_creation_projects_the_spec_once_then_creates_the_projection() {
     let adapter = Arc::new(RecordingAdapter::default());
     let provider = SessionEnvironmentProvider::new(adapter.clone());
-    let refused = provider.create(&spec("s")).await.err().expect("U1");
+    let refused = provider
+        .realizer()
+        .create_unattached(&spec("s"))
+        .await
+        .err()
+        .expect("U1");
     assert_eq!(
         refused,
         pc::SandboxError::not_ready("recorded create"),
@@ -273,7 +278,12 @@ async fn unattached_creation_projects_the_spec_once_then_creates_the_projection(
 
     let adapter = Arc::new(RecordingAdapter::refusing_projection());
     let provider = SessionEnvironmentProvider::new(adapter.clone());
-    let refused = provider.create(&spec("s")).await.err().expect("U2");
+    let refused = provider
+        .realizer()
+        .create_unattached(&spec("s"))
+        .await
+        .err()
+        .expect("U2");
     assert_eq!(
         refused,
         pc::SandboxError::invalid("recorded projection refusal"),
@@ -287,7 +297,12 @@ async fn unattached_adoption_reopens_through_the_adapters_own_layout() {
     let handle = pc::SandboxHandle::new("recorded", "h");
     let adapter = Arc::new(RecordingAdapter::default());
     let provider = SessionEnvironmentProvider::new(adapter.clone());
-    let refused = provider.adopt(&spec("s"), &handle).await.err().expect("U3");
+    let refused = provider
+        .adoption()
+        .adopt_unattached(&spec("s"), &handle)
+        .await
+        .err()
+        .expect("U3");
     assert_eq!(refused, pc::SandboxError::not_ready("recorded adopt"), "U3");
     assert_eq!(
         adapter.calls(),
@@ -300,7 +315,12 @@ async fn unattached_adoption_reopens_through_the_adapters_own_layout() {
 
     let adapter = Arc::new(RecordingAdapter::refusing_projection());
     let provider = SessionEnvironmentProvider::new(adapter.clone());
-    let refused = provider.adopt(&spec("s"), &handle).await.err().expect("U4");
+    let refused = provider
+        .adoption()
+        .adopt_unattached(&spec("s"), &handle)
+        .await
+        .err()
+        .expect("U4");
     assert_eq!(
         refused,
         pc::SandboxError::conflict("recorded layout refusal"),

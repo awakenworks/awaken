@@ -60,15 +60,15 @@
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 54
+        "line": 62
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 55
+        "line": 63
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 61
+        "line": 69
       }
     ],
     "execution_witnesses": [
@@ -102,7 +102,7 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 110,
+        "line": 118,
         "file_sha256": "f0f599c0302c0fa976dee6942eb1959b8a4be6c3ba4a6255ad405150da3eb462"
       }
     ],
@@ -134,15 +134,15 @@
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 118
+        "line": 134
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 123
+        "line": 139
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 140
+        "line": 156
       }
     ]
   },

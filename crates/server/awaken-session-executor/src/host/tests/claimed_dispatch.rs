@@ -1303,7 +1303,8 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .environments()
         .providers()
         .session_provider
-        .create(&host.realization_executor.sandbox_spec("t-foreign-resident"))
+        .realizer()
+        .create_unattached(&host.realization_executor.sandbox_spec("t-foreign-resident"))
         .await
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
@@ -1385,7 +1386,8 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .environments()
         .providers()
         .session_provider
-        .create(&host.realization_executor.sandbox_spec("t-foreign-retained"))
+        .realizer()
+        .create_unattached(&host.realization_executor.sandbox_spec("t-foreign-retained"))
         .await
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();

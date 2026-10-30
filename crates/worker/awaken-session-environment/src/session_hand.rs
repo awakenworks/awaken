@@ -1203,7 +1203,11 @@ mod tests {
                 );
                 provider.into_session_provider()
             };
-            let environment = provider.create(&spec()).await.unwrap();
+            let environment = provider
+                .realizer()
+                .create_unattached(&spec())
+                .await
+                .unwrap();
             environment
                 .projection()
                 .attach_mount(pc::MountRequirement {

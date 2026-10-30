@@ -62,6 +62,25 @@ pub trait EnvironmentRealizer: Send + Sync {
         source_handle: Option<&pc::SandboxHandle>,
         kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError>;
+
+    /// Realize an environment no aggregate effect owns: this provider's
+    /// effective spec of `spec`, then an unattached Create. Consumers: the ACP
+    /// capability probe and tests. A Session-owned creation is always fenced
+    /// through [`Self::create_effective_for_effect`]; the name says which case
+    /// the call site means, as `Sandbox::dispose_unattached` does.
+    async fn create_unattached(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        let spec = self.effective_spec(spec)?;
+        self.create_effective_for_effect(
+            &spec,
+            SandboxEffect::Unattached,
+            None,
+            EnvironmentRealizationKind::Create,
+        )
+        .await
+    }
 }
 
 /// Reopening an environment from its durable handle. Consumers: environment
@@ -140,6 +159,19 @@ pub trait EnvironmentAdoption: Send + Sync {
         retained: &SessionEnvironment,
         effect: SandboxEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError>;
+
+    /// Reopen `handle` with no aggregate effect: this provider's own layout
+    /// for it, then an unattached adoption. Consumer: tests; a Session-owned
+    /// adoption is always fenced through [`Self::adopt_effective_for_effect`].
+    async fn adopt_unattached(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        let layout = self.effective_adoption_layout(spec, handle)?;
+        self.adopt_effective_for_effect(&layout.spec, handle, SandboxEffect::Unattached)
+            .await
+    }
 }
 
 /// Finishing and restoring environments the Session no longer runs in.
@@ -193,6 +225,32 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
 ///
 /// ```compile_fail
 /// use awaken_session_environment_contract::EnvironmentProviderInstallation;
+/// ```
+///
+/// Unattached shortcut decision table: US1 the record carries handles only;
+/// an unattached create or adopt is named on the role that performs it
+/// ([`EnvironmentRealizer::create_unattached`],
+/// [`EnvironmentAdoption::adopt_unattached`]), so the record's retired
+/// shortcuts must not resolve.
+///
+/// ```compile_fail,E0599
+/// # use awaken_provisioning_contract as pc;
+/// # use awaken_session_environment_contract::SessionEnvironmentProvider;
+/// async fn create(provider: &SessionEnvironmentProvider, spec: &pc::SandboxSpec) {
+///     let _ = provider.create(spec).await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// # use awaken_provisioning_contract as pc;
+/// # use awaken_session_environment_contract::SessionEnvironmentProvider;
+/// async fn adopt(
+///     provider: &SessionEnvironmentProvider,
+///     spec: &pc::SandboxSpec,
+///     handle: &pc::SandboxHandle,
+/// ) {
+///     let _ = provider.adopt(spec, handle).await;
+/// }
 /// ```
 #[derive(Clone)]
 pub struct SessionEnvironmentProvider {
@@ -254,37 +312,6 @@ impl SessionEnvironmentProvider {
     #[must_use]
     pub fn installation(&self) -> &Arc<dyn pc::SandboxInstallation> {
         &self.installation
-    }
-
-    /// Realize an unattached environment for `spec`: the effective spec, then
-    /// an unfenced create. Consumers: capability probes, the Worker projection
-    /// synchronizer, and tests; owned creation is always fenced.
-    pub async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let spec = self.realizer.effective_spec(spec)?;
-        self.realizer
-            .create_effective_for_effect(
-                &spec,
-                SandboxEffect::Unattached,
-                None,
-                EnvironmentRealizationKind::Create,
-            )
-            .await
-    }
-
-    /// Adopt `handle` unattached through its own layout: the pure preflight,
-    /// then an unfenced adoption. Consumer: tests; owned adoption is fenced.
-    pub async fn adopt(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let layout = self.adoption.effective_adoption_layout(spec, handle)?;
-        self.adoption
-            .adopt_effective_for_effect(&layout.spec, handle, SandboxEffect::Unattached)
-            .await
     }
 
     /// The execution-installation adapter, for the composition that built it

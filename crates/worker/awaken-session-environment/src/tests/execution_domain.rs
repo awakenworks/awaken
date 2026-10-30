@@ -17,7 +17,8 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
         "/usr/local/bin/awaken-sandbox",
     )
     .into_session_provider()
-    .create(&spec())
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let executor = environment.agent_tools().tool_executor();

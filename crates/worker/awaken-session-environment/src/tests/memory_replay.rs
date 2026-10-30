@@ -1191,7 +1191,8 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     assert!(
         container
             .into_session_provider()
-            .create(&spec())
+            .realizer()
+            .create_unattached(&spec())
             .await
             .is_err()
     );
