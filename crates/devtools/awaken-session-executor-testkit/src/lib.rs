@@ -5,20 +5,31 @@
 //! composition that wants a local Host builds its ports here, from the same
 //! Resources authorities its process selected, and hands them to
 //! `SessionExecutorBuilder::for_local_resources`.
+//!
+//! The `host` feature supplies this full composition and is enabled by the
+//! package default. Workspace callers select it explicitly. Without `host`,
+//! the original extraction-repository and volatile-authority factories remain
+//! available to core unit fixtures without an Executor/Resources assembly.
 
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "host")]
 use awaken_deployment_config::DeploymentConfig;
 use awaken_ext_memory::MemoryExtractionRepository;
+#[cfg(feature = "host")]
 use awaken_resource_application::{
     ResourceAuthorities, StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
+#[cfg(feature = "host")]
 use awaken_resource_contract::SkillStore;
+#[cfg(feature = "host")]
 use awaken_runtime_contract::llm::LlmExecutor;
+#[cfg(feature = "host")]
 use awaken_session_executor::{
     ExecutorComponents, LocalResourcePorts, LocalSkillPorts, SessionExecutorBuilder,
 };
+#[cfg(feature = "host")]
 use awaken_time::WallClock;
 
 /// The Host's Resource ports over one selected set of Resources
@@ -26,6 +37,7 @@ use awaken_time::WallClock;
 /// The same root gives the Resources clock to its SessionExecutionProcess.
 /// Consumer: the CLI's local runtime process and the Scenario host.
 #[must_use]
+#[cfg(feature = "host")]
 pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourcePorts {
     LocalResourcePorts {
         memory: authorities.memory_execution_content(),
@@ -42,6 +54,7 @@ pub fn local_resource_ports(authorities: &ResourceAuthorities) -> LocalResourceP
 /// The Skill catalog ports over `store`: the store and the Resources
 /// applications the Host reads and freezes custom Skills through.
 #[must_use]
+#[cfg(feature = "host")]
 pub fn local_skill_ports(store: Arc<dyn SkillStore>, clock: Arc<dyn WallClock>) -> LocalSkillPorts {
     LocalSkillPorts {
         bundle_source: Arc::new(StoreSkillBundleSource::new(store.clone())),
@@ -87,6 +100,7 @@ pub async fn memory_extraction_repository(
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
+#[cfg(feature = "host")]
 pub async fn volatile_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -105,6 +119,7 @@ pub async fn volatile_host(
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
+#[cfg(feature = "host")]
 pub async fn volatile_dependencies(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -118,6 +133,7 @@ pub async fn volatile_dependencies(
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
+#[cfg(feature = "host")]
 pub async fn volatile_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -137,6 +153,7 @@ pub async fn volatile_dependencies_with_deployment(
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
+#[cfg(feature = "host")]
 pub async fn unconfigured_dependencies_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -181,6 +198,7 @@ pub async fn unconfigured_dependencies_with_deployment(
 
 /// Select the Workdir adapter under the Deployment's sandbox root `base` as
 /// the non-authoritative fallback Session provider.
+#[cfg(feature = "host")]
 fn with_workdir_fallback(
     dependencies: SessionExecutorBuilder,
     base: std::path::PathBuf,
@@ -223,6 +241,7 @@ pub fn volatile_runtime_authority(
 /// # Panics
 /// When `dir` or its extraction database cannot be opened.
 #[must_use]
+#[cfg(feature = "host")]
 pub async fn with_durable_store_dir(
     dependencies: SessionExecutorBuilder,
     dir: &Path,
@@ -239,18 +258,6 @@ pub async fn with_durable_store_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Default)]
-    struct RecordingMemoryInvalidator(std::sync::Mutex<Vec<(String, String)>>);
-    #[cfg(test)]
-    impl awaken_resource_contract::MemoryInvalidator for RecordingMemoryInvalidator {
-        fn publish(&self, store: &str, path: &str) {
-            self.0
-                .lock()
-                .expect("test Memory invalidations")
-                .push((store.into(), path.into()));
-        }
-    }
 
     /// Ownership-preservation graph: C1 no storage directory, C2 a selected
     /// directory; E1 opens only volatile SQLite, E2 creates that directory and
@@ -282,53 +289,6 @@ mod tests {
         assert!(
             dir.join("sessions.db").is_file(),
             "E2 opens dir/sessions.db"
-        );
-    }
-
-    /// Cause/effect graph: C1 one Resources authority selection supplies the
-    /// File/Memory/Skill/reclamation ports; C2 its clock fills the existing
-    /// process value; C3 the sole local constructor consumes those inputs.
-    /// P1 C1 -> the original Skill/reclamation/Memory identities are present.
-    /// P2 C1+C2+C3 -> the actual Builder clock is that same Resources Arc,
-    /// rather than a second clock copied into LocalResourcePorts. This row
-    /// observes the constructed Builder; comparing two inputs is insufficient.
-    /// Existing topology/kernel and root suites own invalid-deployment panic,
-    /// provider/capture and authority rules; this row performs no model I/O and
-    /// adds no parallel model fake, clock selection policy or permission path.
-    #[tokio::test]
-    async fn resource_ports_carry_every_authority_of_one_selection() {
-        let clock = awaken_time::system_clock();
-        let resources = awaken_resource_persistence::ephemeral(
-            clock,
-            Arc::new(RecordingMemoryInvalidator::default()),
-        )
-        .await
-        .expect("ephemeral Resources");
-        let authorities = resources.authorities();
-        let ports = local_resource_ports(&authorities);
-        assert!(ports.skills.is_some(), "P1 Skill catalog present");
-        assert!(ports.reclamation.is_some(), "P1 reclamation present");
-        assert!(
-            Arc::ptr_eq(&ports.memory.queries(), &authorities.memory_queries()),
-            "P1 the same Memory authority"
-        );
-        let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
-            &DeploymentConfig::ephemeral(),
-            awaken_deployment_config::mint_local_workspace(),
-            authorities.clock(),
-        )
-        .expect("a local fixture selects a valid process");
-        let dependencies = SessionExecutorBuilder::for_local_resources(
-            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF,
-            ports,
-            memory_extraction_repository(None).await,
-            process,
-            volatile_runtime_authority(authorities.clock()),
-        );
-        assert!(
-            Arc::ptr_eq(&dependencies.clock(), &authorities.clock()),
-            "P2 clock"
         );
     }
 }

@@ -66,7 +66,7 @@ k8s = ["dep:awaken-sandbox-kubernetes", "dep:awaken-worker-fleet-kubernetes", "d
 # Test access to the adapters behind the installed role handles (`at_root`).
 awaken-session-environment = { workspace = true, features = ["test-support"] }
 # Hosts over a chosen Deployment for the startup rows.
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 awaken-agent-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }

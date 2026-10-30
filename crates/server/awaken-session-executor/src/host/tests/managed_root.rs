@@ -5,6 +5,8 @@ use awaken_session_repository_contract::SessionRepositoryReads;
 use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
+mod environment_ports;
+
 /// One explicit test composition over the existing SQLite Session authority.
 /// Select it before the Host is built; no Host-id registry or read-side seeding
 /// can substitute for this owner. The production sink remains the only admit/
@@ -299,22 +301,10 @@ impl ManagedSessionRootFixture {
     ) -> Arc<awaken_session_application::SessionApplication> {
         self.application
             .get_or_init(|| {
-                let catalog = Arc::new(
-                    awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new(),
-                );
-                catalog
-                    .install_seed(
-                        awaken_environment_application::default_environment_registration(),
-                    )
-                    .expect("install canonical local Environment");
-                let environments = Arc::new(
-                    awaken_environment_application::execution::EnvironmentExecutionApplication::new(
-                        Arc::new(awaken_work_store::InMemoryWorkQueue::new(
-                            self.clock.clone(),
-                        )),
-                        catalog,
-                    ),
-                );
+                // These private tests install their exact frozen projection below.
+                // Environment/Work composition is exercised by ScenarioHost.
+                // Any accidental use of an Environment role must fail here.
+                let environments = Arc::new(environment_ports::UnusedEnvironmentPorts);
                 let runtime = managed.session_execution_roles();
                 Arc::new(
                     awaken_session_application::SessionApplicationBuilder::new(

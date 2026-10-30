@@ -45,7 +45,7 @@ awaken-protocol-managed-testkit.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-worker-contract.workspace = true
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security = { workspace = true, features = ["kubernetes"] }
 kube = { workspace = true, features = ["client"] }

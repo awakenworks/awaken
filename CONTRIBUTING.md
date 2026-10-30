@@ -121,6 +121,25 @@ fixture imports, nested modules and active evidence paths; it does not remove it
 validation obligation. Compare actual per-profile compilation artifacts before
 claiming a timing improvement: workspace filtering still compiles the workspace.
 
+The Executor Testkit's `host` feature owns complete Host/Resources assembly.
+Its package default retains that API; workspace Host callers enable `host`
+explicitly, while Executor unit tests use only its extraction-repository and
+volatile-authority factories with default features disabled. The existing
+ScenarioHost target `executor_environment_composition` owns the actual
+Environment/Work queue wiring and the moved Resources-authority identity case.
+The Executor's private Root fixture refuses any unexpected Environment call;
+it does not simulate successful Work or lease operations.
+
+For a focused native development check, run the Testkit library both with
+`--no-default-features` and with its package defaults, the Executor library with
+and without `--features test-support`, and the ScenarioHost
+`--test executor_environment_composition` target. Keep `--locked`, the qualified
+MSVC toolchain, selected target directory and build settings stable across
+comparisons. These checks supplement the affected plan; they do not replace the
+canonical full gate or transfer evidence between feature profiles. A smaller
+resolved package graph is structural evidence only. Cold and warm timings must
+come from equivalent complete builds before reporting a build-time reduction.
+
 ## Features, environment and target directories
 
 - **Required test features** live in one place,

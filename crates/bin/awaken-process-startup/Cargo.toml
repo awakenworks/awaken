@@ -245,7 +245,7 @@ awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-lease-testkit.workspace = true
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 # sqlite_process_store_contract holds an independent writer on the shared file.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"
