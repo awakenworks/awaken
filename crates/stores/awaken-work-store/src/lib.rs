@@ -30,6 +30,12 @@
 //! readers must also understand historical registration acknowledgements.
 //! Restoring an earlier whole-database backup requires fencing outstanding
 //! clients; rollback of the authority itself is outside this store's guarantees.
+//!
+//! Acknowledgements are committed once per lease generation. Replay checks its
+//! original generation before consulting the clock; a fresh acknowledgement
+//! checks expiry under the write lock. The append-only migration leaves older
+//! acknowledgements without a generation marker: their historical timestamp
+//! cannot prove which lease wrote it. Such a lease needs a fresh, live ACK.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -221,7 +227,6 @@ impl WorkConsumer for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let acknowledged_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
         Self::ack_inner(
             &mut conn,
@@ -229,7 +234,7 @@ impl WorkConsumer for SqliteWorkQueue {
             wid,
             worker_id,
             LeaseFence::OwnerOnly,
-            acknowledged_at,
+            self.clock.as_ref(),
         )
         .await
     }
@@ -316,7 +321,6 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
         &self,
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let acknowledged_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
         Self::ack_inner(
             &mut conn,
@@ -324,7 +328,7 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
-            acknowledged_at,
+            self.clock.as_ref(),
         )
         .await
     }

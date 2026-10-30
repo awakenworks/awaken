@@ -1,6 +1,8 @@
 //! Work identity is independent from reusable ordering ordinals.
 #![cfg(feature = "test-support")]
 
+use std::sync::Arc;
+
 use awaken_environment_contract::EnvironmentRevision;
 use awaken_executable_environment_contract::{
     EnvironmentWorkRevisionOperation as Operation, HeartbeatResult, LeaseHeartbeat,
@@ -257,7 +259,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
 
 #[tokio::test]
 async fn inmemory_work_identity_is_not_reused_after_lifecycle_removal() {
-    let queue = InMemoryWorkQueue::new(awaken_time::system_clock());
+    let queue = InMemoryWorkQueue::new(Arc::new(awaken_lease_testkit::ManualClock::new(0)));
     work_identity_is_not_reused(&queue).await;
 }
 
@@ -266,7 +268,7 @@ async fn sqlite_work_identity_is_not_reused_after_lifecycle_removal() {
     let directory = tempfile::tempdir().unwrap();
     let queue = SqliteWorkQueue::open(
         directory.path().join("identity.db").to_str().unwrap(),
-        awaken_time::system_clock(),
+        Arc::new(awaken_lease_testkit::ManualClock::new(0)),
     )
     .await
     .unwrap();
@@ -283,9 +285,12 @@ async fn postgres_work_identity_is_not_reused_after_lifecycle_removal() {
         return;
     };
     let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 2).await;
-    let queue = PostgresWorkQueue::with_pool(fixture.pool.clone(), awaken_time::system_clock())
-        .await
-        .unwrap();
+    let queue = PostgresWorkQueue::with_pool(
+        fixture.pool.clone(),
+        Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+    )
+    .await
+    .unwrap();
     let local = tokio::task::LocalSet::new();
     let result = local
         .run_until(local.spawn_local(async move {

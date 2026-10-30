@@ -57,6 +57,7 @@ pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
              ON {prefix}_item (environment_id, data_type, data_id)",
             )?,
             observation_column(2)?,
+            acknowledgement_column(3)?,
         ],
     )
 }
@@ -80,6 +81,18 @@ fn observation_column(version: i64) -> Result<Migration, MigrationError> {
         "ALTER TABLE {prefix}_item ADD COLUMN created_at TEXT NOT NULL DEFAULT ''; \
          UPDATE {prefix}_item SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
          WHERE created_at = ''",
+    )
+}
+
+// Both published histories own the item table. Append the same receipt field
+// to each history without changing either history's published checksums. NULL
+// deliberately does not infer the authoring epoch of an old acknowledgement.
+fn acknowledgement_column(version: i64) -> Result<Migration, MigrationError> {
+    Migration::new(
+        version,
+        "bind acknowledgement receipts to their granted lease generation",
+        "ALTER TABLE {prefix}_item ADD COLUMN ack_lease_epoch BIGINT \
+         CHECK (ack_lease_epoch IS NULL OR ack_lease_epoch > 0)",
     )
 }
 
@@ -158,6 +171,7 @@ fn legacy_work_bundle() -> Result<MigrationBundle, MigrationError> {
         SQLITE_UPGRADE,
     )?);
     migrations.push(observation_column(7)?);
+    migrations.push(acknowledgement_column(8)?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -548,7 +562,7 @@ mod tests {
         );
         let (stream, legacy) = selected_work_bundle(Some(LEGACY_V1_CHECKSUM)).expect("H3");
         assert_eq!(stream, PublishedWorkStream::Legacy, "H3");
-        assert_eq!(legacy.migrations().last().unwrap().version(), 7, "E2");
+        assert_eq!(legacy.migrations().last().unwrap().version(), 8, "E2");
         assert_eq!(
             legacy.migrations()[0].checksum_for(Dialect::Sqlite),
             LEGACY_V1_CHECKSUM,
@@ -845,3 +859,7 @@ mod tests {
 #[cfg(all(test, not(feature = "loom")))]
 #[path = "schema/identity_upgrade_tests.rs"]
 mod identity_upgrade_tests;
+
+#[cfg(all(test, not(feature = "loom")))]
+#[path = "schema/ack_upgrade_tests.rs"]
+mod ack_upgrade_tests;

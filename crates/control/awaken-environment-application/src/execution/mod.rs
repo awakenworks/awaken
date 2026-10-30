@@ -2088,7 +2088,8 @@ mod tests {
 
     #[tokio::test]
     async fn archived_session_work_and_bearer_continue_through_application_roles() {
-        let work = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let work = Arc::new(InMemoryWorkQueue::new(clock));
         let session = work
             .enqueue_session("archived", &"existing".into())
             .await

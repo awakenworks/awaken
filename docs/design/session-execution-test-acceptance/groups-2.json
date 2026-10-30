@@ -237,10 +237,9 @@
           ]
         },
         "product_gap": {
-          "reason": "重试 Work ack 会改写 acknowledged_at；丢响应后重试 stop 返回 412 而非重放",
-          "follow_up": "work-store ack/stop 重放（S–M、M）",
+          "reason": "丢响应后重试 stop 仍返回 412；ACK 的原确认时间、过期与代际隔离已由启用的回归覆盖，完整场景仍未验收",
+          "follow_up": "work-store 原停止回执持久化及受控重放（M）",
           "reproducers": [
-            "retried_ack_replays_the_original_acknowledgement",
             "retried_stop_after_lost_response_replays"
           ]
         }
@@ -409,11 +408,10 @@
           ]
         },
         "product_gap": {
-          "reason": "普通 ack/heartbeat/stop 只核对 owner 不核对 epoch；ack 不检查租约过期；epoch 类型可互换",
-          "follow_up": "work-store 租约 fence（M）与过期检查（S）",
+          "reason": "普通 ack/heartbeat/stop 的协议请求不携带 epoch，不能区分重用同一 worker id 的旧 incarnation；ACK 过期和回执代际隔离已有独立回归",
+          "follow_up": "明确 legacy owner-only 能力边界；持有 generation 的调用使用已有 exact-epoch 接口；补齐当前持有者成功的正向对照",
           "reproducers": [
-            "stale_same_owner_claimer_is_refused_after_reclaim",
-            "ack_after_the_lease_lapsed_is_refused"
+            "stale_same_owner_claimer_is_refused_after_reclaim"
           ]
         }
       },

@@ -179,7 +179,9 @@ async fn retained_mutations<Q: WorkBackend>(q: &Q, proof: &WorkSessionAccess) {
 
 #[tokio::test]
 async fn inmemory_archive_keeps_existing_session_authority() {
-    let q = InMemoryWorkQueue::new(awaken_time::system_clock());
+    let q = InMemoryWorkQueue::new(std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(
+        0,
+    )));
     let proof = archived_lease(&q).await;
     retained_mutations(&q, &proof).await;
 }
@@ -188,14 +190,20 @@ async fn inmemory_archive_keeps_existing_session_authority() {
 async fn sqlite_archive_keeps_existing_session_authority_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("archive.db");
-    let q = SqliteWorkQueue::open(path.to_str().unwrap(), awaken_time::system_clock())
-        .await
-        .unwrap();
+    let q = SqliteWorkQueue::open(
+        path.to_str().unwrap(),
+        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+    )
+    .await
+    .unwrap();
     let proof = archived_lease(&q).await;
     drop(q);
-    let q = SqliteWorkQueue::open(path.to_str().unwrap(), awaken_time::system_clock())
-        .await
-        .unwrap();
+    let q = SqliteWorkQueue::open(
+        path.to_str().unwrap(),
+        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         q.authenticate_session_access(&test_session_access_digest(907), 1)
             .await
@@ -216,14 +224,20 @@ async fn postgres_archive_keeps_existing_session_authority_after_reconnect() {
         return;
     };
     let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 2).await;
-    let q = PostgresWorkQueue::with_pool(fixture.pool.clone(), awaken_time::system_clock())
-        .await
-        .unwrap();
+    let q = PostgresWorkQueue::with_pool(
+        fixture.pool.clone(),
+        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+    )
+    .await
+    .unwrap();
     let proof = archived_lease(&q).await;
     drop(q);
-    let q = PostgresWorkQueue::connect(&fixture.scoped_url, awaken_time::system_clock())
-        .await
-        .unwrap();
+    let q = PostgresWorkQueue::connect(
+        &fixture.scoped_url,
+        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         q.authenticate_session_access(&test_session_access_digest(907), 1)
             .await

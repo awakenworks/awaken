@@ -235,20 +235,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 666,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 742,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T08-C02": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a retried Work ack re-stamps acknowledged_at",
-    "limitation": "Not execution evidence. Follow-up: work-store ack replay (S-M)",
+    "review": "Enabled owner-only and exact-epoch ACK retry rows preserve the original timestamp and whole item without consulting the clock, including after expiry; wrong owner and wrong epoch remain refused. Concurrent ACK and generation-isolation rows are adjacent named regressions.",
+    "limitation": "Work-store ACK semantics only; stop replay, Run result independence and platform facets remain separately pending. This source binding is not an execution witness.",
     "id": "B247"
   },
   {
@@ -256,8 +258,8 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 689,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 1085,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "execution_witnesses": [],
@@ -298,8 +300,8 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 626,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 678,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "execution_witnesses": [],

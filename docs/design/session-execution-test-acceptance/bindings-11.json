@@ -4,18 +4,18 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 357,
-        "file_sha256": "8f30d77c9c9c187163903f66a6969515660f7b64009965cf3b3399c2916a0d17"
+        "line": 360,
+        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 358
+        "line": 361
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 369
+        "line": 372
       }
     ],
     "execution_witnesses": [
@@ -49,22 +49,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 390,
-        "file_sha256": "8f30d77c9c9c187163903f66a6969515660f7b64009965cf3b3399c2916a0d17"
+        "line": 396,
+        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 403
+        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "line": 1571
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 409
+        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "line": 1593
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 415
+        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "line": 1633
       }
     ],
     "execution_witnesses": [
@@ -249,22 +249,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 565,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 617,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 53
+        "line": 557
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 55
+        "line": 558
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 59
+        "line": 587
       }
     ],
     "execution_witnesses": [
@@ -290,7 +290,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
     "id": "B211"
   },
   {
@@ -298,22 +298,26 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 560,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 612,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 53
+        "line": 462
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 55
+        "line": 463
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 59
+        "line": 498
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 523
       }
     ],
     "execution_witnesses": [
@@ -340,7 +344,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
     "id": "B212"
   },
   {
@@ -389,14 +393,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 554,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 606,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 382
+        "line": 289
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 293
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 434
       }
     ],
     "execution_witnesses": [
@@ -424,7 +436,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
     "id": "B214"
   },
   {
@@ -432,18 +444,26 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 570,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 622,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 82
+        "line": 289
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 87
+        "line": 293
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 462
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 558
       }
     ],
     "execution_witnesses": [
@@ -471,7 +491,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
     "id": "B215"
   },
   {

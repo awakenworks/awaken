@@ -4,20 +4,23 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 651,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 702,
+        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T09-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: Work ack does not check lease expiry",
-    "limitation": "Not execution evidence. Follow-up: work-store lease expiry (S)",
+    "review": "Enabled first-ACK boundary rows at TTL-1/TTL/TTL+1 on Volatile, independent file SQLite handles and live PostgreSQL pools. Adjacent regressions exercise clock sampling after SQLite write admission, original PostgreSQL committed reply with an actual late-reload mutant, and receipt isolation across lease generations.",
+    "limitation": "Work ACK subset only; owner-only protocol cannot identify an old incarnation reusing the same worker name. Other lease operations and complete scenario qualification remain separate. This source binding is not an execution witness.",
     "id": "B251"
   },
   {

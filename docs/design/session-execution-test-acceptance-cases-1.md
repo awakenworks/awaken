@@ -295,7 +295,7 @@
 - 必须断言：只重试原 ack；不重新执行模型/工具；保留独立 Run 结果。
 - 反向控制：以 Work ack 成功合成 Run 成功必须失败。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：`terminal_run_work_ack_loss_retries_only_the_original_identity`、`terminal_ack_retries_only_the_original_identity`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `retried_ack_replays_the_original_acknowledgement`、`retried_stop_after_lost_response_replays`（忽略，不计证据；E17 为预期失败）：重试 Work ack 会改写 acknowledged_at；丢响应后重试 stop 返回 412 而非重放。完整场景：待验收。
+- 绑定及状态：保留 E16/E17 的原始源码与执行身份。`retried_ack_replays_the_original_acknowledgement` 已启用，增加并发 ACK、过期边界、事务等待、跨代际回执隔离和升级旧数据库的回归；ACK 重试不重写原确认时间。仍有产品缺口 `retried_stop_after_lost_response_replays`（忽略，不计通过）：丢响应后重试 stop 返回 412 而非重放。Work-store 子集不能代替 Run 结果独立性、进程崩溃及完整平台验收。完整场景：待验收。
 
 ### T08-C03 两侧租约与 healthcheck
 
@@ -327,7 +327,7 @@
 - 必须断言：仅当前 owner 可提交；stale receipt 拒绝；失败不扩权。
 - 反向控制：测试内串行锁掩盖数据库竞争必须拒绝。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：`concurrent_takeover_admits_only_the_current_owner_on_volatile_and_file_sqlite`、`postgres_work_lease_acceptance`、`dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite`、`postgres_dispatch_takeover_admits_only_the_current_claim`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `stale_same_owner_claimer_is_refused_after_reclaim`、`ack_after_the_lease_lapsed_is_refused`（忽略，不计证据；E17 为预期失败）：普通 ack/heartbeat/stop 只核对 owner 不核对 epoch；ack 不检查租约过期；epoch 类型可互换。完整场景：待验收。
+- 绑定及状态：保留 E16/E17 的原始源码与执行身份。`ack_after_the_lease_lapsed_is_refused` 已启用，覆盖首次 ACK 的精确过期边界；增加两个独立客户端的并发确认、数据库写入等待和原事务快照回归。`stale_same_owner_claimer_is_refused_after_reclaim` 仍为忽略的产品缺口：旧协议仅携带 worker id，不能推断同名旧 incarnation 的 epoch；补齐方案还必须证明新持有者能够成功。跨领域 epoch 类型隔离继续由 T08-C03 跟踪。完整场景：待验收。
 
 ### T09-C03 身份跨重建
 
