@@ -113,8 +113,11 @@
           ],
           "scope": "需要持久性时真实文件和重开；仅 in-memory SQLite 不足"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-18",
+          "B-DOL-19"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -124,7 +127,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; owned child process killed inside the Resource projection; file SQLite reopened through a new handle; PostgreSQL 16.15 task-owned fixture through independent pools (required); nextest"
+          ],
+          "unaccepted": [
+            "real Resource preparation adapters (counting Runtime fake)",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",

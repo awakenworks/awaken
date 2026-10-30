@@ -29,8 +29,13 @@
           ],
           "scope": "所选 Windows 模式；不含 Linux 或未启用执行器"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-44",
+          "B-DOL-45",
+          "B-DOL-46",
+          "B-DOL-47"
+        ],
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -40,7 +45,17 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; NTFS identity/lock/long-path rows, owned Job objects and Git Bash descendant trees, nextest"
+          ],
+          "unaccepted": [
+            "DLL loading rows",
+            "the full affected-Windows-path and cold CI matrix",
+            "hand::windows_process::dropping_the_session_stops_ready_background_descendants (flaky on first run, not bound)"
+          ]
+        }
       },
       {
         "id": "T35-C02",
@@ -63,7 +78,7 @@
           "scope": "本次 Windows 任务不执行；只可未验收或有能力拒绝证明的不适用"
         },
         "binding_ids": [],
-        "evidence_state": "design_only",
+        "evidence_state": "platform_pending",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -73,7 +88,8 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "platform_pending_reason": "Native Linux namespace, kernel FUSE and container gates; Linux and WSL validation are outside this task's authorized scope, so nothing is reported as passed."
       },
       {
         "id": "T35-C03",
@@ -98,8 +114,12 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-48",
+          "B-DOL-49",
+          "B-DOL-50"
+        ],
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -109,7 +129,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; featureless container tier refusal for Docker, Podman and Kubernetes"
+          ],
+          "unaccepted": [
+            "per-mode qualification of Native, ACP, MCP, Sandbox, OCI, Kubernetes and external brokers",
+            "external deployment qualification"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -817,8 +846,10 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-51"
+        ],
+        "evidence_state": "not_applicable",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -828,7 +859,8 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "not_applicable_reason": "No deployment offers cross-process live FUSE: the live projection exists only for Linux with the fuse feature, and its only invalidation transport is the in-process LocalInvalidator. On this host a matching bus still realizes Copy with no listener (executed refusal proof)."
       }
     ],
     "risk": "P1",

@@ -1,0 +1,461 @@
+[
+  {
+    "id": "B-DOL-46",
+    "name": "kernel_job_closes_when_owner_is_terminated_without_drop",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-local-process/src/windows_job.rs",
+        "line": 161,
+        "file_sha256": "9193836f395176bcc0c2ecb099029fbbb65f75bb99859f611ac1ab8a1ac42a96"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-local-process/src/windows_job.rs",
+        "line": 68
+      },
+      {
+        "path": "crates/worker/awaken-local-process/src/windows_job.rs",
+        "line": 74
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-local-process windows_job::tests::kernel_job_closes_when_owner_is_terminated_without_drop",
+        "package": "awaken-local-process",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "A real owned Windows Job closes its descendants when the owner is terminated.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-47",
+    "name": "timed_out_call_stops_ready_descendants_before_returning",
+    "source_locations": [
+      {
+        "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+        "line": 167,
+        "file_sha256": "3fc32eb2ff692c905e680ec88da0d1176265d9b387c47978ad5cf1c94dc8ec4d"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+        "line": 189
+      },
+      {
+        "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+        "line": 199
+      },
+      {
+        "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+        "line": 200
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-ext-builtin-tools::hand windows_process::timed_out_call_stops_ready_descendants_before_returning",
+        "package": "awaken-ext-builtin-tools",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "A real Git Bash descendant tree is stopped before the timed-out Hand call returns.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-48",
+    "name": "k8s_tier_without_its_feature_is_refused_with_a_stable_message",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-execution-composition/src/container/tier_refusal_tests.rs",
+        "line": 68,
+        "file_sha256": "4d4d9f0ed6da465a0f6b191fe313d0ac7d780b71d21766bc462ccd30ea31ac2c"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-execution-composition/src/container/tier_refusal_tests.rs",
+        "line": 69
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-execution-composition container::tier_refusal_tests::k8s_tier_without_its_feature_is_refused_with_a_stable_message",
+        "package": "awaken-execution-composition",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "The canonical realization builder refuses a tier whose backend feature is absent, before any client or cluster access.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-49",
+    "name": "docker_tier_without_its_feature_is_refused_with_a_stable_message",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-execution-composition/src/container/tier_refusal_tests.rs",
+        "line": 50,
+        "file_sha256": "4d4d9f0ed6da465a0f6b191fe313d0ac7d780b71d21766bc462ccd30ea31ac2c"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-execution-composition/src/container/tier_refusal_tests.rs",
+        "line": 51
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-execution-composition container::tier_refusal_tests::docker_tier_without_its_feature_is_refused_with_a_stable_message",
+        "package": "awaken-execution-composition",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Same refusal for Docker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-50",
+    "name": "podman_tier_without_its_feature_is_refused_with_a_stable_message",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-execution-composition/src/container/tier_refusal_tests.rs",
+        "line": 59,
+        "file_sha256": "4d4d9f0ed6da465a0f6b191fe313d0ac7d780b71d21766bc462ccd30ea31ac2c"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-execution-composition/src/container/tier_refusal_tests.rs",
+        "line": 60
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-execution-composition container::tier_refusal_tests::podman_tier_without_its_feature_is_refused_with_a_stable_message",
+        "package": "awaken-execution-composition",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Same refusal for Podman.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-51",
+    "name": "t40_c03_without_kernel_fuse_a_matching_bus_realizes_copy_with_no_live_listener",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
+        "line": 158,
+        "file_sha256": "fda3e733ed78d0ce501b46c1d9cff0e6bcb231a45dd702002848afe7c0f83546"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
+        "line": 170
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
+        "line": 178
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
+        "line": 183
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
+        "line": 195
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-sandbox-memoryd::live_mode_refusal t40_c03_without_kernel_fuse_a_matching_bus_realizes_copy_with_no_live_listener",
+        "package": "awaken-sandbox-memoryd",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T40-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Refusal evidence, not consistency evidence: a matching bus still realizes Copy with zero live listeners, and later writes and invalidations never reach the mounted bytes.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-52",
+    "name": "test_d2_reproducer_c2_doctest_pin_matches_the_compiler_error_code",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 165,
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T02-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Skipped reproducer asserting the correct behaviour; fails with AWAKEN_RUN_IGNORED=1: the C2 doctest pins E0412 but rustc 1.96 reports E0425",
+    "limitation": "Not execution evidence. Follow-up: awaken-runtime conversation.rs doctest pins (S)"
+  },
+  {
+    "id": "B-DOL-53",
+    "name": "test_d3_reproducer_stable_rustdoc_checks_pinned_codes",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 170,
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T02-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Skipped reproducer; fails: stable rustdoc ignores pinned compile_fail E-codes, so an unrelated failure passes the normal gate",
+    "limitation": "Not execution evidence. Follow-up: doc gate checks compile_fail codes (M)"
+  },
+  {
+    "id": "B-DOL-54",
+    "name": "running_session_budget_tightening_governs_the_next_model_request",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "line": 275,
+        "file_sha256": "f8f3b7377fd8eac02748193ca1ddae810082bffed6d23aa6c40bfa2341a5cd97"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T13-C02": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer; fails: update_limit refuses tightening unless the root execution is Idle",
+    "limitation": "Not execution evidence. Follow-up: session-application budget update during a Running root (M)"
+  },
+  {
+    "id": "B-DOL-55",
+    "name": "redacting_a_version_requires_more_than_content_write",
+    "source_locations": [
+      {
+        "path": "crates/control/awaken-control/src/authz/memory_redaction_tests.rs",
+        "line": 48,
+        "file_sha256": "3035e292b79e78498b41f99a22d7a4171f6ec2e9918d94c6939aec647322c670"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T25-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer; fails: memory version redact maps to workspace.write, the same action as content write",
+    "limitation": "Not execution evidence. Follow-up: awaken-control authz separate redact action (S)"
+  },
+  {
+    "id": "B-DOL-56",
+    "name": "reproduceRecoveredRunContinuesOnTheTakeoverProcess",
+    "source_locations": [
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 425,
+        "file_sha256": "94145ca86eb45ea2a0e2fa1c844f16bf937063a1e6dea2e1bbe2c10f1faf3bbc"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T31-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Opt-in reproducer (AWAKEN_E2E_RUN_PRODUCT_GAPS=1); fails: the takeover process terminates the Session with 'current sandbox handle has no realization marker'",
+    "limitation": "Not execution evidence. Follow-up: takeover reuse of a hard-killed process's local realization (L)"
+  },
+  {
+    "id": "B-DOL-57",
+    "name": "explicit_stop_returns_its_own_receipt",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "line": 133,
+        "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T32-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer; fails: the AG-UI Stop answers 204 with no cancel receipt",
+    "limitation": "Not execution evidence. Follow-up: AG-UI/AI SDK stop receipt (S)"
+  },
+  {
+    "id": "B-DOL-58",
+    "name": "t32_c01_explicit_stop_returns_an_independent_receipt",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 400,
+        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T32-C01": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer; fails: the AI SDK Stop returns 204 with no cancel receipt",
+    "limitation": "Not execution evidence. Follow-up: AG-UI/AI SDK stop receipt (S)"
+  },
+  {
+    "id": "B-DOL-59",
+    "name": "mcp_distinguishes_a_safe_retry_from_an_unknown_effect",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp.rs",
+        "line": 125,
+        "file_sha256": "3e3908520857e4538f719295b64f105cce8fc9f44bef4f9ad2879133b8e9ab41"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T33-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer; fails: tools/call maps certain and unknown tool errors to the same JSON-RPC -32603",
+    "limitation": "Not execution evidence. Follow-up: MCP fault classification on the wire (M)"
+  },
+  {
+    "id": "B-DOL-60",
+    "name": "mcp_http_chain_keeps_the_certain_and_retry_safe_tool_fault_classification",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 298,
+        "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "reproduces_product_gap",
+    "covers": {
+      "T33-C03": {
+        "oracles": [],
+        "negative_control": false
+      }
+    },
+    "review": "Ignored reproducer; fails: the MCP client sees a certain retry-safe fault as Indeterminate",
+    "limitation": "Not execution evidence. Follow-up: MCP fault classification on the wire (M)"
+  }
+]
