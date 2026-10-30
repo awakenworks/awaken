@@ -72,6 +72,35 @@ impl LeaseFence {
     }
 }
 
+/// The original subject of one completed lease, retained after live authority
+/// is cleared. This is evidence for a retry, never another lease grant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StopReceipt {
+    pub(super) owner: String,
+    pub(super) epoch: Epoch,
+}
+
+impl StopReceipt {
+    pub(super) fn matches(&self, owner: &str, epoch: Option<Epoch>, fence: LeaseFence) -> bool {
+        self.owner == owner && Some(self.epoch) == epoch && fence.admits(epoch)
+    }
+}
+
+pub(super) fn stored_stop_receipt(
+    owner: Option<String>,
+    epoch: Option<i64>,
+) -> Result<Option<StopReceipt>, WorkQueueError> {
+    match (owner, epoch) {
+        (None, None) => Ok(None),
+        (Some(owner), Some(epoch)) => Ok(Some(StopReceipt {
+            owner,
+            epoch: stored_epoch(epoch)?
+                .ok_or_else(|| Storage("stop receipt has no granted epoch".into()))?,
+        })),
+        _ => Err(Storage("incomplete stop receipt subject".into())),
+    }
+}
+
 /// The complete lease authority value changed by every Work claim, renewal,
 /// reclaim, and release.  Stores keep the transaction/lock as the linearization
 /// boundary; this pure kernel owns which tuple may be installed inside it.
@@ -300,6 +329,64 @@ mod tests {
 
     fn epoch(value: u64) -> Option<Epoch> {
         Epoch::from_persisted(value)
+    }
+
+    #[test]
+    fn stop_receipts_preserve_absence_and_reject_incomplete_or_ungranted_subjects() {
+        assert_eq!(stored_stop_receipt(None, None).unwrap(), None);
+        for (owner, generation) in [
+            (None, Some(7)),
+            (Some("owner"), None),
+            (Some("owner"), Some(0)),
+            (Some("owner"), Some(-1)),
+        ] {
+            assert!(matches!(
+                stored_stop_receipt(owner.map(str::to_owned), generation),
+                Err(Storage(_))
+            ));
+        }
+        let receipt = stored_stop_receipt(Some("owner".into()), Some(7))
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.owner, "owner");
+        assert_eq!(receipt.epoch, epoch(7).unwrap());
+        // Owner strings retain the live port's opaque identity domain. The
+        // adapter validates external credentials; this decoder invents none.
+        assert_eq!(
+            stored_stop_receipt(Some(String::new()), Some(7))
+                .unwrap()
+                .unwrap()
+                .owner,
+            ""
+        );
+    }
+
+    #[test]
+    fn stop_receipt_replay_requires_original_owner_and_current_generation() {
+        let receipt = StopReceipt {
+            owner: "owner".into(),
+            epoch: epoch(7).unwrap(),
+        };
+        for (owner, current, fence, allowed) in [
+            ("owner", epoch(7), LeaseFence::OwnerOnly, true),
+            (
+                "owner",
+                epoch(7),
+                LeaseFence::Exact(epoch(7).unwrap()),
+                true,
+            ),
+            ("foreign", epoch(7), LeaseFence::OwnerOnly, false),
+            ("owner", epoch(8), LeaseFence::OwnerOnly, false),
+            (
+                "owner",
+                epoch(7),
+                LeaseFence::Exact(epoch(8).unwrap()),
+                false,
+            ),
+            ("owner", None, LeaseFence::OwnerOnly, false),
+        ] {
+            assert_eq!(receipt.matches(owner, current, fence), allowed);
+        }
     }
 
     #[test]

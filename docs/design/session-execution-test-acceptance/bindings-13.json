@@ -236,7 +236,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 742,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "execution_witnesses": [],
@@ -250,7 +250,7 @@
       }
     },
     "review": "Enabled owner-only and exact-epoch ACK retry rows preserve the original timestamp and whole item without consulting the clock, including after expiry; wrong owner and wrong epoch remain refused. Concurrent ACK and generation-isolation rows are adjacent named regressions.",
-    "limitation": "Work-store ACK semantics only; stop replay, Run result independence and platform facets remain separately pending. This source binding is not an execution witness.",
+    "limitation": "Work-store ACK semantics only; Run result independence and platform facets remain separately pending. Stop replay is covered by the distinct B248 subset. This source binding is not an execution witness.",
     "id": "B247"
   },
   {
@@ -258,20 +258,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 1085,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "line": 1115,
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T08-C02": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a retried stop after a lost response returns 412 instead of replaying",
-    "limitation": "Not execution evidence. Follow-up: work-store stop replay (M)",
+    "review": "Enabled owner-only and exact-epoch stop retry matrix on Volatile, independent file SQLite handles and live PostgreSQL pools: retain original timestamps/subject after releasing the lease, revoke the digest, never restore authority, reject foreign identities and later generations. Adjacent named regressions cover concurrent stops, durable reopen/new pool, committed PostgreSQL reply with an actual late-reload mutant, and both published migration histories without inventing historical stop owners.",
+    "limitation": "Work-store completion receipts only. A retained exact proof is not a newly authenticated Session bearer; stopped bearers remain revoked. Managed Environment-credential retry preserves the original projection; this is not hosted-service or process-crash qualification. Original E17 failure remains retained under its original source. No full T08-C02 acceptance is inferred.",
     "id": "B248"
   },
   {
@@ -301,7 +303,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 678,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "execution_witnesses": [],

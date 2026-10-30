@@ -217,7 +217,7 @@
           "B247",
           "B248"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -233,14 +233,8 @@
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
-          ]
-        },
-        "product_gap": {
-          "reason": "丢响应后重试 stop 仍返回 412；ACK 的原确认时间、过期与代际隔离已由启用的回归覆盖，完整场景仍未验收",
-          "follow_up": "work-store 原停止回执持久化及受控重放（M）",
-          "reproducers": [
-            "retried_stop_after_lost_response_replays"
+            "T35 platform gate open (Linux not run by policy)",
+            "ACK/stop receipt regressions qualify Work-store and local Managed adapter semantics; independent Run outcome, real process-crash cuts and hosted Managed service remain unqualified."
           ]
         }
       },

@@ -29,7 +29,7 @@ use awaken_executable_environment_contract::{
 use awaken_session_types::SessionWorkLease;
 use awaken_time::WallClock;
 
-use super::mutation::LeaseFence;
+use super::mutation::{LeaseFence, StopReceipt};
 use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
 use awaken_time::WallClockExt;
 
@@ -54,6 +54,7 @@ struct InMemoryQueueAuthority {
     environment_revisions: BTreeMap<String, (EnvironmentRevision, Operation)>,
     works: BTreeMap<String, WorkItem>,
     ack_epochs: BTreeMap<String, u64>,
+    stop_receipts: BTreeMap<String, StopReceipt>,
     session_token_sha256: HashMap<String, SessionAccessDigest>,
     book: LeaseBook,
 }
@@ -90,6 +91,67 @@ impl InMemoryQueueAuthority {
 }
 
 impl InMemoryWorkQueue {
+    fn stop_work(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        fence: LeaseFence,
+    ) -> WorkMutationResult {
+        let mut authority = self.authority.lock().unwrap();
+        let InMemoryQueueAuthority {
+            works,
+            book,
+            session_token_sha256,
+            stop_receipts,
+            ..
+        } = &mut *authority;
+        let Some(work) = works
+            .get_mut(wid)
+            .filter(|work| work.environment_id == env_id)
+        else {
+            return WorkMutationResult::NotFound;
+        };
+        let snapshot = book.snapshot(wid);
+        let epoch = snapshot
+            .epoch
+            .and_then(awaken_lease_contract::fence::Epoch::from_persisted);
+        if work.state == WorkState::Stopped {
+            return if snapshot.owner.is_none()
+                && !snapshot.lease_present
+                && work.stopped_at.is_some()
+                && work.stop_requested_at.is_some()
+                && stop_receipts
+                    .get(wid)
+                    .is_some_and(|receipt| receipt.matches(worker_id, epoch, fence))
+            {
+                WorkMutationResult::accepted(work.clone())
+            } else {
+                WorkMutationResult::PreconditionFailed
+            };
+        }
+        if snapshot.owner.as_deref() != Some(worker_id) || !fence.admits(epoch) {
+            return WorkMutationResult::PreconditionFailed;
+        }
+        let Some(epoch) = epoch else {
+            return WorkMutationResult::PreconditionFailed;
+        };
+        let stamp = self.clock.observed_at();
+        work.stop_requested_at = Some(stamp.clone());
+        work.stopped_at = Some(stamp);
+        work.state = work.state.after_stop();
+        book.release(wid);
+        session_token_sha256.remove(wid);
+        stop_receipts.insert(
+            wid.to_owned(),
+            StopReceipt {
+                owner: worker_id.to_owned(),
+                epoch,
+            },
+        );
+        WorkMutationResult::accepted(work.clone())
+    }
+
     fn acknowledge(
         &self,
         env_id: &str,
@@ -238,6 +300,7 @@ impl InMemoryWorkQueue {
             .collect();
         authority.works.retain(|id, _| !ids.contains(id));
         authority.ack_epochs.retain(|id, _| !ids.contains(id));
+        authority.stop_receipts.retain(|id, _| !ids.contains(id));
         authority.book.forget_env(env_id, &ids);
         authority
             .session_token_sha256
@@ -525,30 +588,7 @@ impl WorkConsumer for InMemoryWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority {
-            works,
-            book,
-            session_token_sha256,
-            ..
-        } = &mut *authority;
-        let Some(work) = works
-            .get_mut(wid)
-            .filter(|work| work.environment_id == env_id)
-        else {
-            return Ok(WorkMutationResult::NotFound);
-        };
-        if !book.is_owned_by(wid, worker_id) {
-            return Ok(WorkMutationResult::PreconditionFailed);
-        }
-        let stopped_at = self.clock.observed_at();
-        work.stop_requested_at = Some(stopped_at.clone());
-        work.stopped_at = Some(stopped_at);
-        work.state = work.state.after_stop();
-        let out = work.clone();
-        book.release(wid);
-        session_token_sha256.remove(wid);
-        Ok(WorkMutationResult::accepted(out))
+        Ok(self.stop_work(env_id, wid, worker_id, LeaseFence::OwnerOnly))
     }
 }
 
@@ -652,34 +692,12 @@ impl SessionWorkLeaseControl for InMemoryWorkQueue {
         &self,
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
-        let InMemoryQueueAuthority {
-            works,
-            book,
-            session_token_sha256,
-            ..
-        } = &mut *authority;
-        let Some(work) = works
-            .get_mut(&access.work_id)
-            .filter(|work| work.environment_id == access.environment_id)
-        else {
-            return Ok(WorkMutationResult::NotFound);
-        };
-        if !book.is_owned_at_epoch(
+        Ok(self.stop_work(
+            &access.environment_id,
             &access.work_id,
             &access.lease_owner,
-            access.lease_epoch.get(),
-        ) {
-            return Ok(WorkMutationResult::PreconditionFailed);
-        }
-        let stopped_at = self.clock.observed_at();
-        work.stop_requested_at = Some(stopped_at.clone());
-        work.stopped_at = Some(stopped_at);
-        work.state = work.state.after_stop();
-        let out = work.clone();
-        book.release(&access.work_id);
-        session_token_sha256.remove(&access.work_id);
-        Ok(WorkMutationResult::accepted(out))
+            LeaseFence::Exact(access.lease_epoch),
+        ))
     }
 }
 

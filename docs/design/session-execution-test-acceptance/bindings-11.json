@@ -250,7 +250,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 617,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "assertion_locations": [
@@ -290,7 +290,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
+    "limitation": "Current source coordinates refreshed for stop replay. Retained E16 witnesses keep their original source/log identities; this refresh does not qualify execution of this revision or imply full scenario acceptance.",
     "id": "B211"
   },
   {
@@ -299,7 +299,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 612,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "assertion_locations": [
@@ -344,7 +344,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
+    "limitation": "Current source coordinates refreshed for stop replay. Retained E16 witnesses keep their original source/log identities; this refresh does not qualify execution of this revision or imply full scenario acceptance.",
     "id": "B212"
   },
   {
@@ -394,7 +394,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 606,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "assertion_locations": [
@@ -436,7 +436,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
+    "limitation": "Current source coordinates refreshed for stop replay. Retained E16 witnesses keep their original source/log identities; this refresh does not qualify execution of this revision or imply full scenario acceptance.",
     "id": "B214"
   },
   {
@@ -445,7 +445,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 622,
-        "file_sha256": "90b90ca4cf712b8ea7df2c4dafb74394129219d28c5c9901c980ee5eadd3831d"
+        "file_sha256": "cd5b122fe59ad763e599072dc1be4bac3a80b3b5ce2bf8fe565361063d677500"
       }
     ],
     "assertion_locations": [
@@ -491,7 +491,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": "Current assertion coordinates refreshed for the ACK change. Retained E16 witnesses keep their original source and log; they are not relabelled as execution of this revision. No full scenario acceptance is inferred.",
+    "limitation": "Current source coordinates refreshed for stop replay. Retained E16 witnesses keep their original source/log identities; this refresh does not qualify execution of this revision or imply full scenario acceptance.",
     "id": "B215"
   },
   {

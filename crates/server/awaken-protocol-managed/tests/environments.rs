@@ -631,17 +631,23 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     .await
     .expect_for(StatusCode::OK, "O4 stop");
     assert_eq!(stopped["state"], "stopped", "O4 stop");
-    let _ = call_with_worker(
+    let retried = call_with_worker(
         &app,
         "POST",
         &format!("/v1/environments/{id}/work/{wid}/stop"),
         "worker-cas",
     )
     .await
-    .expect_for(
-        StatusCode::CONFLICT,
-        "the official EnvironmentWorker treats 409 as already stopped",
-    );
+    .expect_for(StatusCode::OK, "O4 lost stop response replays");
+    assert_eq!(retried, stopped, "O4 original stop projection is retained");
+    call_with_worker(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        "worker-other",
+    )
+    .await
+    .expect_for(StatusCode::CONFLICT, "O3 foreign owner gets no receipt");
 }
 
 #[tokio::test]
@@ -734,6 +740,45 @@ async fn official_sdk_credential_owns_optional_worker_id_lease_lifecycle() {
     .expect_for(StatusCode::OK, "P1");
     assert_eq!(stopped["state"], "stopped", "P1");
 
+    // The official helper retries with its Environment credential, without a
+    // Worker header. Replaying completion must not restore the released lease.
+    let retry = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        None,
+        Some("environment-key-k"),
+        None,
+    )
+    .await
+    .expect_for(StatusCode::OK, "P1 lost stop response");
+    assert_eq!(retry, stopped, "P1 original completion projection");
+    for operation in ["ack", "heartbeat"] {
+        call_with_lease_headers(
+            &app,
+            "POST",
+            &format!("/v1/environments/{id}/work/{wid}/{operation}"),
+            None,
+            Some("environment-key-k"),
+            None,
+        )
+        .await
+        .expect_for(StatusCode::PRECONDITION_FAILED, "P1 no restored lease");
+    }
+    call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        None,
+        Some("environment-key-j"),
+        None,
+    )
+    .await
+    .expect_for(
+        StatusCode::CONFLICT,
+        "P2 foreign credential gets no receipt",
+    );
+
     // The generated raw SDK method makes Worker ID optional and authenticates
     // with X-Api-Key. That credential owns and observes the lease when no label
     // is present; it is not converted into an anonymous/unfenced mutation.
@@ -760,6 +805,27 @@ async fn official_sdk_credential_owns_optional_worker_id_lease_lifecycle() {
     .await
     .expect_for(StatusCode::OK, "P4");
     assert!(raw_ack["acknowledged_at"].is_string(), "P4");
+    let raw_stopped = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{raw_id}/work/{raw_wid}/stop"),
+        None,
+        None,
+        Some("raw-environment-key"),
+    )
+    .await
+    .expect_for(StatusCode::OK, "P4 stop");
+    let raw_retry = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{raw_id}/work/{raw_wid}/stop"),
+        None,
+        None,
+        Some("raw-environment-key"),
+    )
+    .await
+    .expect_for(StatusCode::OK, "P4 retry");
+    assert_eq!(raw_retry, raw_stopped, "P4 original completion projection");
 }
 
 #[tokio::test]

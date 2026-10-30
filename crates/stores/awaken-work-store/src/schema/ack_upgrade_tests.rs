@@ -16,7 +16,8 @@ fn before_ack(legacy: bool) -> MigrationBundle {
     };
     MigrationBundle::new(
         BUNDLE_ID,
-        bundle.migrations()[..bundle.migrations().len() - 1].to_vec(),
+        // Freeze the genuine pre-ACK history even when later migrations append.
+        bundle.migrations()[..if legacy { 7 } else { 2 }].to_vec(),
     )
     .unwrap()
 }

@@ -711,7 +711,7 @@ async fn ack_after_the_lease_lapsed_is_refused() {
         {
             let base = index as u64 * LEASE_TTL_MS * 4;
             let env = format!("ack-expiry-{index}");
-            let (work, lease) = prepare_ack(pair, &env, bound, base).await;
+            let (work, lease) = claimed_work(pair, &env, bound, base).await;
             let before = pair.a.get(&env, &work).await.unwrap().unwrap();
             pair.clock.set(base + offset);
             let reads = pair.clock.observations();
@@ -747,7 +747,7 @@ async fn retried_ack_replays_the_original_acknowledgement() {
             for (index, bound) in [false, true].into_iter().enumerate() {
                 let base = index as u64 * LEASE_TTL_MS * 4;
                 let env = format!("ack-replay-{index}");
-                let (work, lease) = prepare_ack(pair, &env, bound, base).await;
+                let (work, lease) = claimed_work(pair, &env, bound, base).await;
                 pair.clock.set(base + 100);
                 let first = acknowledge(&pair.a, &env, &work, lease.as_ref())
                     .await
@@ -784,7 +784,7 @@ async fn retried_ack_replays_the_original_acknowledgement() {
     .await;
 }
 
-async fn prepare_ack(
+async fn claimed_work(
     pair: &Pair,
     env: &str,
     bound: bool,
@@ -833,7 +833,7 @@ async fn acknowledgement_receipts_do_not_cross_lease_generations() {
             {
                 let base = index as u64 * LEASE_TTL_MS * 5;
                 let env = format!("ack-generation-{index}");
-                let (work, old_access) = prepare_ack(pair, &env, bound, base).await;
+                let (work, old_access) = claimed_work(pair, &env, bound, base).await;
                 pair.clock.set(base + 100);
                 let original = acknowledge(&pair.a, &env, &work, old_access.as_ref())
                     .await
@@ -899,7 +899,7 @@ async fn concurrent_acknowledgements_share_one_original_receipt() {
         "concurrent ACK changed the original receipt",
         async |pair: &Pair| {
             let env = "concurrent-ack";
-            let (work, lease) = prepare_ack(pair, env, true, 0).await;
+            let (work, lease) = claimed_work(pair, env, true, 0).await;
             let lease = lease.unwrap();
             pair.clock.set(100);
             let reads = pair.clock.observations();
@@ -936,7 +936,7 @@ async fn concurrent_acknowledgements_share_one_original_receipt() {
 async fn sqlite_ack_checks_expiry_after_waiting_for_its_write_transaction() {
     use sqlx::Connection as _;
     let pair = Pair::sqlite_file().await;
-    let (work, lease) = prepare_ack(&pair, "ack-write-wait", true, 0).await;
+    let (work, lease) = claimed_work(&pair, "ack-write-wait", true, 0).await;
     let before = pair.a.get("ack-write-wait", &work).await.unwrap();
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(pair._dir.as_ref().unwrap().path().join("work.db"));
@@ -986,21 +986,39 @@ async fn postgres_ack_reply_belongs_to_its_committed_lease_snapshot() {
     // must describe the acknowledged lease, including its original start.
     // A deliberately late reload is executed as the counterfactual: without
     // this control a harness that missed the interleaving could pass vacuously.
-    assert!(postgres_ack_snapshot_matches(&url, false).await);
+    assert!(postgres_mutation_snapshot_matches(&url, SnapshotMutation::Acknowledge, false).await);
     assert!(
-        !postgres_ack_snapshot_matches(&url, true).await,
+        !postgres_mutation_snapshot_matches(&url, SnapshotMutation::Acknowledge, true).await,
         "late-reload mutant must be detected"
     );
 }
 
-async fn postgres_ack_snapshot_matches(url: &str, late_reload: bool) -> bool {
+#[derive(Clone, Copy)]
+enum SnapshotMutation {
+    Acknowledge,
+    Stop,
+}
+
+async fn postgres_mutation_snapshot_matches(
+    url: &str,
+    mutation: SnapshotMutation,
+    late_reload: bool,
+) -> bool {
     let pair = Pair::postgres_with_limit(url, 1).await;
-    let env = "ack-response-snapshot";
-    let (work, lease) = prepare_ack(&pair, env, true, 0).await;
+    let env = "mutation-response-snapshot";
+    let (work, lease) = claimed_work(&pair, env, true, 0).await;
     let lease = lease.unwrap();
     let mut expected = pair.a.get(env, &work).await.unwrap().unwrap();
     assert_eq!(expected.state, WorkState::Active, "valid claimed fixture");
-    expected.acknowledged_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(100));
+    let stamp = awaken_time::utc::epoch_millis_to_rfc3339(100);
+    match mutation {
+        SnapshotMutation::Acknowledge => expected.acknowledged_at = Some(stamp),
+        SnapshotMutation::Stop => {
+            expected.state = WorkState::Stopped;
+            expected.stop_requested_at = Some(stamp.clone());
+            expected.stopped_at = Some(stamp);
+        }
+    }
     pair.clock.set(100);
     let fixture = pair.postgres.as_ref().unwrap();
     let original_pool = fixture.pool.clone();
@@ -1023,12 +1041,13 @@ async fn postgres_ack_snapshot_matches(url: &str, late_reload: bool) -> bool {
         let queue = pair.a.clone();
         let work = work.clone();
         async move {
-            let reply = queue
-                .ack_with_session_access(&lease)
-                .await
-                .unwrap()
-                .into_item()
-                .unwrap();
+            let reply = match mutation {
+                SnapshotMutation::Acknowledge => queue.ack_with_session_access(&lease).await,
+                SnapshotMutation::Stop => queue.stop_with_session_access(&lease).await,
+            }
+            .unwrap()
+            .into_item()
+            .unwrap();
             if late_reload {
                 queue.get(env, &work).await.unwrap().unwrap()
             } else {
@@ -1059,6 +1078,15 @@ async fn postgres_ack_snapshot_matches(url: &str, late_reload: bool) -> bool {
         .unwrap()
         .unwrap();
     pair.clock.set(LEASE_TTL_MS + 1);
+    if matches!(mutation, SnapshotMutation::Stop) {
+        assert_eq!(
+            pair.b
+                .wake_session(env, &SessionId::from(env))
+                .await
+                .unwrap(),
+            work
+        );
+    }
     let replacement = pair
         .b
         .claim(env, "replacement", LEASE_TTL_MS + 1)
@@ -1080,28 +1108,10 @@ async fn postgres_ack_snapshot_matches(url: &str, late_reload: bool) -> bool {
     same_item(&reply, &expected)
 }
 
+#[path = "lease_acceptance/stop_replay.rs"]
+mod stop_replay;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: a retried stop after a lost response returns PreconditionFailed (412) instead of replaying the stop"]
 async fn retried_stop_after_lost_response_replays() {
-    gap_backends("retried stop was refused", async |pair: &Pair| {
-        let hc = pair.a.enqueue_healthcheck("stop-replay").await.unwrap();
-        pair.a
-            .claim("stop-replay", "worker", 0)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            pair.a
-                .stop("stop-replay", &hc, "worker")
-                .await
-                .unwrap()
-                .is_accepted()
-        );
-        pair.b
-            .stop("stop-replay", &hc, "worker")
-            .await
-            .unwrap()
-            .is_accepted()
-    })
-    .await;
+    stop_replay::retry_matrix().await;
 }

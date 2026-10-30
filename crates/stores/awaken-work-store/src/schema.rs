@@ -58,6 +58,7 @@ pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
             )?,
             observation_column(2)?,
             acknowledgement_column(3)?,
+            stop_receipt_columns(4)?,
         ],
     )
 }
@@ -93,6 +94,17 @@ fn acknowledgement_column(version: i64) -> Result<Migration, MigrationError> {
         "bind acknowledgement receipts to their granted lease generation",
         "ALTER TABLE {prefix}_item ADD COLUMN ack_lease_epoch BIGINT \
          CHECK (ack_lease_epoch IS NULL OR ack_lease_epoch > 0)",
+    )
+}
+
+fn stop_receipt_columns(version: i64) -> Result<Migration, MigrationError> {
+    Migration::new(
+        version,
+        "retain the original stopped lease subject after releasing authority",
+        "ALTER TABLE {prefix}_item ADD COLUMN stop_lease_owner TEXT; \
+         ALTER TABLE {prefix}_item ADD COLUMN stop_lease_epoch BIGINT \
+         CHECK ((stop_lease_owner IS NULL AND stop_lease_epoch IS NULL) OR \
+                (stop_lease_owner IS NOT NULL AND stop_lease_epoch IS NOT NULL AND stop_lease_epoch > 0))",
     )
 }
 
@@ -172,6 +184,7 @@ fn legacy_work_bundle() -> Result<MigrationBundle, MigrationError> {
     )?);
     migrations.push(observation_column(7)?);
     migrations.push(acknowledgement_column(8)?);
+    migrations.push(stop_receipt_columns(9)?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -562,7 +575,7 @@ mod tests {
         );
         let (stream, legacy) = selected_work_bundle(Some(LEGACY_V1_CHECKSUM)).expect("H3");
         assert_eq!(stream, PublishedWorkStream::Legacy, "H3");
-        assert_eq!(legacy.migrations().last().unwrap().version(), 8, "E2");
+        assert_eq!(legacy.migrations().last().unwrap().version(), 9, "E2");
         assert_eq!(
             legacy.migrations()[0].checksum_for(Dialect::Sqlite),
             LEGACY_V1_CHECKSUM,
@@ -863,3 +876,7 @@ mod identity_upgrade_tests;
 #[cfg(all(test, not(feature = "loom")))]
 #[path = "schema/ack_upgrade_tests.rs"]
 mod ack_upgrade_tests;
+
+#[cfg(all(test, not(feature = "loom")))]
+#[path = "schema/stop_upgrade_tests.rs"]
+mod stop_upgrade_tests;
