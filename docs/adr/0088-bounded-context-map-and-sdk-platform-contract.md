@@ -1013,3 +1013,39 @@ Compile contracts and original tests remain with their owners. Public API
 snapshots, isolated consumer builds and current-source native qualification must
 cover the defining contracts and their consumers before qualified delivery;
 source navigation or a dependency metadata pass does not establish that result.
+
+## Amendment 2026-10-31: the Session carries the one Sandbox provider as role handles
+
+This completes the provider convergence the 2026-10-24 amendment deferred.
+Environment supply keeps one abstraction, `SandboxProvider`; the Session no
+longer names a provider of its own. `SessionEnvironmentProvider` becomes
+`SandboxProviderRoles`: the deployment-selected Sandbox provider held as one
+handle per consuming role, every handle over the same adapter instance. Two of
+its five handles are provisioning roles: `SandboxReadiness` (now its own
+handle; `EnvironmentRealizer` no longer extends it, so code that only reads
+capabilities, formats or liveness is not handed realization) and
+`SandboxInstallation`. The other three remain Session roles because each adds
+Session meaning that `SandboxProvider` must not learn: `EnvironmentRealizer`
+(host identity, effective-spec projection, Hand-bound creation),
+`EnvironmentAdoption` (retained-instance observation and rebind, adoption
+layout with historical owned paths) and `EnvironmentTerminalRealization`
+(terminal reconstruction, terminal data readability, restore verified to a
+handle). The record carries handles only: its unfenced `create`/`adopt`
+shortcuts become `EnvironmentRealizer::create_unattached` and
+`EnvironmentAdoption::adopt_unattached`, named like `Sandbox::dispose_unattached`.
+`SandboxEnvironmentProvider::into_session_provider` becomes
+`into_provider_roles`. Retired spellings are pinned by `compile_fail` doctests.
+
+Rejected: implementing `SandboxProvider<Environment = …>` on the Session
+adapter (a `SessionEnvironment` is a record of Session roles, not a live
+`Sandbox`, and the filesystem tiers rely on concrete Local/Namespace types);
+moving `prewarm_images`, `validate_closed_observation` or restore-target
+disposal into new associated-type-free provisioning roles (that changes every
+`SandboxProvider` implementation, including awaken-cloud's, for operations the
+Session roles already name identically); replacing `EnvironmentRealizationKind`
+with `SandboxRealizationIntent` (a Workdir creation may carry its aggregate
+source binding without being a Rebuild, so the pair is not isomorphic; that is
+a decision change for its own slice); one `Arc<dyn …>` over every role (a fat
+interface). Provisioning-contract does not depend on any Session crate; wire
+shapes, persisted bytes, effect fencing and physical ownership are unchanged.
+awaken-cloud imports none of the renamed paths.
