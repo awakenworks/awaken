@@ -163,7 +163,7 @@ WHERE data->'created_at' IS NULL;";
 
 /// Build the credential-schema migration bundle (prefix `credential`).
 pub fn credential_bundle() -> Result<MigrationBundle, MigrationError> {
-    credential_bundle_through(SPECS.len() + 2)
+    credential_bundle_through(SPECS.len() + 3)
 }
 
 /// The bundle as published through `count` migrations. Tests use a prefix to
@@ -193,6 +193,14 @@ fn credential_bundle_through(count: usize) -> Result<MigrationBundle, MigrationE
              CREATE INDEX {prefix}_rollout_ack_source ON {prefix}_managed_credential_rollout \
              ((CASE WHEN json_valid(data) THEN json_extract(data,'$.workspace_id') END), \
               (CASE WHEN json_valid(data) THEN json_extract(data,'$.source_id') END)) WHERE delivered=TRUE;",
+        )?);
+    }
+    if count > SPECS.len() + 2 {
+        migrations.push(Migration::new(
+            11,
+            "material references: retain absorbing close markers against delayed puts",
+            "ALTER TABLE {prefix}_secret ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 \
+             CHECK (closed IN (0, 1))",
         )?);
     }
     MigrationBundle::new(BUNDLE_ID, migrations)

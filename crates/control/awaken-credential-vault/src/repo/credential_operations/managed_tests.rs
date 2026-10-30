@@ -43,9 +43,10 @@ struct PoisonGetStore {
 }
 
 struct AmbiguousManagedPutStore {
+    hold_before_put: bool,
     inner: InMemorySecretStore,
-    put_landed: tokio::sync::Barrier,
-    release_response: tokio::sync::Barrier,
+    put_boundary: tokio::sync::Barrier,
+    release_put: tokio::sync::Barrier,
 }
 
 struct FailedPutAndCleanupStore {
@@ -88,9 +89,17 @@ impl SecretStore for AmbiguousManagedPutStore {
         r: &crate::SecretRef,
         secret: RedactedString,
     ) -> Result<(), CredentialError> {
-        self.inner.put(r, secret).await?;
-        self.put_landed.wait().await;
-        self.release_response.wait().await;
+        let delayed = if self.hold_before_put {
+            Some(secret)
+        } else {
+            self.inner.put(r, secret).await?;
+            None
+        };
+        self.put_boundary.wait().await;
+        self.release_put.wait().await;
+        if let Some(secret) = delayed {
+            self.inner.put(r, secret).await?;
+        }
         Err(CredentialError::Storage(
             "injected lost Managed put response".into(),
         ))
@@ -1049,71 +1058,84 @@ async fn legacy_writing_json_without_attempt_or_writer_fields_is_claimed_and_abo
 
 #[tokio::test]
 async fn expired_writing_owner_is_aborted_and_cannot_publish() {
-    let repo = Arc::new(InMemoryCredentialRepo::new());
-    let secrets = Arc::new(AmbiguousManagedPutStore {
-        inner: InMemorySecretStore::new(),
-        put_landed: tokio::sync::Barrier::new(2),
-        release_response: tokio::sync::Barrier::new(2),
-    });
-    repo.insert_vault("ws", managed_vault()).await.unwrap();
-    let command = managed_command("https://mcp.example.com");
-    let (source, secret) =
-        prepare_source_with_id(command.source_id.clone().unwrap(), command.source);
-    let original_reference = source.material_ref.clone().unwrap();
-    let child = ManagedVaultCredential {
-        id: command.credential_id,
-        vault_id: command.vault_id,
-        workspace_id: source.workspace_id.clone(),
-        source_id: source.id.clone(),
-        auth: command.auth,
-        metadata: command.metadata,
-        display_name: command.display_name,
-        created_at: "2026-09-17T00:00:00Z".into(),
-        updated_at: "2026-09-17T00:00:00Z".into(),
-        revision: 1,
-        lifecycle: ManagedCredentialLifecycle::Active,
-    };
-    let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
-    let recovery_now = pending.material_fence.writer_lease_expires_at_unix_ms + 1;
+    // DT-W: C1 put has landed / has not reached material storage; C2 writer
+    // lease expires; C3 recovery closes and completes the original WAL before
+    // releasing the writer. W1 C1 landed => remove material; W2 C1 delayed =>
+    // reject its late put. Both => no Source/child publication, no pending WAL
+    // and no material. Merely observing absence would fail W2.
+    for hold_before_put in [false, true] {
+        let repo = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(AmbiguousManagedPutStore {
+            hold_before_put,
+            inner: InMemorySecretStore::new(),
+            put_boundary: tokio::sync::Barrier::new(2),
+            release_put: tokio::sync::Barrier::new(2),
+        });
+        repo.insert_vault("ws", managed_vault()).await.unwrap();
+        let command = managed_command("https://mcp.example.com");
+        let (source, secret) =
+            prepare_source_with_id(command.source_id.clone().unwrap(), command.source);
+        let original_reference = source.material_ref.clone().unwrap();
+        let child = ManagedVaultCredential {
+            id: command.credential_id,
+            vault_id: command.vault_id,
+            workspace_id: source.workspace_id.clone(),
+            source_id: source.id.clone(),
+            auth: command.auth,
+            metadata: command.metadata,
+            display_name: command.display_name,
+            created_at: "2026-09-17T00:00:00Z".into(),
+            updated_at: "2026-09-17T00:00:00Z".into(),
+            revision: 1,
+            lifecycle: ManagedCredentialLifecycle::Active,
+        };
+        let pending = PendingManagedCredentialMutation::create(source, child, 1_000).unwrap();
+        let recovery_now = pending.material_fence.writer_lease_expires_at_unix_ms + 1;
 
-    let writer_repo = Arc::clone(&repo);
-    let writer_secrets = Arc::clone(&secrets);
-    let writer_clock = awaken_lease_testkit::ManualClock::new(1_000);
-    let writer = tokio::spawn(async move {
-        execute_managed_mutation(
-            pending,
-            vec![(original_reference, secret.unwrap())],
-            writer_secrets.as_ref(),
-            writer_repo.as_ref(),
-            &writer_clock,
-        )
-        .await
-    });
-    secrets.put_landed.wait().await;
-
-    assert_eq!(
-        recover_managed_credential_mutations_at(secrets.as_ref(), repo.as_ref(), recovery_now)
+        let writer_repo = Arc::clone(&repo);
+        let writer_secrets = Arc::clone(&secrets);
+        let writer_clock = awaken_lease_testkit::ManualClock::new(1_000);
+        let writer = tokio::spawn(async move {
+            execute_managed_mutation(
+                pending,
+                vec![(original_reference, secret.unwrap())],
+                writer_secrets.as_ref(),
+                writer_repo.as_ref(),
+                &writer_clock,
+            )
             .await
-            .unwrap(),
-        1
-    );
-    secrets.release_response.wait().await;
-    let stale_error = writer.await.unwrap().unwrap_err();
-    assert!(
-        matches!(
-                stale_error,
-                ManagedCredentialMutationError::Compensation { ref primary, ref cleanup }
-                if primary.contains("lost Managed put response")
-                    && cleanup.contains("no durable pending fact")
-        ),
-        "a fenced stale writer reports both the ambiguous write and rejected cleanup: {stale_error}"
-    );
-    assert!(matches!(
-        repo.get(&CredentialSourceId("source-1".into())).await,
-        Err(CredentialError::SourceNotFound(_))
-    ));
-    assert!(secrets.inner.inventory().await.unwrap().is_empty());
-    assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+        });
+        secrets.put_boundary.wait().await;
+
+        assert_eq!(
+            recover_managed_credential_mutations_at(secrets.as_ref(), repo.as_ref(), recovery_now)
+                .await
+                .unwrap(),
+            1
+        );
+        secrets.release_put.wait().await;
+        let stale_error = writer.await.unwrap().unwrap_err();
+        let primary_cause = if hold_before_put {
+            "material reference is closed"
+        } else {
+            "lost Managed put response"
+        };
+        assert!(
+            matches!(
+                    stale_error,
+                    ManagedCredentialMutationError::Compensation { ref primary, ref cleanup }
+                    if primary.contains(primary_cause)
+                        && cleanup.contains("no durable pending fact")
+            ),
+            "a fenced stale writer reports both the ambiguous write and rejected cleanup: {stale_error}"
+        );
+        assert!(matches!(
+            repo.get(&CredentialSourceId("source-1".into())).await,
+            Err(CredentialError::SourceNotFound(_))
+        ));
+        assert!(secrets.inner.inventory().await.unwrap().is_empty());
+        assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+    }
 }
 
 #[tokio::test]

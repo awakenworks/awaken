@@ -802,7 +802,10 @@ pub struct CredentialCreateParams {
 pub trait SecretStore: Send + Sync {
     async fn put(&self, r: &SecretRef, secret: RedactedString) -> Result<(), CredentialError>;
     async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError>;
-    /// Idempotently remove material. Credential creation uses this as its
+    /// Idempotently close this reference and remove material. Every subsequent
+    /// put to the same reference must fail, including when close precedes the
+    /// first put. Close and put arbitrate atomically in the material backend.
+    /// Credential creation uses this as its
     /// compensation edge when the secret write succeeds but the secret-free row
     /// cannot be committed.
     /// Cleanup subsequently confirms absence with `get`: only
@@ -888,6 +891,8 @@ impl From<awaken_sync::LockPoisoned> for CredentialError {
 pub trait SealedBlobStore: Send + Sync {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError>;
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError>;
+    /// Atomically remove the blob and permanently close this exact key to puts.
+    /// An absent key still receives a retained, material-free close marker.
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError>;
     async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
         Err(CredentialError::Storage(
@@ -900,7 +905,7 @@ pub trait SealedBlobStore: Send + Sync {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySealedBlobStore {
-    blobs: LeafLock<HashMap<String, Vec<u8>>>,
+    blobs: LeafLock<HashMap<String, Option<Vec<u8>>>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -915,7 +920,13 @@ impl InMemorySealedBlobStore {
 #[async_trait::async_trait]
 impl SealedBlobStore for InMemorySealedBlobStore {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
-        self.blobs.lock().insert(r.0.clone(), blob);
+        let mut blobs = self.blobs.lock();
+        if blobs.get(&r.0).is_some_and(Option::is_none) {
+            return Err(CredentialError::MutationConflict(
+                "material reference is closed".into(),
+            ));
+        }
+        blobs.insert(r.0.clone(), Some(blob));
         Ok(())
     }
 
@@ -923,17 +934,23 @@ impl SealedBlobStore for InMemorySealedBlobStore {
         self.blobs
             .lock()
             .get(&r.0)
-            .cloned()
+            .and_then(Clone::clone)
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
     }
 
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
-        self.blobs.lock().remove(&r.0);
+        self.blobs.lock().insert(r.0.clone(), None);
         Ok(())
     }
 
     async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        Ok(self.blobs.lock().keys().cloned().map(SecretRef).collect())
+        Ok(self
+            .blobs
+            .lock()
+            .iter()
+            .filter_map(|(key, value)| value.as_ref().map(|_| key.clone()))
+            .map(SecretRef)
+            .collect())
     }
 }
 
@@ -941,7 +958,7 @@ impl SealedBlobStore for InMemorySealedBlobStore {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySecretStore {
-    map: LeafLock<HashMap<String, String>>,
+    blobs: InMemorySealedBlobStore,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -956,27 +973,23 @@ impl InMemorySecretStore {
 #[async_trait::async_trait]
 impl SecretStore for InMemorySecretStore {
     async fn put(&self, r: &SecretRef, secret: RedactedString) -> Result<(), CredentialError> {
-        self.map
-            .lock()
-            .insert(r.0.clone(), secret.expose_secret().to_string());
-        Ok(())
+        self.blobs
+            .put_blob(r, secret.expose_secret().as_bytes().to_vec())
+            .await
     }
 
     async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError> {
-        self.map
-            .lock()
-            .get(&r.0)
-            .map(|v| RedactedString::new(v.clone()))
-            .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
+        String::from_utf8(self.blobs.get_blob(r).await?)
+            .map(RedactedString::new)
+            .map_err(|_| CredentialError::Storage("in-memory material is not UTF-8".into()))
     }
 
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
-        self.map.lock().remove(&r.0);
-        Ok(())
+        self.blobs.delete_blob(r).await
     }
 
     async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        Ok(self.map.lock().keys().cloned().map(SecretRef).collect())
+        self.blobs.inventory_blobs().await
     }
 }
 

@@ -976,22 +976,29 @@ impl SqliteSealedBlobStore {
 impl SealedBlobStore for SqliteSealedBlobStore {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
         let p = NS;
-        sqlx::query(&format!(
+        let affected = sqlx::query(&format!(
             "INSERT INTO {p}_secret (secret_ref, sealed) VALUES (?1, ?2) \
-             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed"
+             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed \
+             WHERE {p}_secret.closed = 0"
         ))
         .bind(&r.0)
         .bind(blob)
         .execute(&self.pool)
         .await
-        .map_err(storage)?;
+        .map_err(storage)?
+        .rows_affected();
+        if affected == 0 {
+            return Err(CredentialError::MutationConflict(
+                "material reference is closed".into(),
+            ));
+        }
         Ok(())
     }
 
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError> {
         let p = NS;
         let blob: Option<Vec<u8>> = sqlx::query_scalar(&format!(
-            "SELECT sealed FROM {p}_secret WHERE secret_ref = ?1"
+            "SELECT sealed FROM {p}_secret WHERE secret_ref = ?1 AND closed = 0"
         ))
         .bind(&r.0)
         .fetch_optional(&self.pool)
@@ -1002,18 +1009,22 @@ impl SealedBlobStore for SqliteSealedBlobStore {
 
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
         let p = NS;
-        sqlx::query(&format!("DELETE FROM {p}_secret WHERE secret_ref = ?1"))
-            .bind(&r.0)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_secret (secret_ref, sealed, closed) VALUES (?1, ?2, 1) \
+             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed, closed = 1"
+        ))
+        .bind(&r.0)
+        .bind(Vec::<u8>::new())
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
         Ok(())
     }
 
     async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
         let p = NS;
         let rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT secret_ref FROM {p}_secret ORDER BY secret_ref"
+            "SELECT secret_ref FROM {p}_secret WHERE closed = 0 ORDER BY secret_ref"
         ))
         .fetch_all(&self.pool)
         .await

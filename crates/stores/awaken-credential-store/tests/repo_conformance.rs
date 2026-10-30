@@ -28,6 +28,8 @@ fn epoch(value: u64) -> Option<awaken_lease_contract::fence::Epoch> {
 
 #[path = "support/cleanup.rs"]
 mod cleanup;
+#[path = "repo_conformance/material_closure.rs"]
+mod material_closure;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1693,23 +1695,25 @@ mod postgres {
             .await
             .expect("create schema");
         admin.close().await;
-        Some(
-            PgPoolOptions::new()
-                .max_connections(4)
-                .after_connect(move |conn, _meta| {
-                    let schema = schema.clone();
-                    Box::pin(async move {
-                        conn.execute(format!("SET search_path = {schema}").as_str())
-                            .await?;
-                        conn.execute(format!("SET application_name = '{schema}'").as_str())
-                            .await?;
-                        Ok(())
-                    })
+        Some(schema_connections(&url, schema).await)
+    }
+
+    async fn schema_connections(url: &str, schema: String) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(4)
+            .after_connect(move |conn, _meta| {
+                let schema = schema.clone();
+                Box::pin(async move {
+                    conn.execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    conn.execute(format!("SET application_name = '{schema}'").as_str())
+                        .await?;
+                    Ok(())
                 })
-                .connect(&url)
-                .await
-                .expect("PostgreSQL scenario fixture must initialize after admin connection"),
-        )
+            })
+            .connect(url)
+            .await
+            .expect("PostgreSQL scenario fixture must initialize after admin connection")
     }
 
     async fn repo(schema: &'static str) -> Option<PostgresCredentialRepo> {
@@ -1718,6 +1722,45 @@ mod postgres {
             .await
             .expect("store");
         Some(repo)
+    }
+
+    #[cfg(feature = "sealed-aead")]
+    #[tokio::test]
+    async fn postgres_material_close_survives_new_connections_without_ciphertext() {
+        use awaken_credential_store::{PostgresSealedBlobStore, SealedAeadSecretStore};
+        let Some(pool) = schema_pool("t_material_close").await else {
+            return;
+        };
+        let schema: String = sqlx::query_scalar("SELECT current_schema()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        {
+            let blobs = std::sync::Arc::new(
+                PostgresSealedBlobStore::with_pool(pool.clone())
+                    .await
+                    .unwrap(),
+            );
+            let store = SealedAeadSecretStore::over(&[7; 32], blobs);
+            material_closure::closure_table(&store).await;
+        }
+        pool.close().await;
+        let url = awaken_reliability_testkit::postgres_fixture_url().unwrap();
+        let reopened = schema_connections(&url, schema).await;
+        let blobs = std::sync::Arc::new(
+            PostgresSealedBlobStore::with_pool(reopened.clone())
+                .await
+                .unwrap(),
+        );
+        let store = SealedAeadSecretStore::over(&[7; 32], blobs);
+        material_closure::closed_after_reopen(&store).await;
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT sealed FROM credential_secret WHERE closed=1")
+                .fetch_all(&reopened)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(Vec::is_empty), "D6 no ciphertext retained");
     }
 
     #[test]

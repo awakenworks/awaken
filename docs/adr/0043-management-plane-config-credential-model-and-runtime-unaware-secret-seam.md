@@ -584,3 +584,16 @@ coordinates remain local selectors and are never passed off as Cloud route ids.
   [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md).
 - `awaken-coordinator-local` (the "one service" assembly) is now `awaken-coordinator`.
 - Status corrected from Proposed to Accepted on 2026-10-09; see the Implemented line.
+
+## Amendment 2026-10-30: material retirement closes the original reference
+
+Credential material retirement strengthens the existing material-store delete
+operation to an absorbing close. The same backend key arbitrates put and close;
+close clears material and retains a secret-free marker even for an absent key.
+A delayed put cannot recreate material after the Vault's WAL cleanup completes.
+The existing Vault WAL, publication fence and cleanup executor retain ownership.
+There is no new lifecycle store or cleanup service. SQLite and PostgreSQL append
+the marker to the existing Credential migration stream. Closed markers remain
+retained, and mixed old/new material writers cannot claim closure. Detailed
+semantics live in the existing
+[credential model](../design/credentials-and-vaults.md#material-reference-closure).
