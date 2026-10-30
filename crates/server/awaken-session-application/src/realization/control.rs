@@ -1087,7 +1087,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                 if worker.state != awaken_worker_contract::WorkerState::Ready {
                     return Ok(None);
                 }
-                let scan = {
+                let cursor_state = {
                     let mut cursors = self.session_preparation_cursors.lock().await;
                     let key = target.runtime_incarnation.clone();
                     if cursors.len() >= 4096 && !cursors.contains_key(&key) {
@@ -1097,32 +1097,36 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                             cursors.remove(&evicted_key);
                         }
                     }
-                    let cursor_state = Arc::clone(
+                    Arc::clone(
                         cursors
                             .entry(key)
                             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))),
-                    );
-                    drop(cursors);
-                    let mut cursor = cursor_state.lock().await;
-                    let scan = self
-                        .mutations
-                        .repository()
-                        .preparation_candidates(cursor.as_ref())
-                        .await
-                        .map_err(repository_control)?;
-                    if let (Some(previous), Some(next)) =
-                        (cursor.as_ref(), scan.next_cursor.as_ref())
-                        && next.session_id() == previous.session_id()
-                    {
-                        return Err(SessionRealizationControlFailure::Unavailable(
-                            "Session preparation cursor did not advance".into(),
-                        ));
-                    }
-                    *cursor = scan.next_cursor.clone();
-                    scan
+                    )
                 };
+                // Serialize this incarnation's disposable position through
+                // selection. Advance only past examined roots, not the whole
+                // fetched page: an unfinished head must not starve its peers.
+                let mut cursor = cursor_state.lock().await;
+                let scan = self
+                    .mutations
+                    .repository()
+                    .preparation_candidates(cursor.as_ref())
+                    .await
+                    .map_err(repository_control)?;
+                if let (Some(previous), Some(next)) = (cursor.as_ref(), scan.next_cursor.as_ref())
+                    && next.session_id() == previous.session_id()
+                {
+                    return Err(SessionRealizationControlFailure::Unavailable(
+                        "Session preparation cursor did not advance".into(),
+                    ));
+                }
                 for scoped in scan.sessions {
                     let session_id = scoped.session.session_id;
+                    *cursor = Some(
+                        awaken_session_state_contract::SessionScanCursor::after_session_id(
+                            session_id.as_str(),
+                        ),
+                    );
                     // The scan is a wake hint only. Eligibility and the
                     // directive are both re-derived from the current root.
                     let current = match self.mutations.repository().get(&session_id).await {
@@ -1187,6 +1191,10 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                         },
                     ));
                 }
+                // Every returned row was examined. Retain the repository's
+                // continuation (including an empty filtered page), or wrap at
+                // the proven end of this index snapshot on the next poll.
+                *cursor = scan.next_cursor;
                 Ok(None)
             })
             .await

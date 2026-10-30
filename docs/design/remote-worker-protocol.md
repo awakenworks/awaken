@@ -135,6 +135,14 @@ use this lane for an Idle MCP update only after a realization owner exists;
 its initial WorkQueue placement remains unchanged. The shared driver retains
 physical Environment admission and receipt verification.
 
+The per-incarnation preparation cursor advances past each examined root. A
+returned assignment retains that position rather than skipping the rest of its
+page or wrapping a short final page immediately. Retryable preparation remains
+root-owned work and is revisited after the other candidates; a failing first
+Session therefore cannot starve later MCP credential adoption. Concurrent
+polls share the same cursor lock while current-root and Worker checks still
+fence every assignment.
+
 Credential rollout remains pending until the desired source revision is Active
 and publication-acknowledged, or a revoked source is absent from both desired
 configuration and every live generation. The existing source-reference index

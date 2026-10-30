@@ -497,6 +497,127 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
 }
 
 #[tokio::test]
+async fn preparation_claim_does_not_starve_unvisited_candidates_after_a_retryable_head() {
+    // Causes: C1 the first assigned root stays incomplete/retryable; C2 a
+    // short final page or a full page has other compatible candidates; C3 the
+    // same Worker polls again. Effects: E1 the next unvisited root is claimed,
+    // E2 the unfinished head remains available on wrap, E3 no model Run.
+    // R1 C1+C2(short)+C3 -> E1, not the same poison head; R2 C2(full) -> E1,
+    // not the next PAGE's head; R3 end-of-index -> one empty poll then E2.
+    // R4 two concurrent polls by this incarnation -> distinct first/second
+    // roots under the same cursor lock and each root's ordinary CAS.
+    // All rules use the real SQLite candidate index and root-CAS admission.
+    // An assignment is deliberately not completed, matching a physical
+    // preparation that cannot resolve an old credential after rotation.
+    for (count, concurrent) in [(2, false), (300, false), (2, true)] {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        for index in 0..count {
+            create(
+                repo.as_ref(),
+                externally_placed(&format!("candidate-{index:03}"), "preparing", true),
+            )
+            .await;
+        }
+        let page = repo.preparation_candidates(None).await.unwrap();
+        assert_eq!(
+            page.next_cursor.is_some(),
+            count > 2,
+            "R1/R2 page precondition"
+        );
+        let application = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            reassign_existing_lease: false,
+        };
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        observations.replace(vec![terminal_cleanup_worker(
+            &target,
+            terminal_cleanup_manifest(),
+        )]);
+        application
+            .execution_admission()
+            .set_worker_observation_source(observations)
+            .unwrap();
+        application
+            .execution_admission()
+            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
+            .unwrap();
+        if concurrent {
+            let (left, right) = tokio::join!(
+                application
+                    .realizations
+                    .claim_next_session_preparation(target.clone()),
+                application
+                    .realizations
+                    .claim_next_session_preparation(target.clone()),
+            );
+            let ids: std::collections::BTreeSet<_> = [left, right]
+                .into_iter()
+                .map(|result| {
+                    result
+                        .unwrap()
+                        .expect("R4 assigned root")
+                        .session_id
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(
+                ids,
+                ["candidate-000".to_owned(), "candidate-001".to_owned()].into(),
+                "R4"
+            );
+        } else {
+            for index in 0..count.min(3) {
+                let assignment = application
+                    .realizations
+                    .claim_next_session_preparation(target.clone())
+                    .await
+                    .unwrap()
+                    .expect("R1/R2 another eligible root");
+                assert_eq!(
+                    assignment.session_id.as_str(),
+                    format!("candidate-{index:03}"),
+                    "R1/R2"
+                );
+            }
+        }
+        let head = repo.get(&SessionId::from("candidate-000")).await.unwrap();
+        assert!(
+            head.is_run_free_preparation_candidate(),
+            "C1 remains retryable"
+        );
+        assert!(!head.has_active_activities(), "E3 no model activity");
+        if count == 2 {
+            assert!(
+                application
+                    .realizations
+                    .claim_next_session_preparation(target.clone())
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "R3 bounded end poll"
+            );
+            let wrapped = application
+                .realizations
+                .claim_next_session_preparation(target)
+                .await
+                .unwrap()
+                .expect("R3 retry retained head");
+            assert_eq!(wrapped.session_id.as_str(), "candidate-000", "R3");
+        }
+    }
+}
+
+#[tokio::test]
 async fn run_free_request_is_one_idempotent_session_root_transition() {
     // Causes: C1 external non-self-hosted placement, C2 initial realization
     // still pending, C3 request already retained, C4 local/self-hosted scope,
