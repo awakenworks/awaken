@@ -299,14 +299,19 @@ impl PhaseHook for UrlSourceRecorder {
     fn point(&self) -> PhaseHookPoint {
         PhaseHookPoint::AfterTool
     }
-    async fn on_phase(&self, ctx: &PhaseContext, _: &[Message], state: &Store) -> HookReaction {
+    async fn on_phase(
+        &self,
+        ctx: &PhaseContext,
+        _: &[Message],
+        state: &Store,
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         let mut visible = VisibleUrls::load(state).unwrap_or_default();
         if let (Some(catalogue), awaken_runtime_contract::plugin::PhaseKind::AfterTool(outcome)) =
             (&self.0, &ctx.kind)
         {
             visible.record_outcome(&ctx.run_id, catalogue, &outcome.call, &outcome.output);
         }
-        visible.reaction()
+        Ok(visible.reaction())
     }
 }
 
@@ -318,8 +323,13 @@ impl PhaseHook for UrlSourceObserver {
         PhaseHookPoint::AfterInference
     }
 
-    async fn on_phase(&self, _: &PhaseContext, _: &[Message], _: &Store) -> HookReaction {
-        HookReaction::default()
+    async fn on_phase(
+        &self,
+        _: &PhaseContext,
+        _: &[Message],
+        _: &Store,
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
+        Ok(HookReaction::default())
     }
 
     async fn on_model_input(
@@ -328,13 +338,13 @@ impl PhaseHook for UrlSourceObserver {
         input: &[awaken_runtime_contract::llm::ChatMessage],
         conversation: &[Message],
         state: &Store,
-    ) -> HookReaction {
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         if ctx.kind != awaken_runtime_contract::plugin::PhaseKind::AfterInference {
-            return HookReaction::state(vec![]);
+            return Ok(HookReaction::state(vec![]));
         }
         let mut visible = VisibleUrls::load(state).unwrap_or_default();
         visible.observe_input(conversation, input);
-        visible.reaction()
+        Ok(visible.reaction())
     }
 }
 
@@ -398,6 +408,7 @@ mod tests {
             for command in UrlSourceRecorder(Some(Arc::new(catalogue(&clients))))
                 .on_phase(&context, &[], &state)
                 .await
+                .expect("phase hook succeeds")
                 .state
             {
                 state.apply(&command);
@@ -439,6 +450,7 @@ mod tests {
         for command in UrlSourceObserver
             .on_model_input(&before, &observed_input(&transcript), &transcript, &state)
             .await
+            .expect("phase hook succeeds")
             .state
         {
             state.apply(&command);
@@ -559,7 +571,8 @@ mod tests {
                 .unwrap();
         let reaction = UrlSourceObserver
             .on_model_input(&before, &observed_input(&transcript), &transcript, &state)
-            .await;
+            .await
+            .expect("phase hook succeeds");
         for command in reaction.state {
             state.apply(&command);
         }
@@ -580,7 +593,12 @@ mod tests {
             }),
         };
         let recorder = UrlSourceRecorder(Some(Arc::new(catalogue(&["web_search"]))));
-        for command in recorder.on_phase(&after, &[], &state).await.state {
+        for command in recorder
+            .on_phase(&after, &[], &state)
+            .await
+            .expect("phase hook succeeds")
+            .state
+        {
             state.apply(&command);
         }
         assert!(
@@ -591,6 +609,7 @@ mod tests {
         for command in UrlSourceObserver
             .on_model_input(&before, &observed_input(&transcript), &transcript, &state)
             .await
+            .expect("phase hook succeeds")
             .state
         {
             state.apply(&command);
@@ -641,6 +660,7 @@ mod tests {
         for command in UrlSourceObserver
             .on_model_input(&before, &observed_input(&transcript), &transcript, &damaged)
             .await
+            .expect("phase hook succeeds")
             .state
         {
             damaged.apply(&command);
@@ -806,6 +826,7 @@ mod tests {
         for command in UrlSourceObserver
             .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
             .await
+            .expect("phase hook succeeds")
             .state
         {
             state.apply(&command);
@@ -933,6 +954,7 @@ mod tests {
                 &state,
             )
             .await
+            .expect("phase hook succeeds")
             .state
         {
             state.apply(&command);

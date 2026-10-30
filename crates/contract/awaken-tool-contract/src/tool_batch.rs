@@ -68,7 +68,14 @@ pub enum ToolCallPhase {
     Executing { attempt: u16 },
     /// A durable wait (permission/delegation/external result) owns this correlation.
     Awaiting { wait: ToolWait },
-    /// Terminal output committed before transcript publication.
+    /// Exact physical return, durable before materialization or phase hooks.
+    /// Its state is data until the Runtime folds calls in model order.
+    Returned(ToolOutput),
+    /// A known physical return whose owning Run ended before publication.
+    /// This is not an unknown effect and never fabricates an error ToolResult.
+    KnownAborted { output: ToolOutput, reason: String },
+    /// Terminal materialized output committed before transcript publication.
+    /// Legacy completed calls with empty result vectors remain valid.
     Completed(ToolOutput),
     /// The external outcome cannot safely be determined.
     Indeterminate { reason: String },
@@ -94,7 +101,10 @@ pub struct ToolWait {
 impl ToolCallPhase {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed(_) | Self::Indeterminate { .. })
+        matches!(
+            self,
+            Self::Completed(_) | Self::KnownAborted { .. } | Self::Indeterminate { .. }
+        )
     }
 }
 
@@ -300,6 +310,8 @@ enum CallPhaseView {
     Requested,
     Executing(u16),
     Awaiting(ToolWaitKind),
+    Returned,
+    KnownAborted,
     Completed,
     Indeterminate,
 }
@@ -317,6 +329,8 @@ enum ExecutionRequest {
 enum CallTransition {
     CompleteFromExecutionOrWait,
     CompleteImmediate,
+    RecordReturn,
+    MaterializeReturn,
     MarkIndeterminate,
     StageResult,
 }
@@ -360,7 +374,15 @@ const fn permits_call_transition(phase: CallPhaseView, transition: CallTransitio
             CallPhaseView::Executing(_) | CallPhaseView::Awaiting(_)
         ),
         CallTransition::CompleteImmediate => matches!(phase, CallPhaseView::Requested),
-        CallTransition::MarkIndeterminate => !matches!(phase, CallPhaseView::Completed),
+        CallTransition::RecordReturn => matches!(
+            phase,
+            CallPhaseView::Requested | CallPhaseView::Executing(_) | CallPhaseView::Awaiting(_)
+        ),
+        CallTransition::MaterializeReturn => matches!(phase, CallPhaseView::Returned),
+        CallTransition::MarkIndeterminate => !matches!(
+            phase,
+            CallPhaseView::Returned | CallPhaseView::KnownAborted | CallPhaseView::Completed
+        ),
         CallTransition::StageResult => matches!(
             phase,
             CallPhaseView::Completed | CallPhaseView::Indeterminate
@@ -388,7 +410,7 @@ const fn tool_wait_kind(reason: ToolAwaitReason) -> ToolWaitKind {
 const fn must_seal_on_run_end(phase: CallPhaseView) -> bool {
     !matches!(
         phase,
-        CallPhaseView::Completed | CallPhaseView::Indeterminate
+        CallPhaseView::KnownAborted | CallPhaseView::Completed | CallPhaseView::Indeterminate
     )
 }
 
@@ -404,6 +426,8 @@ fn phase_view(phase: &ToolCallPhase) -> CallPhaseView {
         ToolCallPhase::Requested => CallPhaseView::Requested,
         ToolCallPhase::Executing { attempt } => CallPhaseView::Executing(*attempt),
         ToolCallPhase::Awaiting { wait } => CallPhaseView::Awaiting(wait.kind),
+        ToolCallPhase::Returned(_) => CallPhaseView::Returned,
+        ToolCallPhase::KnownAborted { .. } => CallPhaseView::KnownAborted,
         ToolCallPhase::Completed(_) => CallPhaseView::Completed,
         ToolCallPhase::Indeterminate { .. } => CallPhaseView::Indeterminate,
     }
@@ -414,6 +438,8 @@ const fn executor_entry_attempt(phase: CallPhaseView) -> Option<u16> {
         CallPhaseView::Executing(attempt) => Some(attempt),
         CallPhaseView::Requested
         | CallPhaseView::Awaiting(_)
+        | CallPhaseView::Returned
+        | CallPhaseView::KnownAborted
         | CallPhaseView::Completed
         | CallPhaseView::Indeterminate => None,
     }
@@ -617,15 +643,30 @@ impl ToolBatch {
                         return Err(ToolBatchError::EmptyWaitCorrelation);
                     }
                 }
-                ToolCallPhase::Completed(output) if output.call_id != *call_id => {
+                ToolCallPhase::Returned(output)
+                | ToolCallPhase::KnownAborted { output, .. }
+                | ToolCallPhase::Completed(output)
+                    if output.call_id != *call_id =>
+                {
                     return Err(ToolBatchError::InvalidPersistedState(format!(
                         "call {call_id} contains another call's output"
                     )));
                 }
                 _ => {}
             }
+            if matches!(entry.phase, ToolCallPhase::KnownAborted { .. })
+                && (!entry.result_messages.is_empty() || !entry.result_state.is_empty())
+            {
+                return Err(ToolBatchError::InvalidPersistedState(
+                    "an aborted known return cannot publish effects".into(),
+                ));
+            }
             if (!entry.result_messages.is_empty() || !entry.result_state.is_empty())
                 && !entry.phase.is_terminal()
+                && !matches!(&entry.phase, ToolCallPhase::Returned(_)
+                    if entry.result_state.is_empty()
+                        && entry.result_messages.iter().all(|message|
+                            message.role == awaken_agent_contract::agent::message::Role::System))
             {
                 return Err(ToolBatchError::InvalidPersistedState(format!(
                     "call {call_id} publishes staged effects before a terminal result"
@@ -801,6 +842,65 @@ impl ToolBatch {
         Ok(())
     }
 
+    /// Checkpoint a physical return without applying its state or running hooks.
+    /// Exact replay is inert; no known return can be replaced by another value.
+    pub fn record_returned(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
+        self.ensure_open()?;
+        let call = self.call_mut(&output.call_id)?;
+        if let ToolCallPhase::Returned(previous) = &call.phase {
+            return if previous == &output {
+                Ok(())
+            } else {
+                Err(ToolBatchError::InvalidTransition)
+            };
+        }
+        if !permits_call_transition(phase_view(&call.phase), CallTransition::RecordReturn) {
+            return Err(ToolBatchError::InvalidTransition);
+        }
+        call.phase = ToolCallPhase::Returned(output);
+        Ok(())
+    }
+
+    /// Retain an accepted resume prefix behind the same publication barrier.
+    /// Prefix-only staging is legal only for an explicitly known raw result.
+    pub fn set_returned_context(
+        &mut self,
+        call_id: &str,
+        messages: Vec<awaken_agent_contract::agent::message::Message>,
+    ) -> Result<(), ToolBatchError> {
+        self.ensure_open()?;
+        let call = self.call_mut(call_id)?;
+        if !matches!(call.phase, ToolCallPhase::Returned(_))
+            || messages
+                .iter()
+                .any(|message| message.role != awaken_agent_contract::agent::message::Role::System)
+        {
+            return Err(ToolBatchError::InvalidTransition);
+        }
+        if !call.result_messages.is_empty() && call.result_messages != messages {
+            return Err(ToolBatchError::InvalidTransition);
+        }
+        call.result_messages = messages;
+        Ok(())
+    }
+
+    /// Materialization changes only model-visible content, never the tool's own
+    /// state or identity. The exact raw value remains in its prior ThreadCommit.
+    pub fn complete_returned(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
+        self.ensure_open()?;
+        let call = self.call_mut(&output.call_id)?;
+        let ToolCallPhase::Returned(raw) = &call.phase else {
+            return Err(ToolBatchError::InvalidTransition);
+        };
+        if !permits_call_transition(phase_view(&call.phase), CallTransition::MaterializeReturn)
+            || raw.state != output.state
+            || raw.is_error != output.is_error
+        {
+            return Err(ToolBatchError::InvalidTransition);
+        }
+        self.complete_with_transition(output, CallTransition::MaterializeReturn)
+    }
+
     pub fn complete(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
         self.complete_with_transition(output, CallTransition::CompleteFromExecutionOrWait)
     }
@@ -897,15 +997,18 @@ impl ToolBatch {
     ///
     /// A terminal Run can never be resumed, so retaining a `Requested`,
     /// `Executing`, or `Awaiting` call would leave an impossible recovery
-    /// instruction in durable state. Completed results are preserved; every
-    /// unfinished call becomes indeterminate and the batch is finalized.
+    /// instruction in durable state. Completed results are preserved; known raw
+    /// becomes KnownAborted, while unfinished unknown calls become Indeterminate.
+    /// The same batch is then finalized without publishing invented results.
     /// Reapplying this operation is an idempotent no-op.
     pub fn seal_on_run_end(&mut self, reason: &str) {
         if self.phase == ToolBatchPhase::Finalized {
             return;
         }
         for call in &mut self.calls {
-            if must_seal_on_run_end(phase_view(&call.phase)) {
+            if abandon_known_return(call, reason) {
+                continue;
+            } else if must_seal_on_run_end(phase_view(&call.phase)) {
                 call.phase = ToolCallPhase::Indeterminate {
                     reason: reason.to_string(),
                 };
@@ -942,6 +1045,19 @@ impl ToolBatch {
             .find(|entry| entry.call.call_id == call_id)
             .ok_or_else(|| ToolBatchError::UnknownCall(call_id.to_string()))
     }
+}
+
+fn abandon_known_return(call: &mut DurableToolCall, reason: &str) -> bool {
+    let ToolCallPhase::Returned(output) = &call.phase else {
+        return false;
+    };
+    call.phase = ToolCallPhase::KnownAborted {
+        output: output.clone(),
+        reason: reason.to_owned(),
+    };
+    call.result_messages.clear();
+    call.result_state.clear();
+    true
 }
 
 /// The current batch is an explicit Run-scoped entity encoded through the common
@@ -1203,6 +1319,130 @@ mod tests {
     }
 
     #[test]
+    fn known_return_checkpoints_preserve_raw_and_never_reenter_physical_execution() {
+        // J1/J6/J10 cause/effect table: Requested/Executing/Awaiting -> exact
+        // Returned; identical replay stutters, changed raw rejects unchanged;
+        // Returned has no executor/recovery admission. Materialization may
+        // change content only; raw state/error identity must remain exact.
+        for phase in [
+            ToolCallPhase::Requested,
+            ToolCallPhase::Executing { attempt: 1 },
+            ToolCallPhase::Awaiting {
+                wait: ToolWait {
+                    kind: ToolWaitKind::ExternalResult,
+                    correlation_id: "reply".into(),
+                },
+            },
+        ] {
+            let mut candidate = batch();
+            candidate.calls[0].phase = phase;
+            let raw = ToolOutput::ok("c", "physical raw").with_state(vec![StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "own",
+                7.into(),
+            )]);
+            candidate.record_returned(raw.clone()).unwrap();
+            let known = candidate.clone();
+            candidate.record_returned(raw.clone()).unwrap();
+            assert_eq!(candidate, known, "exact return replay stutters");
+            assert!(
+                candidate
+                    .record_returned(ToolOutput::ok("c", "changed"))
+                    .is_err()
+            );
+            assert_eq!(candidate, known, "changed raw cannot overwrite evidence");
+            assert!(candidate.execution_admission("c").is_err());
+            assert!(
+                candidate
+                    .recover_execution("c", ToolRecoveryCapability::ReplaySafe)
+                    .is_err()
+            );
+            assert_eq!(
+                candidate, known,
+                "known return never obtains physical entry"
+            );
+            let encoded = serde_json::to_value(&candidate).unwrap();
+            let decoded: ToolBatch = serde_json::from_value(encoded).unwrap();
+            assert_eq!(
+                decoded, known,
+                "raw content/error/state survive the owner codec"
+            );
+            let mut materialized = raw.clone();
+            materialized.content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "preview",
+            )];
+            let mut invalid = materialized.clone();
+            invalid.state.clear();
+            assert!(candidate.complete_returned(invalid).is_err());
+            assert_eq!(
+                candidate, known,
+                "materialization cannot erase tool-owned state"
+            );
+            candidate.complete_returned(materialized.clone()).unwrap();
+            assert_eq!(candidate.output("c"), Some(materialized));
+            assert!(
+                candidate.calls()[0].result_state.is_empty(),
+                "raw does not invent publication"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_sealing_distinguishes_known_aborted_from_unknown_and_old_readers_reject_it() {
+        // J6/J9: a known raw + Run terminal => KnownAborted with exact payload,
+        // no model result or staged command. An unknown entered effect retains
+        // the existing Indeterminate meaning. Both are absorbing; old enum
+        // readers reject new variants rather than guessing legacy Completed.
+        #[derive(serde::Deserialize)]
+        enum OldPhase {
+            Requested,
+            Executing { attempt: u16 },
+            Awaiting { wait: ToolWait },
+            Completed(ToolOutput),
+            Indeterminate { reason: String },
+        }
+        for value in [
+            serde_json::json!("Requested"),
+            serde_json::json!({"Executing":{"attempt":1}}),
+            serde_json::json!({"Awaiting":{"wait":{"kind":"ExternalResult","correlation_id":"reply"}}}),
+            serde_json::json!({"Completed":ToolOutput::ok("c", "legacy")}),
+            serde_json::json!({"Indeterminate":{"reason":"unknown"}}),
+        ] {
+            match serde_json::from_value::<OldPhase>(value).unwrap() {
+                OldPhase::Requested => {}
+                OldPhase::Executing { attempt } => assert_eq!(attempt, 1),
+                OldPhase::Awaiting { wait } => assert_eq!(wait.correlation_id, "reply"),
+                OldPhase::Completed(output) => assert_eq!(output.call_id, "c"),
+                OldPhase::Indeterminate { reason } => assert_eq!(reason, "unknown"),
+            }
+        }
+        let mut candidate = batch();
+        let raw = ToolOutput::ok("c", "known");
+        candidate.record_returned(raw.clone()).unwrap();
+        assert!(
+            serde_json::from_value::<OldPhase>(
+                serde_json::to_value(&candidate.calls[0].phase).unwrap()
+            )
+            .is_err()
+        );
+        candidate.seal_on_run_end("cancelled");
+        assert!(matches!(&candidate.calls[0].phase,
+            ToolCallPhase::KnownAborted { output, .. } if output == &raw));
+        assert!(candidate.output("c").is_none(), "no fabricated ToolResult");
+        assert!(candidate.publication().unwrap().messages().next().is_none());
+        let sealed = candidate.clone();
+        candidate.seal_on_run_end("again");
+        assert_eq!(candidate, sealed);
+        assert!(
+            serde_json::from_value::<OldPhase>(
+                serde_json::to_value(&candidate.calls[0].phase).unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn publication_requires_finalization_and_preserves_model_order_exactly_once() {
         // Causes: C1 batch is Open/Finalized; C2 calls are incomplete/terminal;
         // C3 two calls complete in model/reverse order. Effects: E1 only a
@@ -1289,7 +1529,7 @@ mod tests {
 
     #[test]
     fn aggregate_result_commands_follow_the_complete_phase_decision_table() {
-        // Causes: C1 predecessor phase (five closed variants), C2 command,
+        // Causes: C1 predecessor phase (seven closed variants), C2 command,
         // C3 exact/missing call identity, C4 open/finalized batch.
         // Effects: E1 accepted commands produce the named terminal phase;
         // E2 every rejection preserves the entire aggregate. Constraints:
@@ -1304,6 +1544,8 @@ mod tests {
         // R3   | Awaiting      | Completed| reject    | Indeterminate | reject
         // R4   | Completed     | replay   | replay    | reject        | accept
         // R5   | Indeterminate | reject   | reject    | Indeterminate | accept
+        // R8   | Returned      | reject   | reject    | reject        | reject
+        // R9   | KnownAborted  | reject   | reject    | reject        | reject
         // R6: !C3 overrides R1-R5 with E2; R7: !C4 overrides with E2.
         // Shared-updater cause/effect refinement: R7 returns Finalized even
         // for an unknown call; otherwise R6 returns UnknownCall before phase
@@ -1314,6 +1556,17 @@ mod tests {
         let done = ToolOutput::ok("c", "done");
         for (phase, allowed) in [
             (ToolCallPhase::Requested, [false, true, true, false]),
+            (
+                ToolCallPhase::Returned(done.clone()),
+                [false, false, false, false],
+            ),
+            (
+                ToolCallPhase::KnownAborted {
+                    output: done.clone(),
+                    reason: "ended".into(),
+                },
+                [false, false, false, false],
+            ),
             (
                 ToolCallPhase::Executing { attempt: 1 },
                 [true, false, true, false],
@@ -1896,22 +2149,60 @@ mod verification {
     }
 
     fn symbolic_phase(tag: u8) -> CallPhaseView {
-        match tag % 5 {
+        match tag % 7 {
             0 => CallPhaseView::Requested,
             1 => CallPhaseView::Executing(1),
             2 => CallPhaseView::Awaiting(ToolWaitKind::ToolPermission),
             3 => CallPhaseView::Completed,
-            _ => CallPhaseView::Indeterminate,
+            4 => CallPhaseView::Indeterminate,
+            5 => CallPhaseView::Returned,
+            _ => CallPhaseView::KnownAborted,
         }
     }
 
     fn symbolic_transition(tag: u8) -> CallTransition {
-        match tag % 4 {
+        match tag % 6 {
             0 => CallTransition::CompleteFromExecutionOrWait,
             1 => CallTransition::CompleteImmediate,
             2 => CallTransition::MarkIndeterminate,
-            _ => CallTransition::StageResult,
+            3 => CallTransition::StageResult,
+            4 => CallTransition::RecordReturn,
+            _ => CallTransition::MaterializeReturn,
         }
+    }
+
+    /// @obligation tool.transition_preconditions
+    #[kani::proof]
+    fn known_returns_only_admit_materialization_and_never_physical_reentry() {
+        // Complete new-state partition: pending Returned / terminal KnownAborted,
+        // every nonzero u16 budget and every recovery capability. Neither obtains
+        // a physical entry; only pending Returned admits materialization. Payload
+        // equality/codec durability remain real aggregate/runtime test evidence.
+        let pending = kani::any::<bool>();
+        let phase = if pending {
+            CallPhaseView::Returned
+        } else {
+            CallPhaseView::KnownAborted
+        };
+        let budget = NonZeroU16::new(kani::any()).unwrap_or(NonZeroU16::MIN);
+        let policy = ToolRecoveryPolicy::new(symbolic_recovery_mode(kani::any()), budget);
+        assert_eq!(
+            next_execution_attempt(phase, budget, ExecutionRequest::StartOrRetry),
+            Err(ToolBatchError::InvalidTransition)
+        );
+        assert_eq!(
+            recovery_transition(phase, &policy, symbolic_recovery_capability(kani::any())),
+            Err(ToolBatchError::InvalidTransition)
+        );
+        assert_eq!(executor_entry_attempt(phase), None);
+        assert_eq!(
+            permits_call_transition(phase, CallTransition::MaterializeReturn),
+            pending
+        );
+        assert!(!permits_call_transition(
+            phase,
+            CallTransition::MarkIndeterminate
+        ));
     }
 
     /// @obligation tool.executor_entry_order
@@ -1927,6 +2218,8 @@ mod verification {
             CallPhaseView::Executing(attempt) => assert_eq!(admitted, Some(attempt)),
             CallPhaseView::Requested
             | CallPhaseView::Awaiting(_)
+            | CallPhaseView::Returned
+            | CallPhaseView::KnownAborted
             | CallPhaseView::Completed
             | CallPhaseView::Indeterminate => assert_eq!(admitted, None),
         }
@@ -1994,6 +2287,8 @@ mod verification {
 
         for invalid in [
             CallPhaseView::Awaiting(ToolWaitKind::ExternalResult),
+            CallPhaseView::Returned,
+            CallPhaseView::KnownAborted,
             CallPhaseView::Completed,
             CallPhaseView::Indeterminate,
         ] {
@@ -2007,21 +2302,36 @@ mod verification {
     /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn every_tool_call_transition_has_the_unique_documented_precondition() {
+        // Independent cause/effect table for first-application admission.
+        // Columns are executor/wait completion, immediate completion, raw
+        // return, materialization, unknown sealing, and staged publication.
+        // Requested has no physical entry; Executing/Awaiting own one pending
+        // outcome. Returned owns known raw and may only materialize it.
+        // KnownAborted is absorbing and publishes nothing. Completed retains
+        // only its prepared publication; Indeterminate retains its original
+        // unknown-sealing and publication roles. Exact completion/return replay
+        // is a separate aggregate rule, not first-application admission here.
+        // Every old row and all 7x6 combinations remain symbolic; no predicate
+        // below calls or restates the production transition guard.
         let phase = symbolic_phase(kani::any());
         let transition = symbolic_transition(kani::any());
-        let expected = match transition {
-            CallTransition::CompleteFromExecutionOrWait => {
-                matches!(
-                    phase,
-                    CallPhaseView::Executing(_) | CallPhaseView::Awaiting(_)
-                )
+        let allowed = match phase {
+            CallPhaseView::Requested => [false, true, true, false, true, false],
+            CallPhaseView::Executing(_) | CallPhaseView::Awaiting(_) => {
+                [true, false, true, false, true, false]
             }
-            CallTransition::CompleteImmediate => matches!(phase, CallPhaseView::Requested),
-            CallTransition::MarkIndeterminate => !matches!(phase, CallPhaseView::Completed),
-            CallTransition::StageResult => matches!(
-                phase,
-                CallPhaseView::Completed | CallPhaseView::Indeterminate
-            ),
+            CallPhaseView::Returned => [false, false, false, true, false, false],
+            CallPhaseView::KnownAborted => [false, false, false, false, false, false],
+            CallPhaseView::Completed => [false, false, false, false, false, true],
+            CallPhaseView::Indeterminate => [false, false, false, false, true, true],
+        };
+        let expected = match transition {
+            CallTransition::CompleteFromExecutionOrWait => allowed[0],
+            CallTransition::CompleteImmediate => allowed[1],
+            CallTransition::RecordReturn => allowed[2],
+            CallTransition::MaterializeReturn => allowed[3],
+            CallTransition::MarkIndeterminate => allowed[4],
+            CallTransition::StageResult => allowed[5],
         };
         assert_eq!(permits_call_transition(phase, transition), expected);
     }
@@ -2053,7 +2363,10 @@ mod verification {
         assert_eq!(decision, expected);
         if matches!(
             phase,
-            CallPhaseView::Completed | CallPhaseView::Indeterminate
+            CallPhaseView::Returned
+                | CallPhaseView::KnownAborted
+                | CallPhaseView::Completed
+                | CallPhaseView::Indeterminate
         ) {
             assert_ne!(decision, CompletionDisposition::Apply);
         }
@@ -2062,10 +2375,10 @@ mod verification {
     /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn terminal_tool_calls_only_accept_result_staging() {
-        let phase = if kani::any() {
-            CallPhaseView::Completed
-        } else {
-            CallPhaseView::Indeterminate
+        let phase = match kani::any::<u8>() % 3 {
+            0 => CallPhaseView::Completed,
+            1 => CallPhaseView::Indeterminate,
+            _ => CallPhaseView::KnownAborted,
         };
         let transition = symbolic_transition(kani::any());
         if permits_call_transition(phase, transition) {
@@ -2088,7 +2401,9 @@ mod verification {
             must_seal_on_run_end(phase),
             !matches!(
                 phase,
-                CallPhaseView::Completed | CallPhaseView::Indeterminate
+                CallPhaseView::KnownAborted
+                    | CallPhaseView::Completed
+                    | CallPhaseView::Indeterminate
             )
         );
     }

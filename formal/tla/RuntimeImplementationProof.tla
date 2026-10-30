@@ -72,6 +72,17 @@ LEMMA InvokeRefines ==
     \A call \in Calls: Invoke(call) => ABS!Next
 BY Z3T(10) DEF Invoke, ABS!Next
 
+LEMMA ApplyRecordReturnRefines == ApplyRecordReturn => ABS!Next
+\* Cause/effect rule: an enabled concrete return entails both the abstract
+\* return and its call-domain witness, hence the matching existential in Next.
+\* Disabled returns satisfy the implication vacuously; no domain or action is
+\* assumed away. This follows the adjacent completion proof's same two facts.
+<1>1. ApplyRecordReturn => pendingCall \in Calls
+    BY DEF ApplyRecordReturn, ABS!RecordReturn
+<1>2. ApplyRecordReturn => ABS!RecordReturn(pendingCall)
+    BY DEF ApplyRecordReturn
+<1>. QED BY <1>1, <1>2 DEF ABS!Next
+
 LEMMA ApplyCompleteRefines == ApplyComplete => ABS!Next
 <1>1. ApplyComplete => pendingCall \in Calls
     BY DEF ApplyComplete, ABS!Complete
@@ -134,7 +145,7 @@ LEMMA NextRefines == Next => ABS!Next \/ UNCHANGED implVars
 BY PrepareStutters, CrashPreparedStutters, ApplyClaimRefines,
    ApplyReclaimRefines, ApplyRequestToolPermissionRefines, ApplyApproveRefines,
    ApplyDenyRefines, ApplySupplyResultRefines, ApplyDirectStartRefines,
-   ApplyCompleteImmediateRefines, InvokeRefines, ApplyCompleteRefines,
+   ApplyCompleteImmediateRefines, InvokeRefines, ApplyRecordReturnRefines, ApplyCompleteRefines,
    ApplyRecoverReplaySafeRefines,
    ApplyRecoverIndeterminateRefines, ApplyStartChildRefines,
    ApplyAwaitChildRefines, ApplyResumeChildRefines, ApplyFinishChildRefines,

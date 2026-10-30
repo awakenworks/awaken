@@ -6,6 +6,7 @@
 //! The production request identity is wired through lifecycle and dispatch
 //! clients over a real socket, including the post-registration incarnation bind.
 
+use awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest;
 use awaken_session_types::SessionId;
 #[path = "signed_worker_transport_http/attempt_binding.rs"]
 mod attempt_binding;
@@ -26,11 +27,11 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_dispatch::{
-    AttemptAdmission, ClaimedStreamPublisher as _, DispatchClaimOwnership as _,
-    DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
-    DispatchSettlement as _, MemoryDispatchStore, RegisteredWorker, RegistryError,
-    RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
+    AttemptAdmission, DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
+    DispatchExecution as _, DispatchReads as _, DispatchSettlement as _, MemoryDispatchStore,
+    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot,
+    WorkerState,
 };
 use awaken_dispatch_http::{
     WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
@@ -590,6 +591,37 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSessionControl {
+    // Fixture rule P1: the signed transport fixture scripts Agent messages without root admission.
+    // Prepared preparation refuses without changing any recorded effect.
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        _session: &awaken_session_types::SessionId,
+        _agent: &str,
+        _run: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::unavailable(
+            "the signed transport fixture scripts Agent messages without root admission",
+        ))
+    }
+
+    // Fixture rule P1: the signed transport fixture scripts Agent messages without root admission.
+    // Prepared admission refuses without changing any recorded effect.
+    async fn admit_prepared_session_run_activity(
+        &self,
+        _session: &awaken_session_types::SessionId,
+        _run: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+        _preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivityAdmission,
+        awaken_session_types::RunError,
+    > {
+        Err(awaken_session_types::RunError::unavailable(
+            "the signed transport fixture scripts Agent messages without root admission",
+        ))
+    }
+
     async fn admit_session_run_activity(
         &self,
         _session_id: &SessionId,
@@ -857,7 +889,9 @@ fn activation() -> RunActivation {
 fn standard_worker_dispatch(activation: RunActivation) -> RunDispatch {
     let mut dispatch = RunDispatch::new(activation);
     dispatch.placement.runtime_protocol_version = 1;
-    dispatch
+    // C0 current foreground codec metadata is authored by its single compiler;
+    // protocol/signature/epoch/Work and lease negatives remain unchanged.
+    dispatch.with_worker_codec_requirements()
 }
 
 /// Shared Worker-auth middleware decision table and FMECA:
@@ -957,12 +991,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let bootstrap = WorkerUpstream::new(format!("http://{address}"))
         .with_worker_id("signed-http-worker")
         .with_request_authorizer(authorizer);
-    let mut manifest = WorkerManifest {
+    let manifest = WorkerManifest {
         build_digest: "signed-http-build".into(),
-        ..WorkerManifest::default()
+        ..current_dispatch_codec_manifest()
     };
-    manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     // Worker lease receipt decision rules: successful registration and Applied
     // heartbeat both disclose the same positive Coordinator-owned TTL; a
     // bootstrap credential still cannot use incarnation-only operations.
@@ -1082,9 +1114,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(warmups.len(), 1, "A3");
     assert_eq!(warmups[0].environment_id, "signed-env", "A3");
 
-    let queue = awaken_coordinator_client::dispatch_transport_with_upstream(
+    // Reuse the REAL default Worker transport factory and its two existing
+    // roles, freezing the SAME registered manifest. No second client or codec
+    // policy; signed-body mismatch/old protocol negatives remain fail-closed.
+    let (queue, live_publisher) = awaken_coordinator_client::worker_transports_with_upstream(
         &upstream,
         registered.snapshot.identity.clone(),
+        registered.snapshot.manifest.clone(),
     );
     // T31: the signed resume body has no resource selector. Only the guarded
     // durable dispatch supplies the exact pin, including explicit empty input.
@@ -1130,7 +1166,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "claim admission acquires exactly one Session Work receipt"
     );
     attempt_binding::verify_ordinary_return_compatibility(
-        &queue, &upstream, &directory, &dispatch, &claim,
+        queue.as_ref(),
+        &upstream,
+        &directory,
+        &dispatch,
+        &claim,
     )
     .await;
 
@@ -1189,12 +1229,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             }),
         )
     };
-    queue
+    live_publisher
         .publish_observation(&claim, live_event("signed-thread"))
         .await
         .expect("T29 live publication remains best effort");
     assert_eq!(live_stream.events().len(), 1, "T29");
-    queue
+    live_publisher
         .publish_observation(&claim, live_event("forged-thread"))
         .await
         .expect("T30 rejected transport remains best effort to the Worker");

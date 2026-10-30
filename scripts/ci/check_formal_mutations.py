@@ -1521,6 +1521,45 @@ def check_acp_boundary_model_mutants(tlc_jar: Path) -> None:
          "NoLateExitAcknowledged"),
     ])
 
+def check_thread_commit_return_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect table for the existing raw-return and completion boundary:
+    # R1 a delegated preparation refusal can durably retain Returned/Open with
+    # zero attempts; the deliberately false witness must be refuted. R2/R3
+    # folding that result, with/without batch finalization, closes its Open
+    # relationship. Independently removing either closure must violate the
+    # original StateSafety. Preserve the complete CFG and shared strict oracle;
+    # parse errors, tool failures and timeouts never count as semantic detection.
+    source = (ROOT / "formal/tla/ThreadCommitProjection.tla").read_text()
+    config = (ROOT / "formal/tla/ThreadCommitProjection.cfg").read_text()
+    closure = '[s.linkState EXCEPT ![c] = IF @ = "Open" THEN "Completed" ELSE @]'
+    mutations = []
+    for start, end in (("CompleteImmediate(s, t, c) ==", "CompleteImmediateAndFinalize(s, t, c) =="),
+                       ("CompleteImmediateAndFinalize(s, t, c) ==", "MarkIndeterminate(s, t, c) ==")):
+        if source.count(start) != 1 or source.count(end) != 1:
+            raise SystemExit("immediate-return mutation action anchor drifted")
+        begin, finish = source.index(start), source.index(end)
+        action = source[begin:finish]
+        if action.count(closure) != 1:
+            raise SystemExit("immediate-return relationship closure anchor drifted")
+        mutant = source[:begin] + action.replace(closure, "s.linkState", 1) + source[finish:]
+        mutations.append((mutant, config, "StateSafety"))
+    witness = (
+        '\nNoStagedZeroAttemptReturn ==\n'
+        '    ~\\E c \\in AgentCalls:\n'
+        '        /\\ state.callState[c] = "Returned"\n'
+        '        /\\ state.attempts[c] = 0\n'
+        '        /\\ state.linkState[c] = "Open"\n'
+    )
+    if source.count("=============================================================================") != 1 or config.count("INVARIANT StateSafety") != 1:
+        raise SystemExit("raw-return reachability witness anchor drifted")
+    witness_source = source.replace("=============================================================================", witness + "=============================================================================", 1)
+    witness_config = config.replace("INVARIANT StateSafety", "INVARIANTS StateSafety NoStagedZeroAttemptReturn", 1)
+    mutations.append((witness_source, witness_config, "NoStagedZeroAttemptReturn"))
+    check_tlc_model_mutations(tlc_jar, "ThreadCommitProjection", source, config, mutations,
+                              report_metrics=True)
+    print("Thread return projection: 2/2 immediate-fold mutants killed; zero-attempt staged return reachable")
+
+
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;
     # W3 delayed probe success. Removing either expiry lane or erasing request
@@ -1575,6 +1614,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionThreadToolComposition", source, config, [
         (source.replace(crash, mutant), config.replace("    Safety", "    CrashDoesNotProveQuiescence\n    Safety"), "CrashDoesNotProveQuiescence"),
     ], dependencies=("ThreadCommitProjection",))
+    check_thread_commit_return_model_mutants(tlc_jar)
     source = (ROOT / "formal/tla/ManagedCredentialRollout.tla").read_text()
     # Safety mutation does not assume eventual provider availability. The full
     # temporal configuration is separately selected by the strict gate.

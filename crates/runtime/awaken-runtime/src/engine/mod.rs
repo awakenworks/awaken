@@ -53,7 +53,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateAuthority, GateDecision, GateOutcome};
 use awaken_runtime_contract::plugin::{
-    AfterToolContext, ContextMessages, ContextWindow, PhaseContext, PhaseHookPoint, PhaseKind,
+    AfterToolContext, ContextMessages, ContextWindow, PhaseContext, PhaseKind,
     ResolvedExecutionEnv, RunEndContext, RunEndDecision, ToolConcurrencyConstraint,
 };
 use awaken_runtime_contract::resolved::{
@@ -100,8 +100,8 @@ pub(crate) use convert::*;
 pub(crate) use delegation::reconcile_delegation_cancellations;
 use delegation::{
     DelegationInvocation, DelegationParent, delegation_error_output, invoke_delegation,
-    is_resolved_delegation_call, persist_child_run_result, resume_delegation, run_delegation,
-    stage_delegation_awaiting, stage_delegation_completed, stage_delegation_request,
+    is_resolved_delegation_call, resume_delegation, stage_delegation_awaiting,
+    stage_delegation_completed, stage_delegation_request,
 };
 use finalize::{finalize, finish};
 use inference::*;

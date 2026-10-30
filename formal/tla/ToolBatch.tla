@@ -117,8 +117,16 @@ Invoke(c) ==
         published, commitVersion, endedOnce
        >>
 
+\* Raw payloads are erased here. Rust tests retain their exact content/state.
+RecordReturn(c) ==
+    /\ runState = "Running"
+    /\ callState[c] \in {"Requested", "Executing"}
+    /\ callState' = [callState EXCEPT ![c] = "Returned"]
+    /\ UNCHANGED <<runState, attempts, invokedAttempt, ticket, decision, published, endedOnce>>
+    /\ Committed
+
 Complete(c) ==
-    /\ callState[c] = "Executing"
+    /\ callState[c] \in {"Executing", "Returned"}
     /\ invokedAttempt[c] = attempts[c]
     /\ callState' = [callState EXCEPT ![c] = "Completed"]
     /\ UNCHANGED <<
@@ -171,6 +179,7 @@ Cancel ==
     /\ callState' = [c \in Calls |->
           IF callState[c] \in TerminalToolCallStates
           THEN callState[c]
+          ELSE IF callState[c] = "Returned" THEN "KnownAborted"
           ELSE "Indeterminate"]
     /\ ticket' = NoCall
     /\ endedOnce' = TRUE
@@ -184,6 +193,7 @@ Next ==
     \/ \E c \in Calls: Deny(c)
     \/ \E c \in Calls: SupplyResult(c)
     \/ \E c \in Calls: Invoke(c)
+    \/ \E c \in Calls: RecordReturn(c)
     \/ \E c \in Calls: Complete(c)
     \/ \E c \in Calls: RecoverReplaySafe(c)
     \/ \E c \in Calls: RecoverIndeterminate(c)

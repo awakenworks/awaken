@@ -171,6 +171,21 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
+    // Fixture rule P1: Resource tests script ordinary reservation and activation failures.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -946,6 +961,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -958,12 +974,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

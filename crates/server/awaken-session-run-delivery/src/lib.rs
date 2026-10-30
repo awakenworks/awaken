@@ -82,7 +82,10 @@ pub use completion::{
     CompletionRegistry, CompletionSignalClosed, SettlementWakeup, WaiterGuard,
     activate_and_await_session_run, await_completion_state,
 };
-pub use delivery::{ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement};
+mod prepared_session_run;
+pub use delivery::{
+    OutcomeRunExecutor, ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement,
+};
 pub use dispatch_lifecycle::{SessionDispatchLifecycle, drain_session_dispatch};
 mod session_applications;
 pub use hub::{ThreadEvent, ThreadEventHub};
@@ -98,6 +101,7 @@ pub use memory_settlement::observe_dispatched_memory_terminal;
 pub use outcome_projection::{
     committed_outcome_projection, outcome_controller_error, outcome_report,
 };
+pub use prepared_session_run::{PreparedSessionRunDelivery, run_prepared_session_run};
 pub use run_publications::RUN_PUBLICATIONS;
 pub use session_activation::{
     ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,

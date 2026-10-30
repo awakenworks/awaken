@@ -238,9 +238,19 @@ Invoke(c) ==
                     childState, linkStatus,
                     inboxCount, commitVersion, endedOnce>>
 
+RecordReturn(c) ==
+    /\ c \in Calls
+    /\ runState = "Running"
+    /\ callState[c] \in {"Requested", "Executing"}
+    /\ callState' = [callState EXCEPT ![c] = "Returned"]
+    /\ UNCHANGED <<runState, ticketKind, ticketCall, dispatchState, owner,
+                    leaseEpoch, attempts, invokedAttempt, decision, published,
+                    childState, linkStatus, inboxCount, endedOnce>>
+    /\ Committed
+
 Complete(c) ==
     /\ c \in Calls \ {AgentCall}
-    /\ callState[c] = "Executing"
+    /\ callState[c] \in {"Executing", "Returned"}
     /\ invokedAttempt[c] = attempts[c]
     /\ callState' = [callState EXCEPT ![c] = "Completed"]
     /\ UNCHANGED <<runState, ticketKind, ticketCall, dispatchState, owner,
@@ -397,6 +407,7 @@ Cancel ==
     /\ callState' = [c \in Calls |->
           IF callState[c] \in TerminalToolCallStates
           THEN callState[c]
+          ELSE IF callState[c] = "Returned" THEN "KnownAborted"
           ELSE "Indeterminate"]
     /\ linkStatus' = IF linkStatus = "Open"
                       THEN "CancelRequested" ELSE linkStatus
@@ -421,6 +432,7 @@ Next ==
     \/ \E c \in Calls: DirectStart(c)
     \/ \E c \in Calls: CompleteImmediate(c)
     \/ \E c \in Calls: Invoke(c)
+    \/ \E c \in Calls: RecordReturn(c)
     \/ \E c \in Calls: Complete(c)
     \/ \E c \in Calls: RecoverReplaySafe(c)
     \/ \E c \in Calls: RecoverIndeterminate(c)

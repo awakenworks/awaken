@@ -134,6 +134,11 @@ impl<'a> DispatchPreparation<'a> {
     pub fn extension(self) -> Result<RunDispatch, AdmissionError> {
         self.resolve(awaken_observability::current_traceparent(), false, true)
     }
+    /// A trusted caller already froze every activation field. Associate its
+    /// Session without replacing even absent inherited-toolset evidence.
+    pub fn prepared(self, traceparent: Option<String>) -> Result<RunDispatch, AdmissionError> {
+        self.resolve(traceparent, true, false)
+    }
     pub fn with_traceparent(
         self,
         traceparent: Option<String>,

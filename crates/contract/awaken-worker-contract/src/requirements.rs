@@ -238,6 +238,22 @@ pub(crate) const fn required_capability_is_admitted(
     !requirement_present || capability_offered
 }
 
+/// The single required-capability subset check. Execution placement and the
+/// wire codec prerequisite of non-executing claim modes share this rule.
+pub fn admit_required_capabilities<'a>(
+    required: impl IntoIterator<Item = &'a str>,
+    offered: &BTreeSet<String>,
+) -> Result<(), Incompatibility> {
+    if let Some(missing) = required
+        .into_iter()
+        .find(|capability| !required_capability_is_admitted(true, offered.contains(*capability)))
+    {
+        Err(Incompatibility::MissingCapability(missing.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Non-replaceable compatibility kernel. It is intentionally independent from
 /// liveness and ranking; callers re-run it inside the atomic claim transaction.
 pub fn can_claim(
@@ -257,15 +273,13 @@ pub fn can_claim(
     {
         return Err(Incompatibility::InsufficientResources);
     }
-    if let Some(missing) = requirements
-        .required_capabilities
-        .iter()
-        .find(|capability| {
-            !required_capability_is_admitted(true, manifest.capabilities.contains(*capability))
-        })
-    {
-        return Err(Incompatibility::MissingCapability(missing.clone()));
-    }
+    admit_required_capabilities(
+        requirements
+            .required_capabilities
+            .iter()
+            .map(String::as_str),
+        &manifest.capabilities,
+    )?;
     if let Some(required) = &requirements.required_zone
         && manifest.zone.as_ref() != Some(required)
     {

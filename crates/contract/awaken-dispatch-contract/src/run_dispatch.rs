@@ -110,6 +110,9 @@ pub enum DispatchIdentityScope {
     #[default]
     FullDispatch,
     SessionCommand,
+    /// A trusted, complete prepared activation. Unlike ordinary Session
+    /// commands, it has no reduced pre-fingerprint replay relation.
+    PreparedSessionCommand,
 }
 
 impl DispatchIdentityScope {
@@ -349,6 +352,14 @@ impl RunDispatch {
                     .is_some_and(|legacy| self.canonical_bytes() == legacy.canonical_bytes()))
     }
 
+    /// Compare an observed original request without an upgrade fallback. The
+    /// Coordinator uses this only while atomically adopting that exact old row;
+    /// trace context remains attempt-local under the canonical identity law.
+    #[must_use]
+    pub fn same_original_dispatch(&self, other: &Self) -> bool {
+        self.canonical_bytes() == other.canonical_bytes()
+    }
+
     /// Tombstone twin of the upgrade-window rule in
     /// [`Self::same_canonical_dispatch`]: the canonical fingerprint this retry
     /// would have had before the Session published typed MCP requirements, or
@@ -373,6 +384,22 @@ impl RunDispatch {
     /// continue to use [`Self::same_canonical_dispatch`].
     #[must_use]
     pub fn same_session_reservation(&self, other: &Self) -> bool {
+        if matches!(
+            self.identity_scope,
+            DispatchIdentityScope::PreparedSessionCommand
+        ) || matches!(
+            other.identity_scope,
+            DispatchIdentityScope::PreparedSessionCommand
+        ) {
+            return self.identity_scope == other.identity_scope
+                && self
+                    .session_command_fingerprint
+                    .as_ref()
+                    .is_some_and(|stored| {
+                        stored.is_current()
+                            && other.session_command_fingerprint.as_ref() == Some(stored)
+                    });
+        }
         match self.session_command_fingerprint.as_ref() {
             Some(stored) if stored.is_current() => other
                 .session_command_fingerprint
@@ -390,7 +417,16 @@ impl RunDispatch {
     #[must_use]
     pub fn session_reservation_fingerprint(&self) -> String {
         self.session_command_fingerprint.as_ref().map_or_else(
-            || self.legacy_session_reservation_fingerprint(),
+            || {
+                if self.identity_scope == DispatchIdentityScope::PreparedSessionCommand {
+                    // A corrupt prepared row has no legacy command identity.
+                    // Retaining its complete bytes cannot create a reduced
+                    // completion identity accepted by a current command.
+                    self.canonical_fingerprint()
+                } else {
+                    self.legacy_session_reservation_fingerprint()
+                }
+            },
             |fingerprint| fingerprint.as_str().to_string(),
         )
     }
@@ -423,6 +459,7 @@ impl RunDispatch {
     pub fn same_admission_dispatch(&self, other: &Self) -> bool {
         match self.identity_scope {
             DispatchIdentityScope::SessionCommand
+            | DispatchIdentityScope::PreparedSessionCommand
                 if matches!(
                     other.admission_shape(),
                     DispatchAdmissionShape::SessionRootAwaitingActivity
@@ -431,9 +468,9 @@ impl RunDispatch {
             {
                 self.same_session_reservation(other)
             }
-            DispatchIdentityScope::SessionCommand | DispatchIdentityScope::FullDispatch => {
-                self.same_canonical_dispatch(other)
-            }
+            DispatchIdentityScope::SessionCommand
+            | DispatchIdentityScope::PreparedSessionCommand
+            | DispatchIdentityScope::FullDispatch => self.same_canonical_dispatch(other),
         }
     }
 
@@ -442,7 +479,10 @@ impl RunDispatch {
     #[must_use]
     pub fn admission_fingerprint(&self) -> String {
         match self.identity_scope {
-            DispatchIdentityScope::SessionCommand => self.session_reservation_fingerprint(),
+            DispatchIdentityScope::SessionCommand
+            | DispatchIdentityScope::PreparedSessionCommand => {
+                self.session_reservation_fingerprint()
+            }
             DispatchIdentityScope::FullDispatch => self.canonical_fingerprint(),
         }
     }
@@ -455,6 +495,115 @@ impl RunDispatch {
     pub fn with_session_command_identity(mut self) -> Self {
         self.identity_scope = DispatchIdentityScope::SessionCommand;
         self
+    }
+
+    /// Mark a complete prepared activation as a distinct reservation format.
+    /// Historical reduced Session identities cannot authorize its replay.
+    #[must_use]
+    pub fn with_prepared_session_command_identity(mut self) -> Self {
+        self.identity_scope = DispatchIdentityScope::PreparedSessionCommand;
+        self.bind_worker_codec_requirements();
+        self
+    }
+
+    /// Native and ACP's owned-tool continuation consume ActiveToolBatch.
+    /// A2A-only candidates do not; a Native/ACP fallback still does. This is
+    /// the one frozen-candidate compiler used by placement and claim admission.
+    pub fn requires_tool_result_journal(
+        models: &awaken_runtime_contract::resolved::ResolvedSpec,
+    ) -> bool {
+        models.attempt_candidates(None).iter().any(|candidate| {
+            matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(
+                    candidate.binding().identity().2
+                ),
+                awaken_runtime_contract::resolved::Backend::Native
+                    | awaken_runtime_contract::resolved::Backend::Acp(_)
+            )
+        })
+    }
+
+    fn required_worker_codecs(
+        &self,
+        include_runtime_journal: bool,
+    ) -> impl Iterator<Item = &'static str> + use<> {
+        let prepared = (self.identity_scope == DispatchIdentityScope::PreparedSessionCommand)
+            .then_some(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY);
+        let journal = (include_runtime_journal
+            && Self::requires_tool_result_journal(&self.activation.snapshot.resolved_spec))
+        .then_some(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY);
+        [prepared, journal].into_iter().flatten()
+    }
+
+    fn bind_worker_codec_requirements(&mut self) {
+        if self.identity_scope != DispatchIdentityScope::PreparedSessionCommand {
+            return;
+        }
+        let required = self.required_worker_codecs(true);
+        // This narrows a registered Worker's eligibility but does not force an
+        // already installed local owner to acquire a registered Worker.
+        self.placement
+            .required_capabilities
+            .extend(required.map(str::to_owned));
+    }
+
+    /// Publish the intrinsic codec requirements when a caller deliberately
+    /// constructs a Worker-bound request. Legacy/default constructors retain
+    /// their exact wire bytes; this never changes execution location.
+    #[must_use]
+    pub fn with_worker_codec_requirements(mut self) -> Self {
+        let required = self.required_worker_codecs(true);
+        self.placement
+            .required_capabilities
+            .extend(required.map(str::to_owned));
+        self
+    }
+
+    /// Canonical submission refuses a caller that stripped mandatory codec
+    /// requirements. The closed request kind, not optional caller input,
+    /// determines which formats a Worker must understand.
+    pub fn validate_worker_codec_requirements(
+        &self,
+    ) -> Result<(), awaken_worker_contract::Incompatibility> {
+        let remote_wire = self.placement.location
+            != awaken_worker_contract::ExecutionLocation::LocalOnly
+            && self.placement.runtime_protocol_version != 0;
+        awaken_worker_contract::admit_required_capabilities(
+            self.required_worker_codecs(remote_wire),
+            &self.placement.required_capabilities,
+        )
+    }
+
+    /// A registered Worker cannot turn an old unmarked request into a new
+    /// journal producer, even when its own binary supports the new format.
+    /// An absent immutable manifest proves no offered codec capabilities.
+    pub fn validate_worker_wire_codec_requirements(
+        &self,
+        worker: Option<&awaken_worker_contract::WorkerManifest>,
+    ) -> Result<(), awaken_worker_contract::Incompatibility> {
+        awaken_worker_contract::admit_required_capabilities(
+            self.required_worker_codecs(true),
+            &self.placement.required_capabilities,
+        )?;
+        let no_offers = std::collections::BTreeSet::new();
+        awaken_worker_contract::admit_required_capabilities(
+            self.required_worker_codecs(true),
+            worker.map_or(&no_offers, |manifest| &manifest.capabilities),
+        )
+    }
+
+    /// Every Worker claim mode returns the same full request, including
+    /// reservation repair and cancellation. Those modes may bypass execution
+    /// placement, but must never bypass the same mandatory capability rule.
+    /// None is the existing in-process owner, which opens no Worker wire hop.
+    pub fn worker_codec_admission(
+        &self,
+        worker: Option<&awaken_worker_contract::WorkerManifest>,
+    ) -> Result<(), awaken_worker_contract::Incompatibility> {
+        match worker {
+            Some(manifest) => self.validate_worker_wire_codec_requirements(Some(manifest)),
+            None => self.validate_worker_codec_requirements(),
+        }
     }
 
     /// Attach the Session authority's command identity. The reservation port
@@ -547,6 +696,7 @@ impl RunDispatch {
     #[must_use]
     pub fn with_placement(mut self, placement: PlacementRequirements) -> Self {
         self.placement = placement;
+        self.bind_worker_codec_requirements();
         self
     }
 
@@ -1007,6 +1157,166 @@ mod tests {
         .expect("W4 unknown value remains inspectable");
         let unknown = legacy.clone().with_session_command_fingerprint(unknown);
         assert!(!unknown.same_session_reservation(&current), "W4/E4");
+
+        // P1 complete prepared input has its own closed identity kind and exact
+        // current fingerprint; P2 ordinary current/legacy/unknown identities
+        // cannot be upgraded by an incoming prepared request. P3 old readers
+        // fail closed on the new kind, while ordinary wire omission is intact.
+        let prepared = current.clone().with_prepared_session_command_identity();
+        assert!(prepared.same_session_reservation(&prepared), "P1");
+        for other in [&current, &legacy, &unknown] {
+            assert!(!other.same_session_reservation(&prepared), "P2");
+            assert!(!prepared.same_session_reservation(other), "P2");
+        }
+        let mut missing_prepared = prepared.clone();
+        missing_prepared.session_command_fingerprint = None;
+        assert!(!missing_prepared.same_session_reservation(&prepared), "P2");
+        assert!(!prepared.same_session_reservation(&missing_prepared), "P2");
+        let prepared_wire = serde_json::to_value(&prepared).unwrap();
+        assert_eq!(
+            prepared_wire["identity_scope"], "prepared_session_command",
+            "P3"
+        );
+        assert_eq!(
+            serde_json::from_value::<RunDispatch>(prepared_wire.clone()).unwrap(),
+            prepared,
+            "P1"
+        );
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldIdentityScope {
+            FullDispatch,
+            SessionCommand,
+        }
+        assert!(
+            serde_json::from_value::<OldIdentityScope>(prepared_wire["identity_scope"].clone())
+                .is_err(),
+            "P3"
+        );
+        assert!(
+            serde_json::to_value(RunDispatch::new(activation()))
+                .unwrap()
+                .get("identity_scope")
+                .is_none(),
+            "P3 ordinary unchanged"
+        );
+    }
+
+    #[test]
+    fn worker_codec_requirements_are_intrinsic_and_local_legacy_bytes_stay_unchanged() {
+        use awaken_worker_contract::{
+            PREPARED_SESSION_DISPATCH_CAPABILITY as PREPARED,
+            TOOL_RESULT_JOURNAL_CAPABILITY as JOURNAL, VersionRange, WorkerManifest,
+        };
+        // Causes C1 prepared/ordinary kind; C2 Native/ACP/A2A primary;
+        // C3 old explicit-v5 Worker omits prepared support versus actual new
+        // support; C4 required metadata stripped; C5 no-Worker protocol0;
+        // C6 remote transport has no immutable offered-capability evidence.
+        // Effects: E1 C1 prepared always requires its positive codec token;
+        // E2 Native/ACP also require persisted journal support; E3 C4 cannot
+        // bypass even with an offered token or a local fallback on remote
+        // input; E4 C5 legacy bytes/hash and local admission are unchanged.
+        // Rules R1..R3 cross backend x prepared x offered; R4 strips metadata;
+        // R5 is the explicit local/no-wire exception. R6 C6 admits only the
+        // codec-free ordinary A2A row: unknown offers cannot certify a required
+        // codec. Fallback membership is checked by placement's shared table.
+        for backend in ["native", "acp:claude", "a2a:https://codec.invalid"] {
+            let mut activation = activation();
+            activation.snapshot.resolved_spec.model_binding = if backend.starts_with("a2a:") {
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+                    awaken_runtime_contract::resolved::ModelBinding::parse("", "", backend)
+                        .expect("external fixture binding is admissible"),
+                    "workspace",
+                    None,
+                    "sha256:codec-card",
+                )
+                .unwrap()
+            } else {
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "provider", "model", backend,
+                    )
+                    .expect("complete fixture binding is admissible"),
+                )
+            };
+            let local = RunDispatch::new(activation.clone());
+            let old_bytes = serde_json::to_vec(&local).unwrap();
+            let old_hash = local.canonical_fingerprint();
+            assert!(
+                local.worker_codec_admission(None).is_ok(),
+                "R5 no Worker needed"
+            );
+            let decoded: RunDispatch = serde_json::from_slice(&old_bytes).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&decoded).unwrap(),
+                old_bytes,
+                "R5 ordinary None wire"
+            );
+            assert_eq!(
+                decoded.canonical_fingerprint(),
+                old_hash,
+                "R5 ordinary hash"
+            );
+            for prepared in [false, true] {
+                let mut row = RunDispatch::new(activation.clone())
+                    .with_placement(PlacementRequirements::remote_preferred())
+                    .with_worker_codec_requirements();
+                if prepared {
+                    row = row.with_prepared_session_command_identity();
+                }
+                assert_eq!(
+                    row.placement.required_capabilities.contains(PREPARED),
+                    prepared,
+                    "R1 intrinsic kind"
+                );
+                assert_eq!(
+                    row.placement.required_capabilities.contains(JOURNAL),
+                    !backend.starts_with("a2a:"),
+                    "R2 intrinsic frozen backend"
+                );
+                assert_eq!(
+                    row.validate_worker_wire_codec_requirements(None).is_ok(),
+                    !prepared && backend.starts_with("a2a:"),
+                    "R6 unknown remote offers cannot certify required codecs"
+                );
+                let mut old = WorkerManifest {
+                    runtime_protocol: VersionRange::exact(
+                        awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                    ),
+                    ..Default::default()
+                };
+                old.capabilities.insert(JOURNAL.into());
+                assert_eq!(
+                    row.worker_codec_admission(Some(&old)).is_ok(),
+                    !prepared,
+                    "R3 v5 alone cannot decode prepared"
+                );
+                old.capabilities.insert(PREPARED.into());
+                assert!(
+                    row.worker_codec_admission(Some(&old)).is_ok(),
+                    "R3 positive declared support"
+                );
+                if prepared {
+                    row.placement.required_capabilities.remove(PREPARED);
+                } else if !backend.starts_with("a2a:") {
+                    row.placement.required_capabilities.remove(JOURNAL);
+                }
+                if prepared || !backend.starts_with("a2a:") {
+                    assert!(
+                        row.validate_worker_codec_requirements().is_err(),
+                        "R4 missing metadata"
+                    );
+                    assert!(
+                        row.worker_codec_admission(Some(&old)).is_err(),
+                        "R4 offered alone cannot upgrade row"
+                    );
+                    assert!(
+                        row.worker_codec_admission(None).is_err(),
+                        "R4 remote row cannot use local fallback"
+                    );
+                }
+            }
+        }
     }
 
     /// Resource-envelope compatibility causes/effects: C1 current dispatch has a

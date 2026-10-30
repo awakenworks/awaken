@@ -690,6 +690,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Coordina
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRuntimeFake {
+    // Fixture rule P1: scripted User and child Runs use ordinary reservation and activation.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -1585,6 +1600,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFak
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
     {
         unreachable!()
@@ -1598,12 +1614,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFak
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

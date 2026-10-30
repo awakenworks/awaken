@@ -146,6 +146,37 @@ struct RecordingSessionCoordination {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSessionCoordination {
+    // Fixture rule P1: the transport fixture observes settlement without admitting activity.
+    // Prepared preparation refuses without changing any recorded effect.
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        _session: &awaken_session_types::SessionId,
+        _agent: &str,
+        _run: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::unavailable(
+            "the transport fixture observes settlement without admitting activity",
+        ))
+    }
+
+    // Fixture rule P1: the transport fixture observes settlement without admitting activity.
+    // Prepared admission refuses without changing any recorded effect.
+    async fn admit_prepared_session_run_activity(
+        &self,
+        _session: &awaken_session_types::SessionId,
+        _run: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+        _preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivityAdmission,
+        awaken_session_types::RunError,
+    > {
+        Err(awaken_session_types::RunError::unavailable(
+            "the transport fixture observes settlement without admitting activity",
+        ))
+    }
+
     async fn admit_session_run_activity(
         &self,
         _session_id: &awaken_session_types::SessionId,

@@ -72,6 +72,33 @@ impl WorkerPlacedSessions {
 
 #[async_trait::async_trait]
 impl CoordinationRuntime for WorkerPlacedSessions {
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError> {
+        let commit = self
+            .ports
+            .reads
+            .commit_for_read(command.session_id.as_str())
+            .await?;
+        crate::run_prepared_session_run(
+            command,
+            |activation| {
+                crate::SessionLowering::prepare(self.ports.projections.as_ref(), activation)
+            },
+            crate::PreparedSessionRunDelivery {
+                owner: self.ports.owner.clone(),
+                publication: &self.ports.publication,
+                completion: &self.ports.completion,
+                commit,
+                clock: self.ports.clock.as_ref(),
+            },
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,

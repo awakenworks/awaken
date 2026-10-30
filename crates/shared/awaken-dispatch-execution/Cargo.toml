@@ -24,6 +24,8 @@ awaken-dispatch-erasure.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
+# The canonical Worker codec capability vocabulary; do not duplicate its token.
+awaken-worker-contract.workspace = true
 # The process topology and storage selection this dispatch is constructed with.
 awaken-deployment-config.workspace = true
 awaken-runtime-contract.workspace = true

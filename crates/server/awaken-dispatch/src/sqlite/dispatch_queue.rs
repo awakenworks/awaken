@@ -536,6 +536,12 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
                 ) = row;
                 let cancellation_requested = cancellation_requested != 0;
                 let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
+                if request
+                    .worker_codec_admission(Some(&worker.manifest))
+                    .is_err()
+                {
+                    continue;
+                }
                 let previous: Option<WorkerAssignment> = previous_json
                     .map(|value| serde_json::from_str(&value).map_err(json_err))
                     .transpose()?;

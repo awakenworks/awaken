@@ -167,7 +167,10 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
             task.request_cancel().unwrap();
             let mut state = Store::new();
             state.apply(&task_state_cell(&task.id).write(&task).unwrap());
-            let reaction = hook.on_phase(&ctx, &[], &state).await;
+            let reaction = hook
+                .on_phase(&ctx, &[], &state)
+                .await
+                .expect("phase hook succeeds");
             assert_eq!(reaction.state.len(), if remote { 1 } else { 2 });
             state.apply(&reaction.state[0]);
             let next = task_state_cell(&task.id).load(&state).unwrap().unwrap();
@@ -738,7 +741,10 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             .write(&completed)
             .expect("completed state"),
     );
-    let reaction = hook.on_phase(&ctx, &[], &completed_state).await;
+    let reaction = hook
+        .on_phase(&ctx, &[], &completed_state)
+        .await
+        .expect("phase hook succeeds");
     assert_eq!(
         reaction.state.len(),
         2,
@@ -776,6 +782,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     assert!(
         hook.on_phase(&ctx, &[], &leased_state)
             .await
+            .expect("phase hook succeeds")
             .state
             .is_empty(),
         "C2/E2"
@@ -799,7 +806,10 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             .write(&replacement)
             .expect("replacement state"),
     );
-    let reaction = hook.on_phase(&ctx, &[], &replacement_state).await;
+    let reaction = hook
+        .on_phase(&ctx, &[], &replacement_state)
+        .await
+        .expect("phase hook succeeds");
     assert_eq!(reaction.state.len(), 1, "C3/E3");
     replacement_state.apply(&reaction.state[0]);
     let reclaimed = task_state_cell(&replacement.id)
@@ -834,6 +844,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     assert!(
         hook.on_phase(&ctx, &[], &replacement_state)
             .await
+            .expect("phase hook succeeds")
             .state
             .is_empty(),
         "C4/E4 stale completion cannot mutate the current attempt"
@@ -860,7 +871,10 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             .write(&replacement)
             .unwrap(),
     );
-    let _rejected_old_run = hook.on_phase(&ctx, &[], &stale_snapshot).await;
+    let _rejected_old_run = hook
+        .on_phase(&ctx, &[], &stale_snapshot)
+        .await
+        .expect("phase hook succeeds");
     let retained = supervisor
         .completion(&replacement.id)
         .expect("C5/E5 newer evidence retained");
@@ -875,7 +889,10 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             message: "retained-new-epoch".into()
         }
     );
-    let current = hook.on_phase(&ctx, &[], &replacement_state).await;
+    let current = hook
+        .on_phase(&ctx, &[], &replacement_state)
+        .await
+        .expect("phase hook succeeds");
     assert_eq!(
         current.state.len(),
         2,
@@ -982,7 +999,10 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
             .expect("running state"),
     );
 
-    let rejected = hook.on_phase(&ctx, &[], &durable).await;
+    let rejected = hook
+        .on_phase(&ctx, &[], &durable)
+        .await
+        .expect("phase hook succeeds");
     assert_eq!(rejected.state.len(), 2, "R1 task and notification receipt");
     assert!(supervisor.completion(&task.id).is_some(), "R2");
     assert!(
@@ -990,7 +1010,10 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
         "R2 dedup guard"
     );
 
-    let retried = hook.on_phase(&ctx, &[], &durable).await;
+    let retried = hook
+        .on_phase(&ctx, &[], &durable)
+        .await
+        .expect("phase hook succeeds");
     assert_eq!(retried.state.len(), 2, "R2 retry");
     assert_eq!(retried.state, rejected.state, "R2 exact staged retry");
     assert_eq!(
@@ -1010,7 +1033,10 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
         "R3/R5 exact result retention"
     );
 
-    let retired = hook.on_phase(&ctx, &[], &durable).await;
+    let retired = hook
+        .on_phase(&ctx, &[], &durable)
+        .await
+        .expect("phase hook succeeds");
     assert!(retired.state.is_empty(), "R4 has no second durable write");
     assert!(supervisor.completion(&task.id).is_none(), "R4");
     assert!(
@@ -1025,4 +1051,77 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
             .lifecycle,
         BackgroundTaskLifecycle::Ended { .. }
     ));
+}
+
+#[tokio::test]
+async fn step_start_rejects_corrupt_task_namespace_before_touching_supervisor_projection() {
+    // J2/J7: a valid retained completion plus one malformed owned task cell.
+    // Complete namespace decode must fail before any retire/fold/cancel/reclaim;
+    // original state and process-local completion/dedup projection stay exact.
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new(
+        "worker",
+        awaken_time::system_clock(),
+    ));
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
+        },
+        supervisor.clone(),
+    );
+    let env = ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())]).unwrap();
+    let mut task = background_task("decode-before-effects");
+    let fence = task
+        .start(
+            supervisor.worker_id(),
+            supervisor.clock().now_ms(),
+            BackgroundTaskSupervisor::lease_ms(),
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::replay_safe(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .unwrap();
+    assert!(supervisor.register(&task.id, &fence).is_some());
+    supervisor.complete(
+        task.id.clone(),
+        BackgroundTaskCompletion {
+            fence: fence.clone(),
+            end: BackgroundTaskEnd::Completed {
+                content: vec![ContentBlock::text("known")],
+                is_error: false,
+            },
+        },
+    );
+    let mut state = Store::new();
+    state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+    state.apply(&awaken_agent_contract::agent::state::Command::set(
+        awaken_agent_contract::agent::state::Scope::Thread,
+        awaken_agent_contract::agent::state::MergePolicy::Exclusive,
+        "background_task/corrupt",
+        serde_json::json!({"not":"a task"}),
+    ));
+    let before = state.clone();
+    let error = env.hooks_for(PhaseHookPoint::StepStart)[0]
+        .on_phase(
+            &PhaseContext {
+                run_id: RunId("run".into()),
+                step: 0,
+                kind: PhaseKind::StepStart,
+            },
+            &[],
+            &state,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "background_task_state_invalid");
+    assert_eq!(state, before);
+    assert!(
+        supervisor.completion(&task.id).is_some(),
+        "completion was not retired"
+    );
+    assert!(
+        supervisor.register(&task.id, &fence).is_none(),
+        "dedup projection was not cleared"
+    );
 }

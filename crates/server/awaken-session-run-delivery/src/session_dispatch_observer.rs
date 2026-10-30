@@ -113,15 +113,58 @@ impl SessionDispatchObserver {
 
 #[async_trait::async_trait]
 impl SessionRunAdmissionObserver for SessionDispatchObserver {
+    async fn prepare_session_run_activity(
+        &self,
+        dispatch: &RunDispatch,
+        claim: &RunClaim,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, DispatchSettlementError> {
+        if dispatch.identity_scope
+            != awaken_dispatch_contract::DispatchIdentityScope::PreparedSessionCommand
+        {
+            return Ok(None);
+        }
+        let session = Self::activity_session(dispatch, claim).ok_or_else(|| {
+            DispatchSettlementError("prepared reservation affinity is invalid".into())
+        })?;
+        self.application
+            .prepare_prepared_session_run_activity(
+                &SessionId::from(&session.0),
+                &dispatch.activation.snapshot.root_agent_id.0,
+                dispatch.run_id(),
+                mode,
+            )
+            .await
+            .map_err(|error| DispatchSettlementError(error.to_string()))
+    }
+
     async fn admit_session_run_activity(
         &self,
         dispatch: &RunDispatch,
         claim: &RunClaim,
         mode: SessionRunActivityAdmissionMode,
+        preparation: Option<awaken_session_execution_contract::PreparedSessionRunActivity>,
     ) -> Result<SessionRunActivityAdmission, DispatchSettlementError> {
         let Some(session) = Self::activity_session(dispatch, claim) else {
             return Ok(SessionRunActivityAdmission::Rejected);
         };
+        if dispatch.identity_scope
+            == awaken_dispatch_contract::DispatchIdentityScope::PreparedSessionCommand
+        {
+            let preparation = preparation.ok_or_else(|| {
+                DispatchSettlementError("prepared reservation has no guarded preparation".into())
+            })?;
+            return self
+                .application
+                .admit_prepared_session_run_activity(
+                    &SessionId::from(&session.0),
+                    dispatch.run_id(),
+                    mode,
+                    preparation,
+                )
+                .await
+                .map_err(|error| DispatchSettlementError(error.to_string()));
+        }
         self.admit_activity(
             &SessionId::from(&session.0),
             &dispatch.activation.snapshot.root_agent_id.0,

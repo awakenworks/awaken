@@ -1174,6 +1174,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         Err(RunError::internal("unused test runtime"))
     }
@@ -1186,12 +1187,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -1315,6 +1317,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Recordin
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRuntime {
+    // Fixture rule P1: the fixture records tool replies without starting a prepared Run.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one complete self-affine Session Run as an unclaimable reservation.
@@ -1795,6 +1812,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingReplyRuntime
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         Err(RunError::internal("unused reply test runtime"))
     }
@@ -1807,12 +1825,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingReplyRuntime
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -1929,6 +1948,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Recordin
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAdmissionRuntime {
+    // Fixture rule P1: the fixture records child admission without starting a prepared root Run.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one complete self-affine Session Run as an unclaimable reservation.
@@ -2397,9 +2431,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingAgentAdmissi
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         NoopRuntime
-            .define_outcome(thread, description, rubric, max_iterations)
+            .define_outcome(thread, description, rubric, max_iterations, executor)
             .await
     }
 
@@ -2411,12 +2446,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingAgentAdmissi
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -2538,6 +2574,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Recordin
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundaryBudgetRuntime {
+    // Fixture rule P1: the fixture records boundary budget effects without prepared execution.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one complete self-affine Session Run as an unclaimable reservation.
@@ -3048,6 +3099,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingBoundaryBudg
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         Err(RunError::internal("unused boundary budget test runtime"))
     }
@@ -3060,12 +3112,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingBoundaryBudg
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -3185,6 +3238,21 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanupRuntime {
+    // Fixture rule P1: the fixture records terminal cleanup without prepared execution.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn archive_session_thread(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -3807,6 +3875,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCleanupRunti
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         Err(RunError::internal("unused test runtime"))
     }
@@ -3819,12 +3888,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCleanupRunti
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

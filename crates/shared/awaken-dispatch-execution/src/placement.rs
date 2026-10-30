@@ -222,6 +222,14 @@ pub fn remote_worker_placement(
                 .insert(capability.to_string());
         }
     }
+    // This is a persisted codec demand, not a placement preference. The same
+    // intrinsic compiler is consumed by Dispatch/Worker admission, which also
+    // rejects an unmarked remote row before recovery reads or executor effects.
+    if awaken_dispatch_contract::RunDispatch::requires_tool_result_journal(models) {
+        placement
+            .required_capabilities
+            .insert(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_string());
+    }
     placement
 }
 
@@ -387,6 +395,87 @@ pub fn session_preparation_requirements(
 #[cfg(test)]
 mod preparation_tests {
     use super::*;
+
+    fn model_set(
+        primary: &str,
+        candidates: &[&str],
+    ) -> awaken_runtime_contract::resolved::ResolvedSpec {
+        use awaken_runtime_contract::resolved::{
+            CatalogFingerprint, ModelBinding, ResolvedModelCandidate,
+        };
+        awaken_runtime_contract::resolved::ResolvedSpec {
+            model_binding: ResolvedModelCandidate::host(
+                ModelBinding::parse("p", "m", primary).expect("valid primary fixture binding"),
+            ),
+            model_candidates: candidates
+                .iter()
+                .map(|backend| {
+                    ResolvedModelCandidate::host(
+                        ModelBinding::parse("p", "m", *backend)
+                            .expect("valid fallback fixture binding"),
+                    )
+                })
+                .collect(),
+            catalog_fingerprint: CatalogFingerprint("journal-placement".into()),
+            instructions: String::new(),
+            max_steps: Some(1),
+            delegation_limits: Default::default(),
+            tool_descriptors: Vec::new(),
+            plugin_ids: Vec::new(),
+            plugin_config: Default::default(),
+            context_policy: Default::default(),
+            tool_presentation: Default::default(),
+        }
+    }
+
+    #[test]
+    fn raw_result_codec_demand_is_persisted_for_every_native_or_acp_candidate() {
+        // Codec decision table: C1 primary is Native/ACP/A2A; C2 no fallback,
+        // Native/ACP fallback, or only A2A fallback; C3 remote-preferred versus
+        // remote-required. Native and ACP may recover ActiveToolBatch through
+        // the Runtime-owned continuation, while A2A-only does not. Rules R1 any
+        // Native/ACP candidate => the immutable placement carries the codec
+        // token; R2 all A2A => no invented raw-journal demand. C3 changes only
+        // the original execution location, never whether the token is carried.
+        // The expected column is independent of the production predicate. The
+        // Worker-entry/old-Coordinator omission table is owned by Dispatch's
+        // same intrinsic compiler and capability-admission tests.
+        for (primary, candidates, required) in [
+            ("genai", Vec::new(), true),
+            ("acp:claude", Vec::new(), true),
+            ("a2a:https://primary.example", Vec::new(), false),
+            ("a2a:https://primary.example", vec!["genai"], true),
+            ("a2a:https://primary.example", vec!["acp:claude"], true),
+            (
+                "a2a:https://primary.example",
+                vec!["a2a:https://fallback.example"],
+                false,
+            ),
+            ("genai", vec!["a2a:https://fallback.example"], true),
+            ("acp:claude", vec!["a2a:https://fallback.example"], true),
+        ] {
+            for remote_required in [false, true] {
+                let models = model_set(primary, &candidates);
+                let placement = remote_worker_placement(&models, None, None, remote_required);
+                assert_eq!(
+                    placement
+                        .required_capabilities
+                        .contains(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY,),
+                    required,
+                    "primary={primary}, candidates={candidates:?}, remote={remote_required}",
+                );
+                assert_eq!(
+                    placement.location,
+                    if remote_required {
+                        awaken_worker_contract::ExecutionLocation::RemoteRequired
+                    } else {
+                        awaken_worker_contract::ExecutionLocation::RemotePreferred
+                    },
+                    "codec demand does not force an unrelated local/remote policy",
+                );
+            }
+        }
+    }
 
     #[test]
     fn run_free_preparation_uses_the_same_physical_projection_as_run_placement() {

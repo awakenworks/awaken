@@ -28,14 +28,15 @@ use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, PostgresDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunClaim, RunDispatch, SettleOutcome,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
-    WorkerRegistration, WorkerSnapshot, WorkerState,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerObservationSource, WorkerRegistration,
+    WorkerSnapshot, WorkerState,
 };
 use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router_with_services,
 };
+use awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -159,7 +160,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
     // P1 the two processes serve the current binary => explicitly advertise its
     // execution protocol. ANY/omitted is intentionally not positive evidence;
     // the transport admission decision table covers rejection of those peers.
-    let mut manifest = WorkerManifest::default();
+    let mut manifest = current_dispatch_codec_manifest();
     manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let identity = WorkerIdentity::new(WORKER_ID, WORKER_INCARNATION_ID, 1);
@@ -497,8 +498,20 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
 
     let (identity, directory) = configured_worker();
 
-    let queue_a = HttpDispatchQueue::new(&base_a, identity.clone());
-    let queue_b = HttpDispatchQueue::new(&base_b, identity.clone());
+    // C0 both actual Control processes and the current client support these
+    // codecs; freeze the EXACT registered manifest, not an invented offer.
+    // Real PostgreSQL acceptance still requires its configured owned fixture.
+    let manifest = directory
+        .current(WORKER_ID)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot
+        .manifest;
+    let queue_a =
+        HttpDispatchQueue::new(&base_a, identity.clone()).with_worker_manifest(manifest.clone());
+    let queue_b =
+        HttpDispatchQueue::new(&base_b, identity.clone()).with_worker_manifest(manifest.clone());
     let run_id = RunId("active-active-run".into());
     let thread_id = ThreadId("active-active-thread".into());
     // P2 a newly authored remote dispatch and this current Worker must share
@@ -507,17 +520,9 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
     let mut dispatch = RunDispatch::new(activation(&run_id, &thread_id));
     dispatch.placement = awaken_dispatch::PlacementRequirements::remote_preferred();
     dispatch.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
-    awaken_dispatch::can_claim(
-        &directory
-            .current(WORKER_ID)
-            .await
-            .unwrap()
-            .unwrap()
-            .snapshot
-            .manifest,
-        &dispatch.placement,
-    )
-    .expect("P1/P2 current fixture passes the authoritative compatibility kernel");
+    let dispatch = dispatch.with_worker_codec_requirements();
+    awaken_dispatch::can_claim(&manifest, &dispatch.placement)
+        .expect("P1/P2 current fixture passes the authoritative compatibility kernel");
     queue_a
         .enqueue(dispatch)
         .await

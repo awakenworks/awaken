@@ -58,8 +58,8 @@ mod tests {
             _ctx: &PhaseContext,
             _conversation: &[Message],
             _state: &Store,
-        ) -> HookReaction {
-            HookReaction::default()
+        ) -> crate::diagnostic::Result<HookReaction> {
+            Ok(HookReaction::default())
         }
     }
 

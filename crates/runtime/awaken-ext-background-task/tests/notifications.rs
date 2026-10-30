@@ -74,6 +74,7 @@ async fn project(
             state,
         )
         .await
+        .expect("phase hook succeeds")
 }
 
 #[tokio::test]

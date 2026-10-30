@@ -19,11 +19,18 @@ pub(crate) async fn define(
     description: &str,
     rubric: &str,
     max_iterations: u32,
+    admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
 ) -> Result<OutcomeDrive, RunError> {
-    host.define_outcome(thread, description, rubric, max_iterations)
-        .await
-        .map(progress)
-        .map_err(to_run_error)
+    host.define_outcome(
+        thread,
+        description,
+        rubric,
+        max_iterations,
+        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission),
+    )
+    .await
+    .map(progress)
+    .map_err(to_run_error)
 }
 
 pub(crate) async fn prepare(
@@ -42,9 +49,13 @@ pub(crate) async fn prepare(
 pub(crate) async fn resume(
     host: &crate::Outcomes,
     thread: &str,
+    admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
 ) -> Result<Option<OutcomeDrive>, RunError> {
-    host.continue_outcome(thread)
-        .await
-        .map_err(to_run_error)
-        .map(|state| state.map(progress))
+    host.continue_outcome(
+        thread,
+        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission),
+    )
+    .await
+    .map_err(to_run_error)
+    .map(|state| state.map(progress))
 }

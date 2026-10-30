@@ -312,12 +312,12 @@ impl PhaseHook for CompactHook {
         ctx: &PhaseContext,
         conversation: &[Message],
         state: &Store,
-    ) -> HookReaction {
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         // Already evaluated this run (a later step or a resumed run replaying
         // committed state): the kernel injects any summary from `ContextMessages`,
         // so do not re-fold and do not re-stage the marker (emit-once per run).
         if ContextMessages::load_or_default(state).contains_key(COMPACT_PLUGIN_ID) {
-            return HookReaction::default();
+            return Ok(HookReaction::default());
         }
         let Some(fold_to) = self.fold_to(conversation) else {
             // A soft prefetch is preparation only. It must not write the
@@ -337,9 +337,9 @@ impl PhaseHook for CompactHook {
                     .prefetch(self.request(scope, conversation, prefetch_to))
                     .await;
             }
-            return HookReaction::default();
+            return Ok(HookReaction::default());
         };
-        match self.compute(conversation, fold_to).await {
+        Ok(match self.compute(conversation, fold_to).await {
             // A fold happened: record the summary under this producer in
             // `ContextMessages` (the kernel injects it request-only across steps and
             // a resumed run) *and* stage the durable, protocol-neutral marker the
@@ -359,7 +359,7 @@ impl PhaseHook for CompactHook {
                 COMPACT_PLUGIN_ID.to_string(),
                 Vec::new(),
             )]))]),
-        }
+        })
     }
 }
 
@@ -520,7 +520,10 @@ mod tests {
         })
         .with_backend("thread-a", backend.clone());
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(5), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(5), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert!(injected(&reaction).is_empty());
         assert!(backend.summarized.lock().unwrap().is_empty());
     }
@@ -536,7 +539,10 @@ mod tests {
         .with_backend("thread-a", backend.clone());
         let hook = &plugin.resolve().phase_hooks[0];
         // 10 messages, keep_last 2 → summarize the first 8.
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert_eq!(backend.summarized.lock().unwrap()[0].seed.len(), 9); // 8 folded + prompt
         let block = injected(&reaction);
         assert_eq!(block.len(), 1);
@@ -564,7 +570,8 @@ mod tests {
         .with_backend("thread-a", backend.clone());
         let reaction = plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &convo(6), &Store::new())
-            .await;
+            .await
+            .expect("phase hook succeeds");
 
         assert!(injected(&reaction).is_empty());
         assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
@@ -597,7 +604,8 @@ mod tests {
         let plugin = CompactPlugin::new(config).with_backend("thread-a", backend.clone());
         let reaction = plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &conversation, &Store::new())
-            .await;
+            .await
+            .expect("phase hook succeeds");
 
         let block = injected(&reaction);
         assert_eq!(block.len(), 4, "summary + messages 5..8 bridge");
@@ -629,7 +637,8 @@ mod tests {
         .with_backend("thread-a", backend.clone());
         let reaction = plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &convo(10), &Store::new())
-            .await;
+            .await
+            .expect("phase hook succeeds");
 
         assert_eq!(injected(&reaction).len(), 1);
         let summarized = backend.summarized.lock().unwrap();
@@ -669,7 +678,8 @@ mod tests {
                 CompactPlugin::new(config.clone()).with_backend("thread-a", backend.clone());
             let reaction = plugin.resolve().phase_hooks[0]
                 .on_phase(&phase_ctx(), &conversation, &Store::new())
-                .await;
+                .await
+                .expect("phase hook succeeds");
 
             assert_eq!(backend.summarized.lock().unwrap().len(), 1, "{axis}/E2");
             let block = injected(&reaction);
@@ -708,7 +718,8 @@ mod tests {
             .with_backend("thread-a", backend);
             let reaction = plugin.resolve().phase_hooks[0]
                 .on_phase(&phase_ctx(), &convo(10), &Store::new())
-                .await;
+                .await
+                .expect("phase hook succeeds");
 
             assert!(injected(&reaction).is_empty(), "{axis}/E1");
             assert!(
@@ -731,7 +742,8 @@ mod tests {
         .with_backend("thread-a", default_backend.clone());
         default_plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &convo(10), &Store::new())
-            .await;
+            .await
+            .expect("phase hook succeeds");
         assert_eq!(
             default_backend.summarized.lock().unwrap()[0]
                 .seed
@@ -753,7 +765,8 @@ mod tests {
         .with_backend("thread-a", tuned_backend.clone());
         tuned_plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &convo(10), &Store::new())
-            .await;
+            .await
+            .expect("phase hook succeeds");
         assert_eq!(
             tuned_backend.summarized.lock().unwrap()[0]
                 .seed
@@ -779,7 +792,10 @@ mod tests {
         })
         .with_backend("thread-a", backend);
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         // The fold stages exactly one thread-scoped compaction marker, which the
         // read-back helper resolves to `true`.
         assert_eq!(reaction.state.len(), 3);
@@ -811,7 +827,10 @@ mod tests {
         })
         .with_backend("thread-a", backend);
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(5), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(5), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert!(reaction.state.is_empty());
         assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
@@ -832,7 +851,10 @@ mod tests {
         .with_backend("thread-a", backend);
         let hook = &plugin.resolve().phase_hooks[0];
         let mut state = Store::new();
-        let first = hook.on_phase(&phase_ctx(), &convo(10), &state).await;
+        let first = hook
+            .on_phase(&phase_ctx(), &convo(10), &state)
+            .await
+            .expect("phase hook succeeds");
         assert_eq!(
             first.state.len(),
             3,
@@ -846,7 +868,10 @@ mod tests {
         }
         // The summary the first step staged is the block the kernel replays.
         assert_eq!(injected(&first).len(), 1, "the summary is in run state");
-        let second = hook.on_phase(&phase_ctx(), &convo(10), &state).await;
+        let second = hook
+            .on_phase(&phase_ctx(), &convo(10), &state)
+            .await
+            .expect("phase hook succeeds");
         assert!(second.state.is_empty(), "emit-once per run");
         assert!(second.messages.is_empty(), "a replay stages nothing new");
     }
@@ -868,7 +893,10 @@ mod tests {
         .with_backend("thread-a", backend);
         let hook = &plugin.resolve().phase_hooks[0];
         // 10 short messages exceed the 10-token effective window.
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert_eq!(
             injected(&reaction).len(),
             1,
@@ -894,7 +922,10 @@ mod tests {
         })
         .with_backend("thread-a", backend);
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert!(injected(&reaction).is_empty());
         assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
     }
@@ -919,7 +950,10 @@ mod tests {
             ..Default::default()
         });
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &convo(10), &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert!(injected(&reaction).is_empty());
         assert!(!RunCompactionMarker::is_recorded(&reaction.state, "r"));
         assert_eq!(
@@ -946,7 +980,10 @@ mod tests {
             })
             .with_backend("thread-a", backend);
             let hook = &plugin.resolve().phase_hooks[0];
-            let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
+            let reaction = hook
+                .on_phase(&phase_ctx(), &convo(10), &Store::new())
+                .await
+                .expect("phase hook succeeds");
             assert!(injected(&reaction).is_empty(), "no summary block");
             assert!(
                 !RunCompactionMarker::is_recorded(&reaction.state, "r"),
@@ -974,7 +1011,10 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let mut state = Store::new();
         // Ten short messages cross the 20-token soft threshold but not 40 hard.
-        let first = hook.on_phase(&phase_ctx(), &convo(10), &state).await;
+        let first = hook
+            .on_phase(&phase_ctx(), &convo(10), &state)
+            .await
+            .expect("phase hook succeeds");
         assert!(injected(&first).is_empty());
         assert!(!RunCompactionMarker::is_recorded(&first.state, "r"));
         assert!(first.state.is_empty(), "G1/E1");
@@ -983,7 +1023,10 @@ mod tests {
             state.apply(command);
         }
         // Step 2: growth crosses the hard threshold and remains eligible.
-        let second = hook.on_phase(&phase_ctx(), &convo(100), &state).await;
+        let second = hook
+            .on_phase(&phase_ctx(), &convo(100), &state)
+            .await
+            .expect("phase hook succeeds");
         assert_eq!(backend.summarized.lock().unwrap().len(), 1, "G1/E2");
         assert!(RunCompactionMarker::is_recorded(&second.state, "r"));
         assert_eq!(injected(&second).len(), 1, "G1/E2");

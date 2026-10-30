@@ -250,6 +250,14 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         .sandbox_override
         .unwrap_or_else(|| inputs.deployment.sandbox_support());
     let mut capabilities = BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
+    // Every backend receives Claimed.request through the same compiled
+    // Dispatch decoder. Native/ACP/A2A selection changes execution, not this
+    // installed wire support; no operator capability opt-in is needed.
+    capabilities.insert(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY.to_owned());
+    // Advertise this only with the actual Runtime Returned/KnownAborted codec.
+    // Prepared Session command support is an independent capability owned by
+    // its wire admission path; neither token substitutes for the other.
+    capabilities.insert(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_owned());
     capabilities
         .insert(awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY.to_owned());
     capabilities

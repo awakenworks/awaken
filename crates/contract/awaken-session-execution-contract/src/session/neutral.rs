@@ -243,6 +243,16 @@ macro_rules! neutral_role {
                 ))
             }
 
+            async fn run_prepared_session_run(
+                &self,
+                _command: $crate::AdmitPreparedSessionRun,
+                _activity: &dyn $crate::SessionRunActivityAdmitter,
+            ) -> Result<$crate::__macro_support::awaken_agent_contract::agent::run::RunState, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable(
+                    "runtime does not implement prepared Session Run admission",
+                ))
+            }
+
             /// Publish one exact reservation only after the Session root committed its
             /// activity epoch. Ordinary Worker claim/execution remains the sole runner.
             async fn activate_session_run(
@@ -878,6 +888,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 description: &str,
                 rubric: &str,
                 max_iterations: u32,
+                admission: &dyn $crate::PreparedSessionRunAdmission,
             ) -> Result<$crate::OutcomeDrive, $crate::__macro_support::RunError> {
                 let outcome_id = $crate::__macro_support::session_outcome_convenience_id(
                     thread,
@@ -894,17 +905,18 @@ impl $crate::SessionCoordinationReads for $ty {
                     max_iterations,
                 )
                 .await?;
-                $crate::OutcomeRuntime::continue_outcome(self, thread)
+                $crate::OutcomeRuntime::continue_outcome(self, thread, admission)
                     .await?
                     .ok_or_else(|| $crate::__macro_support::RunError::internal("prepared Outcome is not active"))
             }
 
             /// Continue the active Outcome after the ordinary Run resume has committed.
-            /// `None` proves there is no active aggregate; implementations must rebuild
-            /// continuation exclusively from the Thread-owned Outcome state.
+            /// The admission role is borrowed for this drive only. `None` is no
+            /// progress; committed Thread Outcome state remains authoritative.
             async fn continue_outcome(
                 &self,
                 _thread: &str,
+                _admission: &dyn $crate::PreparedSessionRunAdmission,
             ) -> Result<Option<$crate::OutcomeDrive>, $crate::__macro_support::RunError> {
                 Ok(None)
             }

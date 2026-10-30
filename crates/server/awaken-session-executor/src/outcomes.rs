@@ -5,8 +5,9 @@
 //! [`Outcomes`] — drives a Session's Outcomes.
 //!
 //! It prepares and continues the extension-owned Outcome aggregate, running
-//! Worker Runs through [`crate::SessionRuns`] and Grader Runs through the same
-//! Run boundary, and serves the Session application's `OutcomeRuntime` role.
+//! Worker/ACK Runs through the caller's borrowed admission role and Grader
+//! Runs through their existing separate Run boundary. It serves the Session
+//! application's `OutcomeRuntime` role without retaining that application.
 
 use std::sync::Arc;
 
@@ -56,11 +57,17 @@ impl awaken_session_execution_contract::OutcomeRuntime for Outcomes {
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
-        crate::managed_outcome::define(self, thread, description, rubric, max_iterations).await
+        crate::managed_outcome::define(self, thread, description, rubric, max_iterations, admission)
+            .await
     }
 
-    async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-        crate::managed_outcome::resume(self, thread).await
+    async fn continue_outcome(
+        &self,
+        thread: &str,
+        admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+    ) -> Result<Option<OutcomeDrive>, RunError> {
+        crate::managed_outcome::resume(self, thread, admission).await
     }
 }
