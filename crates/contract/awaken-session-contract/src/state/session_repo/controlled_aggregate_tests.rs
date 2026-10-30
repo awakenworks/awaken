@@ -2384,7 +2384,7 @@ fn uncounted_failures_count_only_failed_recovery_and_reset_on_counted_progress()
     preparing
         .assignment()
         .claim(
-            crate::SessionRealizationLease {
+            crate::state::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker:1:boot".into(),
                 epoch: 1,

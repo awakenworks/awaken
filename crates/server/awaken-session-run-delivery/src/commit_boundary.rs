@@ -25,8 +25,6 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_dispatch_contract::{RunClaim, RunDispatch};
-use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
 /// One thread's commit boundary: either a `Local` read+write store (an
@@ -261,76 +259,6 @@ impl OperationCoordinator for SessionCommit {
                 "a remote Worker cannot coordinate authoritative commit operations".to_string(),
             )),
         }
-    }
-}
-
-/// The original Session commit owner with read-only claim-bound refinement.
-/// Dispatch's ClaimedCommitService alone invokes this production path while its
-/// original CommitEpochGuard is held through resolution, append and release.
-/// Request/claim copies are immutable validation input, never admission permits.
-/// There is no second store, receipt cache or authoritative append implementation.
-pub(crate) struct ClaimedSessionCommit {
-    pub(crate) commit: Arc<SessionCommit>,
-    pub(crate) request: RunDispatch,
-    pub(crate) claim: RunClaim,
-    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
-    #[cfg(test)]
-    pub(crate) before_append: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
-}
-
-impl crate::CommittedReads {
-    /// The caller is the existing resolver while its original CommitEpochGuard
-    /// is held. Request/claim are original guarded borrows, never a re-query.
-    /// Ordinary read and write views derive from this same selected commit.
-    pub async fn commit_owner_for_claim(
-        &self,
-        request: &RunDispatch,
-        claim: &RunClaim,
-        clock: Arc<dyn awaken_time::WallClock>,
-    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
-        if request.run_id() != &claim.run_id {
-            return Err(ApplicationError::invalid(
-                "Task commit resolver has a foreign claim",
-            ));
-        }
-        let commit = self
-            .commit_for_read(&request.session_thread_id().0)
-            .await
-            .map_err(ApplicationError::from)?;
-        if commit.committed_authority().is_none() {
-            return Err(ApplicationError::unavailable(
-                "Task commit refinement requires the original local Coordinator authority",
-            ));
-        }
-        Ok(Arc::new(ClaimedSessionCommit {
-            commit,
-            request: request.clone(),
-            claim: claim.clone(),
-            clock,
-            #[cfg(test)]
-            before_append: None,
-        }))
-    }
-}
-
-#[async_trait::async_trait]
-impl Coordinator for ClaimedSessionCommit {
-    async fn commit(&self, _: ThreadCommit) -> Result<CommitRecord, Error> {
-        Err(Error::Rejected(
-            "claim-held Task refinement requires the original idempotent commit operation"
-                .to_string(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-impl OperationCoordinator for ClaimedSessionCommit {
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        self.validate_claimed_operation(&operation).await?;
-        // Same selected SessionCommit, same receipt-first replay and atomic
-        // Thread-version/ordinal CAS. Task refinement owns no writer; any peer
-        // advance after validation is rejected by this original append boundary.
-        self.commit.commit_operation(operation).await
     }
 }
 
