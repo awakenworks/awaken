@@ -124,6 +124,11 @@ def text_files(crate_name: str) -> list[Path]:
     manifest = crate_manifest(crate_name)
     if manifest is None:
         return []
+    return _manifest_source_files(manifest)
+
+
+def _manifest_source_files(manifest: Path) -> list[Path]:
+    """Read this discovered crate's sources, without another workspace walk."""
     src = manifest.parent / "src"
     if not src.exists():
         return []
@@ -775,6 +780,7 @@ def _selftest_crate_discovery() -> None:
             "product/context/deep",
             "group/shallow/tests/fixture",
             "group/shallow/target/debug/build",
+            "node_modules/private",
         ):
             (crates / relative / "src").mkdir(parents=True)
             (crates / relative / "Cargo.toml").write_text("[package]\nname = 'x'\n")
@@ -785,6 +791,7 @@ def _selftest_crate_discovery() -> None:
         assert "deep" in names, "D2"
         assert "fixture" not in names, "D3"
         assert "build" not in names, "D4"
+        assert "private" not in names, "D4 node_modules is not a crate"
         assert crate_manifest("deep", crates) == crates / "product/context/deep/Cargo.toml", "D2"
         assert len(crate_source_files(crates)) == 2, "D1/D2 sources; D3/D4 excluded"
         (root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/group/*"]\n')
@@ -797,6 +804,98 @@ def _selftest_crate_discovery() -> None:
         (root / "extra" / "outside" / "Cargo.toml").write_text("[package]\nname = 'y'\n")
         errors = check_crate_manifests_match_workspace(root)
         assert errors == ["extra/outside: workspace member is not discovered under crates/"], errors
+
+
+def _selftest_manifest_source_projection() -> None:
+    # M1 held manifests select their own source even when folder/package names
+    # differ or two folders share a basename. M2 a repeated call sees file and
+    # manifest edits. M3 another root has independent discovery. M4 no src is
+    # an empty projection. The old name-lookup path is an executed tripwire;
+    # caching mutable discovery or rebuilding it per crate fails this table.
+    import os
+    import tempfile
+
+    global iter_crate_manifests, crate_manifest, _manifest_source_files
+    original_iter, original_lookup = iter_crate_manifests, crate_manifest
+    original_sources = _manifest_source_files
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected = root / "crates"
+        first = selected / "group/opaque"
+        second = selected / "product/context/opaque"
+        for path, name, owner in ((first, "awaken-first", "awaken_alpha"),
+                                  (second, "awaken-second", "awaken_beta")):
+            (path / "src").mkdir(parents=True)
+            (path / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
+            (path / "src/lib.rs").write_text(f"pub use {owner}::Thing;\n")
+        nested = first / "tests/fixture/Cargo.toml"
+        nested.parent.mkdir(parents=True)
+        nested.write_text('[package]\nname = "awaken-nested"\n')
+        calls = 0
+
+        def discover() -> list[Path]:
+            nonlocal calls
+            calls += 1
+            return crate_manifests(selected)
+
+        def refuse_lookup(*_args: object) -> None:
+            raise AssertionError("M1 redundant name-based workspace discovery")
+
+        def project() -> dict[str, frozenset[str]]:
+            before = calls
+            specs = architecture_fitness_specs()
+            assert calls == before + 1, "one fresh discovery per projection"
+            return {spec.name: spec.public_first_party_reexports for spec in specs}
+
+        try:
+            iter_crate_manifests, crate_manifest = discover, refuse_lookup
+            assert project() == {"awaken-first": frozenset({"awaken_alpha"}),
+                                 "awaken-second": frozenset({"awaken_beta"})}, "M1 exact physical roots"
+            try:
+                text_files("awaken-first")
+            except AssertionError as error:
+                assert str(error) == "M1 redundant name-based workspace discovery"
+            else:
+                raise AssertionError("old lookup counterfactual escaped the tripwire")
+            edited = first / "src/lib.rs"
+            stamp = edited.stat()
+            edited.write_text("pub use awaken_gamma::Thing;\n")
+            os.utime(edited, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            assert edited.stat().st_size == stamp.st_size, "M2 equal-length edit"
+            assert project()["awaken-first"] == frozenset({"awaken_gamma"}), "M2 changed source"
+            cached = {path: original_sources(path) for path in discover()}
+            (first / "src/nested.rs").write_text("pub use awaken_delta::Thing;\n")
+            _manifest_source_files = lambda manifest: cached[manifest]
+            # Execute the actual entrypoint with a stale file-list mutant.
+            assert project()["awaken-first"] == frozenset({"awaken_gamma"}), "M2 mutant misses new file"
+            _manifest_source_files = original_sources
+            assert project()["awaken-first"] == frozenset({"awaken_gamma", "awaken_delta"}), "M2 fresh files"
+            edited.unlink()
+            assert project()["awaken-first"] == frozenset({"awaken_delta"}), "M2 removed source"
+            manifest = first / "Cargo.toml"
+            stamp = manifest.stat()
+            manifest.write_text('[package]\nname = "awaken-other"\n')
+            os.utime(manifest, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            assert manifest.stat().st_size == stamp.st_size, "M2 equal-length manifest edit"
+            assert project() == {"awaken-other": frozenset({"awaken_delta"}),
+                                 "awaken-second": frozenset({"awaken_beta"})}, "M2 fresh metadata"
+            nested.unlink()
+            (first / "Cargo.toml").unlink()
+            assert project() == {"awaken-second": frozenset({"awaken_beta"})}, "M2 removed manifest"
+            empty = selected / "group/empty/Cargo.toml"
+            empty.parent.mkdir(parents=True)
+            empty.write_text('[package]\nname = "awaken-empty"\n')
+            assert project() == {"awaken-second": frozenset({"awaken_beta"}),
+                                 "awaken-empty": frozenset()}, "M2/M4 added source-less crate"
+            selected = root / "other/crates"
+            third = selected / "nested/further/opaque"
+            (third / "src").mkdir(parents=True)
+            (third / "Cargo.toml").write_text('[package]\nname = "awaken-third"\n')
+            (third / "src/lib.rs").write_text("pub use awaken_delta::Thing;\n")
+            assert project() == {"awaken-third": frozenset({"awaken_delta"})}, "M3 root switch"
+        finally:
+            iter_crate_manifests, crate_manifest = original_iter, original_lookup
+            _manifest_source_files = original_sources
 
 
 def _selftest_projection_cache() -> None:
@@ -850,6 +949,7 @@ def selftest() -> None:
             raise AssertionError("P4 outside source must not become an ownership key")
     _selftest_projection_cache()
     _selftest_crate_discovery()
+    _selftest_manifest_source_projection()
     _selftest_dependency_declarations()
     # Production-source cause/effect table: C4 an exact/`all` cfg predicate is
     # false whenever test=false; C5 `not(test)` or `any(test, feature=...)` can
@@ -976,7 +1076,7 @@ def architecture_fitness_specs() -> list[_arch_fitness.CrateSpec]:
         awaken_metadata = _awaken_metadata(manifest)
         public_reexports = public_first_party_reexports(
             path.read_text(encoding="utf-8")
-            for path in text_files(package_name(manifest))
+            for path in _manifest_source_files(manifest_path)
         )
         specs.append(
             _arch_fitness.CrateSpec(
