@@ -52,7 +52,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let host = (crate::host::with_test_resource_validation(raw_host))
         .build()
         .expect("validated Host dependencies");
@@ -280,7 +280,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let verifier = Arc::new(SequencedRepositoryTransport::default());
     let host = ((raw_host).with_session_execution(
         crate::host::test_resource_execution().with_repository_binding_verifier(verifier.clone()),
@@ -467,11 +467,11 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let repository_path_fidelity = raw_host
         .env
         .session_provider
-        .realizer()
+        .readiness()
         .capabilities()
         .path_fidelity;
     let host = (crate::host::with_test_resource_validation(raw_host))
@@ -1542,7 +1542,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             std::env::temp_dir().join("awaken-worker-layout-provider"),
             false,
         )
-        .into_session_provider(),
+        .into_provider_roles(),
     );
     let physical = (physical).build().expect("validated Host dependencies");
     physical
@@ -1617,10 +1617,10 @@ async fn frozen_environment_selects_trusted_host_exactly() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     host.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::
-            trusted_host_workdir_with_agent_stderr(trusted_root.path(), false).into_session_provider(),
+            trusted_host_workdir_with_agent_stderr(trusted_root.path(), false).into_provider_roles(),
     );
     let host = (host).build().expect("validated Host dependencies");
 
@@ -1655,7 +1655,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let absent = (absent).build().expect("validated Host dependencies");
     absent
         .run_assembly

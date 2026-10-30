@@ -26,9 +26,9 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         epoch: 1,
         expires_at_unix_ms: 60_000,
     };
-    let original = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let original = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         thread,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
         Some(original_lease.clone()),
     )
     .from_binding("original-source");
@@ -49,9 +49,9 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
-        let requested = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        let requested = awaken_session_contract::SessionEnvironmentEffectIntent::new(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
             Some(crate::session_resource::SessionRealizationLease {
                 expires_at_unix_ms: request_expiry,
                 ..original.realization().unwrap().clone()
@@ -137,7 +137,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             .authority()
             .new_environment_effect_intent(
                 thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 None,
             )
             .expect("installed Sessions");
@@ -154,7 +154,7 @@ async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
             assert!(
                 matches!(
                     missing.unwrap().authorization,
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
+                    awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
                 ),
                 "M2"
             );
@@ -226,7 +226,7 @@ struct ResponseLossBindingSink {
     // not retain a second Root or fabricate a committed generation.
     delegate: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     original_intent:
-        std::sync::Mutex<Option<awaken_session_state_contract::SessionEnvironmentEffectIntent>>,
+        std::sync::Mutex<Option<awaken_session_contract::SessionEnvironmentEffectIntent>>,
     authorize_calls: AtomicUsize,
     persist_calls: AtomicUsize,
     committed: std::sync::Mutex<Option<(String, String)>>,
@@ -236,9 +236,9 @@ struct ResponseLossBindingSink {
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink for ResponseLossBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
@@ -255,14 +255,14 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
             && effect_id == intent.effect_id()
         {
             Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding: binding.clone(),
                     intent: Box::new(original.clone()),
                 },
             )
         } else {
             Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
                     intent: Box::new(original.clone()),
                 },
             )
@@ -271,11 +271,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         self.persist_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(delegate) = &self.delegate {
             return delegate.persist(receipt).await;
@@ -297,16 +295,16 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = intent.realization().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
             Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
                     intent: Box::new(intent.clone()),
                 },
             )
@@ -320,11 +318,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = receipt.realization.as_ref().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
@@ -393,7 +389,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
                 .authority()
                 .new_environment_effect_intent(
                     thread,
-                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
                     None,
                 )
                 .expect("installed Sessions"),
@@ -403,7 +399,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     assert!(
         matches!(
             ordinary.authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
+            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
         ),
         "R1/E1"
     );
@@ -423,7 +419,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
                 .authority()
                 .new_environment_effect_intent(
                     thread,
-                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
                     None,
                 )
                 .expect("installed Sessions"),
@@ -433,7 +429,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     assert!(
         matches!(
             managed.authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { .. }
+            awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized { .. }
         ),
         "R2/E2"
     );
@@ -1004,7 +1000,7 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
         .install_session_environment_owner_projection(
             "binding-corrupt",
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+            &awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: "opaque".into(),
                 effect_id: None,
                 generation: None,

@@ -103,7 +103,7 @@ async fn source_dispatch_observation_preserves_current_scope_and_rejects_affinit
         if terminal {
             root.archive("source-observation", 100).unwrap();
         } else {
-            root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+            root.execution = awaken_session_contract::SessionExecutionState::Idle;
         }
         if !frozen {
             root.terminal_cleanup = Default::default();
@@ -312,7 +312,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     );
     let binding = serde_json::to_string(&environment.lifecycle().handle())
         .expect("R1 encode live Environment binding");
-    let environment_generation = awaken_session_state_contract::SandboxGeneration::new(
+    let environment_generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("remote-terminal-worker"),
         lease.epoch,
         lease.expires_at_unix_ms,
@@ -322,7 +322,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     let environment_effect_id = create_fence.operation_id();
     // A changed aggregate Environment is a new root-CAS snapshot.
     projection.revision.0 += 1;
-    projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding,
         effect_id: Some(environment_effect_id.to_owned()),
         generation: Some(environment_generation.clone()),

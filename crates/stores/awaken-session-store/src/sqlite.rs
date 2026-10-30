@@ -1160,7 +1160,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
 
     async fn preparation_candidates(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         self.scan_reconcilable(after, true).await
     }
@@ -1179,10 +1179,8 @@ impl SessionRepository for SqliteManagedSessionRepository {
         &self,
         session_id: &awaken_session_types::SessionId,
         key: &str,
-    ) -> Result<
-        Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-        SessionRepositoryError,
-    > {
+    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
+    {
         let row = sqlx::query_as::<_, (String, i64)>(
             "SELECT payload_hash, committed_revision FROM managed_session_idempotency
                      WHERE session_id = ?1 AND idempotency_key = ?2",
@@ -1195,7 +1193,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
         row.map(|(payload_hash, revision)| {
             u64::try_from(revision)
                 .map(
-                    |revision| awaken_session_state_contract::SessionIdempotencyReceipt {
+                    |revision| awaken_session_contract::SessionIdempotencyReceipt {
                         payload_hash,
                         committed_revision: SessionRevision(revision),
                     },
@@ -1210,7 +1208,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
 impl SessionReconciliation for SqliteManagedSessionRepository {
     async fn reconciliation_scan(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         self.scan_reconcilable(after, false).await
     }
@@ -1250,7 +1248,7 @@ impl SessionReconciliation for SqliteManagedSessionRepository {
 impl SqliteManagedSessionRepository {
     async fn scan_reconcilable(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
         preparation_only: bool,
     ) -> Result<SessionScan, SessionRepositoryError> {
         let after = after.map(|cursor| cursor.session_id().to_string());
@@ -1288,7 +1286,7 @@ impl SqliteManagedSessionRepository {
         rows.truncate(page_size);
         if has_more {
             scan.next_cursor = rows.last().map(|(_, session_id, _, _)| {
-                awaken_session_state_contract::SessionScanCursor::after_session_id(session_id)
+                awaken_session_contract::SessionScanCursor::after_session_id(session_id)
             });
         }
         for (workspace_id, session_id, row, observed_revision) in rows {

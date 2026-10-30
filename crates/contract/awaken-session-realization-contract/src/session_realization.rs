@@ -302,7 +302,7 @@ pub trait SessionPreparationControl: Send + Sync {
 pub trait SessionPreparationPlacement: Send + Sync {
     fn requirements(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure>;
 }
 
@@ -484,7 +484,7 @@ impl<T> WorkerSessionRealizationControl for T where
 
 /// Topology-specific projection installation used by the one realization
 /// driver. Local Managed execution and a remote Worker both install the same
-/// complete frozen projection through `SessionRuntime`; this port selects only
+/// complete frozen projection through `SessionRuns`; this port selects only
 /// topology-specific effects and owns no lifecycle transition or desired state.
 #[async_trait]
 pub trait SessionProjectionSynchronizer: Send + Sync {

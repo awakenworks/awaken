@@ -3,7 +3,7 @@
 use awaken_session_configuration_contract::resource::{
     ResolvedInputSource, ResolvedSessionResources,
 };
-use awaken_session_state_contract::SessionResourceState;
+use awaken_session_contract::SessionResourceState;
 
 pub(super) fn session_resources_reference_repository(
     resources: &SessionResourceState,

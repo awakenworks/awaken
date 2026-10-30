@@ -14,18 +14,18 @@ use crate::SessionRootReads as _;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_session_event_contract::{
+use awaken_session_contract::{
     OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchAdmissionAction,
     SessionEventBatchAdmissionClass, SessionEventBatchAdmissionPlan, SessionEventCommand,
     SessionEventInput, SessionEventProjectionAnchor, SessionUserRunCommand,
     classify_session_event_batch_admission, resolve_session_event_batch_admission,
     session_event_batch_id,
 };
+use awaken_session_contract::{PersistedSession, SessionEventHistory as EventHistory};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
     SessionThreadTarget, admit_event_batch_topology,
 };
-use awaken_session_state_contract::{PersistedSession, SessionEventHistory as EventHistory};
 use awaken_session_types::{RunError, SessionRevision};
 use awaken_time::WallClockExt as _;
 
@@ -252,11 +252,11 @@ pub struct SessionEventBatchCommands {
     activities: Arc<crate::SessionActivities>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
     coordination: Arc<crate::SessionCoordination>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
-    coordination_runtime: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
+    coordination_runtime: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
-    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
-    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRuns>,
+    outcomes: Arc<dyn awaken_session_execution_contract::Outcomes>,
 }
 
 /// The collaborators one [`SessionEventBatchCommands`] is built from.
@@ -617,7 +617,7 @@ impl SessionEventBatchCommands {
     async fn load_event_root(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<(String, awaken_session_state_contract::SessionAggregate), RunError> {
+    ) -> Result<(String, awaken_session_contract::SessionAggregate), RunError> {
         let owner = self
             .mutations
             .owner(session_id)
@@ -816,7 +816,7 @@ impl SessionEventBatchCommands {
                     .await
                 {
                     Ok(session) => session,
-                    Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                         return result;
                     }
                     Err(error) => {
@@ -1532,7 +1532,7 @@ impl SessionEventBatchCommands {
                 .session(session_id)
                 .await
                 .map_err(|error| RunError::unavailable(error.to_string()))?;
-            if root.execution == awaken_session_state_contract::SessionExecutionState::Running
+            if root.execution == awaken_session_contract::SessionExecutionState::Running
                 && root.active_activity_epochs.is_empty()
                 && let Some(observation) = root.running_interval.as_ref().and_then(|interval| {
                     interval.observations.iter().find(|observation| {
@@ -1561,7 +1561,7 @@ impl SessionEventBatchCommands {
     }
 }
 
-fn repository_run_error(error: awaken_session_state_contract::SessionRepositoryError) -> RunError {
+fn repository_run_error(error: awaken_session_contract::SessionRepositoryError) -> RunError {
     mutation_run_error(repository_failure(error))
 }
 

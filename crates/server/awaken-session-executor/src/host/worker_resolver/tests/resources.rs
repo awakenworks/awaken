@@ -39,7 +39,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let host = (raw_host).build().unwrap();
     let managed = managed_test_host(host.clone());
     let bytes = b"frozen worker input".to_vec();
@@ -184,6 +184,13 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F4 actual preparation acknowledgement and aggregate-owned replacement");
     assert_eq!(
+        roots.enqueued_work(),
+        vec![awaken_session_types::SessionId::from(
+            "thread-cold-resource"
+        )],
+        "F4 the Worker-placed manifest replacement re-projects the Session's Work once"
+    );
+    assert_eq!(
         updated.resource_revision, cleared.revision,
         "F4 Root allocates next"
     );
@@ -291,7 +298,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let host = raw_host.build().unwrap();
     let managed = managed_test_host(host.clone());
     let claim = ingress::RunClaim {
@@ -448,6 +455,13 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         )
         .await
         .expect("R3 actual aggregate transition advances the prepared generation");
+    assert_eq!(
+        roots.enqueued_work(),
+        vec![awaken_session_types::SessionId::from(
+            "thread-generation-fence"
+        )],
+        "R3 the Worker-placed manifest replacement re-projects the Session's Work once"
+    );
     assert_eq!(
         updated.resource_revision, next_manifest.revision,
         "R3 actual next"

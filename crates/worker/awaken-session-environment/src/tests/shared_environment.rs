@@ -18,8 +18,12 @@ async fn revoked_container_rebinds_only_a_proven_owned_path_successor() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
-    let environment = configured.create(&spec()).await.unwrap();
+    .into_provider_roles();
+    let environment = configured
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let before = environment.lifecycle().handle();
     let mut next_json = serde_json::to_value(&before).unwrap();
     next_json["payload"]["owned_paths"]
@@ -86,7 +90,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
             .into_owned(),
         std::time::Duration::ZERO,
     );
-    let provider = provider.into_session_provider();
+    let provider = provider.into_provider_roles();
     let create_fence =
         pc::SandboxEffectFence::new("create-hand", "owner", "runtime", 1, u64::MAX).unwrap();
     // C5 fenced creation has no source/denied source/current source. The first
@@ -260,7 +264,11 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .unwrap();
     let relocated =
         crate::test_support::relocated_provider(&provider, base.path().join("relocated"));
-    let environment = relocated.create(&spec()).await.unwrap();
+    let environment = relocated
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     assert!(
         environment
             .agent_tools()
@@ -271,8 +279,9 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     );
     environment.lifecycle().dispose().await.unwrap();
     let plain = SandboxEnvironmentProvider::workdir(base.path().join("plain"))
-        .into_session_provider()
-        .create(&spec())
+        .into_provider_roles()
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap();
     assert!(
@@ -297,8 +306,12 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
     let base = tempfile::tempdir().unwrap();
     let provider =
         SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
-            .into_session_provider();
-    let environment = provider.create(&spec()).await.unwrap();
+            .into_provider_roles();
+    let environment = provider
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let readonly = pc::MountRequirement {
         mount_id: "late-file".into(),
         source: pc::MountSource::Inline {
@@ -385,8 +398,12 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
     let base = tempfile::tempdir().unwrap();
     let provider =
         SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
-            .into_session_provider();
-    let environment = provider.create(&spec()).await.unwrap();
+            .into_provider_roles();
+    let environment = provider
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let root = environment.agent_process().workspace_cwd();
 
     let default = environment
@@ -659,14 +676,14 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
-            .into_session_provider(),
+            .into_provider_roles(),
             "container" => SandboxEnvironmentProvider::container(
                 Arc::new(FakeContainerProvider::default()),
                 Vec::new(),
                 Arc::new(FakeHandExecutorFactory),
                 "/bin/sh",
             )
-            .into_session_provider(),
+            .into_provider_roles(),
             _ => {
                 let mut provider = SandboxEnvironmentProvider::workdir(root.path());
                 if tier == "hand" {
@@ -676,10 +693,14 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
                         std::time::Duration::ZERO,
                     );
                 }
-                provider.into_session_provider()
+                provider.into_provider_roles()
             }
         };
-        let environment = provider.create(&spec()).await.unwrap();
+        let environment = provider
+            .realizer()
+            .create_unattached(&spec())
+            .await
+            .unwrap();
         for client in [
             AgentFilesystemClient::NativeTools,
             AgentFilesystemClient::AcpProcess,
@@ -756,8 +777,9 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     assert_eq!(
@@ -869,8 +891,9 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     environment.skills().register_skill_dir("skills");
@@ -947,8 +970,9 @@ async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
         factory.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     environment.skills().register_skill_dir("skills");

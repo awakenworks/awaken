@@ -307,9 +307,9 @@ mod tests {
     {
         async fn authorize(
             &self,
-            intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+            intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+            awaken_session_contract::SessionEnvironmentEffectAuthorization,
             awaken_session_types::RunError,
         > {
             if let Some((_, delegate)) = &self.root_authority {
@@ -344,14 +344,12 @@ mod tests {
 
         async fn persist(
             &self,
-            receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-        ) -> Result<
-            awaken_session_state_contract::SessionEnvironmentState,
-            awaken_session_types::RunError,
-        > {
+            receipt: awaken_session_contract::SessionEnvironmentReceipt,
+        ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+        {
             // The recovery oracle counts Create/Adopt root receipts. Resource
             // reservations still commit below, but are a distinct effect kind.
-            if !matches!(receipt.kind, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }) {
+            if !matches!(receipt.kind, awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }) {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
             if let Some((roots, delegate)) = &self.root_authority {

@@ -21,7 +21,7 @@
 //! | W5 | winner | exact replay | `Replayed { N+1 }`, no new fact |
 //! | W6 | loser | retry same stale command | `Conflict`, still no fact or receipt |
 use super::{fact, record, record_update, session};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     ManagedLifecycleFact, SessionCreateResult, SessionMutation, SessionMutationPayload,
     SessionMutationResult, SessionRepositoryError,
 };
@@ -45,7 +45,9 @@ pub struct IndependentCommand {
 /// replacements against the same observed revision.
 pub async fn prepare_independent_race<R>(creator: &R, id: &str) -> IndependentRace
 where
-    R: awaken_session_repository_contract::SessionStore + ?Sized,
+    R: awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox
+        + ?Sized,
 {
     let mut value = session(id, "before");
     value.revision = SessionRevision(0);
@@ -96,12 +98,20 @@ where
 /// Assert W1-W6 after both clients returned. `left` submitted
 /// `race.commands[0]`, `right` submitted `race.commands[1]`. Returns the index
 /// of the winning command.
-pub async fn assert_independent_race(
-    left: &dyn awaken_session_repository_contract::SessionStore,
-    right: &dyn awaken_session_repository_contract::SessionStore,
+// CM2: both original client references had the same erased store type. Generic
+// R retains that unsized case with the exact Core write/outbox capabilities;
+// W1-W6 below retain the original independent-client and no-loser-effect oracle.
+pub async fn assert_independent_race<R>(
+    left: &R,
+    right: &R,
     race: &IndependentRace,
     outcomes: [Result<SessionMutationResult, SessionRepositoryError>; 2],
-) -> usize {
+) -> usize
+where
+    R: awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox
+        + ?Sized,
+{
     let next = SessionRevision(race.base_revision.0 + 1);
     let applied = outcomes
         .iter()
@@ -164,7 +174,7 @@ pub async fn assert_independent_race(
                 .idempotency_receipt(&race.session_id, &won.key)
                 .await
                 .expect("W4 winner receipt read"),
-            Some(awaken_session_state_contract::SessionIdempotencyReceipt {
+            Some(awaken_session_contract::SessionIdempotencyReceipt {
                 payload_hash: won.mutation.idempotency.payload_hash.clone(),
                 committed_revision: next,
             }),

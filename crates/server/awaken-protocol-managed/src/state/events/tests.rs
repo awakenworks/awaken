@@ -9,8 +9,8 @@
 // @formal evidence tool_result.pending_commit_coordinate_is_exact
 // @formal evidence tool_result.terminal_run_rejects_late_result
 // awaken-allow(file-limit-ceiling): 13018 (legacy oversized test file: split, never grow)
-use awaken_session_execution_contract::ThreadReadRuntime as _;
-use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
+use awaken_session_contract::{LifecycleOutbox as _, SessionRepositoryReads};
+use awaken_session_execution_contract::ThreadReads as _;
 use awaken_session_types::SessionId;
 mod activation_failure_time;
 mod admission_boundaries;
@@ -43,7 +43,7 @@ use awaken_managed_session_events::{
 };
 use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::OutcomeIteration;
-use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
 use axum::body::Body;
@@ -112,15 +112,13 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
         .settle_activity_observed(
             &SessionId::from(&session.id),
             activity.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: activity.activity_epoch,
-                    thread_id: ThreadId(session.id.clone()),
-                    run_id: run,
-                    lifecycle_cursor: lifecycle_cursor(2),
-                    source_commit_cursor: 2,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: activity.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id: run,
+                lifecycle_cursor: lifecycle_cursor(2),
+                source_commit_cursor: 2,
+            }),
         )
         .await
         .unwrap();
@@ -297,11 +295,9 @@ async fn persist_batch_projection_anchors(
         .iter_mut()
         .zip(source_commit_cursors.iter().copied())
     {
-        entry.projection_anchor = Some(
-            awaken_session_event_contract::SessionEventProjectionAnchor {
-                source_commit_cursor,
-            },
-        );
+        entry.projection_anchor = Some(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor,
+        });
         entry.processed = true;
     }
     let owner = state
@@ -315,7 +311,7 @@ async fn persist_batch_projection_anchors(
         .mutations()
         .commit_session_snapshot_with_outcome(
             &owner,
-            awaken_session_state_contract::SessionAggregate::try_from(session)
+            awaken_session_contract::SessionAggregate::try_from(session)
                 .expect("valid test snapshot"),
             &format!("test-projection-anchor-{batch_id}"),
             Vec::new(),
@@ -388,7 +384,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
         )
         .await
         .expect("IC1 Session");
-    SessionRuntime::run(
+    SessionRuns::run(
         &runtime,
         "coder",
         &session.id,
@@ -438,7 +434,7 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
      * reconstruct the original public DTO. */
     let session_id = "session-durable-input";
     let batch_id = "initial:create-key";
-    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+    let mut batch = awaken_session_contract::SessionEventBatch::compile(
         &awaken_session_types::SessionId::from(session_id),
         batch_id,
         vec![
@@ -460,11 +456,9 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
         "R1 an unadmitted plan is not public history"
     );
     batch
-        .anchor_admission_projection(
-            awaken_session_event_contract::SessionEventProjectionAnchor {
-                source_commit_cursor: 0,
-            },
-        )
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
         .unwrap();
     let pending = inbound_projections(
         session_id,
@@ -491,7 +485,7 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
         batch
             .mark_processed(
                 operation_id,
-                awaken_session_event_contract::SessionEventProjectionAnchor {
+                awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: ordinal as u64 + 1,
                 },
                 1_700_000_000_000,
@@ -597,15 +591,13 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         .settle_activity_observed(
             &SessionId::from(&session.id),
             activity.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: activity.activity_epoch,
-                    thread_id: ThreadId(session.id.clone()),
-                    run_id: prior_run,
-                    lifecycle_cursor: lifecycle_cursor(2),
-                    source_commit_cursor: 2,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: activity.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id: prior_run,
+                lifecycle_cursor: lifecycle_cursor(2),
+                source_commit_cursor: 2,
+            }),
         )
         .await
         .unwrap();
@@ -872,15 +864,15 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FrozenTo
 struct ThreadPriceProvider;
 
 #[async_trait]
-impl awaken_session_budget_contract::ManagedListPriceProvider for ThreadPriceProvider {
+impl awaken_session_contract::ManagedListPriceProvider for ThreadPriceProvider {
     async fn resolve_snapshot(
         &self,
-        request: awaken_session_budget_contract::ManagedListPriceRequest,
+        request: awaken_session_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_budget_contract::ManagedListPriceSnapshot,
-        awaken_session_budget_contract::ManagedListPriceError,
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
     > {
-        let rate = awaken_session_budget_contract::ManagedTokenListRates {
+        let rate = awaken_session_contract::ManagedTokenListRates {
             input_micros_per_million: 10_000_000_000,
             output_micros_per_million: 10_000_000_000,
             cache_read_micros_per_million: 10_000_000_000,
@@ -892,7 +884,7 @@ impl awaken_session_budget_contract::ManagedListPriceProvider for ThreadPricePro
             .map(|model| (model, rate))
             .collect::<std::collections::BTreeMap<_, _>>();
         model_rates.insert("served".into(), rate);
-        Ok(awaken_session_budget_contract::ManagedListPriceSnapshot {
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "thread-price-test".into(),
             version: 1,
             effective_at_unix_ms: request.occurred_at_unix_ms,
@@ -1364,8 +1356,8 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             .event_batches
             .iter()
             .find(|batch| batch.idempotency_key.as_deref() == Some("race-key"));
-        let frame = |root: &awaken_session_state_contract::PersistedSession,
-                     outbox: &[awaken_session_state_contract::ManagedLifecycleFact],
+        let frame = |root: &awaken_session_contract::PersistedSession,
+                     outbox: &[awaken_session_contract::ManagedLifecycleFact],
                      reads| {
             serde_json::json!({
                 "root": serde_json::to_string(root).unwrap(), "outbox": serde_json::to_string(outbox).unwrap(), "reads": reads,
@@ -1457,13 +1449,12 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     ) -> Vec<(String, String, Option<String>)> {
         let repository = Arc::new(ephemeral_session_repo().await);
         let mut persisted = crate::state::tests::sample_persisted(session_id);
-        persisted.execution =
-            awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+        persisted.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
         // AF8 cleanup has a later root update time. The failure owns its
         // immutable observation and must keep it in every replica.
         // W3: the known time/source are recorded by the existing assignment
         // command, independently of the later root update observation.
-        let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(persisted)
+        let mut aggregate = awaken_session_contract::SessionAggregate::try_from(persisted)
             .expect("valid failed Session fixture");
         aggregate.assignment().record_failure(
             "broader Session realization failure".into(),
@@ -1638,7 +1629,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     assert_eq!(late[0].1, "late source Run failure", "AF4/E5");
 
     let mut child_source = crate::state::tests::sample_persisted("activation-child");
-    child_source.execution = awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+    child_source.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
     let child_run = RunId("activation-child-run".into());
     // W3/AF5: the historical source exists but its failure time is unknown.
     let mut progress = serde_json::to_value(&child_source).unwrap();
@@ -1669,8 +1660,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         awaken_managed_session_events::ActivationFailureProjection::NotFailed
     ));
     let mut missing_cause = crate::state::tests::sample_persisted("activation-missing-cause");
-    missing_cause.execution =
-        awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+    missing_cause.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
     // W5/AF7: the original default has no cause; keep this malformed row so
     // the projection, rather than an unrelated setup command, rejects it.
     assert!(missing_cause.realization_progress().last_error().is_none());
@@ -4741,15 +4731,13 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
         .settle_activity_observed(
             &SessionId::from(&session.id),
             active.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: active.activity_epoch,
-                    thread_id: ThreadId(session.id.clone()),
-                    run_id,
-                    lifecycle_cursor: lifecycle_cursor(2),
-                    source_commit_cursor: 2,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: active.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id,
+                lifecycle_cursor: lifecycle_cursor(2),
+                source_commit_cursor: 2,
+            }),
         )
         .await
         .expect("C2 closes the durable aggregate interval");
@@ -5077,15 +5065,13 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
         .settle_activity_observed(
             &SessionId::from(&session.id),
             active.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: active.activity_epoch,
-                    thread_id: ThreadId(session.id.clone()),
-                    run_id,
-                    lifecycle_cursor: lifecycle_cursor(4),
-                    source_commit_cursor: 4,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: active.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id,
+                lifecycle_cursor: lifecycle_cursor(4),
+                source_commit_cursor: 4,
+            }),
         )
         .await
         .unwrap();
@@ -5317,15 +5303,13 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 .settle_activity_observed(
                     &SessionId::from(&session.id),
                     first_activity.activity_epoch,
-                    Some(
-                        awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                            activity_epoch: first_activity.activity_epoch,
-                            thread_id: ThreadId(session.id.clone()),
-                            run_id: first_run,
-                            lifecycle_cursor: lifecycle_cursor(14),
-                            source_commit_cursor: 14,
-                        },
-                    ),
+                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: first_activity.activity_epoch,
+                        thread_id: ThreadId(session.id.clone()),
+                        run_id: first_run,
+                        lifecycle_cursor: lifecycle_cursor(14),
+                        source_commit_cursor: 14,
+                    }),
                 )
                 .await
                 .unwrap();
@@ -5334,15 +5318,13 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 .settle_activity_observed(
                     &SessionId::from(&session.id),
                     overlapping_activity.activity_epoch,
-                    Some(
-                        awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                            activity_epoch: overlapping_activity.activity_epoch,
-                            thread_id: ThreadId(session.id.clone()),
-                            run_id: overlapping_run,
-                            lifecycle_cursor: lifecycle_cursor(16),
-                            source_commit_cursor: 16,
-                        },
-                    ),
+                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: overlapping_activity.activity_epoch,
+                        thread_id: ThreadId(session.id.clone()),
+                        run_id: overlapping_run,
+                        lifecycle_cursor: lifecycle_cursor(16),
+                        source_commit_cursor: 16,
+                    }),
                 )
                 .await
                 .unwrap();
@@ -5439,15 +5421,13 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             .settle_activity_observed(
                 &SessionId::from(&session_id),
                 second_activity.activity_epoch,
-                Some(
-                    awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                        activity_epoch: second_activity.activity_epoch,
-                        thread_id: ThreadId(session_id.clone()),
-                        run_id: second_run,
-                        lifecycle_cursor: lifecycle_cursor(22),
-                        source_commit_cursor: 22,
-                    },
-                ),
+                Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                    activity_epoch: second_activity.activity_epoch,
+                    thread_id: ThreadId(session_id.clone()),
+                    run_id: second_run,
+                    lifecycle_cursor: lifecycle_cursor(22),
+                    source_commit_cursor: 22,
+                }),
             )
             .await
             .unwrap();
@@ -5717,9 +5697,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .await
         .unwrap();
     let run_id = match &batch.events[0].event {
-        awaken_session_event_contract::SessionEventCommand::UserMessage { run_id, .. } => {
-            run_id.clone()
-        }
+        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
         _ => unreachable!(),
     };
     runtime.lifecycle.lock().unwrap().push(lifecycle(
@@ -5911,7 +5889,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         .update_session(
             &session.id,
             awaken_session_application::SessionUpdateCommand {
-                title: Some(awaken_session_state_contract::SessionFieldUpdate::Replace(
+                title: Some(awaken_session_contract::SessionFieldUpdate::Replace(
                     "renamed".into(),
                 )),
                 metadata: None,
@@ -5945,7 +5923,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         .await
         .unwrap();
     let history =
-        awaken_session_state_contract::SessionUpdateHistory::for_session(&updated_root).unwrap();
+        awaken_session_contract::SessionUpdateHistory::for_session(&updated_root).unwrap();
     assert_eq!(history.facts().len(), 1, "S1 one actual retained update");
     let update = &history.facts()[0];
     assert_eq!(
@@ -6035,7 +6013,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
         awaken_managed_session_events::derive_session_update_events(&anchored_root).unwrap();
     assert_eq!(derived.len(), 1, "S2 one marker and source");
     let retained =
-        awaken_session_state_contract::SessionUpdateHistory::for_session(&anchored_root).unwrap();
+        awaken_session_contract::SessionUpdateHistory::for_session(&anchored_root).unwrap();
     assert!(
         std::ptr::eq(derived[0].1, &retained.facts()[0]),
         "S2 original immutable payload reference"
@@ -6813,7 +6791,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         .session(&SessionId::from(&session.id))
         .await
         .expect("B1-B3 persisted Session");
-    let awaken_session_budget_contract::SessionBudgetState::Active {
+    let awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor,
         consumed_numerator,
         ..
@@ -6822,8 +6800,8 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         panic!("budgeted fixture must persist an active budget")
     };
     *consumed_numerator = u128::from(*max_list_cost_minor)
-        * awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-        * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR;
+        * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+        * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR;
     persisted
         .budget
         .record_reach_transition()
@@ -8474,15 +8452,13 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         .settle_activity_observed(
             &SessionId::from(&session.id),
             child_activity.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: child_activity.activity_epoch,
-                    thread_id: ThreadId(child_id.into()),
-                    run_id: child_run.clone(),
-                    lifecycle_cursor: lifecycle_cursor(32),
-                    source_commit_cursor: 32,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: child_activity.activity_epoch,
+                thread_id: ThreadId(child_id.into()),
+                run_id: child_run.clone(),
+                lifecycle_cursor: lifecycle_cursor(32),
+                source_commit_cursor: 32,
+            }),
         )
         .await
         .unwrap();
@@ -8491,15 +8467,13 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         .settle_activity_observed(
             &SessionId::from(&session.id),
             root_activity.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: root_activity.activity_epoch,
-                    thread_id: ThreadId(session.id.clone()),
-                    run_id: root_run.clone(),
-                    lifecycle_cursor: lifecycle_cursor(33),
-                    source_commit_cursor: 33,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: root_activity.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id: root_run.clone(),
+                lifecycle_cursor: lifecycle_cursor(33),
+                source_commit_cursor: 33,
+            }),
         )
         .await
         .unwrap();
@@ -8659,11 +8633,11 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     runtime.usage_by_thread.lock().unwrap().extend([
         (
             session.id.clone(),
-            awaken_session_budget_contract::SessionUsage {
+            awaken_session_contract::SessionUsage {
                 input_tokens: 10,
                 by_model: std::collections::BTreeMap::from([(
                     "served".into(),
-                    awaken_session_budget_contract::SessionModelUsage {
+                    awaken_session_contract::SessionModelUsage {
                         input_tokens: 10,
                         ..Default::default()
                     },
@@ -8673,11 +8647,11 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         ),
         (
             child_id.into(),
-            awaken_session_budget_contract::SessionUsage {
+            awaken_session_contract::SessionUsage {
                 input_tokens: 5,
                 by_model: std::collections::BTreeMap::from([(
                     "served".into(),
-                    awaken_session_budget_contract::SessionModelUsage {
+                    awaken_session_contract::SessionModelUsage {
                         input_tokens: 5,
                         ..Default::default()
                     },
@@ -9480,14 +9454,14 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
     runtime.usage_by_thread.lock().unwrap().extend([
         (
             session.id.clone(),
-            awaken_session_budget_contract::SessionUsage {
+            awaken_session_contract::SessionUsage {
                 input_tokens: 12,
                 ..Default::default()
             },
         ),
         (
             child_id.into(),
-            awaken_session_budget_contract::SessionUsage {
+            awaken_session_contract::SessionUsage {
                 input_tokens: 7,
                 ..Default::default()
             },
@@ -12050,9 +12024,9 @@ fn retained_outcome_fixture(
     session_id: &str,
     batch_id: &str,
     max_iterations: u32,
-) -> (awaken_session_state_contract::PersistedSession, String) {
+) -> (awaken_session_contract::PersistedSession, String) {
     let mut persisted = crate::state::tests::sample_persisted(session_id);
-    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+    let mut batch = awaken_session_contract::SessionEventBatch::compile(
         &awaken_session_types::SessionId::from(session_id),
         batch_id,
         vec![SessionEventInput::DefineOutcome {
@@ -12066,11 +12040,9 @@ fn retained_outcome_fixture(
     .expect("retained Outcome command");
     batch.admitted_revision = awaken_session_types::SessionRevision(1);
     batch
-        .anchor_admission_projection(
-            awaken_session_event_contract::SessionEventProjectionAnchor {
-                source_commit_cursor: 0,
-            },
-        )
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
         .unwrap();
     batch.events[0].processed = true;
     let outcome_id = match &batch.events[0].event {
@@ -12650,15 +12622,13 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     .settle_activity_observed(
                         &SessionId::from(&session.id),
                         first.activity_epoch,
-                        Some(
-                            awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                                activity_epoch: first.activity_epoch,
-                                thread_id: ThreadId(session.id.clone()),
-                                run_id: run.clone(),
-                                lifecycle_cursor: lifecycle_cursor(2),
-                                source_commit_cursor: 2,
-                            },
-                        ),
+                        Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                            activity_epoch: first.activity_epoch,
+                            thread_id: ThreadId(session.id.clone()),
+                            run_id: run.clone(),
+                            lifecycle_cursor: lifecycle_cursor(2),
+                            source_commit_cursor: 2,
+                        }),
                     )
                     .await
                     .unwrap();
@@ -12676,13 +12646,13 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     "R5 first opening must be issued, first_has_running={first_has_running}"
                 );
                 let reply = state.application.event_batches().append_owned_session_event_batch( &awaken_session_application::SessionRootReads::authorize(     &*state.application.queries(),     &state.resolve_owner(&session.id).await.unwrap().unwrap(),     &SessionId::from(&session.id), ) .await .unwrap(),
-                    vec![SessionEventInput::ToolReply(awaken_session_event_contract::SessionEventToolReply {
+                    vec![SessionEventInput::ToolReply(awaken_session_contract::SessionEventToolReply {
                         tool_request_event_id: first_issued.iter().find(|event| event.type_str() == "agent.tool_use").unwrap().id.clone(),
                         target: awaken_session_execution_contract::SessionThreadTarget::Primary,
                         expected_run_id: run.clone(), expected_correlation_id: "ticket:test-call".into(),
                         expected_thread_version: Some(2), answered_pending_commit_cursor: Some(2),
                         runtime_tool_use_id: "test-call".into(),
-                        reply: awaken_session_event_contract::SessionEventToolReplyKind::Confirmation { allow: true, deny_message: None },
+                        reply: awaken_session_contract::SessionEventToolReplyKind::Confirmation { allow: true, deny_message: None },
                     })], None, None, None).await.unwrap();
                 persist_batch_projection_anchors(&state, &session.id, &reply.batch_id, &[3]).await;
                 let second = state
@@ -12781,10 +12751,11 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                     if terminal == 2 {
                         state
                             .application
-                            .lifecycle().settle_activity_observed(
+                            .lifecycle()
+                            .settle_activity_observed(
                                 &SessionId::from(&session.id),
                                 second.activity_epoch,
-                                Some(awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                                Some(awaken_session_contract::SessionRuntimeIntervalObservation {
                                     activity_epoch: second.activity_epoch,
                                     thread_id: ThreadId(session.id.clone()),
                                     run_id: run.clone(),
@@ -12897,8 +12868,8 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
     // settlement and exact late ACK are covered by lease_semantics, not mocked
     // as successful cleanup here.
     for execution in [
-        awaken_session_state_contract::SessionExecutionState::Running,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Running,
+        awaken_session_contract::SessionExecutionState::Idle,
     ] {
         for (cause, has_error) in [
             (EndCause::Indeterminate, true),

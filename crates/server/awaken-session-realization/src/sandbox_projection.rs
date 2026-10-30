@@ -8,7 +8,7 @@
 /// Session activity/source/lease coordinates stay on the aggregate-side request;
 /// this capture input neither grants authority nor replaces the separate fence.
 pub fn provisioning_checkpoint_request(
-    request: &awaken_session_state_contract::SandboxCheckpointRequest,
+    request: &awaken_session_contract::SandboxCheckpointRequest,
 ) -> awaken_provisioning_contract::SandboxCheckpointCaptureRequest {
     awaken_provisioning_contract::SandboxCheckpointCaptureRequest {
         workspace_id: request.workspace_id.clone(),

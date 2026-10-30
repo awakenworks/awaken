@@ -277,7 +277,7 @@ pub async fn select_local_session_environment(
                 .await
                 .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
         }
-        host = host.with_backend_owned_environment_provider(provider.into_session_provider());
+        host = host.with_backend_owned_environment_provider(provider.into_provider_roles());
     }
     if !explicit {
         let Some(provider) = local_tier_provider(
@@ -298,7 +298,7 @@ pub async fn select_local_session_environment(
                  the execution composition, which this process did not run"
             ));
         };
-        host = host.with_session_environment_provider(provider.into_session_provider(), None);
+        host = host.with_session_environment_provider(provider.into_provider_roles(), None);
     }
     Ok(host)
 }
@@ -321,7 +321,7 @@ pub fn with_backend_owned_environment(
         awaken_deployment_config::session_sandbox_base(deployment).join("backend-owned"),
         deployment.sandbox.inherit_agent_stderr,
     );
-    host.with_backend_owned_environment_provider(provider.into_session_provider())
+    host.with_backend_owned_environment_provider(provider.into_provider_roles())
 }
 
 /// Install the cheap Workdir adapter under the Deployment's sandbox root as a
@@ -335,7 +335,7 @@ pub fn with_workdir_fallback(
 ) -> SessionExecutorBuilder {
     let base = awaken_deployment_config::session_sandbox_base(deployment);
     host.with_fallback_session_environment_provider(
-        SandboxEnvironmentProvider::workdir(base).into_session_provider(),
+        SandboxEnvironmentProvider::workdir(base).into_provider_roles(),
     )
 }
 
@@ -584,7 +584,7 @@ mod startup_tests {
         assert!(host.session_environment_provider_installed());
         assert_eq!(
             host.installed_session_environment_provider()
-                .realizer()
+                .readiness()
                 .capabilities(),
             expected
         );
@@ -629,13 +629,13 @@ mod startup_tests {
                     if explicit_primary {
                         host = host.with_session_environment_provider(
                             SandboxEnvironmentProvider::workdir(base.path().join("primary"))
-                                .into_session_provider(),
+                                .into_provider_roles(),
                             None,
                         );
                     }
                     let capabilities = host
                         .installed_session_environment_provider()
-                        .realizer()
+                        .readiness()
                         .capabilities();
                     let host = select_local_session_environment(
                         host,
@@ -656,7 +656,7 @@ mod startup_tests {
                     assert!(trusted_host_provider(&host).has_workdir_hand());
                     assert_eq!(
                         host.installed_session_environment_provider()
-                            .realizer()
+                            .readiness()
                             .capabilities(),
                         capabilities
                     );

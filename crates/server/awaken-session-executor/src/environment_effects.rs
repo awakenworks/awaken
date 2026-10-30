@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::environment_owner::BoundSessionEnvironmentIdentity;
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentEffectKind,
 };

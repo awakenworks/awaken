@@ -284,7 +284,7 @@ async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {
                 )
                 .await
                 .unwrap(),
-            awaken_session_budget_contract::SessionUsage::default(),
+            awaken_session_contract::SessionUsage::default(),
             "U1 absent Run does not read unavailable State"
         );
         store
@@ -440,7 +440,7 @@ async fn child_recovery_snapshot_reuses_the_parent_commit_consistency_boundary()
             )
             .await
             .expect("R1 absent usage read"),
-        awaken_session_budget_contract::SessionUsage::default(),
+        awaken_session_contract::SessionUsage::default(),
         "R1/E1 only a genuinely absent Run projects zero usage",
     );
 

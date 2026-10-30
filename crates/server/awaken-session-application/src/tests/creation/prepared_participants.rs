@@ -39,7 +39,7 @@
 use super::*;
 use crate::tests::run_admission::response_loss_store::ResponseLossStore;
 
-type Store = Arc<dyn awaken_session_repository_contract::SessionStore>;
+type Store = Arc<dyn crate::SessionStore>;
 
 const WORKSPACE: &str = "workspace";
 const REMOTE: &str = "https://example.test/source.git";
@@ -230,7 +230,7 @@ impl Service {
             .await
         {
             Ok(root) => Some(root),
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => None,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => None,
             Err(error) => panic!("root read: {error}"),
         }
     }

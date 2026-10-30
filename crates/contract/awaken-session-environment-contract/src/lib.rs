@@ -30,12 +30,16 @@
 //! | `ScopedExecution` (Linux TrustedHost only) — execution-authority binding and refresh | execution-authority binding, realization renewal, revocation retirement |
 //! | `RepositoryRealizer` (provisioning contract) | Repository activation |
 //!
-//! Provider roles:
+//! Roles over the one selected Sandbox provider, carried as
+//! [`SandboxProviderRoles`] (environment supply has one abstraction,
+//! `awaken_provisioning_contract::SandboxProvider`; the Session adds roles, not
+//! a second provider):
 //!
 //! | Role | Consumers |
 //! |---|---|
-//! | `EnvironmentRealizer` — capabilities, host identity, effective spec, image preparation, fenced create | Session realization, image warmup, Worker projection synchronizer |
-//! | `EnvironmentAdoption` — adoption layout, observation and closed-evidence validation, fenced adopt, retained rebind | environment lifecycle recovery, terminal preparation |
+//! | `awaken_provisioning_contract::SandboxReadiness` — capabilities, checkpoint formats, liveness probe | Session admission and capacity projection, managed input layout, MCP attachment, Worker manifest |
+//! | `EnvironmentRealizer` — host identity, effective spec, image preparation, fenced and unattached create | Session realization, image warmup, Worker projection synchronizer |
+//! | `EnvironmentAdoption` — adoption layout, observation and closed-evidence validation, fenced and unattached adopt, retained rebind | environment lifecycle recovery, terminal preparation |
 //! | `EnvironmentTerminalRealization` — terminal reconstruction, exact restore, restored-target disposal | terminal preparation and cleanup, environment continuation |
 //! | `awaken_provisioning_contract::SandboxInstallation` — Memory mounter and secret broker installation | Host startup |
 //!
@@ -74,7 +78,7 @@ pub use process::ProcessReaper;
 pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
 pub use provider::{
     EnvironmentAdoption, EnvironmentRealizationKind, EnvironmentRealizer,
-    EnvironmentTerminalRealization, SessionEnvironmentProvider,
+    EnvironmentTerminalRealization, SandboxProviderRoles,
 };
 pub use realized::{
     AgentProcessEnvironment, AgentToolEnvironment, EnvironmentHarvest, EnvironmentLifecycle,

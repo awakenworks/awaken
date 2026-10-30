@@ -18,7 +18,7 @@ pub enum ProjectedEnvironmentOwner {
         binding: String,
     },
     Restoring {
-        request: awaken_session_state_contract::SandboxRestoreRequest,
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
     },
 }
 
@@ -32,7 +32,7 @@ fn legacy_effect(effect_id: &Option<String>) -> LegacyEnvironmentEffect {
 pub(super) fn checkpoint_source_identity(
     source_effect_id: &str,
     source_binding: &str,
-    generation: &awaken_session_state_contract::SandboxGeneration,
+    generation: &awaken_session_contract::SandboxGeneration,
 ) -> BoundSessionEnvironmentIdentity {
     if source_effect_id.is_empty() {
         BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -50,11 +50,11 @@ pub(super) fn checkpoint_source_identity(
 }
 
 pub(super) fn projected_environment_owner(
-    state: &awaken_session_state_contract::SessionEnvironmentState,
+    state: &awaken_session_contract::SessionEnvironmentState,
     workspace_id: &str,
     session_id: &str,
 ) -> Result<ProjectedEnvironmentOwner, RealizationError> {
-    use awaken_session_state_contract::SessionEnvironmentState;
+    use awaken_session_contract::SessionEnvironmentState;
     match state {
         SessionEnvironmentState::Unmaterialized | SessionEnvironmentState::Hibernated { .. } => {
             Ok(ProjectedEnvironmentOwner::Vacant)
@@ -301,11 +301,13 @@ fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_state_contract::{
-        SandboxCheckpointRef, SandboxGeneration, SessionEnvironmentOperation,
-        SessionEnvironmentState, SuspendPhase,
-    };
     use awaken_session_types::SessionId;
+    use {
+        awaken_provisioning_contract::SandboxCheckpointRef,
+        awaken_session_contract::SandboxGeneration,
+        awaken_session_contract::SessionEnvironmentOperation,
+        awaken_session_contract::SessionEnvironmentState, awaken_session_contract::SuspendPhase,
+    };
 
     fn generation(id: u64) -> SandboxGeneration {
         SandboxGeneration::new(&SessionId::from("session"), id, u64::MAX, "env", "image")

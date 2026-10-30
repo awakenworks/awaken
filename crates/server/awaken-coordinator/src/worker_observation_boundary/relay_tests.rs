@@ -1,7 +1,7 @@
 use super::*;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource as _;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_state_contract::*;
+use awaken_session_contract::*;
 use awaken_worker_contract::{WorkerHeartbeat, WorkerRegistration};
 use axum::body::Body;
 use axum::http::Request;

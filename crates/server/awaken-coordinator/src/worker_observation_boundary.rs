@@ -326,7 +326,7 @@ async fn handle_relay_destination(
     let session_id = awaken_session_types::SessionId::from(query.session_id);
     let session = match state.session_queries.session(&session_id).await {
         Ok(session) => session,
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+        Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
             return StatusCode::NOT_FOUND.into_response();
         }
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),

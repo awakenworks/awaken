@@ -163,7 +163,7 @@ impl CommittedReads {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         let commit = self.commit_for_read(session_id).await?;
         if commit
             .authoritative_latest_run(thread_id)
@@ -171,7 +171,7 @@ impl CommittedReads {
             .map_err(RunError::internal)?
             .is_none()
         {
-            return Ok(awaken_session_budget_contract::SessionUsage::default());
+            return Ok(awaken_session_contract::SessionUsage::default());
         }
         // Usage depends only on committed State. Reuse its existing authority
         // query instead of reading every Message, Event, Run and resume ticket

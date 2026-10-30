@@ -9,7 +9,7 @@ use awaken_protocol_managed_testkit::{
     RecordingProjectionRefresh, RehydrateFake, RolloutCredentialSource, create_session_fixture,
     ephemeral_session_repo, paired_projection_refresh, persisted_with_mcp_source,
 };
-use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_contract::SessionExecutionState;
 use awaken_session_types::SessionId;
 
 use crate::SessionCredentialRolloutAdoption;
@@ -102,7 +102,7 @@ async fn current_published_credential_replay_does_not_park_an_already_running_se
             true,
         ),
     ] {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let mut root = persisted_with_mcp_source("current", "source-a", "vault-event");
         root.execution = SessionExecutionState::Running;
@@ -162,7 +162,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     // | V3 | B | A | any | E4 scope fence |
     // | V4 | A | A | archive | E2 |
     // | V5 | A | A absent | delete | E3 |
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     create_session_fixture(
         repo.as_ref(),
@@ -228,7 +228,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     // creating an Unrecorded Agent fact. Checking only credential revision
     // used to miss the later Managed history failure seen after idle renewal.
     assert!(
-        awaken_session_state_contract::SessionUpdateHistory::for_session(&affected)
+        awaken_session_contract::SessionUpdateHistory::for_session(&affected)
             .is_none_or(|history| history.facts().is_empty())
     );
     use tower::ServiceExt as _;
@@ -292,13 +292,13 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     );
     assert!(
         repo.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "workspace-a",
                 source_id: &awaken_credential_contract::CredentialSourceId("source-a".into())
             }
         )
         .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
+        .map(awaken_session_contract::SessionScan::into_sessions)
         .unwrap()
         .is_empty(),
         "V4/E2"
@@ -355,7 +355,7 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
     use tracing::instrument::WithSubscriber;
     for case in ["busy", "precommit", "postcommit"] {
         let failed_refresh = case == "precommit";
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let mut busy = persisted_with_mcp_source("busy", "source-a", "vault-event");
         busy.execution = SessionExecutionState::Running;

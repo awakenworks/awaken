@@ -4,8 +4,8 @@
 //! Frozen Session and scoped transcript reads over the selected Query ports.
 
 use awaken_agent_contract::agent::message::Message;
+use awaken_session_contract::PersistedSession;
 use awaken_session_realization_contract::FrozenSessionProjection;
-use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 
 use crate::{SessionProjectionReads, SessionQueries};

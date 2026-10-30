@@ -13,7 +13,7 @@ impl ManagedState {
     pub(super) fn append_interval_aggregate_projections(
         record: &mut SessionRecord,
         plan: &AggregatePlan,
-        price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
+        price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
         for close in &plan.interval_closes {
             record.publish_fact(&close.usage, price_snapshot)?;

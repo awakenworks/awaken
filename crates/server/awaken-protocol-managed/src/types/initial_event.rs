@@ -148,8 +148,8 @@ pub(crate) fn validate_deployment_initial_events<T: InitialEventSpec>(
 pub(crate) fn compile_session_initial_event_plan(
     session_id: &str,
     events: &[super::session::InboundEvent],
-) -> Result<Option<awaken_session_event_contract::SessionInitialEventPlan>, String> {
-    use awaken_session_event_contract::{SessionEventInput, SessionOutcomeRubric};
+) -> Result<Option<awaken_session_contract::SessionInitialEventPlan>, String> {
+    use awaken_session_contract::{SessionEventInput, SessionOutcomeRubric};
 
     if events.is_empty() {
         return Ok(None);
@@ -189,7 +189,7 @@ pub(crate) fn compile_session_initial_event_plan(
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    awaken_session_event_contract::SessionInitialEventPlan::compile(
+    awaken_session_contract::SessionInitialEventPlan::compile(
         &awaken_session_types::SessionId::from(session_id),
         format!("initial:{session_id}"),
         inputs,
@@ -463,7 +463,7 @@ mod tests {
         let text = compile_session_initial_event_plan("text", &[omitted])
             .unwrap()
             .unwrap();
-        let awaken_session_event_contract::SessionEventCommand::DefineOutcome {
+        let awaken_session_contract::SessionEventCommand::DefineOutcome {
             rubric,
             max_iterations,
             ..
@@ -474,7 +474,7 @@ mod tests {
         assert!(
             matches!(
                 rubric,
-                awaken_session_event_contract::SessionOutcomeRubric::Text { content }
+                awaken_session_contract::SessionOutcomeRubric::Text { content }
                     if content == "correct"
             ),
             "P1/E1"
@@ -491,7 +491,7 @@ mod tests {
         let file = compile_session_initial_event_plan("file", &[file])
             .unwrap()
             .unwrap();
-        let awaken_session_event_contract::SessionEventCommand::DefineOutcome {
+        let awaken_session_contract::SessionEventCommand::DefineOutcome {
             rubric,
             max_iterations,
             ..
@@ -502,7 +502,7 @@ mod tests {
         assert!(
             matches!(
                 rubric,
-                awaken_session_event_contract::SessionOutcomeRubric::File { file_id }
+                awaken_session_contract::SessionOutcomeRubric::File { file_id }
                     if file_id == "file_rubric"
             ),
             "P3/E1"

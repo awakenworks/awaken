@@ -21,13 +21,11 @@ async fn candidate_retention_preserves_original_intent_and_never_invents_unknown
     // I3=C4, with either C2 value => ordinary intent remains Unknown. A durable
     // identity or ownership tag cannot create a pre-effect history record.
     // This exercises the local ownership reducer, not physical admission proof.
-    use awaken_session_state_contract::{
-        SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
-    };
+    use awaken_session_contract::{SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind};
     let directory = tempfile::tempdir().unwrap();
     let provider =
         awaken_session_environment::SandboxEnvironmentProvider::workdir(directory.path())
-            .into_session_provider();
+            .into_provider_roles();
     let thread = "candidate-original-intent";
     let owned = environment(&provider, thread).await;
     let binding = serde_json::to_string(&owned.lifecycle().handle()).unwrap();
@@ -145,15 +143,15 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.authorize_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned {
                 intent: Box::new(intent.clone()),
             },
         )
@@ -161,11 +159,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 
     async fn persist(
         &self,
-        _receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        _receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         panic!("a non-owning binding sink must not persist")
     }
 }
@@ -182,7 +178,7 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
         let directory = tempfile::tempdir().unwrap();
         let provider =
             awaken_session_environment::SandboxEnvironmentProvider::workdir(directory.path())
-                .into_session_provider();
+                .into_provider_roles();
         let owned = environment(&provider, thread).await;
         let host = crate::SessionExecutorBuilder::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -275,14 +271,14 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
     // D2=C4=>E1+E2. An owning sink remains the separate Store-read authority.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     for (suffix, install_non_owner) in [("absent", false), ("non-owner", true)] {
         let thread = format!("durable-adoption-{suffix}");
         let environment = environment(&provider, &thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-        let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
             &thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
             None,
         )
         .from_binding(binding.clone());
@@ -303,7 +299,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
             .install_session_environment_owner_projection(
                 &thread,
                 "workspace",
-                &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                &awaken_session_contract::SessionEnvironmentState::Resident {
                     binding,
                     effect_id: None,
                     generation: None,
@@ -352,18 +348,18 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
     // durable generation. Rules O1=C1+C2=>E1, O2=C1+C3=>E2.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     for (thread, kind) in [
         (
             "ordinary-create-fallback",
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
         ),
         (
             "ordinary-adopt-fallback",
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
         ),
     ] {
-        let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        let mut intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
             thread,
             kind.clone(),
             None,
@@ -372,7 +368,7 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         if matches!(
             kind,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt
         ) {
             intent = intent.from_binding(binding.clone());
         }
@@ -388,14 +384,14 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
             .install(thread)
             .expect("installed Sessions");
         let candidate = match kind {
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
+            awaken_session_contract::SessionEnvironmentEffectKind::Create => host
                 .realization_executor.environments().begin_session_environment_preparation(host.realization_executor.peers(), thread, environment, Some(&intent))
                 .expect("O1 create candidate"),
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => host
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt => host
                 .realization_executor.environments().begin_session_environment_adoption(host.realization_executor.peers(), thread, environment, Some(&intent))
                 .expect("O2 adoption candidate"),
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
-            | awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+            awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. }
+            | awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
             } => unreachable!("O1/O2 enumerate only direct Create and Adopt effects"),
         };
@@ -428,7 +424,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     let thread = "candidate-projection-fence";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -457,7 +453,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+            &awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: candidate.binding.clone(),
                 effect_id: Some(effect_id.clone()),
                 generation: Some(generation.clone()),
@@ -509,7 +505,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         let thread = "adopt-successor-receipt";
         let root = tempfile::tempdir().unwrap();
         let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-            .into_session_provider();
+            .into_provider_roles();
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let source = identity(thread);
@@ -524,7 +520,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
             .install_session_environment_owner_projection(
                 thread,
                 "workspace",
-                &awaken_session_state_contract::SessionEnvironmentState::Resident {
+                &awaken_session_contract::SessionEnvironmentState::Resident {
                     binding,
                     effect_id: Some(format!("effect-{thread}")),
                     generation: Some(generation(thread)),
@@ -673,7 +669,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let thread = "adoption-dispatch-retry";
         let root = tempfile::tempdir().unwrap();
         let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-            .into_session_provider();
+            .into_provider_roles();
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -695,14 +691,14 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         (host.clone())
             .run_assembly
             .install_test_environment_binding_sink(sink.clone());
-        let source_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        let source_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
             None,
         );
         let source = sink
             .persist(
-                awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
+                awaken_session_contract::SessionEnvironmentReceipt::from_intent(
                     &source_intent,
                     binding.clone(),
                 )
@@ -741,7 +737,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                     .authority()
                     .new_environment_effect_intent(
                         thread,
-                        awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+                        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
                         Some(&binding),
                     )
                     .expect("installed Sessions"),
@@ -882,14 +878,14 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     // D2=D1+C4=>E3. A mismatched replay is rejected by the Kani-proved closed
     // Candidate commit reducer and cannot relabel Create as Adopt.
     let thread = "committed-candidate-terminal-takeover";
-    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         thread,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         None,
     );
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -924,7 +920,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     ));
     assert_eq!(
         *committed.ordinary_intent().unwrap().kind(),
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         "E1"
     );
     assert_eq!(
@@ -979,7 +975,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
 
 #[tokio::test]
 async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
-    use awaken_session_state_contract::SessionEnvironmentEffectKind::{Adopt, Create};
+    use awaken_session_contract::SessionEnvironmentEffectKind::{Adopt, Create};
     // Causes: C1 Create/Adopt origin; C2 Store-read identity retained or absent;
     // C3 selected Arc exact/foreign; C4 revocation/unpublished cleanup;
     // C5 projected identity exact/same-generation receipt/new generation;
@@ -999,7 +995,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
     // stale retirement, wrong cause or replay => reject without owner change.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let owned = environment(&provider, "candidate-evidence").await;
     let foreign = environment(&provider, "candidate-foreign").await;
     let rebound = Arc::new(
@@ -1018,7 +1014,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
         for committed in [false, true] {
             let mut base = SessionEnvironmentOwner::Vacant;
             let binding = serde_json::to_string(&owned.lifecycle().handle()).unwrap();
-            let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            let mut intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
                 "candidate-evidence",
                 kind.clone(),
                 None,
@@ -1026,7 +1022,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
             if kind == Adopt {
                 intent = intent.from_binding(binding.clone());
             }
-            let adopt_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            let adopt_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
                 "candidate-evidence",
                 Adopt,
                 None,
@@ -1217,7 +1213,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
     // A raw local handle is provenance for recovery, never authority by itself.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let thread = "unacknowledged-no-authority";
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
@@ -1300,7 +1296,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     let thread = "stale-unmaterialized-projection";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -1328,7 +1324,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .expect("S1 stale projection is a no-write replay");
     let retained = host
@@ -1355,7 +1351,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .expect("S2 stale projection is a no-write replay");
     let resident = host
@@ -1372,9 +1368,9 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
 /// The same Sandbox coordinates minted for another Session: a generation whose
 /// id cannot match the aggregate's.
 fn foreign_generation(
-    generation: &awaken_session_state_contract::SandboxGeneration,
-) -> awaken_session_state_contract::SandboxGeneration {
-    awaken_session_state_contract::SandboxGeneration::new(
+    generation: &awaken_session_contract::SandboxGeneration,
+) -> awaken_session_contract::SandboxGeneration {
+    awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("foreign-session"),
         generation.created_at_unix_ms(),
         generation.expires_at_unix_ms(),

@@ -261,7 +261,7 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
                 SessionEnvironmentPreparation::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "unadopted-effect".into(),
-                        generation: awaken_session_state_contract::SandboxGeneration::new(
+                        generation: awaken_session_contract::SandboxGeneration::new(
                             &awaken_session_types::SessionId::from(unknown.as_str()),
                             1,
                             u64::MAX,
@@ -432,13 +432,18 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 assert!(
                     host.realization_executor
                         .environments()
-                        .authorize_environment_effect_before_io(host.realization_executor.peers(),
+                        .authorize_environment_effect_before_io(
+                            host.realization_executor.peers(),
                             SESSION,
-                            &host.realization_executor.authority().new_environment_effect_intent(
-                                SESSION,
-                                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                                None
-                            ).expect("installed Sessions"),
+                            &host
+                                .realization_executor
+                                .authority()
+                                .new_environment_effect_intent(
+                                    SESSION,
+                                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                                    None
+                                )
+                                .expect("installed Sessions"),
                         )
                         .await
                         .is_err(),
@@ -1234,7 +1239,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
 
 #[tokio::test]
 async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or_http_control() {
-    // Local supervision decision table, through the actual SessionRuntime port:
+    // Local supervision decision table, through the actual SessionRuns port:
     // L1 exact owner/incarnation + due, no MCP -> renew; L2 same with MCP ->
     // renew; L3 foreign owner, L4 foreign incarnation, L5 closed, L6 not due ->
     // no Control call and no mutation. No HTTP client is installed on Host:
@@ -1426,7 +1431,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         deployment,
     )
     .await
-    .with_backend_owned_environment_provider(trusted.into_session_provider())
+    .with_backend_owned_environment_provider(trusted.into_provider_roles())
     .with_execution_authority(gate.clone()))
     .build()
     .expect("validated Host dependencies");
@@ -1710,7 +1715,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
         .install_session_realization_lease(SESSION, f.lease.clone())
         .unwrap();
     *gate.0.lock().unwrap() = false;
-    // A7 the public SessionRuntime renewal delivery entrance has the same root
+    // A7 the public SessionRuns renewal delivery entrance has the same root
     // guard. Unlike the scheduler it reports denial without owning revocation.
     let managed = f.host.clone();
     let mut renewed = f.lease.clone();

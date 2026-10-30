@@ -32,7 +32,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
     // unprocessed together. A System after a ToolReply is not this partition.
     // The existing outcome-crosses-awaiting test covers the opposite order
     // (C2 AFTER C3); both orders must retain the same actionability and queue.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("AQ1 repository"),
@@ -88,7 +88,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
             .settle_user_event_dispatch_observed(
                 &SessionId::from(id),
                 epoch,
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                awaken_session_contract::SessionRuntimeIntervalObservation {
                     activity_epoch: epoch,
                     thread_id: ThreadId(id.into()),
                     run_id: run.clone(),
@@ -106,7 +106,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
                 .await
                 .unwrap()
                 .execution,
-            awaken_session_state_contract::SessionExecutionState::Running,
+            awaken_session_contract::SessionExecutionState::Running,
             "AQ2 stranded legacy shape"
         );
     } else {
@@ -141,7 +141,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
     assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "AQ1/E2");
     assert_eq!(
         root.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "AQ1/E3 queued successor cannot hide the first Run's required action"
     );
     // AQ3 exact repeated recovery is a complete root stutter; AQ4 a later
@@ -188,7 +188,7 @@ async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restar
     // supervisor races. Constraint/Invariant: Outcome may cross only proven
     // Awaiting User truth; the later User keeps queue order. Decision rule:
     // execute Q1-Q3 and require one Outcome plus retained later User.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -280,7 +280,7 @@ async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restar
     assert!(durable.active_activity_epochs.is_empty(), "Q2/E4");
     assert_eq!(
         durable.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "Q2/E2+E4"
     );
 }
@@ -297,7 +297,7 @@ async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it
     // prepare receipt with its exact durable cursor; E3 settle create wake immediately; E4 never hold receipt
     // completion on Outcome evaluation/continue. Rules O1 absent+warm=>E1-E4;
     // O2 present+processed+cold=>skip every effect and retain provenance.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -315,9 +315,8 @@ async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it
     );
     let (batch_epoch, expected_outcome_id) = {
         let batch = session.event_batches.first().expect("batch");
-        let awaken_session_event_contract::SessionEventCommand::DefineOutcome {
-            outcome_id, ..
-        } = &batch.events[0].event
+        let awaken_session_contract::SessionEventCommand::DefineOutcome { outcome_id, .. } =
+            &batch.events[0].event
         else {
             panic!("Outcome Event")
         };
@@ -388,7 +387,7 @@ async fn outcome_busy_is_retryable_and_cannot_mark_the_root_entry_processed() {
     // | Rule | Root command | Aggregate | Effect |
     // | B1 | unprocessed | busy | E1 + E2 |
     // | B2 | same retained command | available | E3 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -453,7 +452,7 @@ fn initial_outcome_reconciliation_does_not_wait_for_its_own_first_run() {
     // R3 C3 -> no duplicate Worker Run. R4 Running/Rescheduling/terminal -> no
     // competing driver. The live Managed initial_events probe exposed R1 at
     // Preparing: no first Run could be created while the selector required Idle.
-    use awaken_session_state_contract::SessionExecutionState as State;
+    use awaken_session_contract::SessionExecutionState as State;
     for state in [
         State::Preparing,
         State::Activating,
@@ -511,7 +510,7 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
     // | C1 | retained+processed | active | E1 + E2 |
     // | C2 | retained+processed | terminal transition | E3 |
     // | C3 | retained+processed | inactive | E4 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -545,7 +544,7 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
     assert!(
         matches!(
             &durable.event_batches[0].events[0].event,
-            awaken_session_event_contract::SessionEventCommand::DefineOutcome {
+            awaken_session_contract::SessionEventCommand::DefineOutcome {
                 rubric: SessionOutcomeRubric::File { file_id },
                 max_iterations: None,
                 ..
@@ -559,7 +558,7 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
         "C1/E1 execution lowering applies the existing default only at effect time"
     );
     let mut in_flight = durable.clone();
-    in_flight.execution = awaken_session_state_contract::SessionExecutionState::Running;
+    in_flight.execution = awaken_session_contract::SessionExecutionState::Running;
     assert!(
         !in_flight.needs_outcome_reconciliation(),
         "C1: a retained Outcome cannot replay its stable Worker Run while Session activity is in flight"

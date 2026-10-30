@@ -84,7 +84,7 @@ pub fn install_container_environment_components(
         settings.container_hand_residency,
         host.clock(),
     )
-    .into_session_provider();
+    .into_provider_roles();
     let host = match components.cache_volume_initializer {
         Some(initializer) => host.with_cache_volume_initializer(initializer),
         None => host,

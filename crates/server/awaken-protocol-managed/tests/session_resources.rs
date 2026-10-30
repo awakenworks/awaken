@@ -54,9 +54,9 @@ use awaken_resource_contract::{
     ResourceState, RetentionPolicy,
 };
 use awaken_session_configuration_contract::SessionInit;
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_repository_contract::{SessionReconciliation as _, SessionRepository};
-use awaken_session_state_contract::{SessionDisposition, SessionExecutionState};
+use awaken_session_contract::SessionRepositoryReads;
+use awaken_session_contract::{SessionDisposition, SessionExecutionState};
+use awaken_session_contract::{SessionReconciliation as _, SessionRepository};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
@@ -474,7 +474,7 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
             assert!(prepared.lock().unwrap().is_empty(), "{rule}");
             assert_eq!(
                 repo.get(&SessionId::from("sesn_0")).await,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound),
+                Err(awaken_session_contract::SessionRepositoryError::NotFound),
                 "{rule}"
             );
         } else {
@@ -772,25 +772,25 @@ struct RecordingListPriceProvider {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_budget_contract::ManagedListPriceProvider for RecordingListPriceProvider {
+impl awaken_session_contract::ManagedListPriceProvider for RecordingListPriceProvider {
     async fn resolve_snapshot(
         &self,
-        request: awaken_session_budget_contract::ManagedListPriceRequest,
+        request: awaken_session_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_budget_contract::ManagedListPriceSnapshot,
-        awaken_session_budget_contract::ManagedListPriceError,
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
     > {
         self.model_rosters
             .lock()
             .unwrap()
             .push(request.model_refs.clone());
-        let rates = awaken_session_budget_contract::ManagedTokenListRates {
+        let rates = awaken_session_contract::ManagedTokenListRates {
             input_micros_per_million: 1,
             output_micros_per_million: 1,
             cache_read_micros_per_million: 1,
             cache_creation_micros_per_million: 1,
         };
-        Ok(awaken_session_budget_contract::ManagedListPriceSnapshot {
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "budget-backend-test".into(),
             version: 1,
             effective_at_unix_ms: request.occurred_at_unix_ms,
@@ -2544,7 +2544,7 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
         .expect("L2/E2 Session");
     assert_eq!(
         settled.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "L2/E2"
     );
 
@@ -3076,7 +3076,7 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
         .terminate_session(
             session_id,
             "2026-08-27T00:00:00Z",
-            awaken_session_state_contract::ManagedLifecycleFact {
+            awaken_session_contract::ManagedLifecycleFact {
                 id: format!("session:{session_id}:terminated"),
                 object_id: session_id.into(),
                 workspace_id: Some("default".into()),
@@ -3372,11 +3372,11 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
     );
     assert!(
         sessions
-            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
                 workspace_id: "default"
             })
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()
             .is_empty(),
         "R1/E3"
@@ -3466,7 +3466,7 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     assert!(durable.resources.pending.is_none());
     assert_eq!(
         durable.resources.activations[0].state,
-        awaken_session_state_contract::ActivationState::Failed
+        awaken_session_contract::ActivationState::Failed
     );
 }
 
@@ -3537,7 +3537,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
     assert!(durable.resources.needs_reconciliation());
     assert_eq!(
         durable.resources.activations.last().unwrap().state,
-        awaken_session_state_contract::ActivationState::Prepared
+        awaken_session_contract::ActivationState::Prepared
     );
 
     let revision = durable.resources.revision;
@@ -3719,7 +3719,7 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
             assert!(durable.resources.pending.is_none(), "C7");
             assert_eq!(
                 durable.resources.activations.last().unwrap().state,
-                awaken_session_state_contract::ActivationState::Failed,
+                awaken_session_contract::ActivationState::Failed,
                 "C7"
             );
         }
@@ -5124,7 +5124,7 @@ async fn settle_profiled_session(
     state: &std::sync::Arc<ManagedState>,
     workspace_id: &str,
     session_id: &str,
-) -> awaken_session_state_contract::PersistedSession {
+) -> awaken_session_contract::PersistedSession {
     // Fixture boundary rule: C1 an accepted profiled root is still Preparing;
     // C2 the exact owner is supplied. Effect E1=C1+C2 enters the canonical
     // execution-admission recovery once and returns the same root after
@@ -5141,7 +5141,7 @@ async fn settle_profiled_session(
     assert_eq!(recovered.owner_scope, workspace_id, "E1 exact owner");
     assert_eq!(
         recovered.session.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "E1 canonical realization converges"
     );
     recovered.session
@@ -5165,27 +5165,24 @@ async fn persist_profiled_publication_source(
         .config_fingerprint
         .0
         .clone();
-    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         session_id,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         Some(realization),
     )
     .for_environment(environment_fingerprint);
     let sink = state.session_application().environment_binding_sink();
     assert_eq!(
         sink.authorize(&intent).await.unwrap(),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
             intent: Box::new(intent.clone())
         },
         "profiled publication fixture uses the aggregate-authorized live source path"
     );
     let binding = format!("profiled-test-live-source:{session_id}");
     sink.persist(
-        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
-            &intent,
-            binding.clone(),
-        )
-        .expect("authorized Environment receipt"),
+        awaken_session_contract::SessionEnvironmentReceipt::from_intent(&intent, binding.clone())
+            .expect("authorized Environment receipt"),
     )
     .await
     .expect("persist profiled live Environment source");
@@ -5268,7 +5265,7 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
         .unwrap();
     assert_eq!(
         durable.execution,
-        awaken_session_state_contract::SessionExecutionState::Preparing,
+        awaken_session_contract::SessionExecutionState::Preparing,
         "Q1/E2"
     );
     assert!(runtime.prepared.lock().unwrap().is_empty(), "Q1/E2");
@@ -5440,7 +5437,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .get(&SessionId::from("profiled-failed-replay"))
         .await
         .expect("seed Session root");
-    failed.execution = awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+    failed.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
     // W3/F1: import the historical unknown-time failure unchanged.
     let mut progress = serde_json::to_value(&failed).unwrap();
     progress["realization_progress"]["last_error"] = "sandbox realization failed".into();
@@ -5450,7 +5447,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
     let sessions = support::session_repository("target Session repository").await;
     let typed: awaken_protocol_managed::awaken_extensions::ProfiledSessionCreate =
         serde_json::from_value(request.clone()).expect("typed private request");
-    let receipt = awaken_session_state_contract::IdempotencyRecord {
+    let receipt = awaken_session_contract::IdempotencyRecord {
         key: "profiled:create:profiled-failed-replay".into(),
         payload_hash: awaken_agent_contract::stable_fingerprint(&typed),
     };
@@ -5783,7 +5780,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             sessions
                 .get(&SessionId::from("profiled-empty-binding"))
                 .await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "B4 no root"
     );
@@ -5862,7 +5859,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     let sessions = support::session_repository("target Session repository").await;
     let typed_legacy: awaken_protocol_managed::awaken_extensions::ProfiledSessionCreate =
         serde_json::from_value(legacy_wire.clone()).expect("legacy private wire");
-    let receipt = awaken_session_state_contract::IdempotencyRecord {
+    let receipt = awaken_session_contract::IdempotencyRecord {
         key: "profiled:create:profiled-legacy-path-replay".into(),
         payload_hash: awaken_agent_contract::stable_fingerprint(&typed_legacy),
     };
@@ -6360,7 +6357,7 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     // qualified public identity as ordinary Managed Events. Decision rules
     // R10a=C1=>E1, R10b=C1+C2+C3=>E2+E3, R2c=C4=>E4, and
     // R10c=C2+C5=>E5. The shared Runtime fake implements the existing
-    // SessionRuntime commit ports; this route adds no Event fallback, projector,
+    // SessionRuns commit ports; this route adds no Event fallback, projector,
     // transcript, identity codec, or status owner.
     let runtime = CoordinatedRuntimeFake::default();
     runtime.hold_next_user_run_activation();
@@ -6604,7 +6601,7 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
     assert!(
         matches!(
             sessions.get(&SessionId::from("profiled-run-missing")).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "R5 no implicit create"
     );

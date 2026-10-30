@@ -524,7 +524,7 @@ impl ManagedState {
     /// and therefore blocks follow-up. This disposable map creates no second
     /// pending/recovery registry.
     pub(super) fn tool_reply_projection_phases(
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
         candidates: &[PendingToolReplyCandidate],
     ) -> std::collections::HashMap<
         PendingToolReplyKey,
@@ -538,11 +538,11 @@ impl ManagedState {
                     .iter()
                     .flat_map(|batch| &batch.events)
                     .find(|entry| match &entry.event {
-                        awaken_session_event_contract::SessionEventCommand::ToolReply { reply, .. } => {
+                        awaken_session_contract::SessionEventCommand::ToolReply { reply, .. } => {
                             let client_executed = matches!(
                                 reply.reply,
-                                awaken_session_event_contract::SessionEventToolReplyKind::CustomToolResult { .. }
-                                    | awaken_session_event_contract::SessionEventToolReplyKind::ToolResult { .. }
+                                awaken_session_contract::SessionEventToolReplyKind::CustomToolResult { .. }
+                                    | awaken_session_contract::SessionEventToolReplyKind::ToolResult { .. }
                             );
                             reply.target == candidate.key.target
                                 && reply.expected_thread_version

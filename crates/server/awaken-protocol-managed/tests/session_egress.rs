@@ -13,7 +13,7 @@ use awaken_protocol_managed::{
     ManagedState, environment_authoring_router, environment_work_router,
 };
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
@@ -28,7 +28,7 @@ struct CapturingFake {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for CapturingFake {
+impl SessionRuns for CapturingFake {
     async fn run(
         &self,
         _a: &str,
@@ -59,21 +59,21 @@ impl SessionRuntime for CapturingFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for CapturingFake);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for CapturingFake);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for CapturingFake);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for CapturingFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for CapturingFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for CapturingFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for CapturingFake);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for CapturingFake);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for CapturingFake);
+awaken_session_execution_contract::neutral_role!(ThreadReads for CapturingFake);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for CapturingFake);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for CapturingFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for CapturingFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for CapturingFake);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for CapturingFake);
 
@@ -156,7 +156,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
 awaken_session_execution_contract::neutral_role!(RealizationEffects for CapturingFake);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for CapturingFake {
+impl awaken_session_execution_contract::Outcomes for CapturingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

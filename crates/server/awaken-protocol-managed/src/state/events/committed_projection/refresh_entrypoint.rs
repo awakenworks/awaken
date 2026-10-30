@@ -102,7 +102,7 @@ impl ManagedState {
                         false,
                     )
                 }
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                     let tombstone = roots
                         .deleted_event_admissions(owner_scope, &id)
                         .await

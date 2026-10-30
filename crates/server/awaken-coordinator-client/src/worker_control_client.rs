@@ -156,9 +156,9 @@ impl WorkerControlClient {
     pub async fn authorize_session_environment_effect(
         &self,
         identity: &WorkerIdentity,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         let (status, body) = self
@@ -183,11 +183,9 @@ impl WorkerControlClient {
     pub async fn persist_session_environment_receipt(
         &self,
         identity: &WorkerIdentity,
-        receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: &awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         let (status, body) = self
             .post_response(
                 "/v1/worker/session/environment/persist",
@@ -488,7 +486,7 @@ impl WorkerControlClient {
     pub async fn authorize_terminal_cleanup_effect(
         &self,
         identity: &WorkerIdentity,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
         awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -521,7 +519,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        preparation: awaken_session_state_contract::SessionCleanupPreparation,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/preparation/record",
@@ -538,7 +536,7 @@ impl WorkerControlClient {
     pub async fn authorize_terminal_cleanup_disposal(
         &self,
         identity: &WorkerIdentity,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let body = self
             .realization_response(
@@ -565,7 +563,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/disposal/record",
@@ -618,7 +616,7 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         session_id: &str,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/repository-publication/complete",
@@ -638,7 +636,7 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         session_id: &str,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/repository-publication/reject",

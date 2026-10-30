@@ -1,8 +1,11 @@
 //! Guard the Environment roles absent from this private Root fixture.
 //!
 //! The fixture commits a frozen Session declaration itself. It must not select
-//! Environment revisions, enqueue Work, claim leases, or report invented queue
-//! results. The existing ScenarioHost owns those real composition scenarios.
+//! Environment revisions, wake or retire Work, claim leases, or report invented
+//! queue results. The existing ScenarioHost owns those real composition
+//! scenarios. A Worker-placed Session re-projects its Work when its Resource
+//! manifest changes, so the fixture records each enqueue it is asked for and
+//! grants nothing else: no queue, claim or lease follows from a record.
 
 use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, ExecutableEnvironmentRegistrationError, ResolvedSessionEnvironment,
@@ -11,7 +14,17 @@ use awaken_executable_environment_contract::{
 use awaken_session_application_contract::{SessionWorkerAssignment, SessionWorkerLeases};
 use awaken_session_types::{RunError, SessionId, SessionWorkLease};
 
-pub(super) struct UnusedEnvironmentPorts;
+#[derive(Default)]
+pub(super) struct UnusedEnvironmentPorts {
+    enqueued: std::sync::Mutex<Vec<SessionId>>,
+}
+
+impl UnusedEnvironmentPorts {
+    /// Sessions whose Work projection was requested, in request order.
+    pub(super) fn enqueued(&self) -> Vec<SessionId> {
+        self.enqueued.lock().unwrap().clone()
+    }
+}
 
 #[async_trait::async_trait]
 impl SessionEnvironmentProjectionSource for UnusedEnvironmentPorts {
@@ -52,9 +65,10 @@ impl SessionWorkerAssignment for UnusedEnvironmentPorts {
     async fn enqueue_session(
         &self,
         _environment_id: &str,
-        _session_id: &SessionId,
+        session_id: &SessionId,
     ) -> Result<String, RunError> {
-        panic!("private Root fixture must not enqueue Work")
+        self.enqueued.lock().unwrap().push(session_id.clone());
+        Ok(format!("fixture-work:{session_id}"))
     }
 
     async fn wake_session(

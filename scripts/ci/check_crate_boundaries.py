@@ -800,7 +800,7 @@ INCOMPLETE_GENERATION_EXEMPTIONS = {
     # of every other coordinate; every consumer compares it as effect identity
     # on a receipt, never as a precondition on a durable head. The type carries
     # the full argument.
-    "SandboxGeneration": "crates/contract/awaken-session-state-contract/src/environment/generation.rs",
+    "SandboxGeneration": "crates/contract/awaken-session-contract/src/state/environment/generation.rs",
 }
 
 

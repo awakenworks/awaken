@@ -60,15 +60,15 @@
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 54
+        "line": 62
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 55
+        "line": 63
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 61
+        "line": 69
       }
     ],
     "execution_witnesses": [
@@ -102,7 +102,7 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 110,
+        "line": 118,
         "file_sha256": "f0f599c0302c0fa976dee6942eb1959b8a4be6c3ba4a6255ad405150da3eb462"
       }
     ],
@@ -134,15 +134,15 @@
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 118
+        "line": 134
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 123
+        "line": 139
       },
       {
         "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 140
+        "line": 156
       }
     ]
   },
@@ -447,18 +447,18 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
-        "line": 368,
+        "line": 367,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
-        "line": 375
+        "line": 374
       },
       {
         "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
-        "line": 379
+        "line": 378
       }
     ],
     "execution_witnesses": [
@@ -494,18 +494,18 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
-        "line": 390,
+        "line": 389,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
-        "line": 401
+        "line": 400
       },
       {
         "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
-        "line": 405
+        "line": 404
       }
     ],
     "execution_witnesses": [
@@ -541,14 +541,14 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 277,
+        "line": 275,
         "file_sha256": "4167b4ef2ed24691794a4428b15526fa95687f7c85a68335fb33c77f61a13fb1"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 279
+        "line": 277
       }
     ],
     "execution_witnesses": [
@@ -583,22 +583,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 283,
+        "line": 281,
         "file_sha256": "4167b4ef2ed24691794a4428b15526fa95687f7c85a68335fb33c77f61a13fb1"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 290
+        "line": 288
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 295
+        "line": 293
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 299
+        "line": 297
       }
     ],
     "execution_witnesses": [
@@ -683,22 +683,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 383,
+        "line": 382,
         "file_sha256": "602a595e8d3d2bf9c52cfe7b2bb1a3216619b86e009e0fb132a38310c47db8be"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 384
+        "line": 383
       },
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 389
+        "line": 388
       },
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 398
+        "line": 397
       }
     ],
     "execution_witnesses": [

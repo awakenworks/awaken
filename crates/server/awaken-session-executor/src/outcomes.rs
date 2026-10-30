@@ -7,7 +7,7 @@
 //! It prepares and continues the extension-owned Outcome aggregate, running
 //! Worker/ACK Runs through the caller's borrowed admission role and Grader
 //! Runs through their existing separate Run boundary. It serves the Session
-//! application's `OutcomeRuntime` role without retaining that application.
+//! application's `Outcomes` role without retaining that application.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use awaken_session_execution_contract::OutcomeDrive;
 use awaken_session_types::RunError;
 
 /// Outcome orchestration for one process. Consumer: the Session application's
-/// `OutcomeRuntime` role.
+/// `Outcomes` role.
 pub struct Outcomes {
     pub(crate) session_runs: Arc<crate::SessionRuns>,
     pub(crate) installed_sessions: Arc<crate::InstalledSessions>,
@@ -31,7 +31,7 @@ impl Outcomes {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for Outcomes {
+impl awaken_session_execution_contract::Outcomes for Outcomes {
     async fn prepare_outcome(
         &self,
         thread: &str,

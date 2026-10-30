@@ -43,13 +43,13 @@ mod tests {
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
         SessionNetworkPolicy,
     };
-    use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
+    use awaken_session_contract::{IdempotencyRecord, SessionResourceState};
+    use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
     use awaken_session_realization_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
         SessionRealizationControl,
     };
-    use awaken_session_state_contract::{IdempotencyRecord, SessionResourceState};
     use {
         awaken_agent_contract::McpTarget,
         awaken_session_configuration_contract::mcp::{
@@ -61,7 +61,7 @@ mod tests {
     struct NoopRuntime;
 
     #[async_trait::async_trait]
-    impl SessionRuntime for NoopRuntime {
+    impl SessionRuns for NoopRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -95,21 +95,21 @@ mod tests {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for NoopRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for NoopRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReads for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanup for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for NoopRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
 
@@ -184,7 +184,7 @@ mod tests {
     awaken_session_execution_contract::neutral_role!(RealizationEffects for NoopRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
+    impl awaken_session_execution_contract::Outcomes for NoopRuntime {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -341,16 +341,15 @@ mod tests {
         session: PersistedSession,
     ) -> (
         ManagedState,
-        Arc<dyn awaken_session_repository_contract::SessionStore>,
+        Arc<dyn awaken_session_application::SessionStore>,
     ) {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repo: Arc<dyn awaken_session_application::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .unwrap(),
         );
         let id = session.session_id.clone();
-        let payload =
-            awaken_session_state_contract::SessionMutationPayload::Replace(session.clone());
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
         repo.create(
             "workspace-a",
@@ -387,7 +386,7 @@ mod tests {
         id: &str,
     ) -> (
         ManagedState,
-        Arc<dyn awaken_session_repository_contract::SessionStore>,
+        Arc<dyn awaken_session_application::SessionStore>,
     ) {
         harness_for(persisted_session(id)).await
     }
@@ -754,9 +753,9 @@ mod tests {
             )
             .expect("Q12 pending Resource generation");
         let expected_revision = pending.revision;
-        let payload = awaken_session_state_contract::SessionMutationPayload::Replace(pending);
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(pending);
         let payload_hash = payload.stable_hash();
-        let mutation = awaken_session_state_contract::SessionMutation {
+        let mutation = awaken_session_contract::SessionMutation {
             expected_revision,
             idempotency: IdempotencyRecord {
                 key: "Q12:pending-resource".into(),
@@ -767,7 +766,7 @@ mod tests {
         };
         assert!(matches!(
             repo.commit("workspace-a", mutation).await.unwrap(),
-            awaken_session_state_contract::SessionMutationResult::Applied { .. }
+            awaken_session_contract::SessionMutationResult::Applied { .. }
         ));
 
         let before_renewal = repo

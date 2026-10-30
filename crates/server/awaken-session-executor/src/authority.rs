@@ -382,7 +382,7 @@ impl UpstreamAuthority {
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_session_realization_contract::SessionResourceMaterializationIntent,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_session_state_contract::SessionTerminalMemoryIntent,
+                awaken_session_contract::SessionTerminalMemoryIntent,
             > + 'static,
     {
         self.memory_reference_encoder = Some(encoder);

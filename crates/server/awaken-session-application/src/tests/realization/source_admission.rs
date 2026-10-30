@@ -6,23 +6,19 @@ use super::*;
 pub(super) fn prepare_terminal_root_for_disposal(root: &mut PersistedSession) {
     let lease = root.realization.clone().unwrap();
     let commands = match root.terminal_cleanup_work_action().unwrap().unwrap() {
-        awaken_session_state_contract::SessionTerminalCleanupAction::Prepare { commands } => {
-            commands
-        }
+        awaken_session_contract::SessionTerminalCleanupAction::Prepare { commands } => commands,
         other => panic!("original preparation: {other:?}"),
     };
     for command in commands {
-        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-            command,
-            lease.clone(),
-        );
-        let prepared = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        let effect =
+            awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+        let prepared = awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             effect.sandbox_effect_fence().unwrap(),
             Vec::new(),
         )
         .unwrap();
-        let repository = awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+        let repository = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
             &root.session_id,
             "workspace",
             &root.resources,
@@ -33,16 +29,16 @@ pub(super) fn prepare_terminal_root_for_disposal(root: &mut PersistedSession) {
     }
     assert!(matches!(
         root.terminal_cleanup_work_action().unwrap(),
-        Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { .. })
+        Some(awaken_session_contract::SessionTerminalCleanupAction::Dispose { .. })
     ));
 }
 
 pub(super) fn terminal_disposal_action(
     session_id: &str,
-) -> awaken_session_state_contract::SessionTerminalCleanupAction {
+) -> awaken_session_contract::SessionTerminalCleanupAction {
     use awaken_provisioning_contract::{SandboxDisposalPreparation, SandboxEffectFence};
-    awaken_session_state_contract::SessionTerminalCleanupAction::Dispose {
-        command: awaken_session_state_contract::SessionCleanupDisposalCommand {
+    awaken_session_contract::SessionTerminalCleanupAction::Dispose {
+        command: awaken_session_contract::SessionCleanupDisposalCommand {
             session_id: session_id.into(),
             effect_id: "terminal".into(),
             preparation_fingerprint: "fixture-preparation".into(),
@@ -64,7 +60,7 @@ fn terminal_source_protocol_capability_is_required_only_for_preparation() {
     // requirement. The existing process-owner test uses this same disposal
     // fixture and independently preserves every physical placement demand.
     use awaken_provisioning_contract::HostAccessPolicy;
-    use awaken_session_state_contract::SessionTerminalCleanupAction;
+    use awaken_session_contract::SessionTerminalCleanupAction;
     let disposal = terminal_disposal_action("source-protocol");
     for trusted in [false, true] {
         for supervised in [false, true] {
@@ -121,7 +117,7 @@ async fn terminal_source_authorization_uses_current_dispatch_without_business_cl
         expires_at_unix_ms: u64::MAX,
     };
     let mut root = registry_race_terminal_session(session_id, Some(lease.clone()));
-    root.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    root.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
             "fixture",
             "original-source",
@@ -154,7 +150,7 @@ async fn terminal_source_authorization_uses_current_dispatch_without_business_cl
         .await
         .unwrap()
         .unwrap();
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         terminal_prepare_commands(work).into_iter().next().unwrap(),
         lease,
     );

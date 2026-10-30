@@ -19,14 +19,14 @@ use super::*;
 
 fn container_provider(
     provider: &Arc<FakeContainerProvider>,
-) -> awaken_session_environment_contract::SessionEnvironmentProvider {
+) -> awaken_session_environment_contract::SandboxProviderRoles {
     SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
+    .into_provider_roles()
 }
 
 fn count(counter: &std::sync::atomic::AtomicUsize) -> usize {
@@ -45,8 +45,16 @@ async fn foreign_instance_with_differing_identity_is_refused_and_logical_id_chec
     let provider_b = Arc::new(FakeContainerProvider::default());
     let configured_a = container_provider(&provider_a);
     let configured_b = container_provider(&provider_b);
-    let environment_a = configured_a.create(&spec()).await.unwrap();
-    let environment_b = configured_b.create(&spec()).await.unwrap();
+    let environment_a = configured_a
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
+    let environment_b = configured_b
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let handle_a = environment_a.lifecycle().handle();
     let handle_b = environment_b.lifecycle().handle();
 
@@ -112,8 +120,16 @@ async fn foreign_instance_with_equal_handle_cannot_rebind_another_providers_envi
     let provider_b = Arc::new(FakeContainerProvider::default());
     let configured_a = container_provider(&provider_a);
     let configured_b = container_provider(&provider_b);
-    let environment_a = configured_a.create(&spec()).await.unwrap();
-    let environment_b = configured_b.create(&spec()).await.unwrap();
+    let environment_a = configured_a
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
+    let environment_b = configured_b
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let handle_a = environment_a.lifecycle().handle();
     assert_eq!(
         handle_a,

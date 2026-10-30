@@ -5,7 +5,7 @@ use super::*;
 
 /// Terminal cleanup prepares every durability participant before the aggregate
 /// opens the one physical-disposal edge. The exact sandbox is reaped only by
-/// `SessionRuntime::dispose_terminal_cleanup_for_effect`: preparation leaves
+/// `SessionRuns::dispose_terminal_cleanup_for_effect`: preparation leaves
 /// its status `Ready`, while disposal flips it to `Terminated`. The process-local
 /// terminal projection remains until the aggregate acknowledges the disposal
 /// receipt, unlike evict-to-rebuild edges that retain the physical workspace.
@@ -108,7 +108,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     );
     let binding =
         serde_json::to_string(&env.lifecycle().handle()).expect("encode terminal binding");
-    let environment_generation = awaken_session_state_contract::SandboxGeneration::new(
+    let environment_generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("t-end"),
         lease.epoch,
         lease.expires_at_unix_ms,
@@ -116,7 +116,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal-test-image",
     );
     let environment_effect_id = create_fence.operation_id();
-    let environment_state = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let environment_state = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: binding.clone(),
         effect_id: Some(environment_effect_id.to_owned()),
         generation: Some(environment_generation.clone()),
@@ -205,7 +205,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // | T2 | T | T | T | F | F | E3 + E4 |
     // | T3 | T | T | T | T | F | E5 |
     // | T4 | F | F | F | F | T | E6 |
-    let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
     assert!(
         cleanup.request(&awaken_session_types::SessionId::from("t-end")),
         "T1 freezes the terminal fence"
@@ -220,7 +220,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     terminal_projection.revision.0 += 1;
     let conflicting = initial.ends_with("-conflict");
     terminal_projection.environment = if initial == "uncommitted" || conflicting {
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
     } else {
         environment_state
     };
@@ -287,10 +287,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )
         .await
         .expect("install the exact terminal projection");
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-        command.clone(),
-        lease.clone(),
-    );
+    let effect =
+        awaken_session_contract::SessionTerminalCleanupEffect::new(command.clone(), lease.clone());
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let before = host.run_assembly.prepared_session_environment("t-end");
@@ -461,7 +459,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         replay_error.kind,
         awaken_session_types::RunErrorKind::Unavailable
     );
-    let mut missing = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut missing = awaken_session_contract::SessionCleanupOperation::default();
     assert!(missing.request(&awaken_session_types::SessionId::from("never-existed")));
     missing
         .freeze_targets(
@@ -471,7 +469,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             0,
         )
         .unwrap();
-    let missing_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let missing_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         missing
             .command_for(
                 &awaken_session_types::SessionId::from("never-existed"),
@@ -533,14 +531,14 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
     ] {
         let thread = "restoring-terminal-response-loss";
         let (lease, base_effect) = terminal_recovery_effect(thread, "restoring-terminal-worker");
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
+        let generation = awaken_session_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from(thread),
             lease.epoch,
             lease.expires_at_unix_ms,
             "restoring-terminal-environment",
             "restoring-terminal-image",
         );
-        let suspend = awaken_session_state_contract::SessionEnvironmentOperation::new(
+        let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
             "terminal-workspace",
             &awaken_session_types::SessionId::from(thread),
             "suspend",
@@ -549,7 +547,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             Some(lease.clone()),
             None,
         );
-        let checkpoint = awaken_session_state_contract::SandboxCheckpointRef {
+        let checkpoint = awaken_provisioning_contract::SandboxCheckpointRef {
             id: "restoring-terminal-checkpoint".into(),
             format: "awaken-fs-v1".into(),
             digest: "restoring-terminal-checkpoint-digest".into(),
@@ -561,7 +559,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             excluded_mounts: Vec::new(),
             suspend_effect_id: suspend.effect_id().to_owned(),
         };
-        let restore = awaken_session_state_contract::SessionEnvironmentOperation::new(
+        let restore = awaken_session_contract::SessionEnvironmentOperation::new(
             "terminal-workspace",
             &awaken_session_types::SessionId::from(thread),
             "restore",
@@ -570,7 +568,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             Some(lease.clone()),
             Some(&checkpoint),
         );
-        let restoring = awaken_session_state_contract::SessionEnvironmentState::Restoring {
+        let restoring = awaken_session_contract::SessionEnvironmentState::Restoring {
             operation: restore,
             checkpoint: checkpoint.clone(),
             generation,
@@ -581,7 +579,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 &awaken_session_types::SessionId::from(thread),
             )
             .expect("TR1 exact aggregate restore target");
-        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
             base_effect
                 .command
                 .with_restore_target(restore_target.clone())
@@ -876,7 +874,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         })
         .expect("installed Sessions");
 
-    let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
     assert!(cleanup.request(&awaken_session_types::SessionId::from(session_id)));
     cleanup
         .freeze_targets(
@@ -890,7 +888,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
             0,
         )
         .unwrap();
-    let completed_child = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let completed_child = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup
             .command_for(
                 &awaken_session_types::SessionId::from(session_id),
@@ -936,7 +934,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         "P3/E3"
     );
 
-    let stale_foreign = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let stale_foreign = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup
             .command_for(&awaken_session_types::SessionId::from(session_id), foreign)
             .unwrap(),
@@ -951,7 +949,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         "P3/E3"
     );
 
-    let root = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let root = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup
             .command_for(
                 &awaken_session_types::SessionId::from(session_id),
@@ -1544,7 +1542,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         );
         let (state, preparation, prepared) =
             disposing_terminal_environment(thread, &prepared_lease, &handle, "durable-checkpoint");
-        let mut session = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        let mut session = awaken_session_contract::PersistedSession::frozen_with_budget(
             thread,
             remote_terminal_cleanup_projection().baseline,
             Default::default(),
@@ -1657,7 +1655,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
                         };
                         owned.identity = BoundSessionEnvironmentIdentity::Durable {
                             effect_id: "terminal-source-effect".into(),
-                            generation: awaken_session_state_contract::SandboxGeneration::new(
+                            generation: awaken_session_contract::SandboxGeneration::new(
                                 &awaken_session_types::SessionId::from(thread),
                                 3,
                                 u64::MAX,

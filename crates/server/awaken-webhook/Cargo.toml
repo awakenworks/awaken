@@ -29,7 +29,7 @@ awaken-outbound-http.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 # Lifecycle adapter: implements the Session lifecycle outbox's delivery port.
 awaken-session-application-contract.workspace = true
-awaken-session-state-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-time.workspace = true
 
 [dev-dependencies]

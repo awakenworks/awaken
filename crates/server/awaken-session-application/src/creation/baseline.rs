@@ -57,13 +57,13 @@ impl SessionCreationCommands {
 
     pub async fn resolve_managed_list_price_snapshot(
         &self,
-        request: awaken_session_budget_contract::ManagedListPriceRequest,
+        request: awaken_session_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_budget_contract::ManagedListPriceSnapshot,
-        awaken_session_budget_contract::ManagedListPriceError,
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
     > {
         let provider = self.managed_list_prices.as_deref().ok_or_else(|| {
-            awaken_session_budget_contract::ManagedListPriceError::Unavailable(
+            awaken_session_contract::ManagedListPriceError::Unavailable(
                 "no Managed list-price provider is configured".into(),
             )
         })?;

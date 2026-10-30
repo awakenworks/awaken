@@ -7,7 +7,7 @@
 //! Session aggregate's retry-budget decision for the report lives here too.
 
 use crate::{FailSessionRealization, RunError, SessionRealizationControlDisposition};
-use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_contract::{PersistedSession, SessionExecutionState};
 
 /// One failed realization effect across projection and driver boundaries.
 /// The provider's relative scheduling hint travels beside the unchanged
@@ -266,7 +266,7 @@ impl FailSessionRealization {
     /// use awaken_session_realization_contract::{
     ///     FailSessionRealization, RealizationFailureOutcome, SessionRealizationControlFailure,
     /// };
-    /// use awaken_session_state_contract::PersistedSession;
+    /// use awaken_session_contract::PersistedSession;
     /// fn observe(command: &FailSessionRealization, session: &PersistedSession)
     ///     -> Result<RealizationFailureOutcome, SessionRealizationControlFailure>
     /// {
@@ -281,7 +281,7 @@ impl FailSessionRealization {
     ///
     /// ```compile_fail,E0599
     /// use awaken_session_realization_contract::FailSessionRealization;
-    /// use awaken_session_state_contract::PersistedSession;
+    /// use awaken_session_contract::PersistedSession;
     /// fn bypass(command: &FailSessionRealization, session: &mut PersistedSession) {
     ///     let _ = command.retries_initial_realization(session, 3);
     /// }
@@ -354,7 +354,7 @@ impl FailSessionRealization {
     /// acknowledged (serving) generations are retained unchanged.
     pub fn record_bounded_failure(
         &self,
-        session: &mut awaken_session_state_contract::SessionAggregate,
+        session: &mut awaken_session_contract::SessionAggregate,
         budget: u32,
     ) -> Result<(), crate::SessionRealizationControlFailure> {
         let unavailable = |error: &dyn std::fmt::Display| {

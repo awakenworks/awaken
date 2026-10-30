@@ -11,7 +11,7 @@ mod support;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 use axum::Router;
@@ -25,7 +25,7 @@ use tower::ServiceExt;
 struct AcceptingFake;
 
 #[async_trait::async_trait]
-impl SessionRuntime for AcceptingFake {
+impl SessionRuns for AcceptingFake {
     async fn run(
         &self,
         _a: &str,
@@ -56,19 +56,19 @@ impl SessionRuntime for AcceptingFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for AcceptingFake);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for AcceptingFake);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for AcceptingFake);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for AcceptingFake);
 
@@ -149,7 +149,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
 awaken_session_execution_contract::neutral_role!(RealizationEffects for AcceptingFake);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
+impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -259,7 +259,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
+impl awaken_session_execution_contract::Outcomes for AcceptingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -446,7 +446,7 @@ async fn environment_is_immutable_across_update() {
 #[tokio::test]
 async fn archived_environment_keeps_existing_session_bearer_http_scope() {
     use awaken_session_application_contract::SessionWorkerAssignment as _;
-    use awaken_session_repository_contract::SessionRepositoryReads as _;
+    use awaken_session_contract::SessionRepositoryReads as _;
     use base64::Engine as _;
     let clock = awaken_time::system_clock();
     let fixture = awaken_protocol_managed_testkit::environment_fixture(clock.clone());

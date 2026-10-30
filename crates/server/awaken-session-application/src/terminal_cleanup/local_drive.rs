@@ -11,10 +11,11 @@ use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
 };
-use awaken_session_state_contract::{
-    PersistedSession, SandboxRestoreRequest, SessionTerminalCleanupAction,
-};
 use awaken_session_types::RunError;
+use {
+    awaken_provisioning_contract::SandboxRestoreRequest, awaken_session_contract::PersistedSession,
+    awaken_session_contract::SessionTerminalCleanupAction,
+};
 
 use super::SessionTerminalCleanups;
 use crate::SessionAggregate;
@@ -28,7 +29,7 @@ use crate::{SessionPreparationError, SessionTerminalCleanupDriveOutcome};
 fn freeze_cleanup_delegations(
     session: &mut SessionAggregate,
     snapshot: awaken_session_application_contract::DelegatedRunSnapshot,
-) -> Result<bool, awaken_session_state_contract::SessionCleanupError> {
+) -> Result<bool, awaken_session_contract::SessionCleanupError> {
     let thread_ids = snapshot
         .delegated_runs
         .into_iter()
@@ -155,13 +156,13 @@ fn terminal_driver_failure(
 /// aggregate advanced concurrently; every other malformed command remains a
 /// fail-closed invalid projection.
 pub(super) fn terminal_cleanup_authorization_failure(
-    error: awaken_session_state_contract::SessionCleanupError,
+    error: awaken_session_contract::SessionCleanupError,
 ) -> SessionRealizationControlFailure {
     match error {
-        awaken_session_state_contract::SessionCleanupError::RealizationMismatch => {
+        awaken_session_contract::SessionCleanupError::RealizationMismatch => {
             SessionRealizationControlFailure::StaleOwnership
         }
-        awaken_session_state_contract::SessionCleanupError::CommandNotPending => {
+        awaken_session_contract::SessionCleanupError::CommandNotPending => {
             SessionRealizationControlFailure::NotReady
         }
         error => SessionRealizationControlFailure::Invalid(error.to_string()),
@@ -173,7 +174,7 @@ use awaken_session_realization_driver::supervise_session_terminal_cleanup_lease 
 impl SessionTerminalCleanups {
     pub(crate) async fn authorize_terminal_cleanup_effect_from_root(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
         awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         SessionRealizationControlFailure,
@@ -345,7 +346,7 @@ impl SessionTerminalCleanups {
                 .await
             {
                 Ok(session) => session,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                     return Ok(None);
                 }
                 Err(error) => return Err(repository_preparation(error)),
@@ -448,9 +449,7 @@ impl SessionTerminalCleanups {
                             .await
                         {
                             Ok(session) => session,
-                            Err(
-                                awaken_session_state_contract::SessionRepositoryError::NotFound,
-                            ) => {
+                            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                                 return Ok(None);
                             }
                             Err(error) => return Err(repository_preparation(error)),
@@ -516,7 +515,7 @@ mod tests {
         assert!(
             matches!(
                 terminal_cleanup_authorization_failure(
-                    awaken_session_state_contract::SessionCleanupError::CommandNotPending
+                    awaken_session_contract::SessionCleanupError::CommandNotPending
                 ),
                 SessionRealizationControlFailure::NotReady
             ),
@@ -525,7 +524,7 @@ mod tests {
         assert!(
             matches!(
                 terminal_cleanup_authorization_failure(
-                    awaken_session_state_contract::SessionCleanupError::RealizationMismatch
+                    awaken_session_contract::SessionCleanupError::RealizationMismatch
                 ),
                 SessionRealizationControlFailure::StaleOwnership
             ),
@@ -534,7 +533,7 @@ mod tests {
         assert!(
             matches!(
                 terminal_cleanup_authorization_failure(
-                    awaken_session_state_contract::SessionCleanupError::OperationMismatch
+                    awaken_session_contract::SessionCleanupError::OperationMismatch
                 ),
                 SessionRealizationControlFailure::Invalid(_)
             ),
@@ -560,7 +559,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
+    impl awaken_session_execution_contract::SessionRuns for RecordingTerminalProjectionRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -594,21 +593,21 @@ mod tests {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(Outcomes for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
 
@@ -693,19 +692,17 @@ mod tests {
     awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingTerminalProjectionRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::TerminalCleanupRuntime
-        for RecordingTerminalProjectionRuntime
-    {
+    impl awaken_session_execution_contract::TerminalCleanup for RecordingTerminalProjectionRuntime {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Make every source-dependent effect durable under the exact aggregate
         /// preparation fence without deleting the physical realization.
         async fn prepare_terminal_cleanup_for_effect(
             &self,
-            effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+            effect: awaken_session_contract::SessionTerminalCleanupEffect,
             authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         ) -> Result<
-            awaken_session_state_contract::SessionCleanupPreparation,
+            awaken_session_contract::SessionCleanupPreparation,
             awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
@@ -720,7 +717,7 @@ mod tests {
         /// aggregate-wide physical disposal is complete.
         async fn acknowledge_terminal_cleanup_preparation(
             &self,
-            effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+            effect: &awaken_session_contract::SessionTerminalCleanupEffect,
         ) {
             awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_preparation(effect)
@@ -734,7 +731,7 @@ mod tests {
         /// effect is permitted at this edge.
         async fn acknowledge_terminal_cleanup_disposal(
             &self,
-            effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+            effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
         ) {
             awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_disposal(effect)

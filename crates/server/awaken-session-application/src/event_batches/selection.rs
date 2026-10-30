@@ -1,7 +1,7 @@
 //! Pure selection of the next committed Session event an Event batch handles.
 
-use awaken_session_event_contract::{SessionEventCommand, SessionUserRunSystemInput};
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
+use awaken_session_contract::{SessionEventCommand, SessionUserRunSystemInput};
 
 use super::{FailedToolReplyCoordinate, SelectedSessionEvent, SessionEventSelection};
 

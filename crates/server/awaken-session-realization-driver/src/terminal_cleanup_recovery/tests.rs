@@ -5,11 +5,11 @@
 
 use super::*;
 use crate::terminal_cleanup_driver::tests::{lease, work};
+use awaken_session_contract::SessionTerminalCleanupAction;
 use awaken_session_execution_contract::NeutralRuntime;
 use awaken_session_realization_contract::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
 };
-use awaken_session_state_contract::SessionTerminalCleanupAction;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -72,7 +72,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Script
 impl awaken_session_realization_contract::SessionTerminalPreparationControl for ScriptedControl {
     async fn authorize_terminal_cleanup_effect(
         &self,
-        _effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        _effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
         awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         SessionRealizationControlFailure,
@@ -83,7 +83,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl for 
     async fn record_terminal_cleanup_preparation(
         &self,
         _lease: &SessionRealizationLease,
-        _preparation: awaken_session_state_contract::SessionCleanupPreparation,
+        _preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
         unreachable!("recovery rows never prepare")
     }
@@ -93,7 +93,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl for 
 impl awaken_session_realization_contract::SessionTerminalDisposalControl for ScriptedControl {
     async fn authorize_terminal_cleanup_disposal(
         &self,
-        _effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        _effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, SessionRealizationControlFailure> {
         unreachable!("recovery rows never dispose")
     }
@@ -101,7 +101,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl for Scr
     async fn record_terminal_cleanup_disposal(
         &self,
         _lease: &SessionRealizationLease,
-        _receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+        _receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         unreachable!("recovery rows never dispose")
     }
@@ -130,7 +130,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         _session_id: &SessionId,
         _lease: &SessionRealizationLease,
-        _receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        _receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         unreachable!("recovery rows never publish")
     }
@@ -139,7 +139,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         _session_id: &SessionId,
         _lease: &SessionRealizationLease,
-        _rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        _rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         unreachable!("recovery rows never publish")
     }
@@ -211,24 +211,24 @@ impl RealizationRuntime for ClockedRealization {
 struct InstallingCleanup;
 
 #[async_trait::async_trait]
-impl TerminalCleanupRuntime for InstallingCleanup {
+impl TerminalCleanup for InstallingCleanup {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        _effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        _effect: awaken_session_contract::SessionTerminalCleanupEffect,
         _authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         unreachable!("recovery rows never prepare")
     }
 
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        _effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        _effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
     }
 
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        _effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        _effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
     }
 

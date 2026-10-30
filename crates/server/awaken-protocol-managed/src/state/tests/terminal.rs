@@ -1,9 +1,9 @@
 use super::*;
 pub(in crate::state) use awaken_protocol_managed_testkit::sample_persisted;
-use awaken_session_execution_contract::ToolPermissionDecision;
-use awaken_session_repository_contract::{
+use awaken_session_contract::{
     LifecycleOutbox as _, SessionReconciliation, SessionRepositoryReads,
 };
+use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
@@ -16,15 +16,12 @@ fn test_thread_agent(id: &str) -> SessionThreadAgent {
     )
 }
 
-async fn await_session_tombstone(
-    repo: &dyn awaken_session_repository_contract::SessionStore,
-    id: &str,
-) {
+async fn await_session_tombstone(repo: &dyn awaken_session_application::SessionStore, id: &str) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if matches!(
                 repo.get(&SessionId::from(id)).await,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                Err(awaken_session_contract::SessionRepositoryError::NotFound)
             ) {
                 break;
             }
@@ -236,7 +233,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     assert!(
         matches!(
             persisted.session.environment,
-            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+            awaken_session_contract::SessionEnvironmentState::Unmaterialized
         ),
         "P1/E3"
     );
@@ -302,7 +299,7 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -423,7 +420,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
         )
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -504,7 +501,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
         )
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -592,7 +589,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -789,7 +786,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         "I6 no duplicate effect"
     );
 
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::CoordinationRuntime>::archive_session_thread(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::ChildRunCoordination>::archive_session_thread(
         &runtime,
         &SessionId::from(&session.id),
         child_id,
@@ -901,7 +898,7 @@ async fn delete_session_disposes_the_host_sandbox() {
     assert!(
         matches!(
             repo.get(&SessionId::from(id)).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "successful cleanup converges to a tombstone"
     );
@@ -1408,7 +1405,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
     assert!(
         matches!(
             repo.get(&SessionId::from(&id)).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "delete converges to tombstone"
     );
@@ -1420,7 +1417,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
 
 #[tokio::test]
 async fn activation_failure_remains_deletable_after_projection_cache_loss() {
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     let mut failed = sample_persisted("sesn_failed_delete");
     failed.execution = SessionExecutionState::ActivationFailed;
@@ -1545,7 +1542,7 @@ async fn archive_session_rehydrates_after_process_restart() {
     // resident Environment binding exists. Effects: E1 the Session is terminal;
     // E2 cold control never prepares a Runtime; E3 it invents no teardown. Rule
     // R1=C1+C2+C3+C4=>E1+E2+E3.
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     let original = {
         let session_fixture_runtime = EndSessionRecorder::default();
@@ -1606,7 +1603,7 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
     // remains fail-closed elsewhere. Requiring mutable Control presentation for
     // C3 leaks every already-terminal Run and hot-loops its downstream inbox.
     // Decision rule R1=C1+C2+C3+C4=>E1+E2+E3.
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("sesn_retired_agent_cleanup");
     let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
@@ -1729,7 +1726,7 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
             .resources
             .activations[0]
             .state,
-        awaken_session_state_contract::ActivationState::Active
+        awaken_session_contract::ActivationState::Active
     );
 
     state.archive_session(&id).await.unwrap();
@@ -1737,7 +1734,7 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
     assert_eq!(durable.execution, SessionExecutionState::Terminated);
     assert_eq!(
         durable.resources.activations[0].state,
-        awaken_session_state_contract::ActivationState::Released
+        awaken_session_contract::ActivationState::Released
     );
     assert!(
         repo.reconciliation_scan(None)
@@ -1790,7 +1787,7 @@ async fn session_create_enforces_the_500_file_boundary() {
 struct EndSessionFailer;
 
 #[async_trait]
-impl SessionRuntime for EndSessionFailer {
+impl SessionRuns for EndSessionFailer {
     async fn run(
         &self,
         _agent: &str,
@@ -1822,13 +1819,13 @@ impl SessionRuntime for EndSessionFailer {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for EndSessionFailer);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for EndSessionFailer);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for EndSessionFailer);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for EndSessionFailer);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for EndSessionFailer);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for EndSessionFailer);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for EndSessionFailer);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for EndSessionFailer);
 
@@ -2008,10 +2005,10 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -2021,14 +2018,14 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        _effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        _effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Err(RunError::internal("sandbox dispose blew up"))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::ChildRunCoordination for EndSessionFailer {
     // Fixture rule P1: terminal tests inject end-session failures without prepared execution.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -2036,7 +2033,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -2239,7 +2236,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer
 impl awaken_session_execution_contract::SessionCoordinationReads for EndSessionFailer {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -2345,7 +2342,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EndSessionF
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::ThreadReads for EndSessionFailer {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -2450,12 +2447,12 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionFailer {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::TerminalCleanup for EndSessionFailer {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
             &authorization,
@@ -2469,7 +2466,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -2483,7 +2480,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -2516,7 +2513,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::Outcomes for EndSessionFailer {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -2615,7 +2612,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
         loop {
             let durable = repo.get(&SessionId::from(&id)).await.unwrap();
             if durable.resources.activations[0].state
-                == awaken_session_state_contract::ActivationState::Releasing
+                == awaken_session_contract::ActivationState::Releasing
             {
                 break durable;
             }
@@ -2627,12 +2624,12 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
     assert!(matches!(durable.disposition, SessionDisposition::Deleting));
     assert_eq!(
         durable.resources.activations[0].state,
-        awaken_session_state_contract::ActivationState::Releasing,
+        awaken_session_contract::ActivationState::Releasing,
         "cleanup failure stays durable for ResourceReclaimer"
     );
     assert_eq!(
         repo.reconciliation_scan(None).await.unwrap().sessions,
-        vec![awaken_session_state_contract::ScopedPersistedSession {
+        vec![awaken_session_contract::ScopedPersistedSession {
             workspace_id: awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
             session: durable,
         }]
@@ -2687,12 +2684,12 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
     ));
     assert_eq!(
         durable.resources.activations[0].state,
-        awaken_session_state_contract::ActivationState::Releasing,
+        awaken_session_contract::ActivationState::Releasing,
         "failed cleanup remains visible to lifecycle recovery"
     );
     assert_eq!(
         repo.reconciliation_scan(None).await.unwrap().sessions,
-        vec![awaken_session_state_contract::ScopedPersistedSession {
+        vec![awaken_session_contract::ScopedPersistedSession {
             workspace_id: awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
             session: durable,
         }]

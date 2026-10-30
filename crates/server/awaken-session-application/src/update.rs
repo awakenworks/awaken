@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use awaken_agent_contract::stable_fingerprint;
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
+use awaken_session_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
+use awaken_session_contract::{SessionFieldUpdate, SessionUpdateChanges};
 use awaken_session_realization_contract::realization_lease_is_live_at;
-use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
-use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateChanges};
 use awaken_session_types::{RunError, SessionRevision};
 
 use std::sync::Arc;
@@ -238,10 +238,10 @@ fn validate_credential_lifecycle_replacement(
 }
 
 fn configuration_failure(
-    error: awaken_session_state_contract::SessionAggregateCommandError,
+    error: awaken_session_contract::SessionAggregateCommandError,
 ) -> SessionUpdateError {
     match error {
-        awaken_session_state_contract::SessionAggregateCommandError::ConfigurationNotIdle => {
+        awaken_session_contract::SessionAggregateCommandError::ConfigurationNotIdle => {
             SessionUpdateError::NotIdle
         }
         error => SessionUpdateError::Rejected(RunError::bad_request(error.to_string())),
@@ -281,7 +281,7 @@ fn apply_configuration_update(
 /// executor, persistence authority, timer, or publication path.
 async fn record_update_fact(
     projection: &dyn awaken_session_execution_contract::SessionProjectionSource,
-    session: &mut awaken_session_state_contract::SessionAggregate,
+    session: &mut awaken_session_contract::SessionAggregate,
     before: &PersistedSession,
     mcp_changed: bool,
 ) -> Result<SessionUpdateChanges, SessionUpdateError> {
@@ -292,15 +292,15 @@ async fn record_update_fact(
             .await
             .map_err(SessionUpdateError::Rejected)?
             .map_or(
-                awaken_session_event_contract::SessionEventProjectionAnchor {
+                awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: 0,
                 },
-                |snapshot| awaken_session_event_contract::SessionEventProjectionAnchor {
+                |snapshot| awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: snapshot.store_cursor,
                 },
             )
     } else {
-        awaken_session_event_contract::SessionEventProjectionAnchor {
+        awaken_session_contract::SessionEventProjectionAnchor {
             source_commit_cursor: 0,
         }
     };
@@ -312,15 +312,13 @@ async fn record_update_fact(
 fn compile_update_tool_settings(
     compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
     command: &SessionUpdateCommand,
-    session: &awaken_session_state_contract::SessionAggregate,
+    session: &awaken_session_contract::SessionAggregate,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
     if session.execution != SessionExecutionState::Idle
         && !(matches!(
             command.mcp_update,
             Some(SessionMcpUpdate::CredentialLifecycle { .. })
-        ) && awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(
-            session,
-        ))
+        ) && awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(session))
     {
         return Err(SessionUpdateError::NotIdle);
     }
@@ -356,7 +354,7 @@ pub struct SessionUpdateCommands {
     executable_projections: crate::ExecutableProjections,
     tool_configuration_compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
-    budget: Arc<dyn awaken_session_execution_contract::BudgetRuntime>,
+    budget: Arc<dyn awaken_session_execution_contract::BudgetAccounting>,
     projection: Arc<dyn awaken_session_execution_contract::SessionProjectionSource>,
 }
 
@@ -997,7 +995,7 @@ mod tests {
         for field in ["initial_agent_configuration", "update_history"] {
             wire.as_object_mut().unwrap().remove(field);
         }
-        let before: awaken_session_state_contract::PersistedSession =
+        let before: awaken_session_contract::PersistedSession =
             serde_json::from_value(wire).unwrap();
         let refreshed = vec![draft(
             "docs",
@@ -1008,8 +1006,7 @@ mod tests {
         )];
         validate_credential_lifecycle_replacement(&before.mcp, "source-a", false, &refreshed)
             .unwrap();
-        let mut root =
-            awaken_session_state_contract::SessionAggregate::try_from(before.clone()).unwrap();
+        let mut root = awaken_session_contract::SessionAggregate::try_from(before.clone()).unwrap();
         assert!(
             root.mcp()
                 .request_full_replacement(refreshed, Some(holder))
@@ -1023,7 +1020,7 @@ mod tests {
         root.record_configuration_update(
             &before,
             true,
-            awaken_session_event_contract::SessionEventProjectionAnchor {
+            awaken_session_contract::SessionEventProjectionAnchor {
                 source_commit_cursor: 0,
             },
         )
@@ -1031,12 +1028,11 @@ mod tests {
         let after = root.into_snapshot();
         assert_ne!(before.mcp, after.mcp, "R2 actual credential replacement");
         assert!(
-            awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&after)
-                .is_none(),
+            awaken_session_contract::SessionUpdateHistory::agent_configuration(&after).is_none(),
             "R1 no fabricated historical acceptance"
         );
         assert!(
-            awaken_session_state_contract::SessionUpdateHistory::for_session(&after)
+            awaken_session_contract::SessionUpdateHistory::for_session(&after)
                 .is_none_or(|history| history.facts().is_empty()),
             "R2 credential refresh must not poison legacy presentation history"
         );

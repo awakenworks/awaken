@@ -20,7 +20,7 @@ pub(super) struct RecordingCreateRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingCreateRuntime {
+impl SessionRuns for RecordingCreateRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -54,21 +54,21 @@ impl SessionRuntime for RecordingCreateRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingCreateRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingCreateRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingCreateRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingCreateRuntime);
 
@@ -290,7 +290,7 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingCreateRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingCreateRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -725,7 +725,7 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     // not yet acknowledged realization. Rule R1=C1+C2=>E1; R2=C1+C3+C4=>E4;
     // R3=C1+C3+!C4+C5=>E2+E3; R4=R3 repeated=>E5. Terminal, local and
     // already-resident rows retain their adjacent recovery behavior.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("worker projection recovery repository"),
@@ -822,7 +822,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
     // | T2 | Worker | Resident | existing external creation |
     // | T3 | Local | CheckpointAndRelease | existing local continuation |
     // | T4 | Local | Resident | existing local creation |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("Session repository"),
@@ -856,7 +856,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
         repository
             .get(&SessionId::from("worker-checkpoint-retention"))
             .await,
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
     ));
     assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "T1/E1");
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "T1/E1");
@@ -981,7 +981,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     // creates a false-ready fact if realization later fails, severity 9,
     // occurrence 4, detection 7; the acknowledgement boundary removes that
     // failure mode. This proves protocols cannot reorder the shared sequence.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -999,7 +999,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     assert!(active.frozen_baseline().is_some(), "R1/E1");
     assert_eq!(
         active.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "R1/E1"
     );
 
@@ -1029,7 +1029,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     // | Rule | Batch | Insert | Reconciled | Effect |
     // | I1 | nonempty | succeeds | no | E1+E2+E3+E4 |
     // | I2 | exact replay | existing equal root | no | same durable payload |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -1040,16 +1040,14 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     );
     let mut command = creation_command("initial-root");
     command.initial_events = Some(
-        awaken_session_event_contract::SessionInitialEventPlan::compile(
+        awaken_session_contract::SessionInitialEventPlan::compile(
             &awaken_session_types::SessionId::from("initial-root"),
             "initial:initial-root",
-            vec![
-                awaken_session_event_contract::SessionEventInput::UserMessage {
-                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                        "hello",
-                    )],
-                },
-            ],
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "hello",
+                )],
+            }],
         )
         .expect("I1 valid plan"),
     );
@@ -1061,7 +1059,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
         .expect("I1 create");
     assert_eq!(
         created.execution,
-        awaken_session_state_contract::SessionExecutionState::Running,
+        awaken_session_contract::SessionExecutionState::Running,
         "I1/E3"
     );
     let durable = repository
@@ -1081,7 +1079,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
             .contains(&batch.wake_activity_epoch.expect("I1 create wake")),
         "I1/E2"
     );
-    let awaken_session_event_contract::SessionEventCommand::UserMessage {
+    let awaken_session_contract::SessionEventCommand::UserMessage {
         operation_id,
         run_id,
         ..
@@ -1091,7 +1089,7 @@ async fn create_response_contains_a_fully_durable_initial_batch() {
     };
     assert_eq!(
         run_id,
-        &awaken_session_event_contract::session_event_user_run_id(
+        &awaken_session_contract::session_event_user_run_id(
             &awaken_session_types::SessionId::from("initial-root"),
             operation_id
         ),
@@ -1112,7 +1110,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
     //
     // | Rule | C1 | C2 | C3 | C4 | Effect |
     // | W1   | T  | T  | T  | F  | E1+E2+E3 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -1139,7 +1137,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
     .expect("W1/E1 durable create succeeds");
     assert_eq!(
         created.execution,
-        awaken_session_state_contract::SessionExecutionState::Preparing,
+        awaken_session_contract::SessionExecutionState::Preparing,
         "W1/E1+E3"
     );
     assert_eq!(
@@ -1182,7 +1180,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             let path = directory.path().join("accepted.sqlite");
             let path = path.to_str().expect("test database path");
             let id = format!("accepted-create-{initial_batch}-{failed_scan}");
-            let record = awaken_session_state_contract::IdempotencyRecord {
+            let record = awaken_session_contract::IdempotencyRecord {
                 key: format!("accept:{id}"),
                 payload_hash: "complete-create-request".into(),
             };
@@ -1196,11 +1194,11 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 command.idempotency = Some(record.clone());
                 if initial_batch {
                     command.initial_events = Some(
-                        awaken_session_event_contract::SessionInitialEventPlan::compile(
+                        awaken_session_contract::SessionInitialEventPlan::compile(
                             &awaken_session_types::SessionId::from(id.as_str()),
                             format!("initial:{id}"),
                             ["first", "second"].into_iter().map(|text| {
-                                awaken_session_event_contract::SessionEventInput::UserMessage {
+                                awaken_session_contract::SessionEventInput::UserMessage {
                                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(text)],
                                 }
                             }).collect(),
@@ -1210,12 +1208,11 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 command
             };
             let accepted = {
-                let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open(path)
-                            .await
-                            .expect("open original authority"),
-                    );
+                let repository: Arc<dyn crate::SessionStore> = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open(path)
+                        .await
+                        .expect("open original authority"),
+                );
                 let runtime = Arc::new(RecordingCreateRuntime::default());
                 let application = SessionApplicationBuilder::fixture(
                     runtime.clone(),
@@ -1233,7 +1230,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                     .expect("Q1 accept");
                 assert_eq!(
                     accepted.execution,
-                    awaken_session_state_contract::SessionExecutionState::Preparing,
+                    awaken_session_contract::SessionExecutionState::Preparing,
                     "Q1/E1"
                 );
                 assert_eq!(
@@ -1281,7 +1278,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 );
                 accepted
             };
-            let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+            let repository: Arc<dyn crate::SessionStore> = Arc::new(
                 awaken_session_store::SqliteManagedSessionRepository::open(path)
                     .await
                     .expect("reopen fresh authority connection"),
@@ -1352,9 +1349,9 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             assert_eq!(
                 ready.execution,
                 if initial_batch {
-                    awaken_session_state_contract::SessionExecutionState::Running
+                    awaken_session_contract::SessionExecutionState::Running
                 } else {
-                    awaken_session_state_contract::SessionExecutionState::Idle
+                    awaken_session_contract::SessionExecutionState::Idle
                 },
                 "Q3/E4"
             );
@@ -1453,7 +1450,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     // | R3 | exact | same | ActivationFailed | E3+E4 |
     // | R4 | exact accept | same | ActivationFailed | E3+E5 |
     // | R5 | exact via role | either completion | ActivationFailed | E3+E6 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("create replay repository"),
@@ -1473,7 +1470,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     })
     .build()
     .expect("valid fixture Session application");
-    let idempotency = awaken_session_state_contract::IdempotencyRecord {
+    let idempotency = awaken_session_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
     };
@@ -1529,16 +1526,16 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
 
     let mut failed = repository.get(&replayed.session_id).await.unwrap();
     let expected_revision = failed.revision;
-    failed.execution = awaken_session_state_contract::SessionExecutionState::ActivationFailed;
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(failed);
+    failed.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(failed);
     let payload_hash = payload.stable_hash();
     assert!(matches!(
         repository
             .commit(
                 "workspace",
-                awaken_session_state_contract::SessionMutation {
+                awaken_session_contract::SessionMutation {
                     expected_revision,
-                    idempotency: awaken_session_state_contract::IdempotencyRecord {
+                    idempotency: awaken_session_contract::IdempotencyRecord {
                         key: "test:create-replay-activation-failed".into(),
                         payload_hash,
                     },
@@ -1548,12 +1545,12 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
             )
             .await
             .unwrap(),
-        awaken_session_state_contract::SessionMutationResult::Applied { .. }
+        awaken_session_contract::SessionMutationResult::Applied { .. }
     ));
     let mut terminal_replay = creation_command("create-replay-effects");
     terminal_replay.intent.control.runtime_placement =
         awaken_session_types::SessionRuntimePlacement::Worker;
-    terminal_replay.idempotency = Some(awaken_session_state_contract::IdempotencyRecord {
+    terminal_replay.idempotency = Some(awaken_session_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
     });
@@ -1578,7 +1575,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     let mut accepted_terminal_replay = creation_command("create-replay-effects");
     accepted_terminal_replay.intent.control.runtime_placement =
         awaken_session_types::SessionRuntimePlacement::Worker;
-    accepted_terminal_replay.idempotency = Some(awaken_session_state_contract::IdempotencyRecord {
+    accepted_terminal_replay.idempotency = Some(awaken_session_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
     });
@@ -1589,10 +1586,10 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         .expect("R4/E5 accepted failed operation root");
     assert_eq!(
         accepted_failed.execution,
-        awaken_session_state_contract::SessionExecutionState::ActivationFailed,
+        awaken_session_contract::SessionExecutionState::ActivationFailed,
         "R4/E5"
     );
-    let original_receipt = awaken_session_state_contract::IdempotencyRecord {
+    let original_receipt = awaken_session_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
     };
@@ -1698,7 +1695,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             0,
         ),
     ] {
-        let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let durable: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .expect("post-create conflict repository"),
@@ -1719,7 +1716,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
         )
         .build()
         .expect("valid fixture Session application");
-        let stable = stable_receipt.then(|| awaken_session_state_contract::IdempotencyRecord {
+        let stable = stable_receipt.then(|| awaken_session_contract::IdempotencyRecord {
             key: "public-create-key".into(),
             payload_hash: "public-create-payload".into(),
         });
@@ -1778,7 +1775,7 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R3/E3");
 
             let mut mismatch = creation_command(session_id);
-            mismatch.idempotency = Some(awaken_session_state_contract::IdempotencyRecord {
+            mismatch.idempotency = Some(awaken_session_contract::IdempotencyRecord {
                 key: stable.key,
                 payload_hash: "different-public-create-payload".into(),
             });
@@ -1811,7 +1808,7 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
     // | F2 | classified internal | ActivationFailed | E1+E3 |
     // | F3 | unclassified internal | nonterminal | E1+E2 |
     for (rule, failure, terminal) in [("F1", 1, false), ("F2", 2, true), ("F3", 3, false)] {
-        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .expect("cleanup admission repository"),
@@ -1865,7 +1862,7 @@ async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure(
      * |---|---|---|---|---|
      * | A1 | pass | pass | fail | E1 + E2 + E3 |
      */
-    let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let durable: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -1909,7 +1906,7 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     // Decision table: A1 absent+C3+C4 => E1+E4; A2 present+C2 => E2; A3
     // present+!C2 => E3. The canonical full Rust gate owns C4; this test is the
     // concrete application gate shared by AI SDK, AG-UI, and A2A.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),
@@ -1989,7 +1986,7 @@ fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProf
 }
 
 async fn assert_profiled_realization_and_environment_rules(
-    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repository: Arc<dyn crate::SessionStore>,
 ) {
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
@@ -2015,7 +2012,7 @@ async fn assert_profiled_realization_and_environment_rules(
     assert_eq!(realized.model(), Some("published-model"), "P1/E1");
     assert_eq!(
         realized.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "P1/E1"
     );
     let baseline = realized.frozen_baseline().expect("P1 frozen baseline");
@@ -2196,15 +2193,13 @@ async fn assert_profiled_realization_and_environment_rules(
             repository
                 .get(&SessionId::from("profiled-environment-substitution"))
                 .await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "Environment substitution fails before Session persistence"
     );
 }
 
-async fn assert_profiled_publication_revision_rules(
-    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
-) {
+async fn assert_profiled_publication_revision_rules(repository: Arc<dyn crate::SessionStore>) {
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
 
@@ -2289,7 +2284,7 @@ async fn assert_profiled_publication_revision_rules(
             repository
                 .get(&SessionId::from("profiled-substituted-revision"))
                 .await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "revision substitution must fail before Session persistence"
     );
@@ -2316,9 +2311,7 @@ async fn assert_profiled_publication_revision_rules(
     );
 }
 
-async fn assert_profiled_override_projection(
-    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
-) {
+async fn assert_profiled_override_projection(repository: Arc<dyn crate::SessionStore>) {
     // Override-projection cause/effect table:
     // | Rule | Agent snapshot | Override publication | Effect |
     // | O1 | exact revision | complete | replace the whole candidate roster and identity |
@@ -2384,9 +2377,7 @@ async fn assert_profiled_override_projection(
     );
 }
 
-async fn assert_profiled_rejection_rules(
-    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
-) {
+async fn assert_profiled_rejection_rules(repository: Arc<dyn crate::SessionStore>) {
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
 
@@ -2401,7 +2392,7 @@ async fn assert_profiled_rejection_rules(
     assert!(
         matches!(
             repository.get(&SessionId::from("profiled-mismatch")).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P2/E2"
     );
@@ -2421,7 +2412,7 @@ async fn assert_profiled_rejection_rules(
             repository
                 .get(&SessionId::from("profiled-unavailable"))
                 .await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P3/E2"
     );
@@ -2449,14 +2440,14 @@ async fn assert_profiled_rejection_rules(
             repository
                 .get(&SessionId::from("profiled-mcp-conflict"))
                 .await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P4/E2"
     );
 }
 
 async fn assert_profiled_direct_resource_rules() {
-    let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let durable: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("direct resource repository"),
@@ -2499,7 +2490,7 @@ async fn assert_profiled_direct_resource_rules() {
         "D2 direct File desired intent freezes in original root before realization"
     );
 
-    let agent_repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let agent_repo: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("Agent collision repository"),
@@ -2529,7 +2520,7 @@ async fn assert_profiled_direct_resource_rules() {
         agent_repo
             .get(&SessionId::from("profiled-direct-agent-collision"))
             .await,
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound),
+        Err(awaken_session_contract::SessionRepositoryError::NotFound),
         "D3 no root"
     );
     assert_eq!(
@@ -2546,7 +2537,7 @@ async fn assert_profiled_direct_resource_rules() {
     // preparing physical state once. D5 gives two Repository trees a
     // parent/child overlap; because both paths are already final, admission
     // rejects the whole set before Registry or Runtime effects.
-    let repository_repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository_repo: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("Repository path Session store"),
@@ -2658,7 +2649,7 @@ async fn assert_profiled_direct_resource_rules() {
         repository_repo
             .get(&SessionId::from(overlapping_session))
             .await,
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound),
+        Err(awaken_session_contract::SessionRepositoryError::NotFound),
         "D5 no root"
     );
     assert_eq!(
@@ -2713,7 +2704,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     // Each cause/effect partition owns a separate boxed future. This keeps the
     // test's large, deeply composed Session values out of one aggregate async
     // frame without changing production stack limits or the decision oracles.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("profiled Session repository"),
@@ -2742,7 +2733,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     // history). No fresh empty history may impersonate old bytes. Install its
     // original default receipt through
     // the real Store, then requires new-binary replay without history/effects.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -2805,21 +2796,19 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         old.environment_materialization().is_none(),
         "T6 old JSON stays unknown"
     );
-    assert!(awaken_session_state_contract::SessionUpdateHistory::for_session(&old).is_none());
-    assert!(
-        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&old).is_none()
-    );
+    assert!(awaken_session_contract::SessionUpdateHistory::for_session(&old).is_none());
+    assert!(awaken_session_contract::SessionUpdateHistory::agent_configuration(&old).is_none());
     old.revision = awaken_session_types::SessionRevision(0);
     let mut old_request = old.clone();
     old_request.created_at_unix_ms = None;
     old_request.updated_at_unix_ms = None;
     let old_hash =
-        awaken_session_state_contract::SessionMutationPayload::Replace(old_request).stable_hash();
-    let old_receipt = awaken_session_state_contract::IdempotencyRecord {
+        awaken_session_contract::SessionMutationPayload::Replace(old_request).stable_hash();
+    let old_receipt = awaken_session_contract::IdempotencyRecord {
         key: format!("session:create:{}:{old_hash}", old.session_id),
         payload_hash: old_hash,
     };
-    let historical: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let historical: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -2872,7 +2861,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         .unwrap();
     let mut changed = created.clone();
     changed.title = Some("time mutation".into());
-    let receipt = awaken_session_state_contract::IdempotencyRecord {
+    let receipt = awaken_session_contract::IdempotencyRecord {
         key: "time-mutation".into(),
         payload_hash: "time-mutation".into(),
     };
@@ -2897,7 +2886,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         .mutations
         .commit_session_snapshot_with_record(
             &owner,
-            awaken_session_state_contract::SessionAggregate::try_from(changed)
+            awaken_session_contract::SessionAggregate::try_from(changed)
                 .expect("valid test snapshot"),
             receipt,
             vec![],
@@ -2911,7 +2900,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         .mutations
         .commit_session_snapshot_with_outcome(
             &owner,
-            awaken_session_state_contract::SessionAggregate::try_from(updated.clone())
+            awaken_session_contract::SessionAggregate::try_from(updated.clone())
                 .expect("valid test snapshot"),
             "clock-rollback",
             vec![],

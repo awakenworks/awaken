@@ -53,7 +53,7 @@ pub struct CreateProfiledSessionCommand {
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub tools: Option<SessionToolConfiguration>,
-    pub idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
+    pub idempotency: Option<awaken_session_contract::IdempotencyRecord>,
 }
 
 /// One product-authored Repository binding joined into the original profiled
@@ -149,7 +149,7 @@ impl SessionCreationCommands {
     pub async fn create_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
         // Match the canonical Session-create boundary: the profiled authoring
         // graph is intentionally deep, so keep its state machine behind one
         // heap indirection instead of embedding it in every caller's Tokio
@@ -167,7 +167,7 @@ impl SessionCreationCommands {
     pub async fn accept_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
         Box::pin(self.create_profiled_session_with_completion(
             command,
             SessionCreationCompletion::AcceptDurableRoot,
@@ -179,7 +179,7 @@ impl SessionCreationCommands {
         &self,
         command: CreateProfiledSessionCommand,
         completion: SessionCreationCompletion,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
         let queries = &self.queries;
         let CreateProfiledSessionCommand {
             owner_scope,
@@ -494,7 +494,7 @@ impl SessionCreationCommands {
                 title,
                 metadata,
                 tools,
-                budget: awaken_session_budget_contract::SessionBudgetState::Absent,
+                budget: awaken_session_contract::SessionBudgetState::Absent,
                 repository_configurations,
                 idempotency,
                 initial_events: None,

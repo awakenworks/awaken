@@ -126,15 +126,13 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                 .settle_activity_observed(
                     &awaken_session_types::SessionId::from(&session.id),
                     activity.activity_epoch,
-                    Some(
-                        awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                            activity_epoch: activity.activity_epoch,
-                            thread_id: ThreadId(session.id.clone()),
-                            run_id: run.clone(),
-                            lifecycle_cursor: lifecycle_cursor(3),
-                            source_commit_cursor: 3,
-                        },
-                    ),
+                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: activity.activity_epoch,
+                        thread_id: ThreadId(session.id.clone()),
+                        run_id: run.clone(),
+                        lifecycle_cursor: lifecycle_cursor(3),
+                        source_commit_cursor: 3,
+                    }),
                 )
                 .await
                 .unwrap();

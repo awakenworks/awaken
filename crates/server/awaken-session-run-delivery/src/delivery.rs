@@ -167,9 +167,9 @@ impl WorkerPlacedSessions {
     /// implementation on the placement aggregate.
     /// ```compile_fail,E0277
     /// use std::sync::Arc;
-    /// use awaken_session_execution_contract::BudgetRuntime;
+    /// use awaken_session_execution_contract::BudgetAccounting;
     /// use awaken_session_run_delivery::WorkerPlacedSessions;
-    /// fn duplicate_budget_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn BudgetRuntime> {
+    /// fn duplicate_budget_role(sessions: Arc<WorkerPlacedSessions>) -> Arc<dyn BudgetAccounting> {
     ///     sessions
     /// }
     /// ```
@@ -376,7 +376,7 @@ mod tests {
         ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
     };
     use awaken_session_execution_contract::{
-        CoordinationRuntime as _, SessionRunExecutionRequirements,
+        ChildRunCoordination as _, SessionRunExecutionRequirements,
     };
 
     fn skill() -> SkillVersion {
@@ -1083,7 +1083,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_capabilities_and_live_inbox_follow_their_decision_tables() {
-        use awaken_session_execution_contract::{CapabilityRuntime as _, LiveInboxRuntime as _};
+        use awaken_session_execution_contract::{CapabilityRuntime as _, LiveInboxAccess as _};
         let delivery = delivery(None).await;
         // C2: a Thread with no projection advertises the Workspace default
         // roster (no publication: none) and the built-in Hand tools.
@@ -1187,7 +1187,7 @@ mod tests {
         // execution format from its correlated frozen-input read; completion
         // registration still precedes enqueue. Its admission rules and the
         // completion/activation tables retain their original owners.
-        use awaken_session_execution_contract::OutcomeRuntime as _;
+        use awaken_session_execution_contract::Outcomes as _;
         let delivery = delivery(None).await;
         // An Outcome needs the Session's installed projection.
         let cold = delivery
@@ -1428,7 +1428,7 @@ mod tests {
 
     #[tokio::test]
     async fn budget_role_retains_only_its_own_delivery_collaborators() {
-        // Cause/effect graph: C1 retain only the published BudgetRuntime;
+        // Cause/effect graph: C1 retain only the published BudgetAccounting;
         // C2 drop the placement aggregate and every other selected role;
         // C3 drop the budget role itself. E1 C1+C2 releases the aggregate and
         // unrelated Memory recovery while retaining the original committed

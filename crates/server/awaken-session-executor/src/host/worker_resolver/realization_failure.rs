@@ -93,7 +93,7 @@ mod tests {
             Arc::new(FakeHandExecutorFactory),
             "awaken-sandbox",
         )
-        .into_session_provider();
+        .into_provider_roles();
         let host = adoption_dependencies()
             .await
             .with_session_environment_provider(provider, None)

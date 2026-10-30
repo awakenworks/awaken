@@ -125,7 +125,7 @@ mod tests {
                 model: "deepseek-v4-pro".into(),
                 execution_model_ref: "deepseek-v4-pro".into(),
                 backend_ref: Some("native".into()),
-                execution: awaken_session_state_contract::SessionExecutionState::Running,
+                execution: awaken_session_contract::SessionExecutionState::Running,
                 runs: vec![
                     awaken_session_application::SessionRunExecutionObservation {
                         model_operations: vec![awaken_runtime_contract::model_inspection::ModelOperationInspection { ordinal: 1, provider: "provider-original".into(), model: "model-original".into(), backend: "native".into(), phase: "entered".into() }],                        run_id: RunId("run-observed".into()),
@@ -224,7 +224,7 @@ mod tests {
             SessionExecutionOperationInventory as Inventory,
             SessionExecutionRecoveryObservation as Recovery, SessionExecutionToolOperation,
         };
-        observation.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+        observation.execution = awaken_session_contract::SessionExecutionState::Terminated;
         let inventory = Inventory::Recorded {
             tools: vec![SessionExecutionToolOperation {
                 thread_id: "session-1".into(),

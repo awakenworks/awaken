@@ -1,5 +1,5 @@
 // @formal surface exclude=application_adapter
-// @formal owner crates/contract/awaken-session-repository-contract/src/repository_port.rs
+// @formal owner crates/contract/awaken-session-contract/src/repository/repository_port.rs
 // @formal owner crates/contract/awaken-session-execution-contract/src/session/projection_source.rs
 // @formal reason: Reads the selected repository and committed projection ports without issuing
 // @formal reason: mutations or realization. The same handles are selected by process composition.
@@ -10,13 +10,13 @@ use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_execution_contract::{
-    CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReadRuntime,
-};
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_state_contract::{
+use awaken_session_contract::SessionRepositoryReads;
+use awaken_session_contract::{
     DeletedSessionEventAdmissions, PersistedSession, SessionRepositoryError, SessionScan,
     SessionScanQuery,
+};
+use awaken_session_execution_contract::{
+    CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReads,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
@@ -53,8 +53,8 @@ mod projection_evidence;
 ///
 /// ```
 /// use awaken_session_application::SessionQueries;
-/// use awaken_session_state_contract::PersistedSession;
-/// use awaken_session_execution_contract::ThreadReadRuntime;
+/// use awaken_session_contract::PersistedSession;
+/// use awaken_session_execution_contract::ThreadReads;
 /// use awaken_session_types::RunError;
 /// async fn frozen(q: &SessionQueries, s: &PersistedSession)
 ///     -> Result<awaken_session_realization_contract::FrozenSessionProjection, RunError> {
@@ -63,7 +63,7 @@ mod projection_evidence;
 /// async fn scoped(q: &SessionQueries) -> Result<Vec<awaken_agent_contract::Message>, RunError> {
 ///     q.session_transcript("w", "s").await
 /// }
-/// async fn original_raw(r: &dyn ThreadReadRuntime)
+/// async fn original_raw(r: &dyn ThreadReads)
 ///     -> Result<Vec<awaken_agent_contract::Message>, RunError> {
 ///     r.committed_messages("thread").await
 /// }
@@ -71,7 +71,7 @@ mod projection_evidence;
 pub struct SessionQueries {
     repository: Arc<dyn SessionRepositoryReads>,
     projection: Arc<dyn SessionProjectionSource>,
-    thread_reads: Arc<dyn ThreadReadRuntime>,
+    thread_reads: Arc<dyn ThreadReads>,
     capabilities: Arc<dyn CapabilityRuntime>,
     profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
 }
@@ -155,7 +155,7 @@ impl SessionQueries {
     /// ```
     /// use std::sync::Arc;
     /// use awaken_session_application::SessionQueries;
-    /// use awaken_session_repository_contract::SessionRepositoryReads;
+    /// use awaken_session_contract::SessionRepositoryReads;
     /// use awaken_session_execution_contract::SessionExecutor;
     /// fn selected(repo: Arc<dyn SessionRepositoryReads>, executor: SessionExecutor) -> SessionQueries {
     ///     let query = SessionQueries::new(repo, &executor, None);
@@ -167,7 +167,7 @@ impl SessionQueries {
     /// ```compile_fail,E0061
     /// use std::sync::Arc;
     /// use awaken_session_application::SessionQueries;
-    /// use awaken_session_repository_contract::SessionRepositoryReads;
+    /// use awaken_session_contract::SessionRepositoryReads;
     /// use awaken_session_execution_contract::{CapabilityRuntime, SessionProjectionSource};
     /// fn separate(repo: Arc<dyn SessionRepositoryReads>, projection: Arc<dyn SessionProjectionSource>,
     ///             capabilities: Arc<dyn CapabilityRuntime>) {
@@ -261,10 +261,10 @@ impl SessionRootReads for SessionQueries {
         owner_scope: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
         self.repository
-            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
                 workspace_id: owner_scope,
             })
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .map(awaken_session_contract::SessionScan::into_sessions)
     }
 }

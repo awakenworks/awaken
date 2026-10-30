@@ -16,7 +16,7 @@ async fn revoked_owner_waits_for_exact_monotonic_resource_readoption() {
     let thread = "revoked-file-resource";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let previous = environment.lifecycle().handle();
     let mut next_json = serde_json::to_value(&previous).unwrap();
@@ -122,7 +122,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     let thread = "revoked-resource-adoption";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let initial = match resident(thread, environment.clone()) {
         SessionEnvironmentOwner::Resident(owned) => owned,
@@ -190,9 +190,9 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     );
 }
 
-fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestoreRequest {
+fn restore_request(thread: &str) -> awaken_provisioning_contract::SandboxRestoreRequest {
     let generation = generation(thread);
-    let suspend = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -201,7 +201,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         None,
         None,
     );
-    let checkpoint = awaken_session_state_contract::SandboxCheckpointRef {
+    let checkpoint = awaken_provisioning_contract::SandboxCheckpointRef {
         id: format!("checkpoint-{thread}"),
         format: "portable-test-v1".into(),
         digest: format!("digest-{thread}"),
@@ -213,7 +213,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         excluded_mounts: Vec::new(),
         suspend_effect_id: suspend.effect_id().to_owned(),
     };
-    let restore = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let restore = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "restore",
@@ -222,7 +222,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         None,
         Some(&checkpoint),
     );
-    awaken_session_state_contract::SandboxRestoreRequest {
+    awaken_provisioning_contract::SandboxRestoreRequest {
         workspace_id: "workspace".into(),
         session_id: thread.into(),
         effect_id: restore.effect_id().to_owned(),
@@ -367,7 +367,7 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     let thread = "resident-resource-reservation";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let resident_environment = environment(&provider, thread).await;
     let initial_binding =
         serde_json::to_string(&resident_environment.lifecycle().handle()).unwrap();
@@ -474,7 +474,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
     let thread = "revoked-resource-receipt";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let mut owner = resident(thread, environment.clone());
@@ -513,7 +513,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
                 ProjectedEnvironmentOwner::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "foreign-generation-receipt".into(),
-                        generation: awaken_session_state_contract::SandboxGeneration::new(
+                        generation: awaken_session_contract::SandboxGeneration::new(
                             &awaken_session_types::SessionId::from(thread),
                             2,
                             u64::MAX,
@@ -546,7 +546,7 @@ async fn cancelled_cleanup_keeps_the_exact_owner_retiring_and_hidden_from_tools(
     // Decision rules R18/R19: C1+C2+C3 => E1+E2; C2+C4 => E3.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, "cancel-retirement").await;
     let owner = Arc::new(tokio::sync::Mutex::new(resident(
         "cancel-retirement",
@@ -621,7 +621,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     let thread = "expiry-before-source-dispose";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -633,7 +633,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     host.run_assembly
         .install_test_resident_session_environment(thread, environment.clone());
     let generation = generation(thread);
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -667,7 +667,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .unwrap();
     assert!(
@@ -691,7 +691,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .unwrap();
     assert!(
@@ -714,7 +714,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     let thread = "discard-live-retry";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -780,7 +780,7 @@ async fn only_exact_terminated_status_clears_a_retiring_owner() {
     // has the same retained-owner effect as C3.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, "status-retirement").await;
     let mut owner = resident("status-retirement", environment);
     let retirement = owner
@@ -844,10 +844,10 @@ async fn terminal_takeover_is_highest_priority_and_other_causes_cannot_overwrite
     let thread = "terminal-takeover";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let generation = generation(thread);
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -1115,19 +1115,18 @@ fn owner_after_projection_derives_a_new_owner_and_keeps_the_held_one() {
     // the held owner is unchanged, because installing waits for the installed Session lock.
     let thread = "after-projection";
     let held = SessionEnvironmentOwner::Vacant;
-    let unmaterialized = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+    let unmaterialized = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
     let projected = held
         .after_projection(thread, "ws", &unmaterialized, true, false)
         .expect("A1");
     assert!(matches!(projected, SessionEnvironmentOwner::Vacant), "A1");
-    let resident = |effect_id: Option<&str>| {
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let resident =
+        |effect_id: Option<&str>| awaken_session_contract::SessionEnvironmentState::Resident {
             binding: "binding-a".into(),
             effect_id: effect_id.map(str::to_owned),
             generation: Some(generation(thread)),
             idle_since_unix_ms: None,
-        }
-    };
+        };
     let projected = held
         .after_projection(thread, "ws", &resident(Some("effect-a")), true, false)
         .expect("A2");

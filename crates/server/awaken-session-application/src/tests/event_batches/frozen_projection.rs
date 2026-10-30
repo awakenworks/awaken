@@ -92,7 +92,7 @@ async fn frozen_query_reads_the_original_prefix_without_a_current_source_session
     assert!(
         matches!(
             repository.get(&SessionId::from("retained-source")).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "Q4 no current source row"
     );
@@ -309,7 +309,7 @@ async fn scoped_transcript_query_keeps_root_refusals_before_raw_reads() {
     // exact kind/code/message. The original real SQLite root is unchanged for
     // every read. This current-root Scope gate must not be added to Q3/Q4's
     // already-frozen historical source. No branch authorization is tested here.
-    let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let durable: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -329,7 +329,7 @@ async fn scoped_transcript_query_keeps_root_refusals_before_raw_reads() {
     preparing.baseline = SessionBaselineState::Preparing(
         super::super::creation::creation_command("scoped-preparing").intent,
     );
-    preparing.execution = awaken_session_state_contract::SessionExecutionState::Preparing;
+    preparing.execution = awaken_session_contract::SessionExecutionState::Preparing;
     create(durable.as_ref(), preparing.clone()).await;
     let preparing = durable.get(&preparing.session_id).await.unwrap();
     for (rule, owner, id, kind, message) in [
@@ -470,7 +470,7 @@ async fn frozen_query_refuses_an_unconsumed_creation_intent_before_reading() {
     preparing.baseline = SessionBaselineState::Preparing(
         super::super::creation::creation_command("preparing-prefix").intent,
     );
-    preparing.execution = awaken_session_state_contract::SessionExecutionState::Preparing;
+    preparing.execution = awaken_session_contract::SessionExecutionState::Preparing;
     let error = queries
         .frozen_session_projection("workspace".into(), &preparing, true)
         .await

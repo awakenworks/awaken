@@ -203,7 +203,7 @@ async fn prepare_ephemeral_all_in_one_process(
     execution: Box<dyn ColocatedExecution>,
 ) -> (
     ProcessRouters,
-    Arc<dyn awaken_session_repository_contract::SessionRepository>,
+    Arc<dyn awaken_session_contract::SessionRepository>,
 ) {
     let stores = in_memory_process_stores().await;
     let sessions = stores
@@ -621,7 +621,7 @@ mod runtime_session_store_tests {
         ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot,
         SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy,
     };
-    use awaken_session_state_contract::{IdempotencyRecord, PersistedSession};
+    use awaken_session_contract::{IdempotencyRecord, PersistedSession};
 
     fn creation_intent() -> SessionCreationIntent {
         SessionCreationIntent {
@@ -694,7 +694,7 @@ mod runtime_session_store_tests {
             Default::default(),
         );
         legacy.baseline = SessionBaselineState::Preparing(intent);
-        legacy.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        legacy.execution = awaken_session_contract::SessionExecutionState::Idle;
         // Interrupted preparation is historical wire input, never a new Create.
         let mut wire = serde_json::to_value(legacy).unwrap();
         wire.as_object_mut()
@@ -876,7 +876,7 @@ mod process_role_surface_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use awaken_agent_contract::stable_fingerprint;
-    use awaken_session_state_contract::IdempotencyRecord;
+    use awaken_session_contract::IdempotencyRecord;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt as _;

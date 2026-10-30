@@ -11,7 +11,7 @@ use awaken_credential_contract::{
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
 };
-use awaken_session_state_contract::{PersistedSession, SessionAggregate};
+use awaken_session_contract::{PersistedSession, SessionAggregate};
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
@@ -273,7 +273,7 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError
 }
 
 pub(crate) fn repository_preparation(
-    error: awaken_session_state_contract::SessionRepositoryError,
+    error: awaken_session_contract::SessionRepositoryError,
 ) -> SessionPreparationError {
     mutation_failure(repository_failure(error))
 }

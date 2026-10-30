@@ -117,7 +117,7 @@ pub struct SessionAcpCapabilityNegotiator {
 /// the task does not retain its own background supervisor or Session owners.
 #[derive(Clone)]
 struct AcpProbe {
-    provider: crate::session_environment::SessionEnvironmentProvider,
+    provider: crate::session_environment::SandboxProviderRoles,
     timeout: Duration,
     handshake: Arc<dyn AcpCapabilityHandshake>,
     stranded: Arc<StrandedProbeEnvironments>,
@@ -191,23 +191,28 @@ impl AcpProbe {
         >,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
         let spec = crate::sandbox_layout::agent_run_sandbox_spec(scope);
-        let environment = self.provider.create(&spec).await.map_err(|error| {
-            // A derived scope means a failure here is usually the *previous*
-            // probe's strand occupying it. Say so: "the root is not absent"
-            // sends an operator hunting, the scope plus the reason sends
-            // them straight at the one environment to reconcile.
-            let strand = if self.stranded.contains(scope) {
-                format!(
-                    "; an earlier probe at scope `{scope}` was interrupted and its \
+        let environment = self
+            .provider
+            .realizer()
+            .create_unattached(&spec)
+            .await
+            .map_err(|error| {
+                // A derived scope means a failure here is usually the *previous*
+                // probe's strand occupying it. Say so: "the root is not absent"
+                // sends an operator hunting, the scope plus the reason sends
+                // them straight at the one environment to reconcile.
+                let strand = if self.stranded.contains(scope) {
+                    format!(
+                        "; an earlier probe at scope `{scope}` was interrupted and its \
                          environment was never disposed"
-                )
-            } else {
-                String::new()
-            };
-            error.map_detail(|detail| {
-                format!("create ACP capability probe environment: {detail}{strand}")
-            })
-        })?;
+                    )
+                } else {
+                    String::new()
+                };
+                error.map_detail(|detail| {
+                    format!("create ACP capability probe environment: {detail}{strand}")
+                })
+            })?;
         let result = async {
             if response.is_closed() {
                 return Err(pc::SandboxError::timeout("ACP capability probe caller cancelled"));

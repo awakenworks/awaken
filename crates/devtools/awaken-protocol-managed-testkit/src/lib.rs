@@ -51,8 +51,8 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 /// [`ManagedStateFixture`] constructors that build it.
 pub use awaken_protocol_managed::ManagedState;
 use awaken_provisioning_contract::SandboxExecutionPolicyStore;
+use awaken_session_application::SessionStore;
 use awaken_session_execution_contract::{CompleteSessionRuntime, McpAttachmentRealizer};
-use awaken_session_repository_contract::SessionStore;
 
 /// A fresh in-memory durable Session repository.
 #[must_use]
@@ -177,7 +177,7 @@ impl ManagedStateFixture for ManagedState {
 pub fn managed_state_from_parts(
     runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     mcp: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
-    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    sessions: Arc<dyn awaken_session_application::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
     compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
@@ -201,7 +201,7 @@ pub fn managed_state_from_parts(
 /// ManagedState type rather than importing the non-test copy through testkit.
 pub fn session_application_from_parts(
     runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
-    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    sessions: Arc<dyn awaken_session_application::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
     compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,

@@ -157,7 +157,20 @@ pub trait RealizationEffects: Send + Sync {
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait CoordinationRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::ChildRunCoordination;
+/// fn selected_role(_: &dyn ChildRunCoordination) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::CoordinationRuntime;
+/// ```
+pub trait ChildRunCoordination: Send + Sync {
     /// Persist one complete self-affine Session Run as an unclaimable reservation.
     /// Implementations must use their existing durable Run dispatch authority;
     /// the default fails closed rather than executing inline.
@@ -282,14 +295,14 @@ pub trait SessionCoordinationReads: Send + Sync {
     /// source. This is separate from complete historical/business containment.
     async fn source_dispatch_observation(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> crate::SessionSourceDispatchObservation;
 
     /// Rebuild execution containment from the observed terminal root and the
     /// original execution authority. Unsupported fixtures remain unproven.
     async fn execution_recovery_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> crate::SessionExecutionRecoveryObservation {
         crate::SessionExecutionRecoveryObservation::NotProven {
             reason: crate::SessionExecutionRecoveryGap::HistoryUnavailable,
@@ -361,7 +374,20 @@ pub trait SessionCoordinationReads: Send + Sync {
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait BudgetRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::BudgetAccounting;
+/// fn selected_role(_: &dyn BudgetAccounting) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::BudgetRuntime;
+/// ```
+pub trait BudgetAccounting: Send + Sync {
     /// Resume an exact `BudgetReached` ticket without injecting transcript
     /// content. Implementations reuse the foreground Run driver or the existing
     /// durable dispatch row; they must not enqueue a replacement Run.
@@ -397,7 +423,20 @@ pub trait BudgetRuntime: Send + Sync {
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait StreamingRunRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::StreamingRuns;
+/// fn selected_role(_: &dyn StreamingRuns) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::StreamingRunRuntime;
+/// ```
+pub trait StreamingRuns: Send + Sync {
     /// Run one request with its protocol-projected, backend-neutral content
     /// owner. Adapters that do not support attributed capture may use the
     /// compatibility default; runtime hosts override it and persist attribution
@@ -505,11 +544,24 @@ pub trait EnvironmentRuntime: Send + Sync {
 }
 
 /// Committed thread readback: messages, recovery snapshots, run lifecycle, disposition and outcome projections.
-/// It grants no write: archiving a coordinated Thread is a [`CoordinationRuntime`] command.
+/// It grants no write: archiving a coordinated Thread is a [`ChildRunCoordination`] command.
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait ThreadReadRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::ThreadReads;
+/// fn selected_role(_: &dyn ThreadReads) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::ThreadReadRuntime;
+/// ```
+pub trait ThreadReads: Send + Sync {
     /// True when durable truth already exists for `thread`. Session-id minting
     /// consults this to skip ids a previous process persisted; implementations
     /// MUST answer without materializing any per-thread state (no context
@@ -576,7 +628,20 @@ pub trait ThreadReadRuntime: Send + Sync {
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait TerminalCleanupRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::TerminalCleanup;
+/// fn selected_role(_: &dyn TerminalCleanup) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::TerminalCleanupRuntime;
+/// ```
+pub trait TerminalCleanup: Send + Sync {
     /// Make every source-dependent effect durable under the exact aggregate
     /// preparation fence without deleting the physical realization.
     async fn prepare_terminal_cleanup_for_effect(
@@ -626,7 +691,20 @@ pub trait TerminalCleanupRuntime: Send + Sync {
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait OutcomeRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::Outcomes;
+/// fn selected_role(_: &dyn Outcomes) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::OutcomeRuntime;
+/// ```
+pub trait Outcomes: Send + Sync {
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
     /// The opaque id is supplied by the application command so crash replay and
     /// activity admission share one stable operation identity.
@@ -661,11 +739,34 @@ pub trait OutcomeRuntime: Send + Sync {
     ) -> Result<Option<OutcomeDrive>, RunError>;
 }
 
-/// Live inbox mutation and snapshot for a running thread.
+/// Access to the live inbox of the attempt currently owned for a Thread.
+/// The SDK's `awaken_runtime_contract::LiveInbox` owns the queue and lifecycle;
+/// this Session consumer role only discovers and edits that existing queue.
 ///
 /// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
-pub trait LiveInboxRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::LiveInboxAccess;
+/// fn selected_role(_: &dyn LiveInboxAccess, _: awaken_runtime_contract::LiveInbox) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::LiveInboxRuntime;
+/// ```
+///
+/// N3 the short-lived colliding spelling must also fail: no alias may shadow
+/// the SDK queue. N1 above names the distinct access role and queue together;
+/// N2 still retains the original retired-Runtime spelling law unchanged.
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::LiveInbox;
+/// ```
+pub trait LiveInboxAccess: Send + Sync {
     /// The live-inbox queue on `thread`'s in-flight Run, or an inactive queue
     /// when none runs here. A process that cannot read which attempts it owns
     /// fails `Unavailable` instead of reporting an inactive queue.

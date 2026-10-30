@@ -20,7 +20,7 @@ mod lifecycle_supervisor;
 
 use std::sync::Arc;
 
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_contract::SessionRepository;
 use awaken_time::WallClockExt as _;
 
 use crate::event_batches::EventBatchReconciliation;
@@ -227,7 +227,7 @@ impl SessionRecovery {
         event_batch_failures: usize,
     ) -> Result<
         crate::SessionEventBatchCutoverValidationSnapshot,
-        awaken_session_state_contract::SessionRepositoryError,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.event_batch_cutover_validation
             .refresh(self.repository.as_ref(), event_batch_failures)

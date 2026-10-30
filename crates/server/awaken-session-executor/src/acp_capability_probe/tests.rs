@@ -161,8 +161,7 @@ async fn probe_negotiator(
         .await
         .with_local_workspace(owner);
     dependencies.env.session_provider =
-        awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
-            .into_session_provider();
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(base).into_provider_roles();
     SessionAcpCapabilityNegotiator::new(
         (dependencies)
             .build()
@@ -368,8 +367,7 @@ fn a_poisoned_stranded_probe_ledger_reads_as_empty() {
 async fn probe_composition(base: &Path) -> Arc<crate::ExecutorComponents> {
     let mut dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "stub").await;
     dependencies.env.session_provider =
-        awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
-            .into_session_provider();
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(base).into_provider_roles();
     dependencies.build().expect("original process composition")
 }
 

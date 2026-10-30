@@ -2,7 +2,7 @@
 // @formal reason: Static owner: the Session application's Run roles served by SessionRuns. Each method revalidates
 // @formal reason: the Session's live Resource bindings, delivers through SessionRuns and projects the
 // @formal reason: committed step once; it chooses no lifecycle transition.
-//! The Session application's `SessionRuntime` and `StreamingRunRuntime` roles,
+//! The Session application's `SessionRuns` and `StreamingRuns` roles,
 //! served by [`SessionRuns`].
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -16,7 +16,7 @@ use crate::managed_input_projection::user_message;
 use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for SessionRuns {
+impl awaken_session_execution_contract::SessionRuns for SessionRuns {
     async fn run(
         &self,
         agent: &str,
@@ -76,7 +76,7 @@ impl awaken_session_execution_contract::SessionRuntime for SessionRuns {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for SessionRuns {
+impl awaken_session_execution_contract::StreamingRuns for SessionRuns {
     async fn run_attributed(
         &self,
         agent: &str,

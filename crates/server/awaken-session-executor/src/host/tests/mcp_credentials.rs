@@ -1279,7 +1279,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Arc::new(UnusedHandFactory),
             "/bin/sh",
         )
-        .into_session_provider(),
+        .into_provider_roles(),
     );
     let backend_secure_host = (backend_secure_host).build().unwrap();
     backend_secure_host
@@ -1332,7 +1332,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             );
     default_secure_host.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(weak_backend_root.path())
-            .into_session_provider(),
+            .into_provider_roles(),
     );
     let default_secure_host = (default_secure_host).build().unwrap();
     default_secure_host

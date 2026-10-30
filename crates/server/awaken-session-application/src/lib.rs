@@ -16,12 +16,12 @@ use awaken_environment_contract::EnvItem;
 #[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_configuration_contract::EnvironmentSnapshot;
+use awaken_session_contract::SessionEnvironmentFacts;
+use awaken_session_contract::SessionRepository;
 use awaken_session_execution_contract::SessionEnvironmentBindingSink;
-use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::SessionEnvironmentFacts;
 use awaken_session_types::RunError;
 use {
-    awaken_session_state_contract::{PersistedSession, SessionScan},
+    awaken_session_contract::{PersistedSession, SessionScan},
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
@@ -41,10 +41,8 @@ pub use recovery_scan::{WorkerRealizationObservation, WorkerRealizationRead};
 /// Single Session-application projection from repository policy into the Run
 /// error vocabulary. Repository callers reuse the contract-owned recovery
 /// disposition and never maintain variant lists beside this adapter.
-fn session_repository_error(
-    error: awaken_session_state_contract::SessionRepositoryError,
-) -> RunError {
-    use awaken_session_state_contract::{
+fn session_repository_error(error: awaken_session_contract::SessionRepositoryError) -> RunError {
+    use awaken_session_contract::{
         SessionRepositoryError as Error, SessionRepositoryRecoveryAction as Action,
     };
 
@@ -81,7 +79,7 @@ struct SessionRecoveryInterests {
     resource_activation: bool,
     event_batches: bool,
     environment_continuation: bool,
-    continuation_rejection: Option<awaken_session_state_contract::SessionEnvironmentRejection>,
+    continuation_rejection: Option<awaken_session_contract::SessionEnvironmentRejection>,
     local_realization: bool,
     dispatch_projection: bool,
 }
@@ -108,15 +106,15 @@ impl SessionRecoveryInterests {
     /// The continuation hint is the aggregate's `AdvanceContinuation`
     /// decision at the scan's `now`.
     fn from_session(session: &PersistedSession, audit_resource_references: bool, now: u64) -> Self {
-        let continuation = awaken_session_state_contract::transition_environment(
+        let continuation = awaken_session_contract::transition_environment(
             SessionEnvironmentFacts::project_continuation(session, now),
-            awaken_session_state_contract::SessionEnvironmentEvent::AdvanceContinuation,
+            awaken_session_contract::SessionEnvironmentEvent::AdvanceContinuation,
         );
         let environment_continuation =
             continuation.is_ok_and(|decision| decision.instruction().is_some());
         let continuation_rejection = continuation.err().filter(|rejection| {
             rejection.recovery_action()
-                == awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction::Reject
+                == awaken_session_contract::SessionEnvironmentReceiptRecoveryAction::Reject
         });
         let local_realization = !session.is_terminal()
             && session.environment.admits_realization_effects()
@@ -278,7 +276,7 @@ pub use terminal::{
 #[cfg(test)]
 mod tests;
 
-use awaken_session_state_contract::SessionAggregate;
+use awaken_session_contract::SessionAggregate;
 
 pub use awaken_session_application_contract::{
     SessionApplicationBuildError, SessionApplicationConfiguration, SessionExecutionPlacement,
@@ -327,4 +325,4 @@ pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
 pub(crate) use awaken_session_configuration_contract::resource as session_resource;
 
 #[cfg(test)]
-use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateChanges};
+use awaken_session_contract::{SessionFieldUpdate, SessionUpdateChanges};

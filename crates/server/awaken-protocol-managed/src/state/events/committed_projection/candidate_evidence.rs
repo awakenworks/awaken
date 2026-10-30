@@ -45,7 +45,7 @@ pub(super) struct CandidateEvidence {
     pub(super) usage: SessionUsage,
     pub(super) primary_thread_usage: Option<crate::types::SessionThreadUsage>,
     pub(super) child_thread_usage: HashMap<String, Option<crate::types::SessionThreadUsage>>,
-    pub(super) price_snapshot: Option<awaken_session_budget_contract::ManagedListPriceSnapshot>,
+    pub(super) price_snapshot: Option<awaken_session_contract::ManagedListPriceSnapshot>,
     pub(super) budget_reach: Vec<awaken_managed_session_events::BudgetReach>,
     /// The complete accepted lifecycle prefix and its checkpoint cursor.
     pub(super) acceptance: LifecycleAcceptance,
@@ -59,7 +59,7 @@ impl CandidateEvidence {
     /// any disposable record is changed. Source failures abort the candidate.
     pub(super) fn derive_plans(
         &self,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         index: &OrderIndex<'_>,
     ) -> Result<
         (
@@ -93,7 +93,7 @@ impl CandidateEvidence {
     pub(super) async fn read(
         state: &ManagedState,
         session_id: &str,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         started: awaken_time::mono::Stopwatch,
     ) -> Result<Self, StateError> {
         let price_snapshot = persisted.budget.price_snapshot().cloned();
@@ -257,7 +257,7 @@ impl CandidateEvidence {
 /// here would make the same prefix project different usage at different read
 /// times. It advances when the interval closes.
 fn committed_session_usage(
-    persisted: &awaken_session_state_contract::PersistedSession,
+    persisted: &awaken_session_contract::PersistedSession,
     session_id: &str,
     root: Option<&RunRecoverySnapshot>,
     children: &awaken_session_application::ProjectionThreadSnapshots,

@@ -487,15 +487,13 @@ impl RootTimeline {
                 .settle_activity_observed(
                     &session,
                     epoch,
-                    Some(
-                        awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                            activity_epoch: epoch,
-                            thread_id: thread,
-                            run_id: run,
-                            lifecycle_cursor: lifecycle_cursor(cursor),
-                            source_commit_cursor: cursor,
-                        },
-                    ),
+                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: epoch,
+                        thread_id: thread,
+                        run_id: run,
+                        lifecycle_cursor: lifecycle_cursor(cursor),
+                        source_commit_cursor: cursor,
+                    }),
                 )
                 .await
                 .unwrap();
@@ -1604,15 +1602,13 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
         .settle_activity_observed(
             &session_id,
             activity.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: activity.activity_epoch,
-                    thread_id: ThreadId(session.id.clone()),
-                    run_id: run,
-                    lifecycle_cursor: lifecycle_cursor(2),
-                    source_commit_cursor: 2,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: activity.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id: run,
+                lifecycle_cursor: lifecycle_cursor(2),
+                source_commit_cursor: 2,
+            }),
         )
         .await
         .unwrap();
@@ -1649,7 +1645,7 @@ async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity
             );
         }
         if active {
-            let root = awaken_session_repository_contract::SessionRepositoryReads::get(
+            let root = awaken_session_contract::SessionRepositoryReads::get(
                 repository.as_ref(),
                 &session_id,
             )
@@ -1763,7 +1759,7 @@ async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
         .unwrap()
         .insert(CHILD.into(), pending);
     let snapshot =
-        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+        awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(
             &fixture.runtime,
             &SessionId::from(&fixture.session_id),
             CHILD,

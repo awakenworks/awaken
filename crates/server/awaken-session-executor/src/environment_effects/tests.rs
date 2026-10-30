@@ -2,8 +2,8 @@
 use super::*;
 use awaken_dispatch_contract::dispatch::AttemptExecutionBinding;
 use awaken_dispatch_contract::*;
+use awaken_session_contract::{SessionEnvironmentReceipt, SessionEnvironmentState};
 use awaken_session_execution_contract::SessionEnvironmentBindingSink;
-use awaken_session_state_contract::{SessionEnvironmentReceipt, SessionEnvironmentState};
 use std::sync::{
     Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -113,7 +113,7 @@ impl SessionEnvironmentBindingSink for Sink {
                 "store response unavailable",
             ));
         }
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
+        let generation = awaken_session_contract::SandboxGeneration::new(
             &receipt.session_id,
             1,
             u64::MAX,
@@ -275,7 +275,7 @@ async fn detached_realizer_keeps_committed_identity_and_never_rebinds_resource_r
                 &effect,
             )
             .await;
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
+        let generation = awaken_session_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from("session"),
             1,
             u64::MAX,

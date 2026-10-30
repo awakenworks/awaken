@@ -231,8 +231,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority.rs",
-        "line": 3151,
-        "file_sha256": "288b53c44bcd326bd5b6c9909956d440b25d55700378974138a252504d9b8685"
+        "line": 3136,
+        "file_sha256": "cd13f233c3939e0870a2cbb89cfbb2279c9d32523081eb14782435ae3bf753f1"
       }
     ],
     "execution_witnesses": [
@@ -287,7 +287,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/session_projection.rs",
-        "line": 2150,
+        "line": 1874,
         "file_sha256": "2d0557be6485fcc66c7daf0e5f082a76ed2b026c664ce9ce2af3fdf02e9e38f0"
       }
     ],

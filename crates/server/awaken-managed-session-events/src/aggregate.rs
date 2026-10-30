@@ -12,9 +12,9 @@ use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 use awaken_session_application_contract::Pending;
-use awaken_session_event_contract::SessionAgentRunBoundary;
+use awaken_session_contract::SessionAgentRunBoundary;
+use awaken_session_contract::{PersistedSession, SessionRuntimeInterval};
 use awaken_session_execution_contract::CoordinatedThreadLink;
-use awaken_session_state_contract::{PersistedSession, SessionRuntimeInterval};
 
 use crate::interval::{
     budget_reach_projection_close_cursor, interval_close_cursor, interval_lifecycle_open_event,
@@ -68,7 +68,7 @@ pub struct AggregatePlan {
 /// The usage an interval closes with, before the protocol prices it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntervalUsage {
-    pub usage: awaken_session_budget_contract::SessionUsage,
+    pub usage: awaken_session_contract::SessionUsage,
     pub max_list_cost_minor: Option<u64>,
 }
 
@@ -392,7 +392,7 @@ fn interval_start(
     admitted_after_commit_cursor: Option<u64>,
     opening: Option<&RunLifecycleEvent>,
     opened_revision: awaken_session_types::SessionRevision,
-    batches: &[awaken_session_event_contract::SessionEventBatch],
+    batches: &[awaken_session_contract::SessionEventBatch],
     prior_close: u64,
 ) -> u64 {
     if let Some(admitted_after) = admitted_after_commit_cursor {

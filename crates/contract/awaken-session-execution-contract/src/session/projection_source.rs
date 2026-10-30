@@ -74,20 +74,20 @@ pub trait SessionProjectionSource: Send + Sync {
 
 /// The projection port derived from the two read roles it is defined by.
 ///
-/// A composition that selects `ThreadReadRuntime` and
+/// A composition that selects `ThreadReads` and
 /// `SessionCoordinationReads` from separate executor components derives its
 /// projection here, so the projection can never read through a third owner:
 /// it is exactly those two roles and nothing else.
 #[derive(Clone)]
 pub struct CommittedSessionProjection {
-    thread_reads: Arc<dyn ThreadReadRuntime>,
+    thread_reads: Arc<dyn ThreadReads>,
     coordination_reads: Arc<dyn SessionCoordinationReads>,
 }
 
 impl CommittedSessionProjection {
     #[must_use]
     pub fn new(
-        thread_reads: Arc<dyn ThreadReadRuntime>,
+        thread_reads: Arc<dyn ThreadReads>,
         coordination_reads: Arc<dyn SessionCoordinationReads>,
     ) -> Self {
         Self {
@@ -139,7 +139,7 @@ impl SessionProjectionSource for CommittedSessionProjection {
 /// The one validated Thread prefix read every projection shares: an exact
 /// selected Run, or the latest one, from the Thread read role. A snapshot of
 /// another Thread or another selected Run is refused, never returned.
-async fn projected_thread_snapshot<R: ThreadReadRuntime + ?Sized>(
+async fn projected_thread_snapshot<R: ThreadReads + ?Sized>(
     reads: &R,
     session_id: &crate::SessionId,
     thread_id: &str,
@@ -185,7 +185,7 @@ async fn projected_thread_snapshot<R: ThreadReadRuntime + ?Sized>(
 #[async_trait]
 impl<T> SessionProjectionSource for T
 where
-    T: ThreadReadRuntime + SessionCoordinationReads + ?Sized,
+    T: ThreadReads + SessionCoordinationReads + ?Sized,
 {
     async fn projection_thread_snapshot(
         &self,
@@ -210,6 +210,6 @@ where
         thread: &str,
         outcome_id: &str,
     ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
-        ThreadReadRuntime::committed_outcome_projection(self, thread, outcome_id).await
+        ThreadReads::committed_outcome_projection(self, thread, outcome_id).await
     }
 }

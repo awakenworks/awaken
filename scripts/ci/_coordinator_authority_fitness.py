@@ -216,7 +216,7 @@ def selftest() -> None:
     # refuses: a read suffix must not create an ownership/export bypass.
     assert not implementation_violation("crates/stores/awaken-session-store/src/sqlite.rs", "SessionRepositoryReads")
     assert implementation_violation("crates/server/awaken-session-executor/src/reader.rs", "SessionRepositoryReads")
-    assert not session_facade_reexports("use awaken_session_repository_contract::SessionRepositoryReads;")
+    assert not session_facade_reexports("use awaken_session_contract::SessionRepositoryReads;")
     assert session_facade_reexports("pub use port::SessionRepositoryReads;")
     assert session_facade_reexports("pub use port::SessionRepositoryReads as Reads;")
     # Cause/effect graph: C1 the resolver implementation is in Host rather than

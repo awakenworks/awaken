@@ -1124,7 +1124,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                 for scoped in scan.sessions {
                     let session_id = scoped.session.session_id;
                     *cursor = Some(
-                        awaken_session_state_contract::SessionScanCursor::after_session_id(
+                        awaken_session_contract::SessionScanCursor::after_session_id(
                             session_id.as_str(),
                         ),
                     );

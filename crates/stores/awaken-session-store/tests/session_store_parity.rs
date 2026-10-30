@@ -17,10 +17,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_session_repository_contract::{
-    LifecycleOutbox, SessionRepository, SessionRepositoryReads, SessionStore,
-};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     DeletedSessionEventAdmissions, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
     SessionCreateResult, SessionEnvironmentPhase, SessionIdempotencyReceipt, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionScan,
@@ -30,6 +27,10 @@ use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessio
 use awaken_session_types::{SessionId, SessionRevision};
 use awaken_store_conformance::session_store::{reopen_preserves_authority, run_suite};
 use sqlx::Executor as _;
+use {
+    awaken_session_application::SessionStore, awaken_session_contract::LifecycleOutbox,
+    awaken_session_contract::SessionRepository, awaken_session_contract::SessionRepositoryReads,
+};
 
 /// Run the (large, possibly non-Send) suite on its own big-stack thread and
 /// current-thread runtime, reporting whether it panicked.
@@ -224,7 +225,7 @@ impl SessionRepository for Divergent {
     }
 }
 
-use awaken_session_repository_contract::SessionReconciliation;
+use awaken_session_contract::SessionReconciliation;
 
 #[async_trait::async_trait]
 impl SessionReconciliation for Divergent {

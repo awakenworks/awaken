@@ -45,7 +45,7 @@ pub fn delete_mutation(value: &PersistedSession, key: &str) -> SessionMutation {
 }
 
 pub async fn tombstone_requires_hidden_completed_cleanup<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     repo: &R,
 ) {
@@ -130,12 +130,12 @@ pub async fn tombstone_requires_hidden_completed_cleanup<
 }
 
 pub async fn deleted_event_admission_decision_table<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     repo: &R,
 ) {
     use awaken_session_application_contract::SessionEventAdmission;
-    use awaken_session_event_contract::{SessionEventBatch, SessionEventInput};
+    use awaken_session_contract::{SessionEventBatch, SessionEventInput};
     // Delete CAS is the sole proof writer. D1 accepted key=>same Accepted;
     // D2 closed key=>same Closed; D3 absent key=>Deleted fence; D4 changed
     // fingerprint=>conflict; D5 foreign/missing Session=>no disclosure; D6
@@ -360,7 +360,9 @@ pub async fn deleted_event_admission_decision_table<
     );
 }
 
-pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionStore>(
+pub fn root_cas_decision_table<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
     repo: &R,
 ) -> impl std::future::Future<Output = ()> + '_ {
     // Keep this owned conformance phase off the caller's async stack.
@@ -417,7 +419,7 @@ pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionSto
                 .expect("initial CAS create");
             assert_eq!(
                 created,
-                awaken_session_state_contract::SessionCreateResult::Applied({
+                awaken_session_contract::SessionCreateResult::Applied({
                     let mut expected = session(&id, "initial");
                     if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
                         assert!(expected.request_delete("ws_a", 0).unwrap().is_some());
@@ -430,12 +432,10 @@ pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionSto
             assert_eq!(
                 repo.idempotency_receipt(&SessionId::from(&id), "create")
                     .await,
-                Ok(Some(
-                    awaken_session_state_contract::SessionIdempotencyReceipt {
-                        payload_hash: create_record.payload_hash.clone(),
-                        committed_revision: SessionRevision(1),
-                    }
-                )),
+                Ok(Some(awaken_session_contract::SessionIdempotencyReceipt {
+                    payload_hash: create_record.payload_hash.clone(),
+                    committed_revision: SessionRevision(1),
+                })),
                 "the decision table reads the same atomic receipt it writes"
             );
 
@@ -450,7 +450,7 @@ pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionSto
                         repo.create("ws_a", replay, create_record, Vec::new())
                             .await
                             .unwrap(),
-                        awaken_session_state_contract::SessionCreateResult::Replayed(expected)
+                        awaken_session_contract::SessionCreateResult::Replayed(expected)
                     );
                 }
                 CasRule::CreateIdempotencyMismatch => {
@@ -469,7 +469,7 @@ pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionSto
                     assert_eq!(
                         error,
                         SessionRepositoryError::Conflict(
-                            awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch
+                            awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch
                         )
                     );
                 }
@@ -620,7 +620,9 @@ pub fn root_cas_decision_table<R: awaken_session_repository_contract::SessionSto
     })
 }
 
-async fn materialization_retention_rows<R: awaken_session_repository_contract::SessionStore>(
+async fn materialization_retention_rows<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
     repo: &R,
 ) {
     // M1 actual first CAS -> immutable pending. M2 fresh mutation trying
@@ -628,7 +630,7 @@ async fn materialization_retention_rows<R: awaken_session_repository_contract::S
     // receipt -> origin; replay of the older first mutation must classify its
     // exact receipt before the replacement law and preserve the later origin.
     // M4 an old Unknown root cannot be upgraded by a generic replacement.
-    use awaken_session_state_contract::{
+    use awaken_session_contract::{
         SessionAggregate, SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
     };
     let old = session("sesn_materialization_cas", "fresh");
@@ -739,10 +741,8 @@ async fn materialization_retention_rows<R: awaken_session_repository_contract::S
         .environment()
         .try_apply_environment_receipt(
             "ws_a",
-            &awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
-                &intent, "binding",
-            )
-            .unwrap(),
+            &awaken_session_contract::SessionEnvironmentReceipt::from_intent(&intent, "binding")
+                .unwrap(),
             1,
         )
         .unwrap();
@@ -793,7 +793,9 @@ async fn materialization_retention_rows<R: awaken_session_repository_contract::S
     assert_eq!(repo.get(&legacy.session_id).await.unwrap(), legacy);
 }
 
-pub async fn create_receipt_decision_table<R: awaken_session_repository_contract::SessionStore>(
+pub async fn create_receipt_decision_table<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
     repo: &R,
 ) {
     // Create-receipt cause/effect table. C1 receipt absent/present; C2 durable
@@ -933,7 +935,7 @@ pub async fn create_receipt_decision_table<R: awaken_session_repository_contract
 }
 
 pub async fn create_receipt_race_decision_table<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     repo: std::sync::Arc<R>,
 ) {

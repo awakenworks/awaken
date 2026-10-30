@@ -21,10 +21,10 @@ use awaken_resource_worker_http::{
 use awaken_resource_worker_http::{
     memory_materialization_reference, terminal_memory_materialization_reference,
 };
+use awaken_session_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
-use awaken_session_state_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn memory_input(
@@ -76,7 +76,7 @@ async fn create_store(catalog: &awaken_resource_application::RegistryApplication
 struct ExactTerminalMemoryControl {
     workspace_id: String,
     intent: SessionTerminalMemoryIntent,
-    current_effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+    current_effect: awaken_session_contract::SessionTerminalCleanupEffect,
 }
 
 // Keep File/Skill renewal wire coverage beside Memory to reuse the same exact
@@ -908,8 +908,8 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         ],
     )
     .unwrap();
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-        awaken_session_state_contract::SessionCleanupCommand::new(
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        awaken_session_contract::SessionCleanupCommand::new(
             &awaken_session_types::SessionId::from("session-terminal-memory"),
             "session-terminal-memory",
             "cleanup-root",
@@ -921,7 +921,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             expires_at_unix_ms: u64::MAX,
         },
     );
-    let intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let intent = awaken_session_contract::terminal_memory_reconciliation_intent(
         &input,
         &materialization,
         &effect,
@@ -1164,14 +1164,14 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     let mut expired_effect = effect.clone();
     let now_unix_ms = support::unix_now_ms();
     expired_effect.lease.expires_at_unix_ms = now_unix_ms.saturating_sub(20_001);
-    let expired_intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let expired_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
         &input,
         &materialization,
         &expired_effect,
     )
     .unwrap();
     let expired_reference = terminal_memory_materialization_reference(&expired_intent).unwrap();
-    let renewed_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let renewed_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         expired_effect.command.clone(),
         awaken_session_configuration_contract::resource::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
@@ -1249,7 +1249,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         "T7 expired current root uses the canonical conflict status: {expired_error}"
     );
 
-    let successor_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let successor_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         expired_effect.command.clone(),
         awaken_session_configuration_contract::resource::SessionRealizationLease {
             epoch: expired_effect.lease.epoch + 1,
@@ -1257,7 +1257,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             ..expired_effect.lease.clone()
         },
     );
-    let successor_intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let successor_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
         &input,
         &materialization,
         &successor_effect,
@@ -1303,7 +1303,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         Vec::new(),
     )
     .unwrap();
-    let altered_intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let altered_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
         &input,
         &altered_materialization,
         &effect,

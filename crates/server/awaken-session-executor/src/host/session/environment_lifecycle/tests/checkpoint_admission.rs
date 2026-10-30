@@ -69,7 +69,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let root = tempfile::tempdir().unwrap();
                 let provider =
                     awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-                        .into_session_provider();
+                        .into_provider_roles();
                 let environment = environment(&provider, thread).await;
                 let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
                 let lease = session_resource::SessionRealizationLease {
@@ -79,7 +79,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     expires_at_unix_ms: 30_000,
                 };
                 let generation = generation(thread);
-                let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+                let operation = awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
                     &awaken_session_types::SessionId::from(thread),
                     "suspend",
@@ -118,7 +118,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     })
                 };
                 install();
-                let request = awaken_session_state_contract::SandboxCheckpointRequest {
+                let request = awaken_session_contract::SandboxCheckpointRequest {
                     workspace_id: "workspace".into(),
                     session_id: thread.into(),
                     operation,
@@ -490,7 +490,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             _ => unreachable!(),
         }
         let generation = generation(rule);
-        let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+        let operation = awaken_session_contract::SessionEnvironmentOperation::new(
             "workspace",
             &awaken_session_types::SessionId::from(rule),
             "suspend",

@@ -330,7 +330,9 @@ count at zero.
    into application commands and projects results; the decision belongs to
    the Session application and its aggregate, so it exists once.
    `scripts/ci/_protocol_translation_fitness.py` refuses in production
-   protocol code: `T1` reaching `awaken-session-repository-contract`; `T2`
+   protocol code: `T1` reaching canonical Core persistence SPI origins or the
+   App store-composition role (including aliases and transitive re-exports),
+   while ordinary Core values remain usable; `T2`
    constructing durable write vocabulary (`IdempotencyRecord`,
    `SessionMutation`, `SessionMutationPayload::`, `SessionTombstone`,
    `ManagedLifecycleFact`); `T3` calling an aggregate decision function
@@ -370,7 +372,7 @@ count at zero.
    production code, found by the crates' `authority` metadata.
 
 5. **The Session aggregate decides every Environment transition.** Changes go
-   through `transition_environment` in `awaken-session-state-contract`, or a
+   through `transition_environment` in `awaken-session-contract`, or a
    law or `SessionEnvironmentOperations` call that decides through it
    ([ADR-0090](0090-session-state-model.md),
    [transition](../design/session-environment-transition.md)).

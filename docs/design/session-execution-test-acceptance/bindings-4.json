@@ -961,22 +961,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 388,
+        "line": 387,
         "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "line": 415
+      },
+      {
+        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
         "line": 416
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 417
-      },
-      {
-        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 431
+        "line": 430
       }
     ],
     "execution_witnesses": [

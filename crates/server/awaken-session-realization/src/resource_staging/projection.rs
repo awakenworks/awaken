@@ -162,7 +162,7 @@ impl crate::resource_staging::ResourceStaging {
         let realizations = self.sessions.clone();
         use crate::staged_resources::ResourceBindingCheck;
 
-        // This method is entered only through the SessionRuntime application
+        // This method is entered only through the SessionRuns application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
         realizations.enter_session_dispatch(thread)?;
@@ -481,7 +481,7 @@ impl crate::resource_staging::ResourceStaging {
             if !reserved_paths.is_empty() {
                 let effect = environments.authorize_environment_effect_before_io(peers,
                         thread,
-                        &peers.authority.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                        &peers.authority.new_environment_effect_intent(thread, awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                             transition_fingerprint: transition.operation_fingerprint(),
                         },
                         Some(&source_binding))?,
@@ -489,19 +489,19 @@ impl crate::resource_staging::ResourceStaging {
                     .await
                     .map_err(awaken_session_types::RunError::from)?;
                 match &effect.authorization {
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                    awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         binding,
                         ..
                     } if binding == &source_binding => {}
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                    awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         ..
                     } => {
                         return Err(RunError::internal(
                             "root-committed Resource reservation does not match the live Environment",
                         ));
                     }
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { .. }
-                    | awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
+                    awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized { .. }
+                    | awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
                         for path in reserved_paths {
                             environment
                                 .projection().reserve_owned_path(&path)

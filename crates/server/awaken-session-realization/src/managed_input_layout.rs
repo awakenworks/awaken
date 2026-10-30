@@ -15,14 +15,14 @@ pub use resource_prompt::{AgentPathView, ResourcePromptProjection};
 #[derive(Clone, Copy)]
 pub enum ManagedLayoutValidationScope<'a> {
     Structural,
-    Exact(&'a crate::session_environment::SessionEnvironmentProvider),
+    Exact(&'a crate::session_environment::SandboxProviderRoles),
 }
 
 impl ManagedLayoutValidationScope<'_> {
     pub fn network_isolation(self) -> bool {
         match self {
             Self::Structural => true,
-            Self::Exact(provider) => provider.realizer().capabilities().network_isolation,
+            Self::Exact(provider) => provider.readiness().capabilities().network_isolation,
         }
     }
 }

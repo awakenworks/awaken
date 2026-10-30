@@ -48,7 +48,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         session_id: &str,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         evidence: &CandidateEvidence,
         index: &OrderIndex<'_>,
     ) -> Result<RootProjection, StateError> {

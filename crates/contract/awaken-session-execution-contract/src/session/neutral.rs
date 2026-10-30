@@ -6,12 +6,12 @@
 // @formal reason: or authorization decision, and streaming delegates to the core run; no transition,
 // @formal reason: persistence, or authorization decision is taken here, so no parallel Session state
 // @formal reason: authority can arise from a runtime that answers None for a role.
-//! Neutral behaviour for [`SessionRuntime`] roles a runtime does not own: [`neutral_role!`]
+//! Neutral behaviour for [`SessionRuns`] roles a runtime does not own: [`neutral_role!`]
 //! writes it once per role and [`NeutralRuntime`] is that behaviour as a value partial doubles forward to.
 
 use super::*;
 
-/// Implement one [`SessionRuntime`] role for a type with the **neutral** behaviour a
+/// Implement one [`SessionRuns`] role for a type with the **neutral** behaviour a
 /// runtime that does not own the role used to get from the trait defaults: ownership
 /// queries answer nothing, reads are empty, writes are refused as unavailable, and
 /// streaming delegates to `run`. Test doubles and narrow in-process runtimes use it
@@ -228,9 +228,9 @@ macro_rules! neutral_role {
             }
         }
     };
-    (CoordinationRuntime for $ty:ty) => {
+    (ChildRunCoordination for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::CoordinationRuntime for $ty {
+        impl $crate::ChildRunCoordination for $ty {
             /// Persist one complete self-affine Session Run as an unclaimable reservation.
             /// Implementations must use their existing durable Run dispatch authority;
             /// the default fails closed rather than executing inline.
@@ -386,14 +386,14 @@ macro_rules! neutral_role {
                 &self,
                 thread: &str,
             ) -> Result<$crate::__macro_support::DelegatedRunSnapshot, $crate::__macro_support::RunError> {
-                $crate::StreamingRunRuntime::interrupt(self, thread).await?;
+                $crate::StreamingRuns::interrupt(self, thread).await?;
                 Ok($crate::__macro_support::DelegatedRunSnapshot {
                     delegated_runs: $crate::SessionCoordinationReads::delegated_runs(self, thread)
                         .await?,
                     coordinated_thread_ids: Vec::new(),
                     watermark: 0,
                     runtime_commit_cursor:
-                        $crate::ThreadReadRuntime::session_thread_recovery_snapshot(
+                        $crate::ThreadReads::session_thread_recovery_snapshot(
                             self,
                             &$crate::__macro_support::SessionId::from(thread),
                             thread,
@@ -413,7 +413,7 @@ macro_rules! neutral_role {
 impl $crate::SessionCoordinationReads for $ty {
             async fn source_dispatch_observation(
                 &self,
-                _session: &awaken_session_state_contract::PersistedSession,
+                _session: &awaken_session_contract::PersistedSession,
             ) -> $crate::SessionSourceDispatchObservation {
                 Default::default()
             }
@@ -506,9 +506,9 @@ impl $crate::SessionCoordinationReads for $ty {
             }
 }
     };
-    (BudgetRuntime for $ty:ty) => {
+    (BudgetAccounting for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::BudgetRuntime for $ty {
+        impl $crate::BudgetAccounting for $ty {
             /// Resume an exact `BudgetReached` ticket without injecting transcript
             /// content. Implementations reuse the foreground Run driver or the existing
             /// durable dispatch row; they must not enqueue a replacement Run.
@@ -551,13 +551,13 @@ impl $crate::SessionCoordinationReads for $ty {
                 _session_id: &$crate::__macro_support::SessionId,
                 thread_id: &str,
             ) -> Result<$crate::__macro_support::SessionUsage, $crate::__macro_support::RunError> {
-                $crate::BudgetRuntime::session_usage(self, thread_id).await
+                $crate::BudgetAccounting::session_usage(self, thread_id).await
             }
         }
     };
-    (StreamingRunRuntime for $ty:ty) => {
+    (StreamingRuns for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::StreamingRunRuntime for $ty {
+        impl $crate::StreamingRuns for $ty {
             /// Run one request with its protocol-projected, backend-neutral content
             /// owner. Adapters that do not support attributed capture may use the
             /// compatibility default; runtime hosts override it and persist attribution
@@ -571,7 +571,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 >,
                 _data_subject_id: Option<String>,
             ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
-                $crate::SessionRuntime::run(self, agent, thread, content).await
+                $crate::SessionRuns::run(self, agent, thread, content).await
             }
 
             /// Run one user request, installing `sink` as the Run's best-effort live-progress
@@ -589,7 +589,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 >,
                 _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
             ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
-                $crate::SessionRuntime::run(self, agent, thread, content).await
+                $crate::SessionRuns::run(self, agent, thread, content).await
             }
 
             /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
@@ -603,7 +603,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 _data_subject_id: Option<String>,
                 sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
             ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
-                $crate::StreamingRunRuntime::run_streaming(self, agent, thread, content, sink).await
+                $crate::StreamingRuns::run_streaming(self, agent, thread, content, sink).await
             }
 
             /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
@@ -705,9 +705,9 @@ impl $crate::SessionCoordinationReads for $ty {
 
         }
     };
-    (ThreadReadRuntime for $ty:ty) => {
+    (ThreadReads for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::ThreadReadRuntime for $ty {
+        impl $crate::ThreadReads for $ty {
             /// True when durable truth already exists for `thread`. Session-id minting
             /// consults this to skip ids a previous process persisted; implementations
             /// MUST answer without materializing any per-thread state (no context
@@ -770,7 +770,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 $crate::__macro_support::RunError,
             > {
                 let snapshot =
-                    $crate::ThreadReadRuntime::session_thread_recovery_snapshot(
+                    $crate::ThreadReads::session_thread_recovery_snapshot(
                         self, session_id, thread_id,
                     )
                     .await?;
@@ -801,9 +801,9 @@ impl $crate::SessionCoordinationReads for $ty {
             }
         }
     };
-    (TerminalCleanupRuntime for $ty:ty) => {
+    (TerminalCleanup for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::TerminalCleanupRuntime for $ty {
+        impl $crate::TerminalCleanup for $ty {
             /// Make every source-dependent effect durable under the exact aggregate
             /// preparation fence without deleting the physical realization.
             async fn prepare_terminal_cleanup_for_effect(
@@ -862,9 +862,9 @@ impl $crate::SessionCoordinationReads for $ty {
             }
         }
     };
-    (OutcomeRuntime for $ty:ty) => {
+    (Outcomes for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::OutcomeRuntime for $ty {
+        impl $crate::Outcomes for $ty {
             /// Persist one Outcome aggregate without executing a Worker or Grader Run.
             /// The opaque id is supplied by the application command so crash replay and
             /// activity admission share one stable operation identity.
@@ -896,7 +896,7 @@ impl $crate::SessionCoordinationReads for $ty {
                     rubric,
                     max_iterations,
                 );
-                let _ = $crate::OutcomeRuntime::prepare_outcome(
+                let _ = $crate::Outcomes::prepare_outcome(
                     self,
                     thread,
                     &outcome_id,
@@ -905,7 +905,7 @@ impl $crate::SessionCoordinationReads for $ty {
                     max_iterations,
                 )
                 .await?;
-                $crate::OutcomeRuntime::continue_outcome(self, thread, admission)
+                $crate::Outcomes::continue_outcome(self, thread, admission)
                     .await?
                     .ok_or_else(|| $crate::__macro_support::RunError::internal("prepared Outcome is not active"))
             }
@@ -922,9 +922,9 @@ impl $crate::SessionCoordinationReads for $ty {
             }
         }
     };
-    (LiveInboxRuntime for $ty:ty) => {
+    (LiveInboxAccess for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
-        impl $crate::LiveInboxRuntime for $ty {
+        impl $crate::LiveInboxAccess for $ty {
             /// The live-inbox queue on `thread`'s in-flight Run. The default reports
             /// an inactive queue, so a host without live-inbox wiring is unaffected.
             async fn live_inbox_snapshot(
@@ -1007,7 +1007,7 @@ impl $crate::SessionCoordinationReads for $ty {
     };
 }
 
-/// The neutral role behaviour as a value: every [`SessionRuntime`] role with the
+/// The neutral role behaviour as a value: every [`SessionRuns`] role with the
 /// behaviour a runtime that does not own that role used to get from the former
 /// trait defaults. Partial test doubles forward the methods they do not script
 /// to it, so that behaviour is defined once and read in one place.
@@ -1017,7 +1017,7 @@ pub struct NeutralRuntime;
 mod mcp;
 
 #[async_trait]
-impl SessionRuntime for NeutralRuntime {
+impl SessionRuns for NeutralRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -1052,13 +1052,13 @@ impl SessionRuntime for NeutralRuntime {
 
 crate::neutral_role!(RealizationRuntime for NeutralRuntime);
 crate::neutral_role!(RealizationEffects for NeutralRuntime);
-crate::neutral_role!(CoordinationRuntime for NeutralRuntime);
+crate::neutral_role!(ChildRunCoordination for NeutralRuntime);
 crate::neutral_role!(SessionCoordinationReads for NeutralRuntime);
-crate::neutral_role!(BudgetRuntime for NeutralRuntime);
-crate::neutral_role!(StreamingRunRuntime for NeutralRuntime);
+crate::neutral_role!(BudgetAccounting for NeutralRuntime);
+crate::neutral_role!(StreamingRuns for NeutralRuntime);
 crate::neutral_role!(EnvironmentRuntime for NeutralRuntime);
-crate::neutral_role!(ThreadReadRuntime for NeutralRuntime);
-crate::neutral_role!(TerminalCleanupRuntime for NeutralRuntime);
-crate::neutral_role!(OutcomeRuntime for NeutralRuntime);
-crate::neutral_role!(LiveInboxRuntime for NeutralRuntime);
+crate::neutral_role!(ThreadReads for NeutralRuntime);
+crate::neutral_role!(TerminalCleanup for NeutralRuntime);
+crate::neutral_role!(Outcomes for NeutralRuntime);
+crate::neutral_role!(LiveInboxAccess for NeutralRuntime);
 crate::neutral_role!(CapabilityRuntime for NeutralRuntime);

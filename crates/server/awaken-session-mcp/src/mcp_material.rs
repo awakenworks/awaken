@@ -33,7 +33,7 @@ pub enum McpTransportMaterialKind {
     },
 }
 
-pub type HttpTransportMaterialRef<'a> = (
+pub(crate) type HttpTransportMaterialRef<'a> = (
     &'a str,
     &'a Option<awaken_agent_contract::RedactedString>,
     &'a Option<Box<McpRefreshMaterial>>,
@@ -225,7 +225,7 @@ pub struct McpQuiescenceAdmissionFence {
     pub activity_epoch: u64,
     pub source_effect_id: String,
     pub source_binding: String,
-    pub generation: awaken_session_state_contract::SandboxGeneration,
+    pub generation: awaken_session_contract::SandboxGeneration,
 }
 
 impl PartialEq for McpQuiescenceAdmissionFence {
@@ -243,10 +243,10 @@ impl Eq for McpQuiescenceAdmissionFence {}
 
 impl McpQuiescenceAdmissionFence {
     pub fn new(
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
     ) -> Self {
         Self {
             operation_effect_id: operation.effect_id().to_owned(),
@@ -259,10 +259,10 @@ impl McpQuiescenceAdmissionFence {
 
     pub fn restored_by(
         &self,
-        environment: &awaken_session_state_contract::SessionEnvironmentState,
+        environment: &awaken_session_contract::SessionEnvironmentState,
     ) -> bool {
         match environment {
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
+            awaken_session_contract::SessionEnvironmentState::Resident {
                 binding,
                 effect_id: Some(effect_id),
                 generation: Some(generation),

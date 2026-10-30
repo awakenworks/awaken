@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 use awaken_session_application_contract::Pending;
-use awaken_session_budget_contract::SessionUsage;
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
+use awaken_session_contract::SessionUsage;
 
 use crate::{
     DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,

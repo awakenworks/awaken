@@ -85,21 +85,21 @@ impl awaken_runtime_contract::PublishedAgentSnapshotSource for TogglePublishedAg
 struct DeploymentPriceProvider;
 
 #[async_trait::async_trait]
-impl awaken_session_budget_contract::ManagedListPriceProvider for DeploymentPriceProvider {
+impl awaken_session_contract::ManagedListPriceProvider for DeploymentPriceProvider {
     async fn resolve_snapshot(
         &self,
-        request: awaken_session_budget_contract::ManagedListPriceRequest,
+        request: awaken_session_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_budget_contract::ManagedListPriceSnapshot,
-        awaken_session_budget_contract::ManagedListPriceError,
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
     > {
-        let rate = awaken_session_budget_contract::ManagedTokenListRates {
+        let rate = awaken_session_contract::ManagedTokenListRates {
             input_micros_per_million: 10_000_000,
             output_micros_per_million: 10_000_000,
             cache_read_micros_per_million: 10_000_000,
             cache_creation_micros_per_million: 10_000_000,
         };
-        Ok(awaken_session_budget_contract::ManagedListPriceSnapshot {
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "deployment-budget-test".into(),
             version: 1,
             effective_at_unix_ms: request.occurred_at_unix_ms,

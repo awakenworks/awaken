@@ -3,10 +3,10 @@ use super::*;
 
 fn fact(id: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
-        id: awaken_session_event_contract::session_terminated_fact_id(id),
+        id: awaken_session_contract::session_terminated_fact_id(id),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
-        event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
+        event_type: awaken_session_contract::SESSION_TERMINATED.into(),
         timestamp: 1,
         runtime_interval: None,
     }
@@ -49,7 +49,7 @@ fn only_the_exact_committed_unattempted_archive_receipt_projects_no_create() {
                 &SessionId::from(id),
                 "2026-10-10T00:00:00Z",
                 fact(id),
-                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
             )
             .await
             .unwrap();
@@ -76,7 +76,7 @@ fn only_the_exact_committed_unattempted_archive_receipt_projects_no_create() {
                     &root
                 )
                 .await,
-                Err(awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(_))
+                Err(awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(_))
             ),
             "W3 unavailable receipt is not negative evidence"
         );

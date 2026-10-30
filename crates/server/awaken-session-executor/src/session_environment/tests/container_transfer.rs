@@ -31,7 +31,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             residency,
             awaken_time::system_clock(),
         )
-        .into_session_provider();
+        .into_provider_roles();
         let thread = "session-container";
         let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
         let host = roots
@@ -69,7 +69,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .authority()
             .new_environment_effect_intent(
                 thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 None,
             )
             .expect("installed Sessions");
@@ -332,7 +332,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let directory = tempfile::tempdir().unwrap();
         assert!(
             SandboxEnvironmentProvider::workdir(directory.path())
-                .into_session_provider()
+                .into_provider_roles()
                 .adoption()
                 .rebind_retained(
                     &spec,

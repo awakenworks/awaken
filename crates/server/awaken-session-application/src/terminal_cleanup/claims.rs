@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
+use awaken_session_contract::{PersistedSession, SessionRepositoryError};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionRealizationLeaseReceipt,
     SessionTerminalCleanupAssignment, terminal_cleanup_worker_requirements,
 };
-use awaken_session_state_contract::{PersistedSession, SessionRepositoryError};
 use awaken_time::WallClockExt as _;
 
 use super::SessionTerminalCleanups;
@@ -78,7 +78,7 @@ impl<'a> TerminalCleanupClaimScope<'a> {
 /// transferred; the provider still owns every physical verification/effect.
 /// The existing claim CAS still owns replacement, Registry fencing and replay.
 pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
-    repository: &dyn awaken_session_repository_contract::SessionRepository,
+    repository: &dyn awaken_session_contract::SessionRepository,
     workers: Option<&dyn awaken_worker_contract::WorkerIncarnationSource>,
     scope: TerminalCleanupClaimScope<'_>,
     owner_scope: &str,
@@ -86,7 +86,7 @@ pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
     target: &awaken_session_realization_contract::SessionRealizationTarget,
     now_unix_ms: u64,
 ) -> Option<TerminalCleanupRootClaim> {
-    use awaken_session_state_contract::{
+    use awaken_session_contract::{
         SessionTerminalCleanupAffinity, session_terminal_cleanup_affinity_for,
     };
     if !scope.is_external() {
@@ -299,7 +299,7 @@ impl SessionTerminalCleanups {
         target: &awaken_session_realization_contract::SessionRealizationTarget,
         owner_scope: &str,
         session: &PersistedSession,
-        action: &awaken_session_state_contract::SessionTerminalCleanupAction,
+        action: &awaken_session_contract::SessionTerminalCleanupAction,
         conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupWorkerRevalidation {
         // A just-written claim is not prior ownership at readback. Reuse the
@@ -318,10 +318,10 @@ impl SessionTerminalCleanups {
             lease.owner == target.owner && lease.runtime_incarnation == target.runtime_incarnation
         }) || !matches!(
             action,
-            awaken_session_state_contract::SessionTerminalCleanupAction::Prepare { .. }
+            awaken_session_contract::SessionTerminalCleanupAction::Prepare { .. }
         ) || !matches!(
             session.environment,
-            awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+            awaken_session_contract::SessionEnvironmentState::Resident { .. }
         ) || matches!(
             self.coordination_reads
                 .source_dispatch_observation(session)
@@ -394,7 +394,7 @@ impl SessionTerminalCleanups {
             && session.realization.is_none()
             && !matches!(
                 &session.environment,
-                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+                awaken_session_contract::SessionEnvironmentState::Unmaterialized
             )
         {
             return TerminalCleanupRootClaim::Failed(SessionRealizationControlFailure::Invalid(
@@ -563,9 +563,7 @@ impl SessionTerminalCleanups {
             let mut first_projection_failure = None;
             let mut retry_after_conflict = false;
             let mut cursor = after_session_id.map(|session_id| {
-                awaken_session_state_contract::SessionScanCursor::after_session_id(
-                    session_id.as_str(),
-                )
+                awaken_session_contract::SessionScanCursor::after_session_id(session_id.as_str())
             });
             loop {
                 let scan = self

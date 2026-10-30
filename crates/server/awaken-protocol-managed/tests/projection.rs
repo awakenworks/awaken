@@ -10,8 +10,8 @@
 mod support;
 
 use awaken_session_application::SessionRootReads as _;
-use awaken_session_execution_contract::ThreadReadRuntime;
-use awaken_session_execution_contract::{SessionCoordinationReads as _, StreamingRunRuntime as _};
+use awaken_session_execution_contract::ThreadReads;
+use awaken_session_execution_contract::{SessionCoordinationReads as _, StreamingRuns as _};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -29,8 +29,8 @@ fn router(state: std::sync::Arc<ManagedState>) -> axum::Router {
     support::edge_stamped(awaken_protocol_managed::router(state))
 }
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_budget_contract::SessionUsage;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_contract::SessionUsage;
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
@@ -397,7 +397,7 @@ impl ScriptFake {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for ScriptFake {
+impl SessionRuns for ScriptFake {
     async fn run(
         &self,
         _a: &str,
@@ -428,11 +428,11 @@ impl SessionRuntime for ScriptFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for ScriptFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for ScriptFake);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for ScriptFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for ScriptFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for ScriptFake);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for ScriptFake);
 
@@ -612,10 +612,10 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -625,14 +625,14 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for ScriptFake {
+impl awaken_session_execution_contract::ChildRunCoordination for ScriptFake {
     // Fixture rule P1: projection scripts activate ordinary reservations only.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -640,7 +640,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ScriptFake {
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -897,7 +897,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ScriptFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for ScriptFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -1003,7 +1003,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ScriptFake 
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for ScriptFake {
+impl awaken_session_execution_contract::BudgetAccounting for ScriptFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resume an exact `BudgetReached` ticket without injecting transcript
@@ -1051,13 +1051,13 @@ impl awaken_session_execution_contract::BudgetRuntime for ScriptFake {
         &self,
         _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         self.session_usage(thread_id).await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for ScriptFake {
+impl awaken_session_execution_contract::ThreadReads for ScriptFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -1175,12 +1175,12 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ScriptFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for ScriptFake {
+impl awaken_session_execution_contract::TerminalCleanup for ScriptFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
             &authorization,
@@ -1194,7 +1194,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ScriptFake {
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -1208,7 +1208,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ScriptFake {
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -1241,7 +1241,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ScriptFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for ScriptFake {
+impl awaken_session_execution_contract::Outcomes for ScriptFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

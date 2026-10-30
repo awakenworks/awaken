@@ -2,13 +2,13 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 
 use crate::rehydrate_fake::{RehydrateFake, scripted_read_failure};
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
+impl awaken_session_execution_contract::BudgetAccounting for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resume an exact `BudgetReached` ticket without injecting transcript
@@ -46,7 +46,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.reads
             .on_read("usage")
             .await
@@ -64,7 +64,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
         &self,
         _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.reads
             .on_read("child_usage")
             .await
@@ -80,7 +80,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
+impl awaken_session_execution_contract::StreamingRuns for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -227,13 +227,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
-    {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
@@ -290,9 +289,8 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, awaken_session_types::RunError>
-    {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -306,13 +304,11 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_state_contract::SourceReleasePreparedReceipt,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -325,8 +321,8 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
@@ -338,8 +334,8 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
     /// Restore a distinct environment from the exact durable checkpoint.
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, awaken_session_types::RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -352,7 +348,7 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
@@ -384,10 +380,10 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -397,14 +393,14 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Ok(crate::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
+impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -792,12 +788,12 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake {
+impl awaken_session_execution_contract::TerminalCleanup for RehydrateFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         self.ended
             .lock()
             .unwrap()
@@ -812,7 +808,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -826,7 +822,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -859,7 +855,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RehydrateFake {
+impl awaken_session_execution_contract::Outcomes for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

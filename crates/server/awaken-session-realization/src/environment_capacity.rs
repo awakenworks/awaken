@@ -13,7 +13,7 @@ impl EnvironmentProviders {
         &self,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> environment_projection::EnvironmentCapacityProjection {
-        let isolation = self.session_provider.realizer().capabilities();
+        let isolation = self.session_provider.readiness().capabilities();
         environment_projection::environment_capacity_projection(
             environment,
             isolation.network_isolation,

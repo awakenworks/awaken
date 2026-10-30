@@ -20,7 +20,7 @@ use awaken_resource_contract::{
     SESSION_REPOSITORY_OWNER_SESSION,
 };
 use awaken_session_configuration_contract::resource::ResolvedInputSource;
-use awaken_session_state_contract::SessionAggregate;
+use awaken_session_contract::SessionAggregate;
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
@@ -605,7 +605,7 @@ impl SessionRepositoryParticipants {
     ) -> Result<
         (
             SessionAggregate,
-            awaken_session_state_contract::SessionCleanupRepositoryPreparation,
+            awaken_session_contract::SessionCleanupRepositoryPreparation,
         ),
         SessionPreparationError,
     > {
@@ -632,7 +632,7 @@ impl SessionRepositoryParticipants {
         // the Session root. The receipt below binds that plan; participant
         // effects are replay-safe through their existing Vault/Registry
         // authorities until the same root accepts physical disposal.
-        let receipt = awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+        let receipt = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
             &session.session_id,
             owner_scope,
             &session.resources,
@@ -659,7 +659,7 @@ impl SessionRepositoryParticipants {
                     &session.resources,
                     configured.repository_id.as_str(),
                 ),
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => false,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => false,
                 Err(_) => {
                     // An unavailable/corrupt root read cannot prove that a
                     // concurrent exact command did not adopt this participant.

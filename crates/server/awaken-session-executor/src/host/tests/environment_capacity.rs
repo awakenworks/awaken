@@ -9,14 +9,13 @@ use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffect;
 use awaken_session_environment_contract::{
     EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentRealizationKind,
-    EnvironmentRealizer, EnvironmentTerminalRealization, SessionEnvironment,
-    SessionEnvironmentProvider,
+    EnvironmentRealizer, EnvironmentTerminalRealization, SandboxProviderRoles, SessionEnvironment,
 };
 
 /// Delegates every environment role to a real workdir provider and records the
 /// capacity requests that reach it; `fail` makes every prewarm fail.
 struct RecordingCapacity {
-    inner: SessionEnvironmentProvider,
+    inner: SandboxProviderRoles,
     prewarmed: Mutex<Vec<(Option<pc::SandboxCapacityShapeId>, usize)>>,
     images: Mutex<Vec<usize>>,
     fail: bool,
@@ -25,15 +24,15 @@ struct RecordingCapacity {
 #[async_trait]
 impl pc::SandboxReadiness for RecordingCapacity {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        self.inner.realizer().capabilities()
+        self.inner.readiness().capabilities()
     }
 
     fn checkpoint_formats(&self) -> Vec<String> {
-        self.inner.realizer().checkpoint_formats()
+        self.inner.readiness().checkpoint_formats()
     }
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.inner.realizer().probe_ready().await
+        self.inner.readiness().probe_ready().await
     }
 }
 
@@ -213,7 +212,7 @@ impl pc::SandboxInstallation for RecordingCapacity {
     }
 }
 
-fn recording_capacity(inner: SessionEnvironmentProvider, fail: bool) -> Arc<RecordingCapacity> {
+fn recording_capacity(inner: SandboxProviderRoles, fail: bool) -> Arc<RecordingCapacity> {
     Arc::new(RecordingCapacity {
         inner,
         prewarmed: Mutex::default(),
@@ -239,7 +238,7 @@ fn executor(
     let sessions = Arc::new(crate::installed_session::InstalledSessions::default()).realizations();
     let env = crate::environment_providers::EnvironmentProviders::new(
         root,
-        SessionEnvironmentProvider::new(recording.clone()),
+        SandboxProviderRoles::new(recording.clone()),
         capacity_is_installed.then(|| recording.clone() as Arc<dyn pc::SandboxCapacity>),
         crate::auxiliary_sandbox::default_auxiliary_sandboxes(),
         crate::TrustedHostPolicy::Refused,
@@ -517,12 +516,12 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
             Arc::new(awaken_session_environment::test_support::FakeHandExecutorFactory),
             "unused-capacity-hand",
         )
-        .into_session_provider(),
+        .into_provider_roles(),
         false,
     );
     let mut providers = crate::environment_providers::EnvironmentProviders::new(
         std::env::temp_dir().join("capacity-effective-spec"),
-        SessionEnvironmentProvider::new(recording.clone()),
+        SandboxProviderRoles::new(recording.clone()),
         Some(recording.clone()),
         crate::auxiliary_sandbox::default_auxiliary_sandboxes(),
         crate::TrustedHostPolicy::Refused,
@@ -570,7 +569,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         Arc::new(awaken_session_environment::test_support::FakeHandExecutorFactory),
         "unused-capacity-hand",
     )
-    .into_session_provider();
+    .into_provider_roles();
     assert!(
         provider.realizer().effective_spec(&effective).is_err(),
         "W9 invalid projection control"

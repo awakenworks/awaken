@@ -1189,7 +1189,7 @@ mod tests {
                     "unused-hand",
                     Duration::ZERO,
                 )
-                .into_session_provider()
+                .into_provider_roles()
             } else {
                 let mut provider =
                     SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
@@ -1201,9 +1201,13 @@ mod tests {
                     "unused-hand".into(),
                     Duration::ZERO,
                 );
-                provider.into_session_provider()
+                provider.into_provider_roles()
             };
-            let environment = provider.create(&spec()).await.unwrap();
+            let environment = provider
+                .realizer()
+                .create_unattached(&spec())
+                .await
+                .unwrap();
             environment
                 .projection()
                 .attach_mount(pc::MountRequirement {

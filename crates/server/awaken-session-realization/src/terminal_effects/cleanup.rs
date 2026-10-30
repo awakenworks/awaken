@@ -14,7 +14,7 @@ use crate::realization_error::RealizationError;
 use crate::realization_error::{AuthorityLoss, PendingState, ProjectionConflict};
 use crate::session_environment::BoundEnvironmentPreparationMode;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_state_contract::SessionCleanupDisposalReceipt;
+use awaken_session_contract::SessionCleanupDisposalReceipt;
 
 impl crate::terminal_effects::TerminalEffects {
     /// Complete every source-dependent participant under one exact aggregate
@@ -25,12 +25,12 @@ impl crate::terminal_effects::TerminalEffects {
     pub async fn prepare_terminal_cleanup_effect<D, DF, B, BF, S>(
         &self,
         peers: crate::peers::Peers<'_>,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         delegated: D,
         quiesce_background: B,
         mcp: (&awaken_session_mcp::McpSessions, &S),
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RealizationError>
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RealizationError>
     where
         D: for<'held> FnOnce(
                 String,
@@ -314,7 +314,7 @@ impl crate::terminal_effects::TerminalEffects {
         // Protect even a no-Environment preparation from reporting success
         // after the terminal owner changed while source effects were in flight.
         let final_effect_fence = self.effect_fence(&effect)?;
-        awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             provider_prepared_effect_fence.unwrap_or(final_effect_fence),
             artifact_receipts,
@@ -334,7 +334,7 @@ impl crate::terminal_effects::TerminalEffects {
     pub async fn dispose_terminal_cleanup_effect(
         &self,
         peers: crate::peers::Peers<'_>,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<SessionCleanupDisposalReceipt, RealizationError> {
         let environments = peers.environments;
         let sessions = &self.sessions;
@@ -493,7 +493,9 @@ impl crate::terminal_effects::TerminalEffects {
         }
         sessions.end_terminal_disposal(session_id.as_str())?;
         self.disposal_authorization(&effect)?;
-        Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
+        ))
     }
 
     /// Retire only a prepared child after Control durably accepts its receipt.
@@ -501,7 +503,7 @@ impl crate::terminal_effects::TerminalEffects {
     pub async fn acknowledge_terminal_cleanup_preparation(
         &self,
         mcp: &awaken_session_mcp::McpSessions,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         if effect.command.thread_id == effect.command.session_id {
             return;
@@ -526,7 +528,7 @@ impl crate::terminal_effects::TerminalEffects {
     pub async fn acknowledge_terminal_cleanup_disposal(
         &self,
         mcp: &awaken_session_mcp::McpSessions,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         if let Err(error) = self
             .retire_terminal_projection_for_generation(

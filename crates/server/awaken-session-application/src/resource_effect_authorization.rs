@@ -9,15 +9,15 @@
 
 use std::sync::Arc;
 
+use awaken_session_contract::{
+    PersistedSession, SessionCleanupError, SessionEnvironmentOperation,
+    SessionEnvironmentReceiptError, SessionMemoryReconciliationError, SessionTerminalMemoryIntent,
+    SessionTerminalMemoryTarget,
+};
 use awaken_session_realization_contract::{
     SessionCheckpointArtifactControl, SessionRealizationControlFailure,
     SessionResourceMaterializationControl, SessionResourceMaterializationIntent,
     SessionResourceMaterializationTarget, SessionTerminalMemoryControl,
-};
-use awaken_session_state_contract::{
-    PersistedSession, SessionCleanupError, SessionEnvironmentOperation,
-    SessionEnvironmentReceiptError, SessionMemoryReconciliationError, SessionTerminalMemoryIntent,
-    SessionTerminalMemoryTarget,
 };
 use awaken_session_types::SessionId;
 use awaken_time::WallClockExt as _;

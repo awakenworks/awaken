@@ -19,10 +19,10 @@ use crate::{
 };
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_session_application_contract::LifecycleFactNotifier;
-use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionUsage};
-use awaken_session_event_contract::SessionEventProjectionAnchor;
-use awaken_session_repository_contract::LifecycleOutbox;
-use awaken_session_state_contract::{
+use awaken_session_contract::LifecycleOutbox;
+use awaken_session_contract::SessionEventProjectionAnchor;
+use awaken_session_contract::{ManagedBudgetUsageCursor, SessionUsage};
+use awaken_session_contract::{
     ManagedLifecycleFact, PersistedSession, SessionActivitySettlementPlan,
     SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeIntervalObservation,
 };
@@ -86,7 +86,7 @@ impl SessionDeleteCommand {
 ///
 /// ```
 /// use awaken_session_application::SessionLifecycle;
-/// use awaken_session_budget_contract::SessionUsage;
+/// use awaken_session_contract::SessionUsage;
 /// use awaken_session_types::SessionId;
 /// async fn settle(service: &SessionLifecycle, id: &SessionId, usage: SessionUsage) {
 ///     let _ = service.reconcile_managed_budget_usage(id, usage).await;
@@ -95,7 +95,7 @@ impl SessionDeleteCommand {
 ///
 /// ```compile_fail,E0599
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_budget_contract::SessionUsage;
+/// use awaken_session_contract::SessionUsage;
 /// use awaken_session_types::SessionId;
 /// async fn old_command(app: &SessionApplication, id: &SessionId, usage: SessionUsage) {
 ///     let _ = app.reconcile_managed_budget_usage(id, usage).await;

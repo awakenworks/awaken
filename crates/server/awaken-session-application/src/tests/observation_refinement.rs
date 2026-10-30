@@ -24,7 +24,7 @@ pub(super) fn root_step(name: &str, before: &PersistedSession, after: &Persisted
 /// Cleanup's private progress wrappers serialize around the same `cleanup`
 /// member; this projects their existing effect id, never derives a second one.
 pub(super) async fn deletion_observation(
-    repo: &dyn awaken_session_repository_contract::SessionStore,
+    repo: &dyn crate::SessionStore,
     session_id: &str,
     owner_scope: &str,
 ) -> serde_json::Value {
@@ -33,7 +33,7 @@ pub(super) async fn deletion_observation(
         .await
     {
         Ok(root) => Some(root),
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => None,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound) => None,
         Err(error) => panic!("deletion observation failed: {error}"),
     };
     let tombstone = repo
@@ -87,10 +87,10 @@ pub(super) async fn deletion_observation(
     let disposition = root
         .as_ref()
         .map_or("tombstoned", |root| match root.disposition {
-            awaken_session_state_contract::SessionDisposition::Active => "active",
-            awaken_session_state_contract::SessionDisposition::Archived { .. } => "archived",
-            awaken_session_state_contract::SessionDisposition::Deleting => "deleting",
-            awaken_session_state_contract::SessionDisposition::Deleted => "tombstoned",
+            awaken_session_contract::SessionDisposition::Active => "active",
+            awaken_session_contract::SessionDisposition::Archived { .. } => "archived",
+            awaken_session_contract::SessionDisposition::Deleting => "deleting",
+            awaken_session_contract::SessionDisposition::Deleted => "tombstoned",
         });
     serde_json::json!({
         "disposition": disposition, "terminal": root.as_ref().is_none_or(|root| root.execution.is_terminal()),

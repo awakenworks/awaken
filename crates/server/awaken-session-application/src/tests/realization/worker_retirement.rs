@@ -120,7 +120,7 @@ fn retained_root(id: &str, identity: &awaken_worker_contract::WorkerIdentity) ->
             expires_at_unix_ms: 1,
         }),
     );
-    root.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    root.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
             "retention-fixture",
             id,
@@ -144,7 +144,7 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
     let identity = awaken_worker_contract::WorkerIdentity::new("live-actor", "boot", 1);
     let id = SessionId::from("retained-active-session");
     let mut root = retained_root(id.as_str(), &identity);
-    root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+    root.execution = awaken_session_contract::SessionExecutionState::Idle;
     root.terminal_cleanup = Default::default();
     let repo = sqlite_session_repository("active resident retirement").await;
     create(repo.as_ref(), root).await;
@@ -231,7 +231,7 @@ async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_r
             Default::default(),
             Default::default(),
         );
-        root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        root.execution = awaken_session_contract::SessionExecutionState::Idle;
         root.realization = fixture.realization;
         root.realization.as_mut().unwrap().expires_at_unix_ms = 0;
         match rule {
@@ -259,9 +259,9 @@ async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_r
             }
             "admitted" => {
                 root.realization.as_mut().unwrap().expires_at_unix_ms = u64::MAX;
-                let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
                     id.as_str(),
-                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
                     root.realization.clone(),
                 )
                 .for_environment(
@@ -273,7 +273,7 @@ async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_r
                         .clone(),
                 );
                 let mut aggregate =
-                    awaken_session_state_contract::SessionAggregate::try_from(root).unwrap();
+                    awaken_session_contract::SessionAggregate::try_from(root).unwrap();
                 aggregate
                     .environment()
                     .admit_environment_effect("workspace", &intent, 1)
@@ -287,21 +287,21 @@ async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_r
                 root.realization.as_mut().unwrap().runtime_incarnation = "other:1:boot".into()
             }
             "preparing" => {
-                root.execution = awaken_session_state_contract::SessionExecutionState::Preparing
+                root.execution = awaken_session_contract::SessionExecutionState::Preparing
             }
             "active-activity" => {
                 root.active_activity_epochs.insert(1);
             }
             "running-interval" => {
                 root.begin_activity_epoch_at(1, None);
-                root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+                root.execution = awaken_session_contract::SessionExecutionState::Idle;
             }
             "incomplete-events" => {
                 root.event_batches =
                     crate::tests::authority::session_with_unsettled_event(id.as_str()).event_batches
             }
             "active-resource" => {
-                root.resources = awaken_session_state_contract::SessionResourceState::from_active(
+                root.resources = awaken_session_contract::SessionResourceState::from_active(
                     file_resources("active").clone(),
                 )
             }
@@ -473,7 +473,7 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
             | "incomplete-events"
             | "live-provider-unknown"
             | "live-report-missing" => {
-                use awaken_session_state_contract::SessionExecutionState;
+                use awaken_session_contract::SessionExecutionState;
                 root.execution = match row {
                     "running" => SessionExecutionState::Running,
                     "rescheduling" => SessionExecutionState::Rescheduling,
@@ -517,7 +517,7 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
                 }
                 if row == "nonresident" {
                     root.environment =
-                        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+                        awaken_session_contract::SessionEnvironmentState::Unmaterialized;
                 }
                 if row == "incomplete-events" {
                     root.event_batches =
@@ -674,9 +674,9 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
             let mut root = retained_root(id, &identity);
             if id.ends_with('z') && later != "terminal" {
                 root.execution = if later == "preparing" {
-                    awaken_session_state_contract::SessionExecutionState::Preparing
+                    awaken_session_contract::SessionExecutionState::Preparing
                 } else {
-                    awaken_session_state_contract::SessionExecutionState::Idle
+                    awaken_session_contract::SessionExecutionState::Idle
                 };
                 root.terminal_cleanup = Default::default();
                 if later == "incomplete-events" {
@@ -740,7 +740,7 @@ async fn worker_retirement_explains_every_refusing_session_without_changing_the_
     let identity = awaken_worker_contract::WorkerIdentity::new("explained-actor", "boot", 2);
     let idle = |id: &str| {
         let mut root = retained_root(id, &identity);
-        root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        root.execution = awaken_session_contract::SessionExecutionState::Idle;
         root.terminal_cleanup = Default::default();
         root
     };
@@ -766,8 +766,7 @@ async fn worker_retirement_explains_every_refusing_session_without_changing_the_
     let repo = sqlite_session_repository("explained retirement").await;
     create(repo.as_ref(), idle("a-resident")).await;
     let mut unmaterialized = idle("b-unmaterialized");
-    unmaterialized.environment =
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+    unmaterialized.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
     create(repo.as_ref(), unmaterialized).await;
     let mut foreign = idle("c-foreign");
     foreign.realization = Some(crate::session_resource::SessionRealizationLease {

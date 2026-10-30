@@ -63,12 +63,12 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     assert!(
         dependencies
             .env
             .session_provider
-            .realizer()
+            .readiness()
             .capabilities()
             .path_fidelity
     );

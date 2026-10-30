@@ -3,8 +3,8 @@ use super::*;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
-use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
-use awaken_session_state_contract::{
+use awaken_session_contract::{LifecycleOutbox as _, SessionRepositoryReads};
+use awaken_session_contract::{
     SessionScanQuery, SessionUpdateAgentConfiguration, SessionUpdateHistory,
 };
 use awaken_session_types::SessionRevision;
@@ -124,9 +124,7 @@ fn request(agent: serde_json::Value) -> SessionCreateParams {
     .unwrap()
 }
 
-async fn roots(
-    repo: &impl awaken_session_repository_contract::SessionStore,
-) -> Vec<PersistedSession> {
+async fn roots(repo: &impl awaken_session_application::SessionStore) -> Vec<PersistedSession> {
     repo.scan(SessionScanQuery::Workspace {
         workspace_id: awaken_tenancy::DEFAULT_WORKSPACE_ID,
     })

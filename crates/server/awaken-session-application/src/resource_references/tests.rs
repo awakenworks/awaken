@@ -6,7 +6,7 @@ use crate::tests::{
     FaultingSessionRepository, RecordingEnvironmentSource, RecordingReferenceIndex,
     UnusedFileCatalog, create, persisted, skill_resources,
 };
-use awaken_session_repository_contract::{SessionRepository as _, SessionRepositoryReads as _};
+use awaken_session_contract::{SessionRepository as _, SessionRepositoryReads as _};
 use awaken_session_types::SessionId;
 use std::collections::BTreeSet;
 use std::sync::{Arc, atomic::Ordering};
@@ -54,7 +54,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
 
     let mut original = persisted("reference-fence", false, "idle");
     original.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(skill_resources("old"));
+        awaken_session_contract::SessionResourceState::from_active(skill_resources("old"));
     create(repo.as_ref(), original).await;
 
     let mut rejected = repo.get(&SessionId::from("reference-fence")).await.unwrap();
@@ -71,7 +71,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         bracket(&application)
             .commit(
                 "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(rejected)
+                awaken_session_contract::SessionAggregate::try_from(rejected)
                     .expect("valid test snapshot"),
                 "R1",
                 Vec::new()
@@ -115,7 +115,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         bracket(&application)
             .commit(
                 "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(stale)
+                awaken_session_contract::SessionAggregate::try_from(stale)
                     .expect("valid test snapshot"),
                 "R2",
                 Vec::new()
@@ -145,7 +145,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     bracket(&application)
         .commit(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(accepted)
+            awaken_session_contract::SessionAggregate::try_from(accepted)
                 .expect("valid test snapshot"),
             "R3",
             Vec::new(),
@@ -176,9 +176,8 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
         let app = Arc::new(app);
         let id = SessionId::from(format!("reference-{rule}-{explicit}"));
         let mut original = persisted(id.as_str(), false, "idle");
-        original.resources = awaken_session_state_contract::SessionResourceState::from_active(
-            skill_resources("old"),
-        );
+        original.resources =
+            awaken_session_contract::SessionResourceState::from_active(skill_resources("old"));
         create(durable.as_ref(), original).await;
         let before = durable.get(&id).await.unwrap();
         let mut candidate = app.mutations.session_aggregate(&id).await.unwrap();
@@ -262,7 +261,7 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
         assert!(
             matches!(
                 *pause.result.lock().unwrap(),
-                Some(awaken_session_state_contract::SessionMutationResult::Conflict { .. })
+                Some(awaken_session_contract::SessionMutationResult::Conflict { .. })
             ),
             "{rule} actual CAS conflict/{explicit}"
         );
@@ -316,7 +315,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
     let id = SessionId::from(format!("reference-receipt-{explicit}"));
     let mut original = persisted(id.as_str(), false, "idle");
     original.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(skill_resources("old"));
+        awaken_session_contract::SessionResourceState::from_active(skill_resources("old"));
     create(durable.as_ref(), original).await;
     let mut candidate = app.mutations.session_aggregate(&id).await.unwrap();
     candidate
@@ -535,7 +534,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         assert!(
             matches!(
                 *pause.result.lock().unwrap(),
-                Some(awaken_session_state_contract::SessionMutationResult::Replayed { new_revision })
+                Some(awaken_session_contract::SessionMutationResult::Replayed { new_revision })
                     if new_revision == target_replay_receipt.committed_revision
             ),
             "R10 actual original receipt replay/{explicit}"

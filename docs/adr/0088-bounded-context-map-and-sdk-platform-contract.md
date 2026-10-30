@@ -964,3 +964,88 @@ names while accepting the original catalog and blob port. The same subject-
 scoped blob erasure/retry case runs in that graph, and the original full/default
 executor tests remain required. A combined workspace build cannot substitute
 for isolated-product evidence, and source checks do not claim native acceptance.
+
+
+## Amendment 2026-10-30: one Session contract and responsibility-named roles
+
+Session aggregate state, events, budget and persistence SPI have one defining
+boundary, `awaken-session-contract`, with private state/event/budget/repository
+modules. Consumers depend on that owner; the four former package names are not
+compatibility implementations. The existing application composition owns the
+method-less `SessionStore` helper. Physical checkpoint and restore values remain
+in `awaken-provisioning-contract` and are consumed directly, while independent
+Dream, shared identifiers and Container transport retain their existing owners.
+No second persistence, lifecycle, public-value copy or synchronization path is
+introduced by this consolidation.
+
+The existing Session execution roles retain their methods and original
+implementations under names describing their callers' responsibilities:
+
+| Former role | Defining role in `awaken-session-execution-contract` |
+|---|---|
+| `SessionRuntime` | `SessionRuns` |
+| `StreamingRunRuntime` | `StreamingRuns` |
+| `CoordinationRuntime` | `ChildRunCoordination` |
+| `ThreadReadRuntime` | `ThreadReads` |
+| `OutcomeRuntime` | `Outcomes` |
+| `BudgetRuntime` | `BudgetAccounting` |
+| `TerminalCleanupRuntime` | `TerminalCleanup` |
+| `LiveInboxRuntime` | `LiveInboxAccess` |
+
+`LiveInboxAccess` is the thread-addressed Session lookup/edit role; the existing
+SDK `LiveInbox` remains the attempt-local queue. Neither is an alias for the
+other. The four existing SDK-engine observation values whose names include
+`Runtime` keep their definitions and wire representation. The deployment
+`RunIngress` value likewise retains its Direct/Durable queue-selection meaning;
+it is not the former application role and owns no Run admission state machine.
+
+Cloud's Billing, Pro and Hosting consumers replace their old Session package
+imports and equivalent manifest declarations with the defining contract. All
+isolated Native-consuming workspace pins and locks must name the same reviewed
+Native and IAM cohort, including Hosted Worker. Flow's existing execution ACL
+consumes that same contract, its original application `SessionStore` and direct
+physical-provider types; its terminal-cleanup test implementations use the
+renamed role. Source callers keep public wire literals and the original state,
+CAS and replay behavior. These are source-API migrations within one cohort,
+without old-role aliases or an alternate compatibility service.
+
+Compile contracts and original tests remain with their owners. Public API
+snapshots, isolated consumer builds and current-source native qualification must
+cover the defining contracts and their consumers before qualified delivery;
+source navigation or a dependency metadata pass does not establish that result.
+
+## Amendment 2026-10-31: the Session carries the one Sandbox provider as role handles
+
+This completes the provider convergence the 2026-10-24 amendment deferred.
+Environment supply keeps one abstraction, `SandboxProvider`; the Session no
+longer names a provider of its own. `SessionEnvironmentProvider` becomes
+`SandboxProviderRoles`: the deployment-selected Sandbox provider held as one
+handle per consuming role, every handle over the same adapter instance. Two of
+its five handles are provisioning roles: `SandboxReadiness` (now its own
+handle; `EnvironmentRealizer` no longer extends it, so code that only reads
+capabilities, formats or liveness is not handed realization) and
+`SandboxInstallation`. The other three remain Session roles because each adds
+Session meaning that `SandboxProvider` must not learn: `EnvironmentRealizer`
+(host identity, effective-spec projection, Hand-bound creation),
+`EnvironmentAdoption` (retained-instance observation and rebind, adoption
+layout with historical owned paths) and `EnvironmentTerminalRealization`
+(terminal reconstruction, terminal data readability, restore verified to a
+handle). The record carries handles only: its unfenced `create`/`adopt`
+shortcuts become `EnvironmentRealizer::create_unattached` and
+`EnvironmentAdoption::adopt_unattached`, named like `Sandbox::dispose_unattached`.
+`SandboxEnvironmentProvider::into_session_provider` becomes
+`into_provider_roles`. Retired spellings are pinned by `compile_fail` doctests.
+
+Rejected: implementing `SandboxProvider<Environment = …>` on the Session
+adapter (a `SessionEnvironment` is a record of Session roles, not a live
+`Sandbox`, and the filesystem tiers rely on concrete Local/Namespace types);
+moving `prewarm_images`, `validate_closed_observation` or restore-target
+disposal into new associated-type-free provisioning roles (that changes every
+`SandboxProvider` implementation, including awaken-cloud's, for operations the
+Session roles already name identically); replacing `EnvironmentRealizationKind`
+with `SandboxRealizationIntent` (a Workdir creation may carry its aggregate
+source binding without being a Rebuild, so the pair is not isomorphic; that is
+a decision change for its own slice); one `Arc<dyn …>` over every role (a fat
+interface). Provisioning-contract does not depend on any Session crate; wire
+shapes, persisted bytes, effect fencing and physical ownership are unchanged.
+awaken-cloud imports none of the renamed paths.

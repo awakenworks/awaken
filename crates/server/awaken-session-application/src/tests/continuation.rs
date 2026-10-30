@@ -26,7 +26,7 @@ struct ContinuationRuntime {
     expected_mcp_generations: Mutex<Vec<Vec<crate::session_mcp::McpGenerationRef>>>,
     quiescence_mcp_override: Mutex<Option<Vec<crate::session_mcp::McpGenerationRef>>>,
     source_tuples: Mutex<Vec<(&'static str, String, String, String)>>,
-    preparation_effects: Mutex<Vec<awaken_session_state_contract::SourceReleasePreparationEffect>>,
+    preparation_effects: Mutex<Vec<awaken_session_contract::SourceReleasePreparationEffect>>,
     disposal_authorizations: Mutex<Vec<awaken_provisioning_contract::SandboxDisposalAuthorization>>,
     projection_installs: Mutex<
         Vec<(
@@ -39,7 +39,7 @@ struct ContinuationRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for ContinuationRuntime {
+impl SessionRuns for ContinuationRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -73,15 +73,15 @@ impl SessionRuntime for ContinuationRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for ContinuationRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for ContinuationRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for ContinuationRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for ContinuationRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for ContinuationRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for ContinuationRuntime);
 
@@ -197,12 +197,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
     async fn quiesce_session_environment(
         &self,
         _thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.quiesces.fetch_add(1, Ordering::SeqCst);
         self.source_tuples.lock().unwrap().push((
             "quiesce",
@@ -223,7 +223,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
             .unwrap()
             .take()
             .unwrap_or_else(|| expected_mcp_generations.to_vec());
-        Ok(awaken_session_state_contract::QuiescenceReceipt {
+        Ok(awaken_session_contract::QuiescenceReceipt {
             effect_id: operation.effect_id().to_owned(),
             generation_id: generation.id().to_owned(),
             activity_epoch: operation.activity_epoch(),
@@ -270,8 +270,8 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
     async fn checkpoint_session_environment(
         &self,
         _thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
         self.source_tuples.lock().unwrap().push((
             "checkpoint",
@@ -286,10 +286,10 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
         if self.fail_checkpoint_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected upload crash"));
         }
-        Ok(awaken_session_state_contract::CheckpointReceipt {
+        Ok(awaken_session_contract::CheckpointReceipt {
             effect_id: request.operation.effect_id().to_owned(),
             generation_id: request.generation.id().to_owned(),
-            checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
+            checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
                 id: "object".into(),
                 format: request.format,
                 digest: "digest".into(),
@@ -307,10 +307,10 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
     async fn prepare_checkpoint_source_disposal(
         &self,
         _thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, RunError> {
         self.preparations.fetch_add(1, Ordering::SeqCst);
         self.preparation_effects
             .lock()
@@ -322,7 +322,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
         let provider_prepared_effect_fence = preparation
             .sandbox_effect_fence()
             .map_err(|error| RunError::internal(error.to_string()))?;
-        awaken_session_state_contract::SourceReleasePreparedReceipt::try_new(
+        awaken_session_contract::SourceReleasePreparedReceipt::try_new(
             preparation.clone(),
             provider_prepared_effect_fence,
             generation,
@@ -334,8 +334,8 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
     async fn dispose_prepared_checkpoint_source(
         &self,
         _thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
         self.disposals.fetch_add(1, Ordering::SeqCst);
         self.disposal_authorizations.lock().unwrap().push(
             disposal.sandbox_disposal_authorization().map_err(|error| {
@@ -345,7 +345,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
         if self.fail_dispose_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected disposal crash"));
         }
-        Ok(awaken_session_state_contract::SourceDisposedReceipt {
+        Ok(awaken_session_contract::SourceDisposedReceipt {
             effect_id: disposal.operation().effect_id().to_owned(),
             generation_id: disposal.generation().id().to_owned(),
             source_binding: disposal.source_binding().into(),
@@ -355,13 +355,13 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         self.restores.fetch_add(1, Ordering::SeqCst);
         if self.fail_restore_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected restore crash"));
         }
-        Ok(awaken_session_state_contract::RestoreReceipt {
+        Ok(awaken_session_contract::RestoreReceipt {
             effect_id: request.effect_id,
             generation_id: request.generation_id,
             checkpoint_id: request.checkpoint.id,
@@ -372,7 +372,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
     async fn delete_session_checkpoint(
         &self,
         _thread: &str,
-        _checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        _checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         self.deletes.fetch_add(1, Ordering::SeqCst);
         if self.fail_delete_once.swap(false, Ordering::SeqCst) {
@@ -408,10 +408,10 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -421,15 +421,17 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         self.terminal_cleanups.fetch_add(1, Ordering::SeqCst);
-        Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
+        ))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntime {
+impl awaken_session_execution_contract::ThreadReads for ContinuationRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -534,16 +536,16 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationRuntime {
+impl awaken_session_execution_contract::TerminalCleanup for ContinuationRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         _authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         let provider_prepared_effect_fence = effect
             .sandbox_effect_fence()
             .map_err(|error| RunError::internal(error.to_string()))?;
-        awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             provider_prepared_effect_fence,
             Vec::new(),
@@ -558,7 +560,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -572,7 +574,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -609,7 +611,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for ContinuationRuntime {
+impl awaken_session_execution_contract::Outcomes for ContinuationRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -678,14 +680,14 @@ pub(super) fn generated_session(id: &str) -> PersistedSession {
         _ => unreachable!(),
     };
     baseline.environment.idle_retention = checkpoint_release_retention();
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(id),
         0,
         100_000,
         baseline.environment.config_fingerprint.0.clone(),
         "base",
     );
-    session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "source-binding".into(),
         effect_id: Some("create".into()),
         generation: Some(generation),
@@ -822,14 +824,14 @@ fn legacy_memory_binding(id: &str) -> String {
 pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> PersistedSession {
     let mut session = generated_session(id);
     let source_generation = session.environment.generation().unwrap();
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(id),
         source_generation.created_at_unix_ms(),
         expires_at_unix_ms,
         source_generation.environment_fingerprint().to_owned(),
         source_generation.base_image_fingerprint().to_owned(),
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(id),
         "suspend",
@@ -838,8 +840,8 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
         None,
         None,
     );
-    session.environment = awaken_session_state_contract::SessionEnvironmentState::Hibernated {
-        checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
+    session.environment = awaken_session_contract::SessionEnvironmentState::Hibernated {
+        checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
             id: "object".into(),
             format: "awaken-fs-tar-v1".into(),
             digest: "digest".into(),
@@ -891,7 +893,7 @@ async fn due_idle_environment_suspends_once_in_order() {
         .to_owned();
     assert!(matches!(
         settled.environment,
-        awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
     ));
     app.continuations
         .reconcile_environment_continuation(&SessionId::from("suspend"), 2_000)
@@ -936,7 +938,7 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
     // are delegated unchanged to the same contract wrapper (rules C5-C8).
     for (id, mut session, should_suspend) in {
         let mut legacy_rw = generated_session("memory-legacy-rw");
-        legacy_rw.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        legacy_rw.resources = awaken_session_contract::SessionResourceState::from_active(
             crate::session_resource::ResolvedSessionResources::try_new(
                 vec![memory_input(
                     "rw",
@@ -946,9 +948,8 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
             )
             .unwrap(),
         );
-        if let awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding, ..
-        } = &mut legacy_rw.environment
+        if let awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } =
+            &mut legacy_rw.environment
         {
             *binding = legacy_memory_binding("memory-legacy-rw");
         }
@@ -966,7 +967,7 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
         );
 
         let mut legacy_ro = generated_session("memory-legacy-ro");
-        legacy_ro.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        legacy_ro.resources = awaken_session_contract::SessionResourceState::from_active(
             crate::session_resource::ResolvedSessionResources::try_new(
                 vec![memory_input(
                     "ro",
@@ -976,9 +977,8 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
             )
             .unwrap(),
         );
-        if let awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding, ..
-        } = &mut legacy_ro.environment
+        if let awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } =
+            &mut legacy_ro.environment
         {
             *binding = legacy_memory_binding("memory-legacy-ro");
         }
@@ -1010,14 +1010,14 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
             result.expect("A3 RO suspension");
             assert!(matches!(
                 repo.get(&SessionId::from(id)).await.unwrap().environment,
-                awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+                awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
             ));
             assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1, "A3");
         } else {
             assert!(result.is_err(), "A1/A2");
             assert!(matches!(
                 repo.get(&SessionId::from(id)).await.unwrap().environment,
-                awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+                awaken_session_contract::SessionEnvironmentState::Resident { .. }
             ));
             assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 0, "A1/A2");
             assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 0, "A1/A2");
@@ -1067,7 +1067,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     assert!(
         matches!(
             hibernated.environment,
-            awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+            awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
         ),
         "D1"
     );
@@ -1416,7 +1416,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         .get(&SessionId::from("checkpoint-artifact-auth"))
         .await
         .unwrap();
-    let awaken_session_state_contract::SessionEnvironmentState::Suspending { operation, .. } =
+    let awaken_session_contract::SessionEnvironmentState::Suspending { operation, .. } =
         &ready.environment
     else {
         panic!("C1 fixture is not suspending")
@@ -1502,8 +1502,8 @@ async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
     let pending = repo.get(&SessionId::from("retry")).await.unwrap();
     assert!(matches!(
         pending.environment,
-        awaken_session_state_contract::SessionEnvironmentState::Suspending {
-            suspend_phase: awaken_session_state_contract::SuspendPhase::Uploading,
+        awaken_session_contract::SessionEnvironmentState::Suspending {
+            suspend_phase: awaken_session_contract::SuspendPhase::Uploading,
             ..
         }
     ));
@@ -1551,8 +1551,8 @@ async fn quiescence_failure_retains_resident_source_for_retry() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Suspending {
-            suspend_phase: awaken_session_state_contract::SuspendPhase::Quiescing,
+        awaken_session_contract::SessionEnvironmentState::Suspending {
+            suspend_phase: awaken_session_contract::SuspendPhase::Quiescing,
             ..
         }
     ));
@@ -1601,8 +1601,8 @@ async fn disposal_failure_retries_without_recheckpointing() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Suspending {
-            suspend_phase: awaken_session_state_contract::SuspendPhase::Disposing,
+        awaken_session_contract::SessionEnvironmentState::Suspending {
+            suspend_phase: awaken_session_contract::SuspendPhase::Disposing,
             checkpoint: Some(_),
             ..
         }
@@ -1618,7 +1618,7 @@ async fn disposal_failure_retries_without_recheckpointing() {
         .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(failed_over)
+            awaken_session_contract::SessionAggregate::try_from(failed_over)
                 .expect("valid test snapshot"),
             "test-continuation-disposal-failover",
             Vec::new(),
@@ -1696,7 +1696,7 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(renewed)
+            awaken_session_contract::SessionAggregate::try_from(renewed)
                 .expect("valid test snapshot"),
             "test-renew-before-source-preparation",
             Vec::new(),
@@ -1716,9 +1716,9 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         .get(&SessionId::from("prep-response-loss"))
         .await
         .unwrap();
-    let awaken_session_state_contract::SessionEnvironmentState::Suspending {
+    let awaken_session_contract::SessionEnvironmentState::Suspending {
         operation,
-        suspend_phase: awaken_session_state_contract::SuspendPhase::Disposing,
+        suspend_phase: awaken_session_contract::SuspendPhase::Disposing,
         source_release_preparation: Some(prepared),
         ..
     } = &disposing.environment
@@ -1745,7 +1745,7 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(disposing)
+            awaken_session_contract::SessionAggregate::try_from(disposing)
                 .expect("valid test snapshot"),
             "test-prepared-source-disposal-failover",
             Vec::new(),
@@ -1802,8 +1802,8 @@ async fn preparation_failure_has_zero_physical_disposal_and_retries_before_dispo
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Suspending {
-            suspend_phase: awaken_session_state_contract::SuspendPhase::ReadyToDispose,
+        awaken_session_contract::SessionEnvironmentState::Suspending {
+            suspend_phase: awaken_session_contract::SuspendPhase::ReadyToDispose,
             checkpoint: Some(_),
             ..
         }
@@ -1823,7 +1823,7 @@ async fn preparation_failure_has_zero_physical_disposal_and_retries_before_dispo
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
     ));
 }
 
@@ -1943,7 +1943,7 @@ async fn restore_failure_retries_the_committed_restore_operation() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Restoring { .. }
+        awaken_session_contract::SessionEnvironmentState::Restoring { .. }
     ));
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
@@ -2007,7 +2007,7 @@ async fn resident_projection_failure_retries_without_restoring_again() {
     assert!(
         matches!(
             resident.environment,
-            awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+            awaken_session_contract::SessionEnvironmentState::Resident { .. }
         ),
         "F2/E2 durable Resident is the retry fact",
     );
@@ -2093,7 +2093,7 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+        awaken_session_contract::SessionEnvironmentState::Resident { .. }
     ));
     assert_eq!(resident_runtime.quiesces.load(Ordering::SeqCst), 0, "X1/E1");
     assert_eq!(
@@ -2133,7 +2133,7 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
     ));
     assert_eq!(
         hibernated_runtime.restores.load(Ordering::SeqCst),
@@ -2180,7 +2180,7 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
     session
         .environment
         .record_quiescence(
-            &awaken_session_state_contract::QuiescenceReceipt {
+            &awaken_session_contract::QuiescenceReceipt {
                 effect_id: operation.effect_id().to_owned(),
                 generation_id: generation.id().to_owned(),
                 activity_epoch: 0,
@@ -2235,7 +2235,7 @@ async fn expired_checkpoint_is_deleted_then_rebuilt_from_frozen_environment() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
 }
 
@@ -2268,7 +2268,7 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
     ));
     app.continuations
         .ensure_environment_resident(&SessionId::from("delete-retry"), 1_000)
@@ -2280,7 +2280,7 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
             .await
             .unwrap()
             .environment,
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
 }
 
@@ -2312,7 +2312,7 @@ async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
         .terminate_session(
             "terminal",
             "2026-08-11T00:00:00Z",
-            awaken_session_state_contract::ManagedLifecycleFact {
+            awaken_session_contract::ManagedLifecycleFact {
                 id: "terminal-archive".into(),
                 object_id: "terminal".into(),
                 workspace_id: Some("workspace".into()),
@@ -2374,7 +2374,7 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         session
             .environment
             .record_quiescence(
-                &awaken_session_state_contract::QuiescenceReceipt {
+                &awaken_session_contract::QuiescenceReceipt {
                     effect_id: operation.effect_id().to_owned(),
                     generation_id,
                     activity_epoch: 0,
@@ -2390,13 +2390,13 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
     // O1
     let mut inconsistent = uploading("inconsistent-evidence", None);
     let realization = inconsistent.realization.clone();
-    if let awaken_session_state_contract::SessionEnvironmentState::Suspending {
+    if let awaken_session_contract::SessionEnvironmentState::Suspending {
         suspend_phase,
         operation,
         ..
     } = &mut inconsistent.environment
     {
-        *suspend_phase = awaken_session_state_contract::SuspendPhase::ReadyToDispose;
+        *suspend_phase = awaken_session_contract::SuspendPhase::ReadyToDispose;
         // O1 retains its original inconsistent persisted evidence. Importing
         // this wire grants no transition or current provider authority.
         let mut wire = serde_json::to_value(&*operation).unwrap();

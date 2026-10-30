@@ -266,7 +266,7 @@ mod tests {
                 dependencies.env.sandbox_root.join("backend-owned"),
                 false,
             )
-            .into_session_provider();
+            .into_provider_roles();
         dependencies = dependencies.with_backend_owned_environment_provider(backend_owned);
         dependencies.env.session_provider =
             awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
@@ -276,7 +276,7 @@ mod tests {
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
-            .into_session_provider();
+            .into_provider_roles();
         let host = (dependencies).build().expect("validated Host dependencies");
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             credential: awaken_agent_contract::credential::CredentialRef {

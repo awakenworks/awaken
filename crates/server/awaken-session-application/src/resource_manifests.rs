@@ -12,7 +12,7 @@
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use crate::repository_participants::RepositoryRetirementCause;
 use awaken_agent_contract::stable_fingerprint;
-use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
+use awaken_session_contract::{IdempotencyRecord, SessionExecutionState};
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
@@ -26,7 +26,7 @@ use crate::{
     SessionInputRequest, SessionInputTarget, SessionMutationError, SessionPreparationError,
 };
 use awaken_resource_contract::BindingId;
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
 use awaken_session_types::{SessionId, SessionRevision};
 use std::sync::Arc;
 
@@ -316,7 +316,7 @@ impl SessionResourceManifests {
                 session.resources().prepare(desired)
             };
             result.map_err(|error| match error {
-                awaken_session_state_contract::ResourceActivationError::Pending => {
+                awaken_session_contract::ResourceActivationError::Pending => {
                     SessionResourceManifestError::Conflict
                 }
                 error => {

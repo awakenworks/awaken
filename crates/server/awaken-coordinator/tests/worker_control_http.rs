@@ -775,12 +775,12 @@ mod environment_renewal {
     use awaken_session_application_contract::SessionWorkerLeaseAuthority;
     use awaken_session_application_contract::{SessionWorkAcquisition, SessionWorkOwnership};
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
-    use awaken_session_state_contract::{
+    use awaken_session_contract::{
         IdempotencyRecord, PersistedSession, SessionEnvironmentEffectAuthorization,
         SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
         SessionEnvironmentState,
     };
+    use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
     use {
         awaken_session_configuration_contract::{
             EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,

@@ -29,7 +29,7 @@ use awaken_session_execution_contract::{
     SessionRunActivityAdmissionMode,
 };
 
-type Store = Arc<dyn awaken_session_repository_contract::SessionStore>;
+type Store = Arc<dyn crate::SessionStore>;
 
 const MEMORY: &str = "t18-memory";
 
@@ -82,7 +82,7 @@ fn fresh_root(id: &str) -> PersistedSession {
     );
     session.execution = legacy.execution;
     session.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(memory_resources());
+        awaken_session_contract::SessionResourceState::from_active(memory_resources());
     session
 }
 

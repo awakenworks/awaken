@@ -9,14 +9,14 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
 use awaken_session_configuration_contract::resource::{ResolvedInput, ResolvedInputSource};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionExecutionState,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
 };
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     SessionArchiveAdmission as ArchiveAdmission,
     SessionArchiveBusinessIntent as ArchiveBusinessIntent,
     session_archive_idempotency_record as archive_idempotency_record,
@@ -42,7 +42,7 @@ use super::{
 /// ```compile_fail,E0451
 /// use awaken_session_application::SessionDispositionMutation;
 ///
-/// fn fabricate(session: awaken_session_state_contract::PersistedSession) {
+/// fn fabricate(session: awaken_session_contract::PersistedSession) {
 ///     let _ = SessionDispositionMutation {
 ///         owner_scope: "workspace".into(),
 ///         session,
@@ -149,10 +149,10 @@ pub(crate) fn session_terminated_record(
     (
         awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at_ms),
         ManagedLifecycleFact {
-            id: awaken_session_event_contract::session_terminated_fact_id(session_id),
+            id: awaken_session_contract::session_terminated_fact_id(session_id),
             object_id: session_id.to_string(),
             workspace_id: owner_scope,
-            event_type: awaken_session_event_contract::SESSION_TERMINATED.to_string(),
+            event_type: awaken_session_contract::SESSION_TERMINATED.to_string(),
             timestamp: i64::try_from(observed_at_ms / 1_000).unwrap_or(i64::MAX),
             runtime_interval: None,
         },
@@ -255,8 +255,8 @@ pub struct SessionTerminationCommands {
     lifecycle: Arc<crate::SessionLifecycle>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
     activities: Arc<crate::SessionActivities>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
-    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
+    coordination: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
 }
 
@@ -390,17 +390,17 @@ impl SessionTerminationCommands {
                 .then(|| self.clock.now_ms());
             let changed = session.lifecycle().archive_with_repository_publication(&command.archived_at, archive_time, intent)
                 .map_err(|error| match error {
-                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
-                        awaken_session_state_contract::SessionDispositionTransitionError::ArchiveAfterDelete,
+                    awaken_session_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
+                        awaken_session_contract::SessionDispositionTransitionError::ArchiveAfterDelete,
                     ) => {
                         SessionArchiveWithRepositoryPublicationError::NotFound
                     }
-                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
-                        awaken_session_state_contract::SessionDispositionTransitionError::ArchiveTimeRequired,
+                    awaken_session_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
+                        awaken_session_contract::SessionDispositionTransitionError::ArchiveTimeRequired,
                     ) => SessionArchiveWithRepositoryPublicationError::Unavailable(
                         "Session archive has no Application time observation".into(),
                     ),
-                    awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Cleanup(_) => {
+                    awaken_session_contract::SessionArchiveWithRepositoryPublicationError::Cleanup(_) => {
                         SessionArchiveWithRepositoryPublicationError::Conflict
                     }
                 })?;
@@ -786,7 +786,7 @@ impl SessionTerminationCommands {
     /// the original cleanup/attempt owners retain every external obligation.
     async fn validate_failed_profiled_execution(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<(), crate::SessionPreparationError> {
         use awaken_lease_contract::fence::Epoch;
         let refused = || {
@@ -800,9 +800,8 @@ impl SessionTerminationCommands {
             .await
             .map_err(SessionPreparationError::Rejected)?
             .ok_or_else(refused)?;
-        let run =
-            awaken_session_state_contract::failed_profiled_run_for_archive(session, &snapshot)
-                .ok_or_else(refused)?;
+        let run = awaken_session_contract::failed_profiled_run_for_archive(session, &snapshot)
+            .ok_or_else(refused)?;
         let operation = awaken_session_execution_contract::session_run_activity_operation_id(
             &session.session_id,
             &run.id,
@@ -818,7 +817,7 @@ impl SessionTerminationCommands {
             .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
             .ok_or_else(refused)?;
         let epoch = Epoch::from_persisted(epoch).ok_or_else(refused)?;
-        awaken_session_state_contract::failed_profiled_activity_matches(session, &observed, epoch)
+        awaken_session_contract::failed_profiled_activity_matches(session, &observed, epoch)
             .then_some(())
             .ok_or_else(refused)
     }
@@ -932,7 +931,7 @@ mod publication_error_tests {
         // Exhaustive table over every execution state x terminal flag:
         // F1 terminal -> none; F2 Preparing/Running -> profiled release;
         // F3 any other live state -> idle-only archive.
-        use awaken_session_state_contract::{SessionArchiveAdmission, SessionExecutionState};
+        use awaken_session_contract::{SessionArchiveAdmission, SessionExecutionState};
         for execution in [
             SessionExecutionState::Preparing,
             SessionExecutionState::Activating,

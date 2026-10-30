@@ -1992,7 +1992,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut first = adoption_dependencies_at(storage.path()).await;
     first.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
-            .into_session_provider(),
+            .into_provider_roles(),
     );
     let first = roots.configure(first).build().unwrap();
     let first_managed = managed_test_host(first.clone());
@@ -2023,7 +2023,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut replacement = adoption_dependencies_at(storage.path()).await;
     replacement.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
-            .into_session_provider(),
+            .into_provider_roles(),
     );
     let replacement = roots.configure(replacement).build().unwrap();
 
@@ -2300,7 +2300,8 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
             .environments()
             .providers()
             .session_provider
-            .adopt(&spec, &observed.lifecycle().handle())
+            .adoption()
+            .adopt_unattached(&spec, &observed.lifecycle().handle())
             .await
             .expect("same-handle replacement"),
     );
@@ -2562,7 +2563,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         &activation.snapshot,
     );
     projection.baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
-    projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "opaque-worker-owned-environment".into(),
         effect_id: None,
         generation: None,

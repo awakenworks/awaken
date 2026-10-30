@@ -214,7 +214,7 @@ async fn nonlocal_environment_refusals_precede_agent_reads_and_session_creation(
         let scan = managed
             .sessions
             .session_repository_handle()
-            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
                 workspace_id: &workspace_id,
             })
             .await

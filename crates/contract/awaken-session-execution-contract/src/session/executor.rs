@@ -10,12 +10,12 @@
 //! own one role; the binding owns no execution state or durable truth.
 
 #[cfg(test)]
-use crate::SessionRuntime;
+use crate::SessionRuns;
 use crate::{
-    BudgetRuntime, CapabilityRuntime, ColocatedRealizationRoles, CommittedSessionProjection,
-    CompleteSessionRuntime, CoordinationRuntime, LiveInboxRuntime, OutcomeRuntime,
-    SessionCoordinationReads, SessionPlacementRoles, SessionProjectionSource, StreamingRunRuntime,
-    ThreadReadRuntime,
+    BudgetAccounting, CapabilityRuntime, ChildRunCoordination, ColocatedRealizationRoles,
+    CommittedSessionProjection, CompleteSessionRuntime, LiveInboxAccess, Outcomes,
+    SessionCoordinationReads, SessionPlacementRoles, SessionProjectionSource, StreamingRuns,
+    ThreadReads,
 };
 use std::sync::Arc;
 
@@ -28,9 +28,9 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0277
 /// use std::sync::Arc;
-/// use awaken_session_execution_contract::{NeutralRuntime, SessionExecutor, SessionRuntime};
+/// use awaken_session_execution_contract::{NeutralRuntime, SessionExecutor, SessionRuns};
 ///
-/// fn cannot_bind_partial<T: SessionRuntime + 'static>(runtime: Arc<T>) {
+/// fn cannot_bind_partial<T: SessionRuns + 'static>(runtime: Arc<T>) {
 ///     let _ = SessionExecutor::colocated(runtime, Arc::new(NeutralRuntime));
 /// }
 /// ```
@@ -39,8 +39,8 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0594
 /// use std::sync::Arc;
-/// use awaken_session_execution_contract::{BudgetRuntime, SessionExecutor};
-/// fn cannot_replace(executor: &mut SessionExecutor, other: Arc<dyn BudgetRuntime>) {
+/// use awaken_session_execution_contract::{BudgetAccounting, SessionExecutor};
+/// fn cannot_replace(executor: &mut SessionExecutor, other: Arc<dyn BudgetAccounting>) {
 ///     executor.budget = other;
 /// }
 /// ```
@@ -58,13 +58,13 @@ pub struct SessionExecutionRoles {
     /// Where the Sessions are realized: a co-located Worker's realization
     /// roles, or the frozen-input admission of Worker-placed Sessions.
     pub placement: SessionPlacementRoles,
-    pub coordination: Arc<dyn CoordinationRuntime>,
+    pub coordination: Arc<dyn ChildRunCoordination>,
     pub coordination_reads: Arc<dyn SessionCoordinationReads>,
-    pub budget: Arc<dyn BudgetRuntime>,
-    pub streaming_runs: Arc<dyn StreamingRunRuntime>,
-    pub thread_reads: Arc<dyn ThreadReadRuntime>,
-    pub outcomes: Arc<dyn OutcomeRuntime>,
-    pub live_inbox: Arc<dyn LiveInboxRuntime>,
+    pub budget: Arc<dyn BudgetAccounting>,
+    pub streaming_runs: Arc<dyn StreamingRuns>,
+    pub thread_reads: Arc<dyn ThreadReads>,
+    pub outcomes: Arc<dyn Outcomes>,
+    pub live_inbox: Arc<dyn LiveInboxAccess>,
     pub capability: Arc<dyn CapabilityRuntime>,
 }
 
@@ -96,8 +96,8 @@ impl SessionExecutor {
         &self.placement
     }
 
-    /// The required `CoordinationRuntime` selected at construction.
-    pub fn coordination(&self) -> &dyn CoordinationRuntime {
+    /// The required `ChildRunCoordination` selected at construction.
+    pub fn coordination(&self) -> &dyn ChildRunCoordination {
         self.coordination.as_ref()
     }
 
@@ -106,28 +106,28 @@ impl SessionExecutor {
         self.coordination_reads.as_ref()
     }
 
-    /// The required `BudgetRuntime` selected at construction.
-    pub fn budget(&self) -> &dyn BudgetRuntime {
+    /// The required `BudgetAccounting` selected at construction.
+    pub fn budget(&self) -> &dyn BudgetAccounting {
         self.budget.as_ref()
     }
 
-    /// The required `StreamingRunRuntime` selected at construction.
-    pub fn streaming_runs(&self) -> &dyn StreamingRunRuntime {
+    /// The required `StreamingRuns` selected at construction.
+    pub fn streaming_runs(&self) -> &dyn StreamingRuns {
         self.streaming_runs.as_ref()
     }
 
-    /// The required `ThreadReadRuntime` selected at construction.
-    pub fn thread_reads(&self) -> &dyn ThreadReadRuntime {
+    /// The required `ThreadReads` selected at construction.
+    pub fn thread_reads(&self) -> &dyn ThreadReads {
         self.thread_reads.as_ref()
     }
 
-    /// The required `OutcomeRuntime` selected at construction.
-    pub fn outcomes(&self) -> &dyn OutcomeRuntime {
+    /// The required `Outcomes` selected at construction.
+    pub fn outcomes(&self) -> &dyn Outcomes {
         self.outcomes.as_ref()
     }
 
-    /// The required `LiveInboxRuntime` selected at construction.
-    pub fn live_inbox(&self) -> &dyn LiveInboxRuntime {
+    /// The required `LiveInboxAccess` selected at construction.
+    pub fn live_inbox(&self) -> &dyn LiveInboxAccess {
         self.live_inbox.as_ref()
     }
 
@@ -225,7 +225,7 @@ mod tests {
     struct NamedThreadReads;
 
     #[async_trait::async_trait]
-    impl ThreadReadRuntime for NamedThreadReads {
+    impl ThreadReads for NamedThreadReads {
         async fn owns_thread(&self, _thread: &str) -> Result<bool, crate::RunError> {
             Ok(false)
         }

@@ -27,8 +27,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_dispatch::{
-    AttemptAdmission, DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
-    DispatchExecution as _, DispatchReads as _, DispatchSettlement as _, MemoryDispatchStore,
+    AttemptAdmission, DispatchEnqueue as _, DispatchReads as _, MemoryDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory,
     WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot,
     WorkerState,
@@ -65,22 +64,20 @@ struct RecordingSessionControl {
     terminal_control_calls: AtomicUsize,
     cleanup_claims: Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
     cleanup_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
-    cleanup_action: Mutex<Option<awaken_session_state_contract::SessionTerminalCleanupAction>>,
+    cleanup_action: Mutex<Option<awaken_session_contract::SessionTerminalCleanupAction>>,
     preparation_authorization: Mutex<
         Option<awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization>,
     >,
-    authorized_preparations:
-        Mutex<Vec<awaken_session_state_contract::SessionTerminalCleanupEffect>>,
-    cleanup_preparations: Mutex<Vec<awaken_session_state_contract::SessionCleanupPreparation>>,
-    authorized_disposals:
-        Mutex<Vec<awaken_session_state_contract::SessionTerminalCleanupDisposalEffect>>,
-    cleanup_disposals: Mutex<Vec<awaken_session_state_contract::SessionCleanupDisposalReceipt>>,
+    authorized_preparations: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
+    cleanup_preparations: Mutex<Vec<awaken_session_contract::SessionCleanupPreparation>>,
+    authorized_disposals: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupDisposalEffect>>,
+    cleanup_disposals: Mutex<Vec<awaken_session_contract::SessionCleanupDisposalReceipt>>,
     repository_publication_projection:
         Mutex<Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>>,
     repository_publication_receipts:
-        Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationReceipt>>,
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
     repository_publication_rejections:
-        Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationRejection>>,
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
 }
 
 impl RecordingSessionControl {
@@ -116,9 +113,9 @@ enum EnvironmentAuthorizationMode {
 #[derive(Default)]
 struct RecordingEnvironmentBindings {
     mode: Mutex<EnvironmentAuthorizationMode>,
-    intents: Mutex<Vec<awaken_session_state_contract::SessionEnvironmentEffectIntent>>,
-    receipts: Mutex<Vec<awaken_session_state_contract::SessionEnvironmentReceipt>>,
-    persisted_environment: Mutex<awaken_session_state_contract::SessionEnvironmentState>,
+    intents: Mutex<Vec<awaken_session_contract::SessionEnvironmentEffectIntent>>,
+    receipts: Mutex<Vec<awaken_session_contract::SessionEnvironmentReceipt>>,
+    persisted_environment: Mutex<awaken_session_contract::SessionEnvironmentState>,
     reject_persist: std::sync::atomic::AtomicBool,
 }
 
@@ -128,25 +125,29 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.intents.lock().unwrap().push(intent.clone());
         match self.mode.lock().unwrap().clone() {
-            EnvironmentAuthorizationMode::Authorized => {
-                Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent.clone()) })
-            }
+            EnvironmentAuthorizationMode::Authorized => Ok(
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(intent.clone()),
+                },
+            ),
             EnvironmentAuthorizationMode::AlreadyApplied(binding) => Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding,
                     intent: Box::new(intent.clone()),
                 },
             ),
-            EnvironmentAuthorizationMode::Unowned => {
-                Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { intent: Box::new(intent.clone()) })
-            }
+            EnvironmentAuthorizationMode::Unowned => Ok(
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                    intent: Box::new(intent.clone()),
+                },
+            ),
             EnvironmentAuthorizationMode::Unavailable => {
                 Err(awaken_session_types::RunError::unavailable_classified(
                     "session_environment_authorization_unavailable",
@@ -158,11 +159,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         if self.reject_persist.load(Ordering::SeqCst) {
             return Err(awaken_session_types::RunError::unavailable_classified(
                 "session_environment_persist_unavailable",
@@ -485,7 +484,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 {
     async fn authorize_terminal_cleanup_effect(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
         awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -505,7 +504,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
     async fn record_terminal_cleanup_preparation(
         &self,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        preparation: awaken_session_state_contract::SessionCleanupPreparation,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_preparations.lock().unwrap().push(preparation);
@@ -519,7 +518,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 {
     async fn authorize_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.authorized_disposals
@@ -532,7 +531,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
     async fn record_terminal_cleanup_disposal(
         &self,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_disposals.lock().unwrap().push(receipt);
@@ -564,7 +563,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         _session_id: &SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.repository_publication_receipts
@@ -578,7 +577,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         _session_id: &SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.repository_publication_rejections
@@ -1394,9 +1393,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | B4 | exact | unavailable | n/a | retryable 503 |
     // | B5 | foreign/stale | any | n/a | reject before binding authority |
     // | B6 | exact | Authorized | success/unavailable | one receipt + exact authority / retryable |
-    let environment_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let environment_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         "signed-thread",
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         Some(realization_lease.clone()),
     )
     .for_environment("env-fingerprint");
@@ -1407,7 +1406,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("B1 authorized root effect"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
             intent: Box::new(environment_intent.clone())
         },
         "B1"
@@ -1422,7 +1421,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("B2 response-loss readback"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding: "sandbox-binding-v2".into(),
             intent: Box::new(environment_intent.clone()),
         },
@@ -1459,9 +1458,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let calls_before_foreign = environment_bindings.intents.lock().unwrap().len();
     let mut foreign_lease = realization_lease.clone();
     foreign_lease.runtime_incarnation = "foreign-incarnation".into();
-    let foreign_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let foreign_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         "signed-thread",
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         Some(foreign_lease),
     )
     .for_environment("env-fingerprint");
@@ -1480,16 +1479,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "B5 foreign lease never reaches the binding authority"
     );
 
-    let environment_receipt =
-        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
-            &environment_intent,
-            "sandbox-binding-v2",
-        )
-        .expect("B6 exact receipt");
-    let persisted_environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let environment_receipt = awaken_session_contract::SessionEnvironmentReceipt::from_intent(
+        &environment_intent,
+        "sandbox-binding-v2",
+    )
+    .expect("B6 exact receipt");
+    let persisted_environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "sandbox-binding-v2".into(),
         effect_id: Some(environment_receipt.effect_id.clone()),
-        generation: Some(awaken_session_state_contract::SandboxGeneration::new(
+        generation: Some(awaken_session_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from("signed-thread"),
             100,
             1_000,
@@ -1615,7 +1613,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     )
     .await;
 
-    let mut cleanup_operation = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut cleanup_operation = awaken_session_contract::SessionCleanupOperation::default();
     assert!(
         cleanup_operation.request(&awaken_session_types::SessionId::from("signed-thread")),
         "K4 fence"
@@ -1635,7 +1633,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .expect("K4 canonical command");
     *session_control.cleanup_action.lock().unwrap() = Some(
-        awaken_session_state_contract::SessionTerminalCleanupAction::Prepare {
+        awaken_session_contract::SessionTerminalCleanupAction::Prepare {
             commands: vec![cleanup_command.clone()],
         },
     );
@@ -1660,12 +1658,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert_eq!(
         cleanup_work.action,
-        awaken_session_state_contract::SessionTerminalCleanupAction::Prepare {
+        awaken_session_contract::SessionTerminalCleanupAction::Prepare {
             commands: vec![cleanup_command.clone()],
         },
         "K4"
     );
-    let preparation_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let preparation_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup_command.clone(),
         realization_lease.clone(),
     );
@@ -1708,7 +1706,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         std::slice::from_ref(&preparation_effect),
         "K4 effect bytes"
     );
-    let preparation = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+    let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
         &preparation_effect,
         preparation_effect.sandbox_effect_fence().unwrap(),
         Vec::new(),
@@ -1733,7 +1731,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
 
     let disposal_effect_id = inherited_provider_disposal.operation_id().unwrap();
-    let disposal_command: awaken_session_state_contract::SessionCleanupDisposalCommand =
+    let disposal_command: awaken_session_contract::SessionCleanupDisposalCommand =
         serde_json::from_value(serde_json::json!({
             "session_id": "signed-thread",
             "effect_id": disposal_effect_id,
@@ -1742,7 +1740,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         }))
         .expect("K5 disposal command fixture");
     *session_control.cleanup_action.lock().unwrap() = Some(
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose {
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose {
             command: disposal_command.clone(),
         },
     );
@@ -1757,12 +1755,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("K5 disposal work");
     assert_eq!(
         disposal_work.action,
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose {
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose {
             command: disposal_command.clone(),
         },
         "K5 disposal command bytes"
     );
-    let disposal_effect = awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
+    let disposal_effect = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
         disposal_command.clone(),
         realization_lease.clone(),
     );
@@ -1784,7 +1782,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "K5 effect bytes"
     );
     let disposal_receipt =
-        awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
+        awaken_session_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
     client
         .record_terminal_cleanup_disposal(
             &registered.snapshot.identity,
@@ -1858,7 +1856,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | P3 | current/exact | canonical rejection | forward exact rejection |
     // | P4 | current/foreign | poll/complete/reject | reject before Control |
     // | P5 | current/exact | none | return pending None |
-    let publication_intent: awaken_session_state_contract::SessionRepositoryPublicationIntent =
+    let publication_intent: awaken_session_contract::SessionRepositoryPublicationIntent =
         serde_json::from_value(serde_json::json!({
             "input": {
                 "binding_id": "source",
@@ -1880,8 +1878,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             }
         }))
         .expect("publication intent fixture");
-    let mut publication_operation =
-        awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut publication_operation = awaken_session_contract::SessionCleanupOperation::default();
     publication_operation
         .request_with_publication(
             &awaken_session_types::SessionId::from("signed-thread"),
@@ -1927,11 +1924,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "commit": publication_intent.expectation.commit,
     }))
     .expect("P2 effect receipt");
-    let publication_receipt =
-        awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
-            &publication_command,
-            effect_receipt,
-        );
+    let publication_receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+        &publication_command,
+        effect_receipt,
+    );
     client
         .record_terminal_repository_publication_receipt(
             &registered.snapshot.identity,
@@ -1951,7 +1947,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "P2"
     );
     let publication_rejection =
-        awaken_session_state_contract::SessionRepositoryPublicationRejection::new(
+        awaken_session_contract::SessionRepositoryPublicationRejection::new(
             &publication_command,
             awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefChanged {
                 observed_commit: "fedcba9876543210fedcba9876543210fedcba98".into(),
@@ -1980,7 +1976,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // closed-source cause without a second route. This fixture owns HTTP bytes
     // and lease/auth refusal only; aggregate/provider tests own source proof.
     let source_closed =
-        awaken_session_state_contract::SessionRepositoryPublicationRejection::source_closed(
+        awaken_session_contract::SessionRepositoryPublicationRejection::source_closed(
             &publication_command,
             "signed-source-binding",
             awaken_provisioning_contract::SandboxObservation::Terminal {
@@ -3013,14 +3009,14 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         epoch: 2,
         expires_at_unix_ms: u64::MAX,
     };
-    let command = awaken_session_state_contract::SessionCleanupCommand::new(
+    let command = awaken_session_contract::SessionCleanupCommand::new(
         &awaken_session_types::SessionId::from("any-session"),
         "any-session",
         "any-root",
     );
     let preparation_effect =
-        awaken_session_state_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
-    let preparation = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+    let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
         &preparation_effect,
         preparation_effect.sandbox_effect_fence().unwrap(),
         Vec::new(),
@@ -3038,7 +3034,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         "any-provider-fingerprint",
     )
     .unwrap();
-    let disposal_command: awaken_session_state_contract::SessionCleanupDisposalCommand =
+    let disposal_command: awaken_session_contract::SessionCleanupDisposalCommand =
         serde_json::from_value(serde_json::json!({
             "session_id": "any-session",
             "effect_id": provider_preparation.operation_id().unwrap(),
@@ -3046,13 +3042,13 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             "provider_disposal": provider_preparation,
         }))
         .unwrap();
-    let disposal_effect = awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
+    let disposal_effect = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
         disposal_command.clone(),
         lease.clone(),
     );
     let disposal_receipt =
-        awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
-    let publication_receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt =
+        awaken_session_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
+    let publication_receipt: awaken_session_contract::SessionRepositoryPublicationReceipt =
         serde_json::from_value(serde_json::json!({
             "command_fingerprint": "command",
             "effect_receipt": {
@@ -3064,7 +3060,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             "receipt_fingerprint": "receipt"
         }))
         .unwrap();
-    let publication_rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection =
+    let publication_rejection: awaken_session_contract::SessionRepositoryPublicationRejection =
         serde_json::from_value(serde_json::json!({
             "command_fingerprint": "command",
             "effect_rejection": {

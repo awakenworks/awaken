@@ -191,7 +191,7 @@ async fn paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_
     assert!(after_failure.active_activity_epochs.is_empty(), "Z2");
     assert_eq!(
         after_failure.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "Z2"
     );
 
@@ -316,7 +316,7 @@ async fn return_code_alone_cannot_sign_off_zero_execution() {
     check_zero_execution(&runtime.counts()).expect("NC baseline: no leak yet");
 
     // Mutant: a leaked inline model execution behind the failed admission.
-    awaken_session_execution_contract::SessionRuntime::run(
+    awaken_session_execution_contract::SessionRuns::run(
         runtime.as_ref(),
         "agent",
         session,

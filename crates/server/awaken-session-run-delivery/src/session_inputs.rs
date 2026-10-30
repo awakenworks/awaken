@@ -75,7 +75,7 @@ pub fn session_thread_reply_result(
 /// System identity, validation, and Role ordering cannot diverge.
 pub fn session_system_message(
     session_id: &str,
-    system: &awaken_session_event_contract::SessionUserRunSystemInput,
+    system: &awaken_session_contract::SessionUserRunSystemInput,
 ) -> Result<Message, RunError> {
     if session_id.trim().is_empty()
         || system.operation_id.trim().is_empty()

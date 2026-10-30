@@ -660,9 +660,9 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/work".into(), commit: "a".repeat(40), expected_prior_commit: None,
         };
-        let command = awaken_session_state_contract::SessionRepositoryPublicationCommand {
+        let command = awaken_session_contract::SessionRepositoryPublicationCommand {
             session_id: session.into(), effect_id: "terminal-protected-platform-effect".into(),
-            intent: awaken_session_state_contract::SessionRepositoryPublicationIntent {
+            intent: awaken_session_contract::SessionRepositoryPublicationIntent {
                 input: platform_resources().inputs()[0].clone(), expectation: expectation.clone(),
             },
         };

@@ -24,12 +24,12 @@
 //! | X | SQLite vs PostgreSQL | rows C1-C5 | - | identical normalized outcome signatures |
 use super::*;
 
-type Store = Arc<dyn awaken_session_repository_contract::SessionStore>;
+type Store = Arc<dyn crate::SessionStore>;
 
 async fn session_outbox(
     store: &Store,
     session: &SessionId,
-) -> Vec<awaken_session_event_contract::ManagedLifecycleFact> {
+) -> Vec<awaken_session_contract::ManagedLifecycleFact> {
     store
         .pending_lifecycle()
         .await
@@ -80,7 +80,7 @@ async fn append(
     session: &SessionId,
     input: SessionEventInput,
     key: &str,
-) -> Result<awaken_session_event_contract::SessionEventBatch, RunError> {
+) -> Result<awaken_session_contract::SessionEventBatch, RunError> {
     let _process_local = client.lock.lock().await;
     client
         .app
@@ -95,9 +95,7 @@ async fn append(
         .await
 }
 
-fn normalized(
-    result: &Result<awaken_session_event_contract::SessionEventBatch, RunError>,
-) -> String {
+fn normalized(result: &Result<awaken_session_contract::SessionEventBatch, RunError>) -> String {
     match result {
         Ok(_) => "accepted".into(),
         Err(error) => format!("{:?}:{}:{}", error.kind, error.code, error.message),
@@ -171,7 +169,7 @@ async fn consumption_table(prefix: &str, store_a: Store, store_b: Store) -> Vec<
         // C6: a shared PostgreSQL fixture legitimately receives facts from
         // other tests. Make that interleaving deterministic on BOTH backends;
         // C3/C4 must protect this Session rather than freeze the whole database.
-        let unrelated = awaken_session_event_contract::ManagedLifecycleFact {
+        let unrelated = awaken_session_contract::ManagedLifecycleFact {
             id: unique(&format!("{prefix}-unrelated-fact")),
             object_id: unique(&format!("{prefix}-unrelated-session")),
             workspace_id: Some("workspace".into()),

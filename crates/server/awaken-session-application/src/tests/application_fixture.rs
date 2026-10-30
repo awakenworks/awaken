@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) fn application(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn crate::SessionStore>,
     environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
     application_with_configuration(repo, environments, Default::default())
@@ -10,7 +10,7 @@ pub(crate) fn application(
 
 pub(super) fn application_with_runtime(
     runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn crate::SessionStore>,
     environments: impl Into<SessionEnvironments>,
 ) -> SessionApplication {
     configured_application(
@@ -46,7 +46,7 @@ pub(super) fn configured_application(
 }
 
 pub(super) fn application_with_configuration(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn crate::SessionStore>,
     environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
 ) -> SessionApplication {
@@ -73,7 +73,7 @@ pub(super) fn application_with_persistence(
 }
 
 pub(super) fn configured_admission_application(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn crate::SessionStore>,
     runtime: Arc<RecordingAgentAdmissionRuntime>,
 ) -> SessionApplication {
     let mut app = application_with_runtime(

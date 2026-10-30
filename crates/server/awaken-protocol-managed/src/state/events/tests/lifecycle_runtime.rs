@@ -7,10 +7,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 use awaken_session_application_contract::{Pending, StepOutcome};
 use awaken_session_execution_contract::{
-    CoordinatedThreadLink, OutcomeDrive, SessionRuntime, ToolPermissionDecision,
+    CoordinatedThreadLink, OutcomeDrive, SessionRuns, ToolPermissionDecision,
 };
 use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
+    SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use awaken_session_types::{RunError, SessionId};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -79,7 +79,7 @@ impl LifecycleRuntime {
 }
 
 #[async_trait]
-impl SessionRuntime for LifecycleRuntime {
+impl SessionRuns for LifecycleRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -113,13 +113,13 @@ impl SessionRuntime for LifecycleRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for LifecycleRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for LifecycleRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for LifecycleRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for LifecycleRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for LifecycleRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for LifecycleRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for LifecycleRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for LifecycleRuntime);
 
@@ -200,7 +200,7 @@ impl awaken_session_execution_contract::RealizationRuntime for LifecycleRuntime 
 awaken_session_execution_contract::neutral_role!(RealizationEffects for LifecycleRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for LifecycleRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for LifecycleRuntime {
     // Fixture rule P1: lifecycle scripts observe public Event admission without prepared execution.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -208,7 +208,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for LifecycleRuntime
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -420,7 +420,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for LifecycleRuntime
 impl awaken_session_execution_contract::SessionCoordinationReads for LifecycleRuntime {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -522,7 +522,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for LifecycleRu
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for LifecycleRuntime {
+impl awaken_session_execution_contract::StreamingRuns for LifecycleRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -621,7 +621,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for LifecycleRuntime
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for LifecycleRuntime {
+impl awaken_session_execution_contract::ThreadReads for LifecycleRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -831,7 +831,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for LifecycleRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for LifecycleRuntime {
+impl awaken_session_execution_contract::Outcomes for LifecycleRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

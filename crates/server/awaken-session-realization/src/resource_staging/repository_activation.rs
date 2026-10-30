@@ -104,7 +104,7 @@ impl ResourceStaging {
         repository: &RepositoryActivation,
         binding_checks: &[ResourceBindingCheck],
         publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<Option<pc::RepositoryHttpBasicCredential>, RealizationError> {
@@ -310,7 +310,7 @@ impl ResourceStaging {
         realizer: &dyn pc::RepositoryRealizer,
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
@@ -360,7 +360,7 @@ impl ResourceStaging {
 
     pub fn validate_repository_environment_adoption_paths(
         &self,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &pc::SandboxSpec,
         repository_paths: &[&str],
         historical_owned_paths: &[&str],

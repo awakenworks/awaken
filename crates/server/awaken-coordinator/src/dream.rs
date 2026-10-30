@@ -17,9 +17,9 @@ use awaken_resource_contract::{
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_configuration_contract::SessionToolConfiguration;
+use awaken_session_contract::ManagedLifecycleFact;
 use awaken_session_dream_contract::DreamOutputBehavior;
 use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
-use awaken_session_state_contract::ManagedLifecycleFact;
 
 const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
 
@@ -557,12 +557,10 @@ impl DreamExecutor for BuiltInDreamAgent {
             let now_ms = awaken_time::WallClockExt::now_ms(self.sessions.clock().as_ref());
             let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(now_ms);
             let fact = ManagedLifecycleFact {
-                id: awaken_session_event_contract::session_terminated_fact_id(
-                    &preparation.session_id,
-                ),
+                id: awaken_session_contract::session_terminated_fact_id(&preparation.session_id),
                 object_id: preparation.session_id.clone(),
                 workspace_id: Some(request.workspace_id.clone()),
-                event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
+                event_type: awaken_session_contract::SESSION_TERMINATED.into(),
                 timestamp: i64::try_from(now_ms / 1_000).unwrap_or(i64::MAX),
                 runtime_interval: None,
             };

@@ -190,7 +190,7 @@ impl<'a> DispatchPreparation<'a> {
         } else {
             activation
         };
-        // `SessionRuntime::install_session_projection` is the sole
+        // `SessionRuns::install_session_projection` is the sole
         // Coordinator-side owner that installs this frozen runtime projection.
         // Preserve that existing
         // ownership fact in the dispatch contract so a registered Worker enters

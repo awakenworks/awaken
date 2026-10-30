@@ -17,9 +17,9 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
             epoch: 3,
             expires_at_unix_ms: 500,
         };
-        let original = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        let original = awaken_session_contract::SessionEnvironmentEffectIntent::new(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
             Some(old_lease.clone()),
         )
         .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
@@ -59,7 +59,7 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
             )
             .await
             .unwrap();
-        let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let result = awaken_session_execution_contract::TerminalCleanup::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &assignment.projection),
@@ -173,7 +173,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             )
             .await
             .unwrap();
-        let result = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let result = awaken_session_execution_contract::TerminalCleanup::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &projection),
@@ -210,7 +210,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         let mut conflicting = assignment;
         conflicting.projection.revision.0 += 1;
         conflicting.projection.environment =
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
+            awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: "foreign".into(),
                 effect_id: None,
                 generation: None,
@@ -228,7 +228,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             )
             .await
             .unwrap();
-        let error = awaken_session_execution_contract::TerminalCleanupRuntime::prepare_terminal_cleanup_for_effect(
+        let error = awaken_session_execution_contract::TerminalCleanup::prepare_terminal_cleanup_for_effect(
                     &*(host.clone()).run_assembly,
                     effect.clone(),
                     terminal_preparation_authorization(&effect, &conflicting.projection),

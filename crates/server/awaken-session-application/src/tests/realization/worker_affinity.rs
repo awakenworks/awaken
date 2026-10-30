@@ -87,10 +87,12 @@ async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
             modern.realization = root.realization;
             root = modern;
             assert!(root.is_terminal());
-            assert!(awaken_session_state_contract::session_has_no_create_evidence(&root));
+            assert!(awaken_session_contract::session_has_no_create_evidence(
+                &root
+            ));
         }
         if mode != "no-create" && mode != "legacy" {
-            root.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+            root.environment = awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
                     "source-admission-fixture",
                     id.as_str(),
@@ -307,7 +309,7 @@ async fn draining_cleanup_claim_races_preserve_owned_roots_and_compensate_new_on
                 epoch: 7,
                 expires_at_unix_ms: 1,
             });
-            let inner: Arc<dyn awaken_session_repository_contract::SessionStore> =
+            let inner: Arc<dyn crate::SessionStore> =
                 sqlite_session_repository("drain versus root CAS").await;
             let id = SessionId::from("draining-cas-race");
             create(
@@ -437,7 +439,7 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
             expires_at_unix_ms: if rule == "live" { u64::MAX } else { 1 },
         };
         let mut root = registry_race_terminal_session(&session_id, Some(old_lease.clone()));
-        root.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        root.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
                 "fixture",
                 format!("bound-{session_id}"),
@@ -811,7 +813,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         reassign_existing_lease: false,
     };
     let mut requested = registry_race_terminal_session("claim-compatible", None);
-    requested.resources = awaken_session_state_contract::SessionResourceState::from_active(
+    requested.resources = awaken_session_contract::SessionResourceState::from_active(
         file_resources("claim-compatible-file"),
     );
     // The original checked factory performs the same request/freeze assertions.
@@ -1001,8 +1003,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     let credentialed_session_id = "claim-d-credential";
     let resources = credentialed_repository_resources("source", "repo-active");
     let mut credentialed = registry_race_terminal_session(credentialed_session_id, None);
-    credentialed.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(resources);
+    credentialed.resources = awaken_session_contract::SessionResourceState::from_active(resources);
     create(repo.as_ref(), credentialed).await;
     let mut resource_only_manifest = terminal_cleanup_manifest();
     resource_only_manifest
@@ -1069,28 +1070,27 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
                 expires_at_unix_ms: 1,
             }),
         );
-        checkpoint.environment =
-            awaken_session_state_contract::SessionEnvironmentState::Hibernated {
-                checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
-                    id: object_id.into(),
-                    format: "portable-checkpoint-v1".into(),
-                    digest: "sha256:checkpoint".into(),
-                    size_bytes: 7,
-                    created_at_unix_ms: 1,
-                    expires_at_unix_ms: u64::MAX,
-                    environment_fingerprint: "env-7".into(),
-                    base_image_fingerprint: "base-image".into(),
-                    excluded_mounts: Vec::new(),
-                    suspend_effect_id: "suspend-effect".into(),
-                },
-                generation: awaken_session_state_contract::SandboxGeneration::new(
-                    &SessionId::from(id),
-                    1,
-                    u64::MAX,
-                    "env-7",
-                    "base-image",
-                ),
-            };
+        checkpoint.environment = awaken_session_contract::SessionEnvironmentState::Hibernated {
+            checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
+                id: object_id.into(),
+                format: "portable-checkpoint-v1".into(),
+                digest: "sha256:checkpoint".into(),
+                size_bytes: 7,
+                created_at_unix_ms: 1,
+                expires_at_unix_ms: u64::MAX,
+                environment_fingerprint: "env-7".into(),
+                base_image_fingerprint: "base-image".into(),
+                excluded_mounts: Vec::new(),
+                suspend_effect_id: "suspend-effect".into(),
+            },
+            generation: awaken_session_contract::SandboxGeneration::new(
+                &SessionId::from(id),
+                1,
+                u64::MAX,
+                "env-7",
+                "base-image",
+            ),
+        };
         create(repo.as_ref(), checkpoint).await;
         let before = repo.get(&SessionId::from(id)).await.unwrap();
         workers.replace(vec![terminal_cleanup_worker(
@@ -1162,7 +1162,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     let retained_checkpoint = retained_checkpoint.expect("W9-old predecessor negative row ran");
 
     let mut unowned = registry_race_terminal_session("claim-f-unowned-resident", None);
-    unowned.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    unowned.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "physical-without-owner".into(),
         effect_id: None,
         generation: None,

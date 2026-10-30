@@ -225,7 +225,7 @@ async fn acp_fixture(
         awaken_session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
             root, false,
         )
-        .into_session_provider(),
+        .into_provider_roles(),
     );
     let factory = Arc::new(FaultFactory {
         inner: host.exec.acp.as_ref().unwrap().clone(),

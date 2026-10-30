@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use awaken_runtime_contract::CancellationToken;
 use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
-use awaken_session_repository_contract::LifecycleOutbox;
+use awaken_session_contract::LifecycleOutbox;
 
 /// How often the replay loop retries pending facts without a notification.
 pub const LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);

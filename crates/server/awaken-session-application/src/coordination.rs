@@ -9,7 +9,7 @@
 //!
 //! This module adds no child registry. It resolves the roster already frozen by
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
-//! existing [`awaken_session_execution_contract::SessionRuntime`] port.
+//! existing [`awaken_session_execution_contract::SessionRuns`] port.
 
 use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
@@ -44,8 +44,8 @@ const MAX_UNARCHIVED_AGENT_CHILD_THREADS: usize = 24;
 async fn admit_fresh_agent_report(
     app: &SessionCoordination,
     owner: &str,
-    settled: awaken_session_state_contract::PersistedSession,
-    observation: awaken_session_state_contract::SessionRuntimeIntervalObservation,
+    settled: awaken_session_contract::PersistedSession,
+    observation: awaken_session_contract::SessionRuntimeIntervalObservation,
     continuation: SessionAgentReportContinuation,
 ) -> Result<(), RunError> {
     // Only confirmed Missing with the original active membership reaches
@@ -93,9 +93,9 @@ pub struct SessionCoordination {
     run_admissions: Arc<crate::SessionRunAdmissions>,
     realizations: Arc<crate::SessionRealizations>,
     observations: Arc<crate::SessionObservations>,
-    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
 }
 
 /// The collaborators one [`SessionCoordination`] is built from.
@@ -146,7 +146,7 @@ impl SessionCoordination {
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         source: (&ThreadId, &RunId),
-    ) -> Result<(awaken_session_state_contract::PersistedSession, u64), RunError> {
+    ) -> Result<(awaken_session_contract::PersistedSession, u64), RunError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::internal(
                 "Session activity operation identity is required",
@@ -186,12 +186,12 @@ impl SessionCoordination {
 
     async fn recover_coordinated_admission(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
     ) -> Result<Option<SessionAgentMessageReceipt>, RunError> {
         let (operation, thread, run) = command.activity_source();
         let epoch = command.activity_epoch();
-        awaken_session_state_contract::validate_complete_run_activity(
+        awaken_session_contract::validate_complete_run_activity(
             session, operation, epoch, thread, run,
         )
         .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -239,9 +239,9 @@ impl SessionCoordination {
 
     async fn reconcile_coordination_boundary_usage(
         &self,
-        session: awaken_session_state_contract::PersistedSession,
+        session: awaken_session_contract::PersistedSession,
         source_thread_id: &ThreadId,
-    ) -> Result<awaken_session_state_contract::PersistedSession, RunError> {
+    ) -> Result<awaken_session_contract::PersistedSession, RunError> {
         if session.is_terminal() {
             return Ok(session);
         }
@@ -265,7 +265,7 @@ impl SessionCoordination {
         (
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
             RunState,
-            Option<awaken_session_state_contract::SessionRuntimeIntervalObservation>,
+            Option<awaken_session_contract::SessionRuntimeIntervalObservation>,
         ),
         RunError,
     > {
@@ -289,13 +289,15 @@ impl SessionCoordination {
                 "Agent settlement does not identify a committed child boundary",
             ));
         }
-        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation::from_committed_boundary(
-            command.session_activity_epoch,
-            &command.source_thread_id,
-            &command.source_run_id,
-            &state,
-            &snapshot,
-        ).map_err(|error| RunError::internal(error.to_string()))?;
+        let observation =
+            awaken_session_contract::SessionRuntimeIntervalObservation::from_committed_boundary(
+                command.session_activity_epoch,
+                &command.source_thread_id,
+                &command.source_run_id,
+                &state,
+                &snapshot,
+            )
+            .map_err(|error| RunError::internal(error.to_string()))?;
         Ok((snapshot, state, observation))
     }
 
@@ -328,7 +330,7 @@ impl SessionCoordination {
     fn coordination_root_profile(
         &self,
         owner_scope: &str,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<awaken_executable_agent_contract::ExecutableAgentSessionProfile, RunError> {
         let baseline = session
             .frozen_baseline()
@@ -346,7 +348,7 @@ impl SessionCoordination {
     fn coordination_roster(
         &self,
         owner_scope: &str,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<Vec<ResolvedRosterMember>, RunError> {
         let baseline = session
             .frozen_baseline()
@@ -410,7 +412,7 @@ impl SessionCoordination {
     async fn coordination_session(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<(String, awaken_session_state_contract::PersistedSession), RunError> {
+    ) -> Result<(String, awaken_session_contract::PersistedSession), RunError> {
         let session = self
             .queries
             .session(session_id)
@@ -821,7 +823,7 @@ impl SessionAgentCoordination for SessionCoordination {
                         && entry.projection_anchor.is_none()
                         && matches!(
                             &entry.event,
-                            awaken_session_event_contract::SessionEventCommand::UserMessage {
+                            awaken_session_contract::SessionEventCommand::UserMessage {
                                 run_id: pending_run, ..
                             } if pending_run == run_id
                         )
@@ -1089,7 +1091,7 @@ impl SessionAgentCoordination for SessionCoordination {
         }
         let observation = observation.expect("visible action requires a lifecycle observation");
         let retained_user_event = role == SessionAgentBoundaryRole::PrimaryContinuation
-            && awaken_session_state_contract::SessionEventHistory::from(&current)
+            && awaken_session_contract::SessionEventHistory::from(&current)
                 .retains_user_run(&command.source_run_id)
                 .map_err(|error| RunError::internal(error.to_string()))?;
         if action != SessionAgentBoundaryAction::ContinueReport {
@@ -1175,7 +1177,7 @@ impl SessionAgentCoordination for SessionCoordination {
         if current.is_terminal() {
             return Ok(());
         }
-        if !awaken_session_state_contract::SessionEventHistory::from(&current)
+        if !awaken_session_contract::SessionEventHistory::from(&current)
             .retains_user_run(&command.source_run_id)
             .map_err(|error| RunError::internal(error.to_string()))?
         {

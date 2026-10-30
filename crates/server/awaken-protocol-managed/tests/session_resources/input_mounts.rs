@@ -28,7 +28,7 @@ async fn manifest_memory_mounts_reuse_creation_paths_and_binding_identities() {
             })
             .collect::<Vec<_>>()
     };
-    let durable_bindings = |root: &awaken_session_state_contract::PersistedSession| {
+    let durable_bindings = |root: &awaken_session_contract::PersistedSession| {
         root.resources
             .desired()
             .inputs()
@@ -242,11 +242,11 @@ async fn create_and_manifest_preserve_distinct_participant_prefixes_on_resolutio
             None
         };
         let roots_before = sessions
-            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
                 workspace_id: "default",
             })
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap();
         let prepared_before = runtime.prepared.lock().unwrap().len();
         let staged_before = runtime.staged.lock().unwrap().len();
@@ -360,11 +360,11 @@ async fn create_and_manifest_preserve_distinct_participant_prefixes_on_resolutio
         }
         assert_eq!(
             sessions
-                .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+                .scan(awaken_session_contract::SessionScanQuery::Workspace {
                     workspace_id: "default",
                 })
                 .await
-                .map(awaken_session_state_contract::SessionScan::into_sessions)
+                .map(awaken_session_contract::SessionScan::into_sessions)
                 .unwrap(),
             roots_before,
             "PFX1 no new root; PFX2 exact original root, including revision and resources"

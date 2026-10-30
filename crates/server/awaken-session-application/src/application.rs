@@ -8,7 +8,7 @@
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_session_application_contract::process_local_executable_projection_admission;
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
     SessionEnvironmentReceiptRecoveryAction, SessionEnvironmentState, SessionMutationResult,
@@ -25,7 +25,7 @@ pub(crate) fn validate_session_sandbox_layout(
     layout: &awaken_session_configuration_contract::SessionSandboxLayout,
 ) -> Result<(), RunError> {
     validate_environment_continuation_topology(
-        awaken_session_state_contract::SessionPlacementClass::new(
+        awaken_session_contract::SessionPlacementClass::new(
             layout.runtime_placement,
             layout.environment.self_hosted,
         ),
@@ -35,9 +35,9 @@ pub(crate) fn validate_session_sandbox_layout(
 }
 
 /// Reject a layout whose idle policy its placement cannot honour
-/// ([`awaken_session_state_contract::SessionPlacementClass::supports_idle_retention`]).
+/// ([`awaken_session_contract::SessionPlacementClass::supports_idle_retention`]).
 fn validate_environment_continuation_topology(
-    placement: awaken_session_state_contract::SessionPlacementClass,
+    placement: awaken_session_contract::SessionPlacementClass,
     idle_retention: &awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
 ) -> Result<(), RunError> {
     if !placement.supports_idle_retention(idle_retention) {
@@ -51,7 +51,7 @@ fn validate_environment_continuation_topology(
 #[cfg(kani)]
 mod environment_owner_kani_proof {
     use super::{SessionExecutionPlacement, runtime_placement_for_topology};
-    use awaken_session_state_contract::SessionPlacementClass;
+    use awaken_session_contract::SessionPlacementClass;
     use awaken_session_types::SessionRuntimePlacement;
 
     /// @obligation runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
@@ -105,11 +105,28 @@ impl ExecutableProjections {
     }
 }
 
+/// One durable Session store viewed through both of its outbound ports.
+///
+/// A composition root opens the store once and hands it to the Session
+/// application as this object; the application keeps the two ports apart and
+/// exposes the outbox only to its delivery consumer. It adds no behaviour a
+/// caller could miss.
+pub trait SessionStore:
+    awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox
+{
+}
+
+impl<
+    T: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox + ?Sized,
+> SessionStore for T
+{
+}
+
 /// One immutable persistence selection made before the execution Host exists.
 /// The application and its Environment receipt sink always share these exact
 /// Store/Clock handles; no app-to-Host installation is needed to create it.
 pub struct SessionPersistence {
-    store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    store: Arc<dyn crate::SessionStore>,
     clock: Arc<dyn awaken_time::WallClock>,
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
 }
@@ -117,7 +134,7 @@ pub struct SessionPersistence {
 impl SessionPersistence {
     #[must_use]
     pub fn new(
-        store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+        store: Arc<dyn crate::SessionStore>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         let repo: Arc<dyn SessionRepository> = store.clone();
@@ -181,9 +198,9 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_application::{SessionApplication, SessionEventBatches};
-/// use awaken_session_execution_contract::StreamingRunRuntime;
+/// use awaken_session_execution_contract::StreamingRuns;
 /// use awaken_session_types::RunError;
-/// async fn existing_policy(runs: &dyn StreamingRunRuntime) -> Result<bool, RunError> {
+/// async fn existing_policy(runs: &dyn StreamingRuns) -> Result<bool, RunError> {
 ///     runs.supports_mid_conversation_system("thread").await
 /// }
 /// fn selected_role(application: &SessionApplication) -> std::sync::Arc<dyn SessionEventBatches> {
@@ -262,7 +279,7 @@ impl SessionPersistence {
 /// ```
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionPersistence;
-/// use awaken_session_repository_contract::SessionStore;
+/// use {awaken_session_application::SessionStore};
 /// fn select(store: Arc<dyn SessionStore>, clock: Arc<dyn awaken_time::WallClock>)
 ///     -> SessionPersistence
 /// {
@@ -273,7 +290,7 @@ impl SessionPersistence {
 /// ```compile_fail,E0599
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_repository_contract::SessionStore;
+/// use {awaken_session_application::SessionStore};
 /// fn replace_live(application: &mut SessionApplication, store: Arc<dyn SessionStore>) {
 ///     application.replace_repository(store);
 /// }
@@ -368,9 +385,9 @@ impl SessionPersistence {
 /// Z2b: Thread disposition and exact Outcome reads keep their original owner.
 ///
 /// ```
-/// use awaken_session_execution_contract::ThreadReadRuntime;
+/// use awaken_session_execution_contract::ThreadReads;
 /// use awaken_session_types::SessionId;
-/// async fn existing_role(reads: &dyn ThreadReadRuntime, session: &SessionId) {
+/// async fn existing_role(reads: &dyn ThreadReads, session: &SessionId) {
 ///     let _ = reads.session_thread_disposition(session, "thread").await;
 ///     let _ = reads.committed_outcome_projection("thread", "outcome").await;
 /// }
@@ -381,8 +398,8 @@ impl SessionPersistence {
 /// ```
 /// use std::sync::Arc;
 /// use awaken_agent_contract::stream::sink::Sink;
-/// use awaken_session_execution_contract::StreamingRunRuntime;
-/// async fn existing_role(runs: &dyn StreamingRunRuntime, sink: Arc<dyn Sink>) {
+/// use awaken_session_execution_contract::StreamingRuns;
+/// async fn existing_role(runs: &dyn StreamingRuns, sink: Arc<dyn Sink>) {
 ///     let _ = runs.pending_tool("thread").await;
 ///     let _ = runs.rebind_model("thread", "model").await;
 ///     let _ = runs
@@ -394,8 +411,8 @@ impl SessionPersistence {
 /// Z2d: ticket results remain on the original Runtime role.
 ///
 /// ```
-/// use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
-/// async fn existing_role(runs: &dyn SessionRuntime, decision: ToolPermissionDecision) {
+/// use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
+/// async fn existing_role(runs: &dyn SessionRuns, decision: ToolPermissionDecision) {
 ///     let _ = runs.resume("thread", "call", decision).await;
 ///     let _ = runs.resume_custom("thread", "call", Vec::new(), false).await;
 /// }
@@ -404,8 +421,8 @@ impl SessionPersistence {
 /// Z2e: Outcome commands remain on the original Outcome role.
 ///
 /// ```
-/// use awaken_session_execution_contract::OutcomeRuntime;
-/// async fn existing_role(outcomes: &dyn OutcomeRuntime, executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission) {
+/// use awaken_session_execution_contract::Outcomes;
+/// async fn existing_role(outcomes: &dyn Outcomes, executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission) {
 ///     let _ = outcomes.define_outcome("thread", "goal", "rubric", 3, executor).await;
 ///     let _ = outcomes.continue_outcome("thread", executor).await;
 /// }
@@ -444,7 +461,7 @@ pub struct SessionApplication {
     recovery: Arc<crate::SessionRecovery>,
     /// The composition inputs a fixture may still change before sharing.
     #[cfg(any(test, feature = "test-support"))]
-    store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    store: Arc<dyn crate::SessionStore>,
     #[cfg(any(test, feature = "test-support"))]
     fixture_assembly: crate::construction::SessionAssembly,
 }
@@ -543,7 +560,7 @@ impl SessionApplication {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_managed_list_price_provider(
         &mut self,
-        provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
+        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
     ) {
         crate::construction::reassemble(self, |assembly| assembly.prices = Some(provider));
     }
@@ -742,7 +759,7 @@ impl RepositoryEnvironmentBindingSink {
                     error,
                     SessionEnvironmentReceiptError::MaterializationUnknown
                         | SessionEnvironmentReceiptError::Rejected(
-                            awaken_session_state_contract::SessionEnvironmentRejection::MaterializationPending
+                            awaken_session_contract::SessionEnvironmentRejection::MaterializationPending
                         )
                 ) {
                     "session_environment_materialization_pending"

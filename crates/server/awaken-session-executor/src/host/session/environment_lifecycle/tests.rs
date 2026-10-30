@@ -31,7 +31,7 @@ fn environment_effect_fence(thread: &str) -> awaken_provisioning_contract::Sandb
 }
 
 async fn environment(
-    provider: &crate::session_environment::SessionEnvironmentProvider,
+    provider: &crate::session_environment::SandboxProviderRoles,
     thread: &str,
 ) -> Arc<crate::session_environment::SessionEnvironment> {
     // Fixture cause/effect rule: C1 lifecycle tests later perform exact,
@@ -113,8 +113,8 @@ async fn dispose_current_environment(
         .expect("dispose current Environment through aggregate effect fence");
 }
 
-fn generation(thread: &str) -> awaken_session_state_contract::SandboxGeneration {
-    awaken_session_state_contract::SandboxGeneration::new(
+fn generation(thread: &str) -> awaken_session_contract::SandboxGeneration {
+    awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
         u64::MAX,
