@@ -22,6 +22,33 @@ pub enum RetirementSelection<'a> {
     Exact(&'a Arc<crate::session_environment::SessionEnvironment>),
 }
 
+impl BoundSessionEnvironment {
+    /// Confirm only that this original source is the one the durable projection
+    /// describes. Reuse installation's exact-or-stutter identity law; this read
+    /// changes no owner and grants no lease, preparation or physical effect.
+    pub fn matches_source_projection(
+        &self,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<bool, RealizationError> {
+        let ProjectedEnvironmentOwner::AwaitingAdoption { identity, binding } =
+            projected_environment_owner(state, workspace_id, session_id)?
+        else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            durable_projection_identity_decision(
+                self.identity == identity,
+                self.binding == binding,
+                same_durable_generation(&self.identity, &identity),
+            ),
+            DurableProjectionIdentityDecision::Exact
+                | DurableProjectionIdentityDecision::SamePhysicalOwnerStutter
+        ))
+    }
+}
+
 fn compatible_durable_projection(
     owned: &BoundSessionEnvironment,
     identity: &BoundSessionEnvironmentIdentity,
