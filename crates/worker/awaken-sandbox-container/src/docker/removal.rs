@@ -28,6 +28,9 @@ impl DockerRuntime {
                     container_id,
                     Some(RemoveContainerOptions {
                         force,
+                        // An image that declares VOLUME gets an anonymous volume
+                        // per container; without this it outlives every session.
+                        v: true,
                         ..Default::default()
                     }),
                 )

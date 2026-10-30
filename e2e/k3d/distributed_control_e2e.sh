@@ -195,8 +195,10 @@ cleanup() {
     "$DEPLOY_DIR/awaken-server" \
     "$DEPLOY_DIR/awaken-worker" \
     "$KUBECONFIG_FILE" || return "$?"
-  # Allocated by this invocation only; retained together with a failed cluster.
-  [ -z "$CONTINUATION_VOLUME" ] || docker volume rm "$CONTINUATION_VOLUME" >/dev/null
+  # Allocated by this invocation only; retained together with a failed cluster
+  # above. k3d_delete_cluster already removed it with the node volumes it
+  # captured, so a failed postcondition cannot orphan it; this covers the rest.
+  [ -z "$CONTINUATION_VOLUME" ] || docker volume rm "$CONTINUATION_VOLUME" >/dev/null 2>&1 || true
 }
 
 k3d_admit_or_exit "ADR-0071 distributed E2E"
@@ -452,8 +454,10 @@ for executable in awaken-control awaken-coordinator awaken-worker awaken-server;
 done
 ok "all role artifacts execute as UID 10001 with normalized mode and unchanged bytes"
 # Reuse the shared nested-node reserve and actual capacity admission.
+e2e_docker_init distributed-control
+e2e_docker_sweep
 k3d_ensure_images "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
-CONTINUATION_VOLUME=$(docker volume create --label "awaken.e2e.cluster=$CLUSTER")
+CONTINUATION_VOLUME=$(docker volume create "${E2E_LABELS[@]}" --label "awaken.e2e.cluster=$CLUSTER" "awaken-e2e-$CLUSTER-continuation")
 k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
 CLUSTER_CREATED=1
 k3d_bind_private_kubeconfig "$CLUSTER"

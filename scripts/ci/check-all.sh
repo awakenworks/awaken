@@ -203,6 +203,8 @@ run static "cold dependency fetch self-test" python3 scripts/ci/check_dependency
 run static "receive hook integration" python3 scripts/ci/install_receive_hooks.py --self-test
 run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_arithmetic.py --self-test
 run static "crate-boundaries" python3 scripts/ci/check_crate_boundaries.py
+run static "docker-volumes self-test" python3 -m unittest scripts/ci/test_check_docker_volumes.py
+run static "docker-volumes" python3 scripts/ci/check_docker_volumes.py
 run static "hook-glob generator self-test" python3 scripts/ci/generate_hooks.py --self-test
 run static "hook-glob generation" python3 scripts/ci/generate_hooks.py --check
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test

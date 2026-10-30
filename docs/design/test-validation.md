@@ -104,6 +104,15 @@ bash scripts/ci/pg_tests.sh --require-docker
 bash scripts/ci/check-trusted-host-portability.sh
 ```
 
+Harness containers must not leak Docker volumes. Postgres, MinIO, registry,
+k3s and similar images declare `VOLUME`, so every `docker run`/`create` of one
+names an explicit mount (`--tmpfs` for throwaway data, a run-scoped named volume
+when the container restarts) and every `docker rm` passes `-v`.
+`scripts/ci/check_docker_volumes.py` enforces this for `e2e/` and `scripts/` in
+the static group; `scripts/ci/e2e_docker_lib.sh` labels harness objects with
+`awaken.e2e.owner`/`awaken.e2e.run` and sweeps a killed run's leftovers at the
+next start.
+
 Required focused Rust runs list and execute identical arguments, then compare
 named outcomes and occurrence counts. Equal totals with different names,
 empty selections, ignored cases, fixture skips, and failed processes cannot
