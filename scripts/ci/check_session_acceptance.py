@@ -26,6 +26,7 @@ refusal against a mutated copy of a minimal ledger):
 | L11  | an evidence entry changed after it was registered          | refuse  |
 | L12  | a product gap has no reason, follow-up or ignored reproducer | refuse |
 | L13  | group, binding or evidence identities collide               | refuse |
+| L14  | not-applicable without a reason or an executed refusal proof | refuse |
 """
 
 from __future__ import annotations
@@ -54,7 +55,10 @@ PLATFORM_PENDING = "platform_pending"
 # The product does not yet satisfy an oracle: a reproducer exists, is ignored
 # with its reason, and is never counted as execution evidence.
 PRODUCT_GAP = "product_gap"
-STATES = LEGACY_STATES | {CLAUSE_COMPLETE, PLATFORM_PENDING, PRODUCT_GAP}
+# The mode is not offered here; an executed test proves the capability is
+# refused, never that the behaviour passed.
+NOT_APPLICABLE = "not_applicable"
+STATES = LEGACY_STATES | {CLAUSE_COMPLETE, PLATFORM_PENDING, PRODUCT_GAP, NOT_APPLICABLE}
 CLAUSE_RELATION = "covers_case_clauses"
 GAP_RELATION = "reproduces_product_gap"
 # A Rust reproducer is `#[ignore = "product gap: ..."]`; a Python one is a
@@ -204,6 +208,10 @@ def _case_errors(case: dict, bindings: dict, gates_closed: bool) -> list[str]:
     elif state == PLATFORM_PENDING:
         if not case.get("platform_pending_reason"):
             errors.append(f"L10 {case['id']} is platform pending without a reason")
+    elif state == NOT_APPLICABLE:
+        executed_refusal = [b for b in clause if b["execution_witnesses"]]
+        if not case.get("not_applicable_reason") or not executed_refusal:
+            errors.append(f"L14 {case['id']} is not applicable without a reason or an executed refusal proof")
     elif state == PRODUCT_GAP:
         gap = case.get("product_gap") or {}
         reproducers = [bindings[b] for b in case["binding_ids"]
@@ -349,6 +357,12 @@ def _mutations():
         case(d)["product_gap"] = {"reason": "r", "follow_up": "f"}
         d["catalog"]["counts"]["case_evidence_states"] = {PRODUCT_GAP: 1}
         bind(d)["relation"] = GAP_RELATION
+    def na_unproven(d):
+        case(d)["evidence_state"] = NOT_APPLICABLE
+        case(d)["not_applicable_reason"] = "mode not offered"
+        d["catalog"]["counts"]["case_evidence_states"] = {NOT_APPLICABLE: 1}
+        bind(d)["execution_witnesses"] = []
+
     def gap_unreasoned(d):
         gap_unignored(d)
         case(d)["product_gap"] = {"reason": "r"}
@@ -356,7 +370,7 @@ def _mutations():
             ("L05", no_run), ("L06", rewritten), ("L11", edited), ("L06", inherited), ("L05", unexecuted),
             ("L07", oracle_gap), ("L07", control_gap), ("L08", slices_gap), ("L09", accepted),
             ("L01", count_total), ("L10", pending_reason), ("L01", upgraded), ("L02", missing_path),
-            ("L12", gap_unignored), ("L12", gap_unreasoned))
+            ("L12", gap_unignored), ("L12", gap_unreasoned), ("L14", na_unproven))
 
 
 def self_test() -> int:
