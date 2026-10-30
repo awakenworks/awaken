@@ -149,7 +149,7 @@ impl EnvironmentHolding {
                 baseline_env: Some(&projection.baseline.env),
                 content_delivery: None,
                 environment: Some(&environment),
-                network_isolation: provider.realizer().capabilities().network_isolation,
+                network_isolation: provider.readiness().capabilities().network_isolation,
             },
             projection.baseline.env.clone(),
         );

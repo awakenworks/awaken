@@ -916,7 +916,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let repository_path_fidelity = raw_host
         .env
         .session_provider
-        .realizer()
+        .readiness()
         .capabilities()
         .path_fidelity;
     let host = (crate::host::with_test_resource_validation(raw_host))

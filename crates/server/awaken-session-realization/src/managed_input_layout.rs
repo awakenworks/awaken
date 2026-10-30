@@ -22,7 +22,7 @@ impl ManagedLayoutValidationScope<'_> {
     pub fn network_isolation(self) -> bool {
         match self {
             Self::Structural => true,
-            Self::Exact(provider) => provider.realizer().capabilities().network_isolation,
+            Self::Exact(provider) => provider.readiness().capabilities().network_isolation,
         }
     }
 }

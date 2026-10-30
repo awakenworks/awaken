@@ -233,14 +233,14 @@ mod tests {
         let provider =
             SessionEnvironmentProvider::new(Arc::new(UninstalledSessionEnvironmentProvider));
         assert_eq!(
-            provider.realizer().probe_ready().await,
+            provider.readiness().probe_ready().await,
             Err(not_installed())
         );
         assert_eq!(
-            provider.realizer().capabilities(),
+            provider.readiness().capabilities(),
             awaken_session_environment_contract::workdir_capabilities()
         );
-        assert!(provider.realizer().checkpoint_formats().is_empty());
+        assert!(provider.readiness().checkpoint_formats().is_empty());
     }
 
     #[tokio::test]

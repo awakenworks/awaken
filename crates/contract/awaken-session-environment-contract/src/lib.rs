@@ -34,7 +34,8 @@
 //!
 //! | Role | Consumers |
 //! |---|---|
-//! | `EnvironmentRealizer` — capabilities, host identity, effective spec, image preparation, fenced create | Session realization, image warmup, Worker projection synchronizer |
+//! | `awaken_provisioning_contract::SandboxReadiness` — capabilities, checkpoint formats, liveness probe | Session admission and capacity projection, managed input layout, MCP attachment, Worker manifest |
+//! | `EnvironmentRealizer` — host identity, effective spec, image preparation, fenced create | Session realization, image warmup, Worker projection synchronizer |
 //! | `EnvironmentAdoption` — adoption layout, observation and closed-evidence validation, fenced adopt, retained rebind | environment lifecycle recovery, terminal preparation |
 //! | `EnvironmentTerminalRealization` — terminal reconstruction, exact restore, restored-target disposal | terminal preparation and cleanup, environment continuation |
 //! | `awaken_provisioning_contract::SandboxInstallation` — Memory mounter and secret broker installation | Host startup |

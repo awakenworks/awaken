@@ -40,7 +40,7 @@ async fn session_realizer_uses_the_selected_filesystem_providers_readiness_facts
             SandboxEnvironmentProvider::Container { .. } => unreachable!(),
         };
         let selected = adapter.into_session_provider();
-        let readiness: &dyn pc::SandboxReadiness = selected.realizer().as_ref();
+        let readiness: &dyn pc::SandboxReadiness = selected.readiness().as_ref();
         assert_eq!(readiness.capabilities(), capabilities, "{row}");
         assert_eq!(readiness.checkpoint_formats(), formats, "{row}");
         if row == "R1" {
@@ -80,7 +80,7 @@ async fn session_realizer_probes_the_same_container_provider_without_caching_rea
         "unused-readiness-hand",
     )
     .into_session_provider();
-    let readiness: &dyn pc::SandboxReadiness = provider.realizer().as_ref();
+    let readiness: &dyn pc::SandboxReadiness = provider.readiness().as_ref();
     assert_eq!(readiness.capabilities(), physical.capabilities());
     for (index, expected) in [
         Ok(()),

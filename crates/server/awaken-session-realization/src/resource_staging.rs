@@ -269,7 +269,7 @@ impl ResourceStaging {
             thread,
             create_time_mounts,
             has_repositories,
-            provider.realizer().capabilities().network_isolation,
+            provider.readiness().capabilities().network_isolation,
         )
     }
 
@@ -283,7 +283,7 @@ impl ResourceStaging {
             thread,
             resources.mounts.clone(),
             !resources.repositories.is_empty(),
-            provider.realizer().capabilities().network_isolation,
+            provider.readiness().capabilities().network_isolation,
         )
     }
 
@@ -304,7 +304,7 @@ impl ResourceStaging {
             thread,
             mounts,
             has_repositories,
-            provider.realizer().capabilities().network_isolation,
+            provider.readiness().capabilities().network_isolation,
         )
     }
 

@@ -471,7 +471,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     let repository_path_fidelity = raw_host
         .env
         .session_provider
-        .realizer()
+        .readiness()
         .capabilities()
         .path_fidelity;
     let host = (crate::host::with_test_resource_validation(raw_host))

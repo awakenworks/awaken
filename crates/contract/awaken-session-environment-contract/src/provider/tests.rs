@@ -313,7 +313,7 @@ async fn unattached_adoption_reopens_through_the_adapters_own_layout() {
 async fn readiness_is_answered_by_the_one_selected_adapter() {
     let adapter = Arc::new(RecordingAdapter::default());
     let provider = SessionEnvironmentProvider::new(adapter.clone());
-    let readiness: &dyn pc::SandboxReadiness = provider.realizer().as_ref();
+    let readiness: &dyn pc::SandboxReadiness = provider.readiness().as_ref();
     assert_eq!(
         readiness.capabilities(),
         pc::SandboxCapabilities::default(),

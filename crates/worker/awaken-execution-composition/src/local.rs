@@ -584,7 +584,7 @@ mod startup_tests {
         assert!(host.session_environment_provider_installed());
         assert_eq!(
             host.installed_session_environment_provider()
-                .realizer()
+                .readiness()
                 .capabilities(),
             expected
         );
@@ -635,7 +635,7 @@ mod startup_tests {
                     }
                     let capabilities = host
                         .installed_session_environment_provider()
-                        .realizer()
+                        .readiness()
                         .capabilities();
                     let host = select_local_session_environment(
                         host,
@@ -656,7 +656,7 @@ mod startup_tests {
                     assert!(trusted_host_provider(&host).has_workdir_hand());
                     assert_eq!(
                         host.installed_session_environment_provider()
-                            .realizer()
+                            .readiness()
                             .capabilities(),
                         capabilities
                     );

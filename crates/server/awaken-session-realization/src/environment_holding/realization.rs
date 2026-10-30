@@ -265,7 +265,7 @@ impl crate::environment_holding::EnvironmentHolding {
             historical_owned_paths,
         )
         .map_err(crate::realization_error::InvalidRequest::EnvironmentLayout)?;
-        let capabilities = provider.realizer().capabilities();
+        let capabilities = provider.readiness().capabilities();
         if provider.realizer().supports_host_identity() {
             awaken_provisioning_contract::prepare_trusted_host_environment(&spec, &capabilities)
                 .map_err(crate::realization_error::InvalidRequest::from)?;

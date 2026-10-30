@@ -68,7 +68,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         dependencies
             .env
             .session_provider
-            .realizer()
+            .readiness()
             .capabilities()
             .path_fidelity
     );

@@ -79,7 +79,7 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
             .projected_session_environment_provider(session, None)
             .map_err(RunError::from)?;
         Ok(provider
-            .realizer()
+            .readiness()
             .capabilities()
             .supports_secret_egress_without_bypass())
     }

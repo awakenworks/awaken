@@ -249,7 +249,7 @@ impl RealizationExecutor {
                 self.environments
                     .providers()
                     .session_provider
-                    .realizer()
+                    .readiness()
                     .capabilities()
                     .network_isolation,
             )

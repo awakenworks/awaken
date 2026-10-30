@@ -25,15 +25,15 @@ struct RecordingCapacity {
 #[async_trait]
 impl pc::SandboxReadiness for RecordingCapacity {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        self.inner.realizer().capabilities()
+        self.inner.readiness().capabilities()
     }
 
     fn checkpoint_formats(&self) -> Vec<String> {
-        self.inner.realizer().checkpoint_formats()
+        self.inner.readiness().checkpoint_formats()
     }
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.inner.realizer().probe_ready().await
+        self.inner.readiness().probe_ready().await
     }
 }
 

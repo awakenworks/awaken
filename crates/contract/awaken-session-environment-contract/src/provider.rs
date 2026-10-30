@@ -25,10 +25,22 @@ pub enum EnvironmentRealizationKind {
 }
 
 /// Realizing a fresh environment. Consumers: Session realization, the Worker
-/// projection synchronizer. Backend facts and liveness retain the existing
-/// Sandbox readiness contract, over the same selected physical provider.
+/// projection synchronizer. Backend facts and liveness are not realization:
+/// they belong to the Sandbox readiness role, which the same selected provider
+/// supplies through its own handle ([`SessionEnvironmentProvider::readiness`]).
+///
+/// Readiness type decision table: RR1 a realizer handle no longer answers
+/// readiness, so a caller that only reads capabilities cannot be handed
+/// realization authority. This compile-only case executes no effect.
+///
+/// ```compile_fail,E0599
+/// # use awaken_session_environment_contract::EnvironmentRealizer;
+/// fn capabilities_through_realization(realizer: &dyn EnvironmentRealizer) {
+///     let _ = realizer.capabilities();
+/// }
+/// ```
 #[async_trait]
-pub trait EnvironmentRealizer: pc::SandboxReadiness {
+pub trait EnvironmentRealizer: Send + Sync {
     /// Whether environments run Agents as the trusted host user.
     fn supports_host_identity(&self) -> bool;
 
@@ -184,6 +196,7 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
 /// ```
 #[derive(Clone)]
 pub struct SessionEnvironmentProvider {
+    readiness: Arc<dyn pc::SandboxReadiness>,
     realizer: Arc<dyn EnvironmentRealizer>,
     adoption: Arc<dyn EnvironmentAdoption>,
     terminal: Arc<dyn EnvironmentTerminalRealization>,
@@ -195,7 +208,8 @@ impl SessionEnvironmentProvider {
     /// The handles of one adapter that plays every provider role.
     pub fn new<P>(provider: Arc<P>) -> Self
     where
-        P: EnvironmentRealizer
+        P: pc::SandboxReadiness
+            + EnvironmentRealizer
             + EnvironmentAdoption
             + EnvironmentTerminalRealization
             + pc::SandboxInstallation
@@ -205,12 +219,21 @@ impl SessionEnvironmentProvider {
             + 'static,
     {
         Self {
+            readiness: provider.clone(),
             realizer: provider.clone(),
             adoption: provider.clone(),
             terminal: provider.clone(),
             installation: provider.clone(),
             origin: provider,
         }
+    }
+
+    /// The selected provider's capabilities, checkpoint formats and liveness.
+    /// Consumers: Session admission and capacity projection, managed input
+    /// layout, MCP attachment, the Worker manifest and startup verification.
+    #[must_use]
+    pub fn readiness(&self) -> &Arc<dyn pc::SandboxReadiness> {
+        &self.readiness
     }
 
     #[must_use]
