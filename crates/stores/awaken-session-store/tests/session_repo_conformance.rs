@@ -497,7 +497,7 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
 #[ignore = "explicit local PostgreSQL capacity observation; seeds many canonical Session roots"]
 async fn postgres_session_capacity_reference_and_indexed_observation() {
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_repository_contract::SessionRepository as _;
+    use awaken_session_repository_contract::{SessionReconciliation as _, SessionRepository as _};
     use awaken_session_state_contract::{
         SessionEnvironmentPhase, SessionEnvironmentState, SessionWorkerObligation,
     };

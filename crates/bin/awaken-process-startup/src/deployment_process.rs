@@ -158,6 +158,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
                 runtime_authority: persistence.runtime_authority.clone(),
                 worker_directory: persistence.worker_directory.clone(),
                 sessions: stores.sessions.clone(),
+                session_reconciliation: stores.sessions.clone(),
                 postgres_pool: persistence.postgres_pool.clone(),
                 run_recovery: persistence.run_recovery.clone(),
                 run_lifecycle: persistence.run_lifecycle.clone(),

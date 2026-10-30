@@ -12,7 +12,7 @@ use std::collections::HashSet;
 ///
 /// The original Store implements this role directly. `scan` accepts only the
 /// four SELECT-only selections; quarantine maintenance stays on
-/// [`SessionRepository::reconciliation_scan`]. The returned values grant no
+/// [`SessionReconciliation::reconciliation_scan`]. The returned values grant no
 /// execution, claim, cleanup or permission authority.
 ///
 /// Capability decision table: R1 the same full Store upcasts to its reader
@@ -113,7 +113,7 @@ pub trait SessionRepositoryReads: Send + Sync {
 /// }
 /// ```
 #[async_trait]
-pub trait SessionRepository: SessionRepositoryReads {
+pub trait SessionRepository: SessionRepositoryReads + SessionReconciliation {
     /// Insert one new aggregate together with owner, idempotency and outbox, or
     /// atomically return the exact durable aggregate for an owner-bound replay.
     /// Occupied, tombstoned and mismatched identities are the typed
@@ -156,23 +156,6 @@ pub trait SessionRepository: SessionRepositoryReads {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError>;
-
-    /// Revalidate one page of the canonical reconciliation index, maintaining
-    /// the original row-local quarantine evidence in the same Store.
-    /// Successful EOF, cursor advancement and downstream effect admission stay
-    /// with their existing callers; this method grants no realization lease.
-    async fn reconciliation_scan(
-        &self,
-        after: Option<&SessionScanCursor>,
-    ) -> Result<SessionScan, SessionRepositoryError>;
-
-    /// Capacity observation derived from the same committed Session roots.
-    /// Native stores may answer this from their transactionally maintained
-    /// root index; test doubles retain the exact paged reference algorithm.
-    /// This read never grants a Worker claim or a realization lease.
-    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
-        session_worker_demand_from_scan(self).await
-    }
 
     /// One keyset page of Run-free preparation roots: explicit initial demand
     /// or an Idle MCP update retained in the same authoritative Session.
@@ -217,7 +200,7 @@ pub trait SessionRepository: SessionRepositoryReads {
 /// retained Pod, including live Sessions with no claimable Dispatch. Any
 /// unbound, never-materialized terminal work needs one first-placement Pod.
 /// This read grants no claim or recovery.
-async fn session_worker_demand_from_scan<R: SessionRepository + ?Sized>(
+async fn session_worker_demand_from_scan<R: SessionReconciliation + ?Sized>(
     repository: &R,
 ) -> Result<u64, SessionRepositoryError> {
     let mut cursor: Option<SessionScanCursor> = None;
@@ -272,3 +255,33 @@ async fn session_worker_demand_from_scan<R: SessionRepository + ?Sized>(
 // test doubles implement this port explicitly. Workspace ownership is persisted
 // atomically beside each row through `create`; authorization scope decorators do
 // not belong in this resource persistence port.
+
+/// Maintenance observations needed by checkpoint retention and demand sampling.
+/// This role may maintain quarantine evidence but cannot mutate a Session root.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_repository_contract::SessionReconciliation;
+/// use awaken_session_state_contract::SessionMutation;
+/// fn cannot_commit(source: &dyn SessionReconciliation, mutation: SessionMutation) {
+///     let _ = source.commit("w", mutation);
+/// }
+/// ```
+#[async_trait]
+pub trait SessionReconciliation: Send + Sync {
+    /// Revalidate one page of the canonical reconciliation index, maintaining
+    /// the original row-local quarantine evidence in the same Store.
+    /// Successful EOF, cursor advancement and downstream effect admission stay
+    /// with their existing callers; this method grants no realization lease.
+    async fn reconciliation_scan(
+        &self,
+        after: Option<&SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError>;
+
+    /// Capacity observation derived from the same committed Session roots.
+    /// Native stores may answer this from their transactionally maintained
+    /// root index; test doubles retain the exact paged reference algorithm.
+    /// This read never grants a Worker claim or a realization lease.
+    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
+        session_worker_demand_from_scan(self).await
+    }
+}

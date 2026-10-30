@@ -415,7 +415,7 @@ log "1/11 build production roles and the protocol-only Provider fixture"
 "$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""
 SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")
 echo "using immutable Sandbox image $SANDBOX_IMAGE"
-CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
+CONTROL_BIN=$(resolve_cargo_executable awaken-control-process awaken-control)
 COORDINATOR_BIN=$(resolve_cargo_executable awaken-coordinator-process awaken-coordinator --features container-k8s)
 WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
 SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)

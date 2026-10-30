@@ -70,10 +70,10 @@ fn candidate_epoch_not_exhausted() -> &'static str {
     "d.lease_epoch < 9223372036854775807"
 }
 
-/// Produce only one bounded page of payloads. The cheap, status-based inner
-/// selection precedes the per-Thread/JSON predicates: a large fresh queue need
-/// not evaluate those predicates for every row before its first candidate.
-/// The outer flags skip ineligible page members;
+/// The first use limits the cheap status selection before per-Thread/JSON
+/// predicates, so a fresh queue need not evaluate every row before admission.
+/// The remaining scan uses the same order with an exclusive lower bound and
+/// no SQL limit. The outer flags skip ineligible members in either mode;
 /// the exact transaction remains the sole mutation/eligibility authority.
 fn candidate_page_sql(local: bool) -> String {
     let p = NS;
@@ -90,7 +90,7 @@ fn candidate_page_sql(local: bool) -> String {
     format!(
         "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
                 d.status, d.cancel_requested, d.lease_epoch, \
-                d.physical_rank, d.state_rank, d.priority, \
+                d.physical_rank, d.state_rank, d.priority, d.created_at, \
                 CASE WHEN d.status IN ('reserved', 'reservation_running') \
                      THEN {reservation_peer} \
                      WHEN d.status IN ('pending', 'awaiting') \
@@ -116,6 +116,12 @@ fn candidate_page_sql(local: bool) -> String {
              AND {retry_due} \
              AND (d.status IN ('reserved', 'reservation_running') OR {epoch_not_exhausted}) \
          ) ranked \
+             WHERE ($3::integer IS NULL OR \
+                 ranked.physical_rank > $3 OR \
+                 (ranked.physical_rank = $3 AND ranked.state_rank > $4) OR \
+                 (ranked.physical_rank = $3 AND ranked.state_rank = $4 AND ranked.priority < $5) OR \
+                 (ranked.physical_rank = $3 AND ranked.state_rank = $4 AND ranked.priority = $5 AND \
+                   (ranked.created_at, ranked.run_id) > ($6::timestamptz, $7::text))) \
              ORDER BY ranked.physical_rank, ranked.state_rank, \
                       ranked.priority DESC, ranked.created_at, ranked.run_id \
              LIMIT $2 \
@@ -124,40 +130,26 @@ fn candidate_page_sql(local: bool) -> String {
     )
 }
 
-/// Once the first page proves a long incompatible prefix, use one streaming
-/// pass with the original database-side Thread/local pruning. It retains the
-/// same candidate order and never materializes the whole result in Rust.
-fn candidate_deep_sql(local: bool) -> String {
-    let p = NS;
-    let thread_available = thread_available_for_claim(p);
-    let reservation_peer = no_running_peer(p);
-    let local_filter = if local {
-        candidate_local_filter()
-    } else {
-        "TRUE"
-    };
-    let state_rank = candidate_state_rank(local);
-    let retry_due = candidate_retry_due();
-    let epoch_not_exhausted = candidate_epoch_not_exhausted();
-    format!(
-        "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
-                d.status, d.cancel_requested, d.lease_epoch, \
-                TRUE AS thread_eligible, TRUE AS local_eligible \
-         FROM {p}_dispatch d WHERE \
-         ((d.status IN ('reserved', 'reservation_running') AND \
-           d.lease_until IS NOT NULL AND d.lease_until <= $1 AND {reservation_peer}) OR \
-          (d.status = 'running' AND d.lease_until IS NOT NULL AND \
-           d.lease_until <= $1 AND {local_filter}) OR \
-          (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
-           SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
-           (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
-           {thread_available} AND {local_filter}) OR \
-          (d.status = 'pending' AND {thread_available} AND {local_filter})) \
-         AND {retry_due} AND {epoch_not_exhausted} \
-         ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR \
-                       d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
-                  {state_rank}, d.priority DESC, d.created_at, d.run_id"
-    )
+/// Exclusive position in the original discovery order. This is a per-call
+/// observation, never a persisted queue or Worker ownership coordinate.
+struct CandidatePosition {
+    physical_rank: i32,
+    state_rank: i32,
+    priority: i64,
+    created_at: sqlx::types::time::OffsetDateTime,
+    run_id: String,
+}
+
+impl CandidatePosition {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, DispatchError> {
+        Ok(Self {
+            physical_rank: row.try_get("physical_rank").map_err(store_error)?,
+            state_rank: row.try_get("state_rank").map_err(store_error)?,
+            priority: row.try_get("priority").map_err(store_error)?,
+            created_at: row.try_get("created_at").map_err(store_error)?,
+            run_id: row.try_get("run_id").map_err(store_error)?,
+        })
+    }
 }
 
 fn candidate_is_admissible(
@@ -227,25 +219,37 @@ fn candidate_is_admissible(
 impl PostgresDispatchStore {
     async fn try_claim_discovered(
         &self,
-        run_id: String,
+        run_ids: impl IntoIterator<Item = String>,
         owner: &str,
         lease_ms: u64,
         capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let claimed = claim_exact_transaction(
-            &mut tx,
-            ThreadLock::SkipBusy,
-            &RunId(run_id),
-            owner,
-            lease_ms,
-            audience.worker(),
-            capabilities,
-        )
-        .await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(claimed)
+        // A losing batch keeps its checkout, not its transaction or locks.
+        // Rejoining the pool for every stale id amplifies contention while
+        // other readers still hold discovery streams. Exact authority stays
+        // in the original per-id transaction and no read stream crosses here.
+        let mut connection = self.pool.acquire().await.map_err(store_error)?;
+        for run_id in run_ids {
+            let mut tx = sqlx::Acquire::begin(&mut *connection)
+                .await
+                .map_err(store_error)?;
+            let claimed = claim_exact_transaction(
+                &mut tx,
+                ThreadLock::SkipBusy,
+                &RunId(run_id),
+                owner,
+                lease_ms,
+                audience.worker(),
+                capabilities,
+            )
+            .await?;
+            tx.commit().await.map_err(store_error)?;
+            if claimed.is_some() {
+                return Ok(claimed);
+            }
+        }
+        Ok(None)
     }
 
     async fn claim_discovered(
@@ -255,66 +259,123 @@ impl PostgresDispatchStore {
         capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        let first_sql = candidate_page_sql(audience.local());
-        let first = sqlx::query(&first_sql)
-            .bind(crate::clock::db_millis(now_ms))
-            .bind(CANDIDATE_PAGE_SIZE)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(store_error)?;
-        let first_len = first.len();
-        let mut attempted = std::collections::HashSet::new();
-        for row in first {
-            if !candidate_is_admissible(&row, audience, capabilities, now_ms)? {
-                continue;
-            }
-            let run_id: String = row.try_get("run_id").map_err(store_error)?;
-            attempted.insert(run_id.clone());
-            if let Some(claimed) = self
-                .try_claim_discovered(run_id, owner, lease_ms, capabilities, audience)
-                .await?
-            {
-                return Ok(Some(claimed));
-            }
-        }
-        if first_len < CANDIDATE_PAGE_SIZE as usize {
-            return Ok(None);
-        }
-
-        // The first page had no winner. Scan the complete read-only candidate
-        // order once, with the original database-side Thread/local pruning.
-        // Streaming bounds client memory even when every Worker-specific
-        // candidate is incompatible. Release its connection before any exact
-        // claim, so a one-connection pool cannot deadlock against itself.
-        let deep_sql = candidate_deep_sql(audience.local());
-        loop {
-            let mut stream = sqlx::query(&deep_sql)
+        let discovery = async {
+            let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+            let sql = candidate_page_sql(audience.local());
+            let first = sqlx::query(&sql)
                 .bind(crate::clock::db_millis(now_ms))
-                .fetch(&self.pool);
-            let mut selected = None;
-            while let Some(row) = stream.try_next().await.map_err(store_error)? {
-                let run_id: String = row.try_get("run_id").map_err(store_error)?;
-                if attempted.contains(&run_id)
-                    || !candidate_is_admissible(&row, audience, capabilities, now_ms)?
+                .bind(Some(CANDIDATE_PAGE_SIZE))
+                .bind(None::<i32>)
+                .bind(None::<i32>)
+                .bind(None::<i64>)
+                .bind(None::<sqlx::types::time::OffsetDateTime>)
+                .bind(None::<&str>)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_error)?;
+            let exhausted = first.len() < CANDIDATE_PAGE_SIZE as usize;
+            let mut position: Option<CandidatePosition> = None;
+            // The fast page has already released its connection. Preserve
+            // ordinary early admission without decoding every request first.
+            for row in first {
+                let next = CandidatePosition::from_row(&row)?;
+                if candidate_is_admissible(&row, audience, capabilities, now_ms)?
+                    && let Some(claimed) = self
+                        .try_claim_discovered(
+                            std::iter::once(next.run_id.clone()),
+                            owner,
+                            lease_ms,
+                            capabilities,
+                            audience,
+                        )
+                        .await?
                 {
-                    continue;
+                    return Ok(Some(claimed));
                 }
-                selected = Some(run_id);
-                break;
+                position = Some(next);
             }
-            drop(stream);
-            let Some(run_id) = selected else {
+            if exhausted {
                 return Ok(None);
-            };
-            attempted.insert(run_id.clone());
-            if let Some(claimed) = self
-                .try_claim_discovered(run_id, owner, lease_ms, capabilities, audience)
-                .await?
-            {
-                return Ok(Some(claimed));
             }
-        }
+            loop {
+                let lower = position.take();
+                let mut stream = sqlx::query(&sql)
+                    .bind(crate::clock::db_millis(now_ms))
+                    // PostgreSQL LIMIT NULL means the remaining ordered scan.
+                    // Buffer admissible ids, not every incompatible payload.
+                    .bind(None::<i64>)
+                    .bind(lower.as_ref().map(|p| p.physical_rank))
+                    .bind(lower.as_ref().map(|p| p.state_rank))
+                    .bind(lower.as_ref().map(|p| p.priority))
+                    .bind(lower.as_ref().map(|p| p.created_at))
+                    .bind(lower.as_ref().map(|p| p.run_id.as_str()))
+                    .fetch(&self.pool);
+                let mut candidates = Vec::with_capacity(CANDIDATE_PAGE_SIZE as usize);
+                let mut exhausted = true;
+                let mut inspected = 0_usize;
+                let mut after_first_candidate = 0_usize;
+                let mut scan_error = None;
+                loop {
+                    let row = match stream.try_next().await {
+                        Ok(Some(row)) => row,
+                        Ok(None) => break,
+                        Err(error) => {
+                            scan_error = Some(store_error(error));
+                            break;
+                        }
+                    };
+                    let next = match CandidatePosition::from_row(&row) {
+                        Ok(position) => position,
+                        Err(error) => {
+                            scan_error = Some(error);
+                            break;
+                        }
+                    };
+                    match candidate_is_admissible(&row, audience, capabilities, now_ms) {
+                        Ok(true) => candidates.push(next.run_id.clone()),
+                        Ok(false) => {}
+                        Err(error) => {
+                            scan_error = Some(error);
+                            break;
+                        }
+                    }
+                    position = Some(next);
+                    if !candidates.is_empty() {
+                        after_first_candidate += 1;
+                        if after_first_candidate == CANDIDATE_PAGE_SIZE as usize {
+                            exhausted = false;
+                            break;
+                        }
+                    }
+                    inspected += 1;
+                    if inspected.is_multiple_of(CANDIDATE_PAGE_SIZE as usize) {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                // No retained read connection or stream crosses exact claim.
+                drop(stream);
+                if !candidates.is_empty()
+                    && let Some(claimed) = self
+                        .try_claim_discovered(candidates, owner, lease_ms, capabilities, audience)
+                        .await?
+                {
+                    return Ok(Some(claimed));
+                }
+                // Preserve observation order: a later corrupt row or stream
+                // failure cannot suppress an earlier successful exact claim.
+                if let Some(error) = scan_error {
+                    return Err(error);
+                }
+                if exhausted {
+                    return Ok(None);
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), discovery)
+            .await
+            .map_err(|_| {
+                DispatchError::Unavailable("candidate discovery deadline exceeded".into())
+            })?
     }
 }
 

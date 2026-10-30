@@ -193,15 +193,6 @@ impl SessionRepository for Divergent {
         }
         self.inner.commit(owner_scope, mutation).await
     }
-    async fn reconciliation_scan(
-        &self,
-        after: Option<&SessionScanCursor>,
-    ) -> Result<SessionScan, SessionRepositoryError> {
-        self.inner.reconciliation_scan(after).await
-    }
-    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
-        self.inner.worker_demand().await
-    }
     async fn preparation_candidates(
         &self,
         after: Option<&SessionScanCursor>,
@@ -233,6 +224,21 @@ impl SessionRepository for Divergent {
     }
 }
 
+use awaken_session_repository_contract::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for Divergent {
+    async fn reconciliation_scan(
+        &self,
+        after: Option<&SessionScanCursor>,
+    ) -> Result<SessionScan, SessionRepositoryError> {
+        self.inner.reconciliation_scan(after).await
+    }
+
+    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
+        self.inner.worker_demand().await
+    }
+}
 #[async_trait]
 impl LifecycleOutbox for Divergent {
     async fn append_lifecycle(

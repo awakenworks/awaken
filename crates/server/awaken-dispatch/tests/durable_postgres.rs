@@ -1183,22 +1183,14 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         .snapshot;
     let mut gpu = PlacementRequirements::remote_required();
     gpu.required_capabilities.insert("gpu".into());
-    let template = serde_json::to_value(
+    harness::seed_placement_candidate_prefix(
+        &pool,
         RunDispatch::new(activation_on("template", "template-thread")).with_placement(gpu),
+        140,
+        "page-incompatible-",
+        100,
     )
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, priority) \
-         SELECT 'page-incompatible-' || g, 'page-thread-' || g, \
-                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
-                    to_jsonb('page-incompatible-' || g)), '{activation,thread_id}', \
-                    to_jsonb('page-thread-' || g)), 'pending', 100 \
-         FROM generate_series(1, 140) AS g",
-    )
-    .bind(sqlx::types::Json(&template))
-    .execute(&pool)
-    .await
-    .unwrap();
+    .await;
     assert!(
         store
             .claim_compatible(&worker, 60_000)
@@ -2126,6 +2118,11 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
     // D3 the peer releases the lock. D1+D2 => discovery claims only the peer
     // before D1 releases; D1+!D2 => bounded None and unchanged Pending/epoch0;
     // D3 => original candidate becomes claimable with its own fresh epoch.
+    // D4 two full 128-row batches share that busy Thread: the bounded front
+    // and an entire deep batch lose exact claim, then the legal tail still
+    // wins. D4+!D2=>EOF only after both batches, with every busy epoch intact.
+    // D5 a batch shares one checkout but each failed exact transaction must
+    // release its locks before the next attempt; D3 proves later fresh claim.
     // Exact ordinary/terminal waits and fresh DB-clock minting remain covered
     // by exact_claim_mints_lease_after_waiting_for_thread_lock above.
     let Some(pool) = harness::schema_pool("t_pg_discovery_thread_contention").await else {
@@ -2138,6 +2135,15 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
         .enqueue(RunDispatch::new(activation_on("a-busy", "thread-busy")))
         .await
         .unwrap();
+    for index in 1..256 {
+        store
+            .enqueue(RunDispatch::new(activation_on(
+                &format!("a-busy-{index:03}"),
+                "thread-busy",
+            )))
+            .await
+            .unwrap();
+    }
     store
         .enqueue(RunDispatch::new(activation_on("b-free", "thread-free")))
         .await
@@ -2170,6 +2176,10 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
             .await
             .unwrap();
     assert_eq!(row, ("pending".into(), 0), "D1/!D2 no authority minted");
+    let unchanged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_dispatch WHERE thread_id='thread-busy' AND status='pending' AND lease_epoch=0",
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(unchanged, 256, "D4 no failed candidate acquired an epoch");
     blocker.rollback().await.unwrap();
     let released = store
         .claim("after-release", 60_000, &Default::default())

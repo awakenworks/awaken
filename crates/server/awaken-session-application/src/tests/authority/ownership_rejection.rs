@@ -120,16 +120,6 @@ impl SessionRepository for CallerScopedOwnerRepository {
         self.inner.commit(owner_scope, mutation).await
     }
 
-    async fn reconciliation_scan(
-        &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
-        self.inner.reconciliation_scan(after).await
-    }
-
     async fn idempotency_receipt(
         &self,
         session_id: &SessionId,
@@ -149,6 +139,20 @@ impl SessionRepository for CallerScopedOwnerRepository {
     }
 }
 
+use awaken_session_repository_contract::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for CallerScopedOwnerRepository {
+    async fn reconciliation_scan(
+        &self,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<
+        awaken_session_state_contract::SessionScan,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
+        self.inner.reconciliation_scan(after).await
+    }
+}
 #[async_trait::async_trait]
 impl awaken_session_repository_contract::LifecycleOutbox for CallerScopedOwnerRepository {
     async fn append_lifecycle(

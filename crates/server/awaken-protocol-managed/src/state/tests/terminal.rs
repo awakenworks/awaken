@@ -1,7 +1,9 @@
 use super::*;
 pub(in crate::state) use awaken_protocol_managed_testkit::sample_persisted;
 use awaken_session_execution_contract::ToolPermissionDecision;
-use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads};
+use awaken_session_repository_contract::{
+    LifecycleOutbox as _, SessionReconciliation, SessionRepositoryReads,
+};
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 

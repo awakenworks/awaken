@@ -54,8 +54,8 @@ use awaken_resource_contract::{
     ResourceState, RetentionPolicy,
 };
 use awaken_session_configuration_contract::SessionInit;
-use awaken_session_repository_contract::SessionRepository;
 use awaken_session_repository_contract::SessionRepositoryReads;
+use awaken_session_repository_contract::{SessionReconciliation as _, SessionRepository};
 use awaken_session_state_contract::{SessionDisposition, SessionExecutionState};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;

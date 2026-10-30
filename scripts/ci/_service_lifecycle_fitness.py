@@ -17,7 +17,8 @@ SERVICE_LIFECYCLE_SOURCE = "crates/server/awaken-service-lifecycle/src/lib.rs"
 CLI_PROCESS_STARTUP = "crates/bin/awaken-process-startup/src/process_startup.rs"
 CLI_MANIFEST = "crates/bin/awaken-cli/Cargo.toml"
 CLI_SERVICE = "crates/bin/awaken-process-startup/src/service.rs"
-CONTROL_BIN = "crates/bin/awaken-cli/src/bin/awaken-control.rs"
+CONTROL_MANIFEST = "crates/bin/awaken-control-process/Cargo.toml"
+CONTROL_BIN = "crates/bin/awaken-control-process/src/main.rs"
 # The Coordinator executable is its own package so its dependency closure links
 # no Worker-side crate (rule D4 of _dispatch_boundary_fitness.py).
 COORDINATOR_MANIFEST = "crates/bin/awaken-coordinator-process/Cargo.toml"
@@ -35,6 +36,7 @@ def _bins(manifest: dict) -> dict:
 def service_binary_violations(
     manifest: dict,
     coordinator_manifest: dict,
+    control_manifest: dict,
     service_source: str,
     control_source: str,
     coordinator_source: str,
@@ -45,7 +47,6 @@ def service_binary_violations(
     bins = _bins(manifest)
     expected = {
         "awaken": "src/main.rs",
-        "awaken-control": "src/bin/awaken-control.rs",
     }
     for name, path in expected.items():
         if bins.get(name) != path:
@@ -55,6 +56,12 @@ def service_binary_violations(
             "missing canonical `awaken-coordinator` executable at `src/main.rs` of the "
             "Coordinator process package"
         )
+    if _bins(control_manifest) != {"awaken-control": "src/main.rs"}:
+        errors.append("missing canonical `awaken-control` executable at `src/main.rs` of its process package")
+    if set(control_manifest.get("dependencies", {})) != {"awaken-process-startup"}:
+        errors.append("Control process must depend only on the Worker-free shared startup")
+    if "awaken-control" in bins:
+        errors.append("aggregate CLI package must not recreate the Control executable")
     if "awaken-coordinator" in bins:
         errors.append("aggregate CLI package must not recreate the Coordinator executable")
     if manifest.get("package", {}).get("default-run") != "awaken":
@@ -115,11 +122,14 @@ def selftest() -> None:
         "package": {"default-run": "awaken"},
         "bin": [
             {"name": "awaken", "path": "src/main.rs"},
-            {"name": "awaken-control", "path": "src/bin/awaken-control.rs"},
         ],
     }
     coordinator_manifest = {
         "bin": [{"name": "awaken-coordinator", "path": "src/main.rs"}],
+    }
+    control_manifest = {
+        "bin": [{"name": "awaken-control", "path": "src/main.rs"}],
+        "dependencies": {"awaken-process-startup": {"workspace": True}},
     }
     canonical_service = (
         "pub async fn run_service( async fn migrate_service_for_role("
@@ -128,16 +138,20 @@ def selftest() -> None:
     assert service_binary_violations(
         canonical_manifest,
         coordinator_manifest,
+        control_manifest,
         canonical_service,
         canonical_entry,
         canonical_entry,
     ) == []  # R1/E1
-    def target_manifests(target: str, mutate) -> tuple[dict, dict]:
+    def target_manifests(target: str, mutate) -> tuple[dict, dict, dict]:
         if target == "awaken-coordinator":
-            return canonical_manifest, {"bin": mutate(coordinator_manifest["bin"])}
+            return canonical_manifest, {"bin": mutate(coordinator_manifest["bin"])}, control_manifest
+        if target == "awaken-control":
+            return canonical_manifest, coordinator_manifest, {**control_manifest, "bin": mutate(control_manifest["bin"])}
         return (
             {"package": canonical_manifest["package"], "bin": mutate(canonical_manifest["bin"])},
             coordinator_manifest,
+            control_manifest,
         )
 
     for rule, target in enumerate(
@@ -272,9 +286,16 @@ def selftest() -> None:
         assert any(
             expected in error
             for error in service_binary_violations(
-                manifest, coordinator_manifest, service, control, coordinator
+                manifest, coordinator_manifest, control_manifest, service, control, coordinator
             )
         ), f"{rule}/E2"
+
+    # C6 a Control twin in CLI or a direct Worker dependency would reopen
+    # the exact closure this target move removes. R27/R28=>reject both.
+    twin = {**canonical_manifest, "bin": canonical_manifest["bin"] + [{"name": "awaken-control", "path": "control.rs"}]}
+    assert any("must not recreate the Control" in e for e in service_binary_violations(twin, coordinator_manifest, control_manifest, canonical_service, canonical_entry, canonical_entry))
+    wider = {**control_manifest, "dependencies": {**control_manifest["dependencies"], "awaken-worker": {"workspace": True}}}
+    assert any("depend only" in e for e in service_binary_violations(canonical_manifest, coordinator_manifest, wider, canonical_service, canonical_entry, canonical_entry))
 
     # Runtime cause/effect table: C6 Worker names the shared dependency; C7 it
     # has no local Tokio macro and enters the owner exactly once; C8 the owner
@@ -364,9 +385,13 @@ def check_all(
     coordinator_manifest = tomllib.loads(
         (repo_root / COORDINATOR_MANIFEST).read_text(encoding="utf-8")
     )
+    control_manifest = tomllib.loads(
+        (repo_root / CONTROL_MANIFEST).read_text(encoding="utf-8")
+    )
     for error in service_binary_violations(
         cli_manifest,
         coordinator_manifest,
+        control_manifest,
         (repo_root / CLI_SERVICE).read_text(encoding="utf-8"),
         (repo_root / CONTROL_BIN).read_text(encoding="utf-8"),
         (repo_root / COORDINATOR_BIN).read_text(encoding="utf-8"),
