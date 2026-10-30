@@ -1789,6 +1789,9 @@ mod hosted_runtime_route_profile_tests;
 #[path = "authz_management_profile_tests.rs"]
 mod management_profile_tests;
 #[cfg(test)]
+#[path = "authz/memory_redaction_tests.rs"]
+mod memory_redaction_tests;
+#[cfg(test)]
 #[path = "authz/migration_tests.rs"]
 mod migration_tests;
 #[cfg(test)]
