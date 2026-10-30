@@ -272,3 +272,6 @@ impl SessionEnvironmentProvider {
         self.origin.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests;
