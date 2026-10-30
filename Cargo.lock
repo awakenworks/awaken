@@ -1702,7 +1702,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c3572d0fbed9655b084af03c3d5e31a407d106da#c3572d0fbed9655b084af03c3d5e31a407d106da"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=29e073afe1814f10c21f547cfb28357aa8f1e1b0#29e073afe1814f10c21f547cfb28357aa8f1e1b0"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1719,7 +1719,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c3572d0fbed9655b084af03c3d5e31a407d106da#c3572d0fbed9655b084af03c3d5e31a407d106da"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=29e073afe1814f10c21f547cfb28357aa8f1e1b0#29e073afe1814f10c21f547cfb28357aa8f1e1b0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1731,7 +1731,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c3572d0fbed9655b084af03c3d5e31a407d106da#c3572d0fbed9655b084af03c3d5e31a407d106da"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=29e073afe1814f10c21f547cfb28357aa8f1e1b0#29e073afe1814f10c21f547cfb28357aa8f1e1b0"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -1747,7 +1747,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c3572d0fbed9655b084af03c3d5e31a407d106da#c3572d0fbed9655b084af03c3d5e31a407d106da"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=29e073afe1814f10c21f547cfb28357aa8f1e1b0#29e073afe1814f10c21f547cfb28357aa8f1e1b0"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -1766,7 +1766,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c3572d0fbed9655b084af03c3d5e31a407d106da#c3572d0fbed9655b084af03c3d5e31a407d106da"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=29e073afe1814f10c21f547cfb28357aa8f1e1b0#29e073afe1814f10c21f547cfb28357aa8f1e1b0"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1775,7 +1775,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=c3572d0fbed9655b084af03c3d5e31a407d106da#c3572d0fbed9655b084af03c3d5e31a407d106da"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=29e073afe1814f10c21f547cfb28357aa8f1e1b0#29e073afe1814f10c21f547cfb28357aa8f1e1b0"
 dependencies = [
  "async-trait",
  "atomicwrites",
