@@ -4,20 +4,23 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 651,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 682,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T09-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: Work ack does not check lease expiry",
-    "limitation": "Not execution evidence. Follow-up: work-store lease expiry (S)",
+    "review": "Enabled first-ACK boundary rows at TTL-1/TTL/TTL+1 on Volatile, independent file SQLite handles and live PostgreSQL pools. Adjacent regressions exercise clock sampling after SQLite write admission, original PostgreSQL committed reply with an actual late-reload mutant, and receipt isolation across lease generations.",
+    "limitation": "Work ACK subset only; owner-only protocol cannot identify an old incarnation reusing the same worker name. Other lease operations and complete scenario qualification remain separate. This source binding is not an execution witness.",
     "id": "B251"
   },
   {
@@ -390,5 +393,30 @@
     "relation": "covers_case_clauses",
     "review": "Executed the real claimed-materialization public entrypoints for Provider and A2A. Barrier collaborators expose exact reads, completed reads, committed receipts, and delayed acknowledgements. Existing E16/E17 entries retain their original Windows source identities. This binding covers only the named Linux materialization facets.",
     "limitation": "Model invocation, all refresh/provision transports, and common acceptance gates are not closed by this component receipt."
+  },
+  {
+    "id": "B262",
+    "name": "same_credential_session_reclaim_fences_the_exact_generation",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance/credential_generation.rs",
+        "line": 5,
+        "file_sha256": "020463db9800302a6ac2797b101bb04f0189134538dcd05dc9917920195d7c2a"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "covers": {
+      "T09-C02": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Two handles on each backend reclaim Session Work with the same principal. The old exact epoch fails ACK/heartbeat/stop with unchanged whole item and clock; its bearer is revoked. Positive controls ACK, renew and stop using the current generation; replay retains completion without restoring authority.",
+    "limitation": "Sequential exact-generation/current-holder controls complement the existing concurrent takeover rows; they are not a replacement for those races or a guarantee for legacy owner-only messages. Actual native execution is recorded separately; no full acceptance is inferred."
   }
 ]

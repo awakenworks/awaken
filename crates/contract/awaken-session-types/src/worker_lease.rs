@@ -4,7 +4,10 @@
 use crate::SessionId;
 use std::num::NonZeroU64;
 
-/// A durable Session Worker assignment observation. This value contains no
+/// Neutral compatibility coordinates for a Session Worker assignment.
+/// Controlled Session operations use the kernel-backed value in
+/// `awaken_session_application_contract`; this DTO is not an action proof.
+/// This value contains no
 /// lease mutation or grant policy. A receiver must compare it with current
 /// authority before admitting an effect; expiry is a renewable observation.
 #[derive(Clone, Debug, PartialEq, Eq)]

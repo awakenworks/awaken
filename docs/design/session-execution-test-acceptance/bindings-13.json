@@ -235,20 +235,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 666,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 722,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T08-C02": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a retried Work ack re-stamps acknowledged_at",
-    "limitation": "Not execution evidence. Follow-up: work-store ack replay (S-M)",
+    "review": "Enabled owner-only and exact-epoch ACK retry rows preserve the original timestamp and whole item without consulting the clock, including after expiry; wrong owner and wrong epoch remain refused. Concurrent ACK and generation-isolation rows are adjacent named regressions.",
+    "limitation": "Work-store ACK semantics only; Run result independence and platform facets remain separately pending. Stop replay is covered by the distinct B248 subset. This source binding is not an execution witness.",
     "id": "B247"
   },
   {
@@ -256,20 +258,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 689,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 1095,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T08-C02": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a retried stop after a lost response returns 412 instead of replaying",
-    "limitation": "Not execution evidence. Follow-up: work-store stop replay (M)",
+    "review": "Enabled owner-only and exact-epoch stop retry matrix on Volatile, independent file SQLite handles and live PostgreSQL pools: retain original timestamps/subject after releasing the lease, revoke the digest, never restore authority, reject foreign identities and later generations. Adjacent named regressions cover concurrent stops, durable reopen/new pool, committed PostgreSQL reply with an actual late-reload mutant, and both published migration histories without inventing historical stop owners.",
+    "limitation": "Work-store completion receipts only. A retained exact proof is not a newly authenticated Session bearer; stopped bearers remain revoked. Managed Environment-credential retry preserves the original projection; this is not hosted-service or process-crash qualification. Original E17 failure remains retained under its original source. No full T08-C02 acceptance is inferred.",
     "id": "B248"
   },
   {
@@ -277,41 +281,46 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 403,
-        "file_sha256": "6b70a5172a5eb79ad8d71439e4dfd5950c44013be4ad2e419ca4b9259514a277"
+        "line": 402,
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T08-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: Work and Dispatch epochs are both raw u64 and can be swapped",
-    "limitation": "Not execution evidence. Follow-up: work-store and run-ingress contracts (M)",
+    "review": "Controlled SessionWorkerLeaseAuthority acquisition returns a kernel-backed SessionWorkGrant with WorkLeaseEpoch. Neutral SessionWorkLease transfer DTOs and WorkSessionAccess retain their compatible numeric/kernel representation. Compile the actual acquisition consumer against DispatchSettlement, alongside a valid Dispatch consumer and the unchanged neutral DTO consumer.",
+    "limitation": "Only the controlled Session operation boundary prevents implicit Work-to-Dispatch generation substitution; an explicit numeric projection remains possible. The type-name assertion alone is not compiler evidence. E17 keeps its original source/log identity; complete lifecycle/platform acceptance remains pending.",
     "id": "B249"
   },
   {
-    "name": "stale_same_owner_claimer_is_refused_after_reclaim",
+    "name": "owner_only_reclaim_preserves_the_credential_principal_boundary",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 626,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance/credential_generation.rs",
+        "line": 113,
+        "file_sha256": "020463db9800302a6ac2797b101bb04f0189134538dcd05dc9917920195d7c2a"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T09-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: plain ack/heartbeat/stop check only the owner, not the epoch",
-    "limitation": "Not execution evidence. Follow-up: work-store lease fence (M)",
+    "review": "The compatibility role authenticates a credential principal, not a physical process incarnation. A reclaimed current principal succeeds; foreign principals fail without mutation; stop replay restores no authority. The original impossible same-principal/absent-generation oracle is retained under E17, not relabelled as a pass.",
+    "limitation": "This row does not fence an old process presenting the same credential. Stronger incarnation guarantees require client/credential participation; Session Work can use the exact-generation role. No full T09-C02 acceptance is inferred.",
     "id": "B250"
   }
 ]

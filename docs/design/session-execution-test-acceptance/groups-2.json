@@ -217,7 +217,7 @@
           "B247",
           "B248"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -233,15 +233,8 @@
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
-          ]
-        },
-        "product_gap": {
-          "reason": "重试 Work ack 会改写 acknowledged_at；丢响应后重试 stop 返回 412 而非重放",
-          "follow_up": "work-store ack/stop 重放（S–M、M）",
-          "reproducers": [
-            "retried_ack_replays_the_original_acknowledgement",
-            "retried_stop_after_lost_response_replays"
+            "T35 platform gate open (Linux not run by policy)",
+            "ACK/stop receipt regressions qualify Work-store and local Managed adapter semantics; independent Run outcome, real process-crash cuts and hosted Managed service remain unqualified."
           ]
         }
       },
@@ -275,7 +268,7 @@
           "B216",
           "B249"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -291,14 +284,8 @@
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
-          ]
-        },
-        "product_gap": {
-          "reason": "Work 与 Dispatch epoch 都是裸 u64，可被互换",
-          "follow_up": "work-store 与 run-ingress 契约（M）",
-          "reproducers": [
-            "work_and_dispatch_epochs_are_distinct_types"
+            "T35 platform gate open (Linux not run by policy)",
+            "Work/Dispatch compiler isolation and numeric wire are distinct from complete two-sided lifecycle/platform qualification."
           ]
         }
       }
@@ -387,9 +374,10 @@
           "B216",
           "B217",
           "B250",
-          "B251"
+          "B251",
+          "B262"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -405,17 +393,11 @@
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
+            "T35 platform gate open (Linux not run by policy)",
+            "Legacy owner-only requests do not carry process incarnation or epoch; same-credential process fencing requires supported client/credential participation. Current-holder-positive and exact Session generation tests do not qualify that absent identity."
           ]
         },
-        "product_gap": {
-          "reason": "普通 ack/heartbeat/stop 只核对 owner 不核对 epoch；ack 不检查租约过期；epoch 类型可互换",
-          "follow_up": "work-store 租约 fence（M）与过期检查（S）",
-          "reproducers": [
-            "stale_same_owner_claimer_is_refused_after_reclaim",
-            "ack_after_the_lease_lapsed_is_refused"
-          ]
-        }
+        "calibration_note": "E17 preserves the original same-owner-process oracle failure. The compatibility tuple identifies a credential principal; this calibration replaces an impossible distinction with separately tested credential and exact-generation contracts. It does not claim that a legacy security guarantee was implemented."
       },
       {
         "id": "T09-C03",

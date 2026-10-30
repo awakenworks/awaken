@@ -30,6 +30,16 @@
 //! readers must also understand historical registration acknowledgements.
 //! Restoring an earlier whole-database backup requires fencing outstanding
 //! clients; rollback of the authority itself is outside this store's guarantees.
+//!
+//! Acknowledgements are committed once per lease generation. Replay checks its
+//! original generation before consulting the clock; a fresh acknowledgement
+//! checks expiry under the write lock. The append-only migration leaves older
+//! acknowledgements without a generation marker: their historical timestamp
+//! cannot prove which lease wrote it. Such a lease needs a fresh, live ACK.
+//! A stop retains its original owner and generation after clearing the live
+//! authority and Session digest. Its successful retry returns the stopped
+//! decision without sampling a clock or restoring either grant. Historical
+//! rows without a recorded stop subject cannot be attributed retroactively.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -73,7 +83,7 @@ use mutation::{
     StoredLeaseAuthorityInput, apply_metadata_patch, claim_stored_lease_authority,
     granted_session_epoch, lease_authority_transition, reclaimed_lease_authority,
     release_stored_lease_authority, renew_stored_lease_authority, stored_epoch,
-    stored_lease_authority, stored_lease_epoch,
+    stored_lease_authority, stored_lease_epoch, stored_stop_receipt,
 };
 #[cfg(any(test, feature = "test-support"))]
 mod inmem;
@@ -221,7 +231,6 @@ impl WorkConsumer for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let acknowledged_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
         Self::ack_inner(
             &mut conn,
@@ -229,7 +238,7 @@ impl WorkConsumer for SqliteWorkQueue {
             wid,
             worker_id,
             LeaseFence::OwnerOnly,
-            acknowledged_at,
+            self.clock.as_ref(),
         )
         .await
     }
@@ -261,7 +270,6 @@ impl WorkConsumer for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let stopped_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
         Self::stop_inner(
             &mut conn,
@@ -269,7 +277,7 @@ impl WorkConsumer for SqliteWorkQueue {
             wid,
             worker_id,
             LeaseFence::OwnerOnly,
-            stopped_at,
+            self.clock.as_ref(),
         )
         .await
     }
@@ -316,7 +324,6 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
         &self,
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let acknowledged_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
         Self::ack_inner(
             &mut conn,
@@ -324,7 +331,7 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
-            acknowledged_at,
+            self.clock.as_ref(),
         )
         .await
     }
@@ -352,7 +359,6 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
         &self,
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let stopped_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
         Self::stop_inner(
             &mut conn,
@@ -360,7 +366,7 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
-            stopped_at,
+            self.clock.as_ref(),
         )
         .await
     }

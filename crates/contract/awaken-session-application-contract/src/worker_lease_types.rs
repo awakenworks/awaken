@@ -1,15 +1,15 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
 //! Session-owned Worker assignment lease and admission decisions.
+use crate::SessionWorkGrant;
 use awaken_lease_contract::fence::TenureScope;
 use awaken_session_types::SessionId;
-use awaken_session_types::SessionWorkLease;
 /// The lease family of Session Work: which Work item binds which Session in
 /// which Environment (the subject), held by one execution owner.
 ///
 /// A receipt or lease compared without the Work item or Environment could be
 /// satisfied by another Work item of the same Session; the subject carries all
-/// three so that can never happen. Consumers: [`SessionWorkLease`] and
+/// three so that can never happen. Consumers: [`SessionWorkGrant`] and
 /// the Session application authority receipt.
 #[derive(Debug)]
 pub(crate) struct SessionWork;
@@ -35,8 +35,8 @@ pub(super) fn proof_representative_lease(
     environment: bool,
     epoch: bool,
     expiry: bool,
-) -> SessionWorkLease {
-    SessionWorkLease::from_persisted(
+) -> SessionWorkGrant {
+    awaken_session_types::SessionWorkLease::from_persisted(
         if work { "k" } else { "K" },
         if environment { "e" } else { "E" },
         SessionId::from(if session { "s" } else { "S" }),
@@ -44,6 +44,7 @@ pub(super) fn proof_representative_lease(
         if epoch { 1 } else { 2 },
         if expiry { 10 } else { 20 },
     )
+    .map(SessionWorkGrant::from_transfer)
     .expect("representative epochs are nonzero")
 }
 
@@ -51,7 +52,7 @@ pub(super) fn proof_representative_lease(
 pub enum SessionWorkOwnership {
     NotRequired,
     Unowned,
-    Leased(SessionWorkLease),
+    Leased(SessionWorkGrant),
 }
 
 #[derive(Clone, Copy)]

@@ -1293,6 +1293,7 @@ dependencies = [
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-iam-core",
+ "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-session-application-contract",

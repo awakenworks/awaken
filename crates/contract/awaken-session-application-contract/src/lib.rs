@@ -56,6 +56,9 @@ pub use composition::{
 };
 pub use session_services::SessionParticipantProvenance;
 
+mod worker_lease_value;
+pub use worker_lease_value::{SessionWorkGrant, WorkLeaseEpoch};
+
 mod worker_lease;
 pub use worker_lease::{
     SessionWorkAuthorityReceipt, SessionWorkerLeaseAuthority, acquire_session_work_receipt,

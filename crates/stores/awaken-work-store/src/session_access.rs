@@ -153,22 +153,45 @@ impl SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
         fence: LeaseFence,
-        acknowledged_at: String,
+        clock: &dyn WallClock,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = backends::immediate(conn).await?;
         let Some(current) = Self::owned(&mut tx, env_id, wid).await? else {
             return Ok(WorkMutationResult::NotFound);
         };
-        if !Self::lease_matches(&mut tx, env_id, wid, worker_id, fence).await? {
+        let authority = Self::lease_authority(&mut tx, env_id, wid).await?;
+        if authority.owner.as_deref() != Some(worker_id) || !fence.admits(authority.epoch) {
+            return Ok(WorkMutationResult::PreconditionFailed);
+        }
+        let epoch = stored_lease_epoch(authority.granted_epoch()?)?;
+        let acknowledged_epoch: Option<i64> =
+            sqlx::query_scalar("SELECT ack_lease_epoch FROM work_queue_item WHERE work_id = ?1")
+                .bind(wid)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        if current.acknowledged_at.is_some() && acknowledged_epoch == Some(epoch) {
+            tx.commit().await.map_err(storage)?;
+            return Ok(WorkMutationResult::accepted(current));
+        }
+        // Write admission and subject fencing precede the one clock sample.
+        // A replay above reports history without issuing another grant.
+        let now = clock.now();
+        if authority
+            .expires_at
+            .is_none_or(|expires| expires <= db_millis(now.as_epoch_ms()))
+        {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
         let next = ack_next_state(&current);
         sqlx::query(
-            "UPDATE work_queue_item SET acknowledged_at = ?1, state = ?2 WHERE work_id = ?3",
+            "UPDATE work_queue_item SET acknowledged_at = ?1, state = ?2, ack_lease_epoch = ?4 \
+             WHERE work_id = ?3",
         )
-        .bind(acknowledged_at)
+        .bind(now.to_rfc3339())
         .bind(next)
         .bind(wid)
+        .bind(epoch)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
@@ -249,16 +272,40 @@ impl SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
         fence: LeaseFence,
-        stopped_at: String,
+        clock: &dyn WallClock,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = backends::immediate(conn).await?;
-        if Self::owned(&mut tx, env_id, wid).await?.is_none() {
+        let Some(current) = Self::owned(&mut tx, env_id, wid).await? else {
             return Ok(WorkMutationResult::NotFound);
-        }
+        };
         let authority = Self::lease_authority(&mut tx, env_id, wid).await?;
+        let stored: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT stop_lease_owner, stop_lease_epoch FROM work_queue_item WHERE work_id = ?1",
+        )
+        .bind(wid)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let receipt = stored_stop_receipt(stored.0, stored.1)?;
+        if current.state == awaken_executable_environment_contract::WorkState::Stopped {
+            let replay = authority.owner.is_none()
+                && authority.refreshed_at.is_none()
+                && authority.expires_at.is_none()
+                && current.stopped_at.is_some()
+                && current.stop_requested_at.is_some()
+                && receipt
+                    .is_some_and(|receipt| receipt.matches(worker_id, authority.epoch, fence));
+            tx.commit().await.map_err(storage)?;
+            return Ok(if replay {
+                WorkMutationResult::accepted(current)
+            } else {
+                WorkMutationResult::PreconditionFailed
+            });
+        }
         if authority.owner.as_deref() != Some(worker_id) || !fence.admits(authority.epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
+        let receipt_epoch = stored_lease_epoch(authority.granted_epoch()?)?;
         let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
             authority,
             LeaseAuthorityCommand::Release {
@@ -271,14 +318,17 @@ impl SqliteWorkQueue {
         sqlx::query(
             "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
              state = 'stopped', lease_owner = ?2, lease_expires_ms = ?3, \
-             lease_refreshed_ms = ?4, session_token_sha256 = NULL \
+             lease_refreshed_ms = ?4, session_token_sha256 = NULL, \
+             stop_lease_owner = ?6, stop_lease_epoch = ?7 \
              WHERE work_id = ?5",
         )
-        .bind(stopped_at)
+        .bind(clock.observed_at())
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)
         .bind(wid)
+        .bind(worker_id)
+        .bind(receipt_epoch)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
@@ -548,43 +598,53 @@ impl PostgresWorkQueue {
         fence: LeaseFence,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let current: Option<(String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT state, lease_owner, lease_epoch FROM work_queue_item WHERE work_id = $1 \
-             AND environment_id = $2 FOR UPDATE",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {COLS}, lease_owner, lease_epoch, lease_expires_ms, ack_lease_epoch FROM work_queue_item \
+             WHERE work_id = $1 AND environment_id = $2 FOR UPDATE"
+        ))
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?;
-        let Some((state, owner, epoch)) = current else {
+        let Some(row) = row else {
             return Ok(WorkMutationResult::NotFound);
         };
-        let epoch = stored_epoch(epoch)?;
+        let owner: Option<String> = row.try_get("lease_owner").map_err(storage)?;
+        let epoch = stored_epoch(row.try_get("lease_epoch").map_err(storage)?)?;
         if owner.as_deref() != Some(worker_id) || !fence.admits(epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        let next = awaken_executable_environment_contract::WorkState::from_wire(&state)
-            .unwrap_or(awaken_executable_environment_contract::WorkState::Stopped)
-            .after_ack()
-            .as_str();
-        sqlx::query(
-            "UPDATE work_queue_item SET acknowledged_at = $1, state = $2 \
-             WHERE work_id = $3 AND environment_id = $4",
-        )
-        .bind(self.clock.observed_at())
-        .bind(next)
+        let current = pg_row_to_item(&row)?;
+        let epoch = stored_lease_epoch(
+            epoch.ok_or_else(|| storage("owned ACK has no granted lease epoch"))?,
+        )?;
+        let acknowledged_epoch: Option<i64> = row.try_get("ack_lease_epoch").map_err(storage)?;
+        if current.acknowledged_at.is_some() && acknowledged_epoch == Some(epoch) {
+            tx.commit().await.map_err(storage)?;
+            return Ok(WorkMutationResult::accepted(current));
+        }
+        let expires: Option<i64> = row.try_get("lease_expires_ms").map_err(storage)?;
+        let now = self.clock.now();
+        if expires.is_none_or(|expires| expires <= db_millis(now.as_epoch_ms())) {
+            return Ok(WorkMutationResult::PreconditionFailed);
+        }
+        let row = sqlx::query(&format!(
+            "UPDATE work_queue_item SET acknowledged_at = $1, state = $2, ack_lease_epoch = $5 \
+             WHERE work_id = $3 AND environment_id = $4 RETURNING {COLS}"
+        ))
+        .bind(now.to_rfc3339())
+        .bind(ack_next_state(&current))
         .bind(wid)
         .bind(env_id)
-        .execute(&mut *tx)
+        .bind(epoch)
+        .fetch_one(&mut *tx)
         .await
         .map_err(storage)?;
+        // Capture this transaction's reply before releasing the row lock.
+        let item = pg_row_to_item(&row)?;
         tx.commit().await.map_err(storage)?;
-        Ok(self
-            .fetch_owned(env_id, wid)
-            .await?
-            .map(WorkMutationResult::accepted)
-            .unwrap_or(WorkMutationResult::NotFound))
+        Ok(WorkMutationResult::accepted(item))
     }
 
     pub(super) async fn heartbeat_inner(
@@ -679,29 +739,51 @@ impl PostgresWorkQueue {
         fence: LeaseFence,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let authority: Option<StoredLeaseAuthority> = sqlx::query_as(
-            "SELECT lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item WHERE work_id = $1 \
-             AND environment_id = $2 FOR UPDATE",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {COLS}, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms, \
+             stop_lease_owner, stop_lease_epoch FROM work_queue_item WHERE work_id = $1 \
+             AND environment_id = $2 FOR UPDATE"
+        ))
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?;
-        let Some((owner, epoch, refreshed, expires)) = authority else {
+        let Some(row) = row else {
             return Ok(WorkMutationResult::NotFound);
         };
-        let epoch = stored_epoch(epoch)?;
-        if owner.as_deref() != Some(worker_id) || !fence.admits(epoch) {
+        let current = pg_row_to_item(&row)?;
+        let authority = stored_lease_authority(
+            row.try_get("lease_owner").map_err(storage)?,
+            row.try_get("lease_epoch").map_err(storage)?,
+            row.try_get("lease_refreshed_ms").map_err(storage)?,
+            row.try_get("lease_expires_ms").map_err(storage)?,
+        )?;
+        let receipt = stored_stop_receipt(
+            row.try_get("stop_lease_owner").map_err(storage)?,
+            row.try_get("stop_lease_epoch").map_err(storage)?,
+        )?;
+        if current.state == awaken_executable_environment_contract::WorkState::Stopped {
+            let replay = authority.owner.is_none()
+                && authority.refreshed_at.is_none()
+                && authority.expires_at.is_none()
+                && current.stopped_at.is_some()
+                && current.stop_requested_at.is_some()
+                && receipt
+                    .is_some_and(|receipt| receipt.matches(worker_id, authority.epoch, fence));
+            tx.commit().await.map_err(storage)?;
+            return Ok(if replay {
+                WorkMutationResult::accepted(current)
+            } else {
+                WorkMutationResult::PreconditionFailed
+            });
+        }
+        if authority.owner.as_deref() != Some(worker_id) || !fence.admits(authority.epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
+        let receipt_epoch = stored_lease_epoch(authority.granted_epoch()?)?;
         let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
-            LeaseAuthorityTuple {
-                owner,
-                epoch,
-                refreshed_at: refreshed,
-                expires_at: expires,
-            },
+            authority,
             LeaseAuthorityCommand::Release {
                 owner: worker_id.to_string(),
                 fence,
@@ -709,27 +791,27 @@ impl PostgresWorkQueue {
         ) else {
             return Ok(WorkMutationResult::PreconditionFailed);
         };
-        sqlx::query(
+        let row = sqlx::query(&format!(
             "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
              state = 'stopped', lease_owner = $2, lease_expires_ms = $3, \
-             lease_refreshed_ms = $4, session_token_sha256 = NULL \
-             WHERE work_id = $5 AND environment_id = $6",
-        )
+             lease_refreshed_ms = $4, session_token_sha256 = NULL, \
+             stop_lease_owner = $7, stop_lease_epoch = $8 \
+             WHERE work_id = $5 AND environment_id = $6 RETURNING {COLS}"
+        ))
         .bind(self.clock.observed_at())
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)
         .bind(wid)
         .bind(env_id)
-        .execute(&mut *tx)
+        .bind(worker_id)
+        .bind(receipt_epoch)
+        .fetch_one(&mut *tx)
         .await
         .map_err(storage)?;
+        let item = pg_row_to_item(&row)?;
         tx.commit().await.map_err(storage)?;
-        Ok(self
-            .fetch_owned(env_id, wid)
-            .await?
-            .map(WorkMutationResult::accepted)
-            .unwrap_or(WorkMutationResult::NotFound))
+        Ok(WorkMutationResult::accepted(item))
     }
 }
 

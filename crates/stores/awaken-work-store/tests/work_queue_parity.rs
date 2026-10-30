@@ -53,7 +53,7 @@ fn file_sqlite_backend_conforms_with_a_fresh_file_per_rule() {
     let dir = tempfile::tempdir().unwrap();
     let next = std::sync::atomic::AtomicUsize::new(0);
     block(run_suite(
-        awaken_time::system_clock(),
+        Arc::new(awaken_lease_testkit::ManualClock::new(0)),
         |clock| {
             let path = dir.path().join(format!(
                 "rule-{}.db",
@@ -78,13 +78,14 @@ fn file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected() {
     block(async {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("reopen.db").to_str().unwrap().to_string();
-        let first = SqliteWorkQueue::open(&path, awaken_time::system_clock())
-            .await
-            .unwrap();
+        let first =
+            SqliteWorkQueue::open(&path, Arc::new(awaken_lease_testkit::ManualClock::new(0)))
+                .await
+                .unwrap();
         reopen_preserves_authority(first, || {
             let path = path.clone();
             async move {
-                SqliteWorkQueue::open(&path, awaken_time::system_clock())
+                SqliteWorkQueue::open(&path, Arc::new(awaken_lease_testkit::ManualClock::new(0)))
                     .await
                     .unwrap()
             }
@@ -94,11 +95,13 @@ fn file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected() {
     // NC2: an in-memory "file" factory cannot pass the reopen row.
     assert!(
         fails(|| async {
-            let first = SqliteWorkQueue::open_in_memory(awaken_time::system_clock())
-                .await
-                .unwrap();
+            let first = SqliteWorkQueue::open_in_memory(Arc::new(
+                awaken_lease_testkit::ManualClock::new(0),
+            ))
+            .await
+            .unwrap();
             reopen_preserves_authority(first, || async {
-                SqliteWorkQueue::open_in_memory(awaken_time::system_clock())
+                SqliteWorkQueue::open_in_memory(Arc::new(awaken_lease_testkit::ManualClock::new(0)))
                     .await
                     .unwrap()
             })
@@ -357,7 +360,7 @@ impl EnvironmentWorkLifecycle for RebuildsMutationResult {
 fn divergent_backend_fails_the_shared_behaviour_table() {
     assert!(
         fails(|| run_suite(
-            awaken_time::system_clock(),
+            Arc::new(awaken_lease_testkit::ManualClock::new(0)),
             async |clock: Arc<dyn WallClock>| RebuildsMutationResult {
                 inner: SqliteWorkQueue::open_in_memory(clock).await.unwrap(),
             },
@@ -374,9 +377,12 @@ fn divergent_backend_fails_the_shared_behaviour_table() {
                 let path = path.clone();
                 async move {
                     RebuildsMutationResult {
-                        inner: SqliteWorkQueue::open(&path, awaken_time::system_clock())
-                            .await
-                            .unwrap(),
+                        inner: SqliteWorkQueue::open(
+                            &path,
+                            Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+                        )
+                        .await
+                        .unwrap(),
                     }
                 }
             };
@@ -404,15 +410,21 @@ async fn postgres_reopen_preserves_authority_through_an_independent_pool() {
         }
     };
     // `first` owns its own pool, which is dropped with it before the reopen.
-    let first = PostgresWorkQueue::with_pool(connect().await, awaken_time::system_clock())
-        .await
-        .expect("queue schema migrations");
+    let first = PostgresWorkQueue::with_pool(
+        connect().await,
+        Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+    )
+    .await
+    .expect("queue schema migrations");
     reopen_preserves_authority(first, || {
         let connect = connect.clone();
         async move {
-            PostgresWorkQueue::with_existing_pool(connect().await, awaken_time::system_clock())
-                .await
-                .expect("existing schema verified")
+            PostgresWorkQueue::with_existing_pool(
+                connect().await,
+                Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+            )
+            .await
+            .expect("existing schema verified")
         }
     })
     .await;

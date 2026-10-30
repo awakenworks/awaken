@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 async fn q() -> SqliteWorkQueue {
-    SqliteWorkQueue::open_in_memory(system_clock())
+    // Claims in these decision tables use the logical epoch-zero timeline.
+    SqliteWorkQueue::open_in_memory(Arc::new(awaken_lease_testkit::ManualClock::new(0)))
         .await
         .unwrap()
 }

@@ -18,25 +18,72 @@ use awaken_executable_environment_contract::{
 use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
 use awaken_store_conformance::work_queue::{WorkBackend, session_access_digest};
+use awaken_time::{UtcTime, WallClock};
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, PostgresWorkQueue, SqliteWorkQueue};
 
 use super::work_postgres_fixture::WorkPostgresFixture;
 
 type Handle = Arc<dyn WorkBackend>;
 
+fn same_item(
+    left: &awaken_executable_environment_contract::WorkItem,
+    right: &awaken_executable_environment_contract::WorkItem,
+) -> bool {
+    left.id == right.id
+        && left.environment_id == right.environment_id
+        && left.data == right.data
+        && left.metadata == right.metadata
+        && left.state == right.state
+        && left.created_at == right.created_at
+        && left.acknowledged_at == right.acknowledged_at
+        && left.latest_heartbeat_at == right.latest_heartbeat_at
+        && left.started_at == right.started_at
+        && left.stop_requested_at == right.stop_requested_at
+        && left.stopped_at == right.stopped_at
+}
+
+struct ObservedClock {
+    inner: ManualClock,
+    reads: AtomicUsize,
+}
+
+impl ObservedClock {
+    fn new() -> Self {
+        Self {
+            inner: ManualClock::new(0),
+            reads: AtomicUsize::new(0),
+        }
+    }
+
+    fn set(&self, now: u64) {
+        self.inner.set(now);
+    }
+
+    fn observations(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl WallClock for ObservedClock {
+    fn now(&self) -> UtcTime {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.now()
+    }
+}
+
 /// Two handles over one backend plus whatever must outlive them.
 struct Pair {
     label: &'static str,
     a: Handle,
     b: Handle,
-    clock: Arc<ManualClock>,
+    clock: Arc<ObservedClock>,
     _dir: Option<tempfile::TempDir>,
     postgres: Option<WorkPostgresFixture>,
 }
 
 impl Pair {
     fn volatile() -> Self {
-        let clock = Arc::new(ManualClock::new(0));
+        let clock = Arc::new(ObservedClock::new());
         let shared: Handle = Arc::new(InMemoryWorkQueue::new(clock.clone()));
         Self {
             label: "volatile",
@@ -49,7 +96,7 @@ impl Pair {
     }
 
     async fn sqlite_file() -> Self {
-        let clock = Arc::new(ManualClock::new(0));
+        let clock = Arc::new(ObservedClock::new());
         let dir = tempfile::tempdir().expect("SQLite tempdir");
         let path = dir.path().join("work.db");
         let path = path.to_str().expect("utf-8 path");
@@ -74,8 +121,12 @@ impl Pair {
     }
 
     async fn postgres(url: &str) -> Self {
-        let clock = Arc::new(ManualClock::new(0));
-        let fixture = WorkPostgresFixture::new(url, 8).await;
+        Self::postgres_with_limit(url, 8).await
+    }
+
+    async fn postgres_with_limit(url: &str, limit: u32) -> Self {
+        let clock = Arc::new(ObservedClock::new());
+        let fixture = WorkPostgresFixture::new(url, limit).await;
         let a: Handle = Arc::new(
             PostgresWorkQueue::with_pool(fixture.pool.clone(), clock.clone())
                 .await
@@ -178,17 +229,18 @@ async fn access(q: &Handle, digest: &SessionAccessDigest, now: u64) -> Option<Wo
 
 fn claim_as(
     q: &Handle,
-    env: &'static str,
+    env: &str,
     owner: &'static str,
     now: u64,
     digest: SessionAccessDigest,
 ) -> impl std::future::Future<Output = bool> + Send + 'static {
     let q = q.clone();
+    let env = env.to_owned();
     async move {
         // A storage-level refusal under contention is a failed claim: it must
         // never grant authority, which the caller checks independently.
         matches!(
-            q.claim_with_session_access(env, owner, owner, now, None, &digest)
+            q.claim_with_session_access(&env, owner, owner, now, None, &digest)
                 .await,
             Ok(Some(_))
         )
@@ -621,91 +673,428 @@ async fn gap_backends(row: &str, scenario: impl AsyncFn(&Pair) -> bool) {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: plain ack/heartbeat/stop are owner-only, so a stale claimer reusing the same worker id is not fenced after reclaim"]
-async fn stale_same_owner_claimer_is_refused_after_reclaim() {
-    gap_backends("stale incarnation ack accepted", async |pair: &Pair| {
-        let hc = pair.a.enqueue_healthcheck("same-owner").await.unwrap();
-        pair.a
-            .claim("same-owner", "worker", 0)
-            .await
-            .unwrap()
-            .unwrap();
-        // The worker restarts under the same id and reclaims the expired lease.
-        pair.b
-            .claim("same-owner", "worker", LEASE_TTL_MS)
-            .await
-            .unwrap()
-            .unwrap();
-        // The previous incarnation's delayed ack must not act on the new lease.
-        matches!(
-            pair.a.ack("same-owner", &hc, "worker").await.unwrap(),
-            WorkMutationResult::PreconditionFailed
-        )
-    })
-    .await;
-}
+// The historical same-owner/process reproducer expected two identical
+// owner-only requests to be distinguishable. E17 retains that original
+// failed source. The credential_generation module tests the actual credential
+// boundary and the exact Session generation with current-holder controls.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: Work ack does not check lease expiry, so an ack after the lease lapsed is accepted"]
 async fn ack_after_the_lease_lapsed_is_refused() {
     gap_backends("lapsed lease ack accepted", async |pair: &Pair| {
-        let hc = pair.a.enqueue_healthcheck("lapsed").await.unwrap();
-        pair.a.claim("lapsed", "worker", 0).await.unwrap().unwrap();
-        pair.clock.set(LEASE_TTL_MS + 1);
-        matches!(
-            pair.a.ack("lapsed", &hc, "worker").await.unwrap(),
-            WorkMutationResult::PreconditionFailed
-        )
+        let mut correct = true;
+        for (index, (bound, offset)) in [false, true]
+            .into_iter()
+            .flat_map(|bound| {
+                [LEASE_TTL_MS - 1, LEASE_TTL_MS, LEASE_TTL_MS + 1].map(|offset| (bound, offset))
+            })
+            .enumerate()
+        {
+            let base = index as u64 * LEASE_TTL_MS * 4;
+            let env = format!("ack-expiry-{index}");
+            let (work, lease) = claimed_work(pair, &env, bound, base).await;
+            let before = pair.a.get(&env, &work).await.unwrap().unwrap();
+            pair.clock.set(base + offset);
+            let reads = pair.clock.observations();
+            let result = acknowledge(&pair.a, &env, &work, lease.as_ref()).await;
+            correct &= pair.clock.observations() == reads + 1;
+            if offset < LEASE_TTL_MS {
+                correct &= result.into_item().is_some_and(|item| {
+                    item.acknowledged_at
+                        == Some(awaken_time::utc::epoch_millis_to_rfc3339(base + offset))
+                        && item.state == WorkState::Active
+                });
+            } else {
+                correct &= matches!(result, WorkMutationResult::PreconditionFailed)
+                    && pair
+                        .a
+                        .get(&env, &work)
+                        .await
+                        .unwrap()
+                        .is_some_and(|after| same_item(&after, &before));
+            }
+        }
+        correct
     })
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: a retried Work ack overwrites acknowledged_at instead of replaying the original ack"]
 async fn retried_ack_replays_the_original_acknowledgement() {
     gap_backends(
         "the retry re-stamped the acknowledgement",
         async |pair: &Pair| {
-            let env = "ack-replay";
-            pair.a
-                .enqueue_session(env, &SessionId::from("replay"))
-                .await
-                .unwrap();
-            assert!(claim_as(&pair.a, env, "owner", 0, session_access_digest(9)).await);
-            let lease = access(&pair.a, &session_access_digest(9), 0).await.unwrap();
-            pair.clock.set(100);
-            let first = pair.a.ack_with_session_access(&lease).await.unwrap();
-            pair.clock.set(200);
-            let retry = pair.b.ack_with_session_access(&lease).await.unwrap();
-            retry.into_item().unwrap().acknowledged_at == first.into_item().unwrap().acknowledged_at
+            let mut correct = true;
+            for (index, bound) in [false, true].into_iter().enumerate() {
+                let base = index as u64 * LEASE_TTL_MS * 4;
+                let env = format!("ack-replay-{index}");
+                let (work, lease) = claimed_work(pair, &env, bound, base).await;
+                pair.clock.set(base + 100);
+                let first = acknowledge(&pair.a, &env, &work, lease.as_ref())
+                    .await
+                    .into_item()
+                    .unwrap();
+                // Replay is historical evidence, not another grant: it reads no
+                // clock, even after expiry, and never bypasses subject fencing.
+                for offset in [200, LEASE_TTL_MS + 1] {
+                    pair.clock.set(base + offset);
+                    let reads = pair.clock.observations();
+                    let retry = acknowledge(&pair.b, &env, &work, lease.as_ref())
+                        .await
+                        .into_item()
+                        .unwrap();
+                    correct &= same_item(&retry, &first) && pair.clock.observations() == reads;
+                }
+                let reads = pair.clock.observations();
+                correct &= matches!(
+                    pair.b.ack(&env, &work, "foreign").await.unwrap(),
+                    WorkMutationResult::PreconditionFailed
+                );
+                if let Some(mut wrong_epoch) = lease {
+                    wrong_epoch.lease_epoch = wrong_epoch.lease_epoch.next().unwrap();
+                    correct &= matches!(
+                        pair.b.ack_with_session_access(&wrong_epoch).await.unwrap(),
+                        WorkMutationResult::PreconditionFailed
+                    );
+                }
+                correct &= pair.clock.observations() == reads;
+            }
+            correct
+        },
+    )
+    .await;
+}
+
+async fn claimed_work(
+    pair: &Pair,
+    env: &str,
+    bound: bool,
+    base: u64,
+) -> (String, Option<WorkSessionAccess>) {
+    pair.clock.set(base);
+    if bound {
+        let work = pair
+            .a
+            .enqueue_session(env, &SessionId::from(env))
+            .await
+            .unwrap();
+        let digest = session_access_digest(base + 901);
+        assert!(claim_as(&pair.a, env, "owner", base, digest.clone()).await);
+        (work, Some(access(&pair.a, &digest, base).await.unwrap()))
+    } else {
+        let work = pair.a.enqueue_healthcheck(env).await.unwrap();
+        pair.a.claim(env, "owner", base).await.unwrap().unwrap();
+        (work, None)
+    }
+}
+
+async fn acknowledge(
+    q: &Handle,
+    env: &str,
+    work: &str,
+    access: Option<&WorkSessionAccess>,
+) -> WorkMutationResult {
+    if let Some(access) = access {
+        q.ack_with_session_access(access).await.unwrap()
+    } else {
+        q.ack(env, work, "owner").await.unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acknowledgement_receipts_do_not_cross_lease_generations() {
+    gap_backends(
+        "prior ACK replay bypassed the replacement lease",
+        async |pair: &Pair| {
+            let mut correct = true;
+            for (index, (bound, expired)) in [false, true]
+                .into_iter()
+                .flat_map(|bound| [false, true].map(|expired| (bound, expired)))
+                .enumerate()
+            {
+                let base = index as u64 * LEASE_TTL_MS * 5;
+                let env = format!("ack-generation-{index}");
+                let (work, old_access) = claimed_work(pair, &env, bound, base).await;
+                pair.clock.set(base + 100);
+                let original = acknowledge(&pair.a, &env, &work, old_access.as_ref())
+                    .await
+                    .into_item()
+                    .unwrap();
+                let next_start = base + LEASE_TTL_MS;
+                pair.clock.set(next_start);
+                let next = if bound {
+                    let digest = session_access_digest(base + 902);
+                    assert!(claim_as(&pair.b, &env, "owner", next_start, digest.clone()).await);
+                    Some(access(&pair.b, &digest, next_start).await.unwrap())
+                } else {
+                    pair.b
+                        .claim(&env, "owner", next_start)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    None
+                };
+                let before = pair.a.get(&env, &work).await.unwrap().unwrap();
+                if let Some(old) = old_access {
+                    correct &= matches!(
+                        pair.a.ack_with_session_access(&old).await.unwrap(),
+                        WorkMutationResult::PreconditionFailed
+                    );
+                }
+                let observed = next_start + if expired { LEASE_TTL_MS } else { 10 };
+                pair.clock.set(observed);
+                let reads = pair.clock.observations();
+                let result = acknowledge(&pair.b, &env, &work, next.as_ref()).await;
+                correct &= pair.clock.observations() == reads + 1;
+                if expired {
+                    correct &= matches!(result, WorkMutationResult::PreconditionFailed)
+                        && pair
+                            .a
+                            .get(&env, &work)
+                            .await
+                            .unwrap()
+                            .is_some_and(|after| same_item(&after, &before));
+                } else {
+                    let current = result.into_item().unwrap();
+                    correct &= current.acknowledged_at
+                        == Some(awaken_time::utc::epoch_millis_to_rfc3339(observed))
+                        && current.acknowledged_at != original.acknowledged_at;
+                    pair.clock.set(next_start + LEASE_TTL_MS);
+                    let reads = pair.clock.observations();
+                    let replay = acknowledge(&pair.a, &env, &work, next.as_ref())
+                        .await
+                        .into_item()
+                        .unwrap();
+                    correct &= same_item(&replay, &current) && pair.clock.observations() == reads;
+                }
+            }
+            correct
         },
     )
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: a retried stop after a lost response returns PreconditionFailed (412) instead of replaying the stop"]
-async fn retried_stop_after_lost_response_replays() {
-    gap_backends("retried stop was refused", async |pair: &Pair| {
-        let hc = pair.a.enqueue_healthcheck("stop-replay").await.unwrap();
-        pair.a
-            .claim("stop-replay", "worker", 0)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            pair.a
-                .stop("stop-replay", &hc, "worker")
-                .await
-                .unwrap()
-                .is_accepted()
-        );
-        pair.b
-            .stop("stop-replay", &hc, "worker")
-            .await
-            .unwrap()
-            .is_accepted()
-    })
+async fn concurrent_acknowledgements_share_one_original_receipt() {
+    gap_backends(
+        "concurrent ACK changed the original receipt",
+        async |pair: &Pair| {
+            let env = "concurrent-ack";
+            let (work, lease) = claimed_work(pair, env, true, 0).await;
+            let lease = lease.unwrap();
+            pair.clock.set(100);
+            let reads = pair.clock.observations();
+            let (left, right, concurrent) = race(
+                false,
+                {
+                    let q = pair.a.clone();
+                    let lease = lease.clone();
+                    async move { q.ack_with_session_access(&lease).await.unwrap() }
+                },
+                {
+                    let q = pair.b.clone();
+                    async move { q.ack_with_session_access(&lease).await.unwrap() }
+                },
+            )
+            .await;
+            let left = left.into_item().unwrap();
+            let right = right.into_item().unwrap();
+            concurrent == 2
+                && same_item(&left, &right)
+                && pair.clock.observations() == reads + 1
+                && pair
+                    .a
+                    .get(env, &work)
+                    .await
+                    .unwrap()
+                    .is_some_and(|stored| same_item(&stored, &left))
+        },
+    )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_ack_checks_expiry_after_waiting_for_its_write_transaction() {
+    use sqlx::Connection as _;
+    let pair = Pair::sqlite_file().await;
+    let (work, lease) = claimed_work(&pair, "ack-write-wait", true, 0).await;
+    let before = pair.a.get("ack-write-wait", &work).await.unwrap();
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(pair._dir.as_ref().unwrap().path().join("work.db"));
+    let mut blocker = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .unwrap();
+    let lock = blocker.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let reads = pair.clock.observations();
+    let mut request = Box::pin(acknowledge(
+        &pair.a,
+        "ack-write-wait",
+        &work,
+        lease.as_ref(),
+    ));
+    let pending = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(request.as_mut(), cx).is_pending())
+    })
+    .await;
+    let early_reads = pair.clock.observations() - reads;
+    pair.clock.set(LEASE_TTL_MS);
+    lock.commit().await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), request)
+        .await
+        .unwrap();
+    let after = pair.a.get("ack-write-wait", &work).await.unwrap();
+    blocker.close().await.unwrap();
+    pair.cleanup().await;
+    assert!(pending, "the owned writer lock blocks ACK admission");
+    assert_eq!(
+        early_reads, 0,
+        "no authoritative clock sample before write admission"
+    );
+    assert!(matches!(result, WorkMutationResult::PreconditionFailed));
+    assert!(
+        same_item(after.as_ref().unwrap(), before.as_ref().unwrap()),
+        "expired ACK produces no mutation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_ack_reply_belongs_to_its_committed_lease_snapshot() {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    // The real row lock admits ACK before a queued read takes its only pool
+    // connection. An independent pool then reclaims the item. The response
+    // must describe the acknowledged lease, including its original start.
+    // A deliberately late reload is executed as the counterfactual: without
+    // this control a harness that missed the interleaving could pass vacuously.
+    assert!(postgres_mutation_snapshot_matches(&url, SnapshotMutation::Acknowledge, false).await);
+    assert!(
+        !postgres_mutation_snapshot_matches(&url, SnapshotMutation::Acknowledge, true).await,
+        "late-reload mutant must be detected"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum SnapshotMutation {
+    Acknowledge,
+    Stop,
+}
+
+async fn postgres_mutation_snapshot_matches(
+    url: &str,
+    mutation: SnapshotMutation,
+    late_reload: bool,
+) -> bool {
+    let pair = Pair::postgres_with_limit(url, 1).await;
+    let env = "mutation-response-snapshot";
+    let (work, lease) = claimed_work(&pair, env, true, 0).await;
+    let lease = lease.unwrap();
+    let mut expected = pair.a.get(env, &work).await.unwrap().unwrap();
+    assert_eq!(expected.state, WorkState::Active, "valid claimed fixture");
+    let stamp = awaken_time::utc::epoch_millis_to_rfc3339(100);
+    match mutation {
+        SnapshotMutation::Acknowledge => expected.acknowledged_at = Some(stamp),
+        SnapshotMutation::Stop => {
+            expected.state = WorkState::Stopped;
+            expected.stop_requested_at = Some(stamp.clone());
+            expected.stopped_at = Some(stamp);
+        }
+    }
+    pair.clock.set(100);
+    let fixture = pair.postgres.as_ref().unwrap();
+    let original_pool = fixture.pool.clone();
+    let inspector = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&fixture.scoped_url)
+        .await
+        .unwrap();
+    let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&original_pool)
+        .await
+        .unwrap();
+    let mut held_row = inspector.begin().await.unwrap();
+    sqlx::query("SELECT work_id FROM work_queue_item WHERE work_id=$1 FOR UPDATE")
+        .bind(&work)
+        .fetch_one(&mut *held_row)
+        .await
+        .unwrap();
+    let request = tokio::spawn({
+        let queue = pair.a.clone();
+        let work = work.clone();
+        async move {
+            let reply = match mutation {
+                SnapshotMutation::Acknowledge => queue.ack_with_session_access(&lease).await,
+                SnapshotMutation::Stop => queue.stop_with_session_access(&lease).await,
+            }
+            .unwrap()
+            .into_item()
+            .unwrap();
+            if late_reload {
+                queue.get(env, &work).await.unwrap().unwrap()
+            } else {
+                reply
+            }
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')")
+                .bind(backend_pid).fetch_one(&inspector).await.unwrap();
+            if waiting { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("ACK reaches the held row lock");
+    let mut queued_read = Box::pin(original_pool.acquire());
+    let queued = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(queued_read.as_mut(), cx).is_pending())
+    })
+    .await;
+    assert!(
+        queued,
+        "the only connection belongs to ACK before its commit"
+    );
+    held_row.commit().await.unwrap();
+    let read_blocker = tokio::time::timeout(std::time::Duration::from_secs(20), queued_read)
+        .await
+        .unwrap()
+        .unwrap();
+    pair.clock.set(LEASE_TTL_MS + 1);
+    if matches!(mutation, SnapshotMutation::Stop) {
+        assert_eq!(
+            pair.b
+                .wake_session(env, &SessionId::from(env))
+                .await
+                .unwrap(),
+            work
+        );
+    }
+    let replacement = pair
+        .b
+        .claim(env, "replacement", LEASE_TTL_MS + 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.id, work, "actual reclaim of the original item");
+    assert_ne!(
+        replacement.started_at, expected.started_at,
+        "the two generation snapshots differ"
+    );
+    drop(read_blocker);
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(20), request)
+        .await
+        .unwrap()
+        .unwrap();
+    inspector.close().await;
+    pair.cleanup().await;
+    same_item(&reply, &expected)
+}
+
+#[path = "lease_acceptance/stop_replay.rs"]
+mod stop_replay;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retried_stop_after_lost_response_replays() {
+    stop_replay::retry_matrix().await;
+}
+
+#[path = "lease_acceptance/credential_generation.rs"]
+mod credential_generation;
