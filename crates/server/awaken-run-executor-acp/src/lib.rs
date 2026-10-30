@@ -88,6 +88,9 @@ mod cleanup;
 mod commit;
 #[cfg(feature = "execution")]
 mod config_home;
+#[cfg(all(test, feature = "execution"))]
+#[path = "tests/failure_projection.rs"]
+mod failure_projection_tests;
 #[cfg(feature = "execution")]
 mod mcp_context;
 #[cfg(feature = "execution")]
