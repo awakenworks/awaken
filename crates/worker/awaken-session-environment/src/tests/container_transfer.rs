@@ -28,9 +28,8 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
     let mut docker_spec = spec();
     docker_spec.scope = format!("host-repo-real-{}", std::process::id());
     docker_spec.outputs_path = "/mnt/session/outputs".into();
-    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environment = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
         provider,
-        None,
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",

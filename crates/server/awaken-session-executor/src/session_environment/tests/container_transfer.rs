@@ -22,9 +22,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         awaken_session_environment_contract::ContainerHandResidency::Resident,
     ] {
         let fake = Arc::new(FakeContainerProvider::default());
-        let provider = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+        let provider = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
             fake.clone(),
-            None,
             Vec::new(),
             Arc::new(FakeHandExecutorFactory),
             "awaken-sandbox",

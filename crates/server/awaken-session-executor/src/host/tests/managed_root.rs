@@ -795,7 +795,7 @@ mod retry_hint_tests {
                         "stub",
                     )
                     .await
-                    .with_session_environment_provider(provider),
+                    .with_session_environment_provider(provider, None),
                 )
                 .build()
                 .unwrap();

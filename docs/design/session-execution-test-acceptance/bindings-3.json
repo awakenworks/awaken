@@ -101,7 +101,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_credentials.rs",
-        "line": 1657,
+        "line": 1659,
         "file_sha256": "2d8083d657dd47f9ce2eb848f713fa18c228bbf3c066064a6dd5d73748ca2e4f"
       }
     ],

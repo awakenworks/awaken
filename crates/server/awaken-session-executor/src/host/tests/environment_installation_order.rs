@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffect;
 use awaken_session_environment_contract::{
-    EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentCapacity,
-    EnvironmentProviderInstallation, EnvironmentRealizationKind, EnvironmentRealizer,
-    EnvironmentTerminalRealization, SessionEnvironment, SessionEnvironmentProvider,
+    EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentRealizationKind,
+    EnvironmentRealizer, EnvironmentTerminalRealization, SessionEnvironment,
+    SessionEnvironmentProvider,
 };
 
 use super::OkModel;
@@ -37,7 +37,7 @@ impl RecordingInstallation {
         ));
         Arc::new(Self {
             name,
-            inner: crate::uninstalled_environment::default_session_provider(root),
+            inner: crate::uninstalled_environment::default_session_provider(root).0,
             clock,
             mounters: Mutex::default(),
             brokers: Mutex::default(),
@@ -58,17 +58,33 @@ impl RecordingInstallation {
 }
 
 #[async_trait]
-impl EnvironmentRealizer for RecordingInstallation {
+impl pc::SandboxReadiness for RecordingInstallation {
     fn capabilities(&self) -> pc::SandboxCapabilities {
         self.inner.realizer().capabilities()
     }
 
+    fn checkpoint_formats(&self) -> Vec<String> {
+        self.inner.realizer().checkpoint_formats()
+    }
+
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        self.inner.realizer().probe_ready().await
+    }
+}
+
+#[async_trait]
+impl EnvironmentRealizer for RecordingInstallation {
     fn supports_host_identity(&self) -> bool {
         self.inner.realizer().supports_host_identity()
     }
 
     fn effective_spec(&self, spec: &pc::SandboxSpec) -> Result<pc::SandboxSpec, pc::SandboxError> {
         self.inner.realizer().effective_spec(spec)
+    }
+
+    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        *self.image_prewarms.lock().unwrap() += 1;
+        Ok(())
     }
 
     async fn create_effective_for_effect(
@@ -197,13 +213,8 @@ impl EnvironmentTerminalRealization for RecordingInstallation {
 }
 
 #[async_trait]
-impl EnvironmentCapacity for RecordingInstallation {
-    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
-        *self.image_prewarms.lock().unwrap() += 1;
-        Ok(())
-    }
-
-    async fn prewarm(
+impl pc::SandboxCapacity for RecordingInstallation {
+    async fn prewarm_to(
         &self,
         _spec: &pc::SandboxSpec,
         _target: usize,
@@ -211,7 +222,7 @@ impl EnvironmentCapacity for RecordingInstallation {
         Ok(0)
     }
 
-    async fn discard_capacity(&self, _spec: &pc::SandboxSpec) {}
+    async fn discard_shape(&self, _spec: &pc::SandboxSpec) {}
 
     fn ready_capacity(&self, _spec: &pc::SandboxSpec) -> usize {
         0
@@ -220,7 +231,7 @@ impl EnvironmentCapacity for RecordingInstallation {
     async fn shutdown_capacity(&self) {}
 }
 
-impl EnvironmentProviderInstallation for RecordingInstallation {
+impl pc::SandboxInstallation for RecordingInstallation {
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         self.mounters.lock().unwrap().push(mounter);
     }
@@ -310,6 +321,13 @@ fn installation_oracle(
             origin.name, expected.name
         ));
     }
+    let installation: Arc<dyn pc::SandboxInstallation> = expected.clone();
+    if !Arc::ptr_eq(selected.installation(), &installation) {
+        return Err(format!(
+            "{} has a foreign installation owner",
+            expected.name
+        ));
+    }
     if !last_is(&expected.brokers, &controlled.broker) {
         return Err(format!("{} lost the secret broker", expected.name));
     }
@@ -327,6 +345,7 @@ fn installation_oracle(
 async fn assert_built_host_serves(
     builder: crate::SessionExecutorBuilder,
     selected: &Arc<RecordingInstallation>,
+    capacity_owner: &Arc<RecordingInstallation>,
     replaced: Option<&Arc<RecordingInstallation>>,
     controlled: &Controlled,
     row: &str,
@@ -339,6 +358,14 @@ async fn assert_built_host_serves(
     let providers = host.realization_executor.environments().providers();
     installation_oracle(&providers.session_provider, selected, controlled)
         .unwrap_or_else(|error| panic!("{row}: built Host: {error}"));
+    let expected_capacity: Arc<dyn pc::SandboxCapacity> = capacity_owner.clone();
+    assert!(
+        providers
+            .session_capacity
+            .as_ref()
+            .is_some_and(|capacity| Arc::ptr_eq(capacity, &expected_capacity)),
+        "{row}: capacity belongs to the same selected construction"
+    );
     providers
         .prewarm_environment_images(&[])
         .await
@@ -359,8 +386,15 @@ async fn assert_built_host_serves(
 
 #[tokio::test]
 async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the_final_provider() {
+    // SI3 cause/effect: R1-R6 select services before/after the provider, replace
+    // its selection or relocate its adapter. Every row consumes the canonical
+    // SandboxInstallation role of the SAME selected Arc; an installation-only
+    // object neither requires an associated Environment nor grants execution.
+    // The original broker/mounter/clock and capacity assertions remain below.
     // Decision table (T01-C01). Every row first selects the controlled Memory
     // mounter through the fixture, except where the row orders it explicitly.
+    // C2 provider replacement selects its SandboxCapacity in the same call;
+    // E2 the built Host keeps that exact pool, never the replaced provider's.
     // | Row | call order                                  | selected | expected                         |
     // | R1  | Broker -> Provider A                        | A        | A uses the original Broker       |
     // | R2  | Provider A -> Broker                        | A        | same as R1                       |
@@ -373,7 +407,7 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     let a = RecordingInstallation::new("A", builder.clock());
     let builder = builder
         .with_session_secret_broker(controlled.broker.clone())
-        .with_session_environment_provider(a.provider());
+        .with_session_environment_provider(a.provider(), Some(a.clone()));
     installation_oracle(
         builder.installed_session_environment_provider(),
         &a,
@@ -381,13 +415,13 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     )
     .unwrap_or_else(|error| panic!("R1: {error}"));
     assert_eq!(a.installs(), (1, 1), "R1: one install of each service");
-    assert_built_host_serves(builder, &a, None, &controlled, "R1").await;
+    assert_built_host_serves(builder, &a, &a, None, &controlled, "R1").await;
 
     // R2
     let (builder, controlled) = Controlled::new().await;
     let a = RecordingInstallation::new("A", builder.clock());
     let builder = builder
-        .with_session_environment_provider(a.provider())
+        .with_session_environment_provider(a.provider(), Some(a.clone()))
         .with_session_secret_broker(controlled.broker.clone());
     installation_oracle(
         builder.installed_session_environment_provider(),
@@ -396,7 +430,7 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     )
     .unwrap_or_else(|error| panic!("R2: {error}"));
     assert_eq!(a.installs(), (1, 1), "R2: same as R1");
-    assert_built_host_serves(builder, &a, None, &controlled, "R2").await;
+    assert_built_host_serves(builder, &a, &a, None, &controlled, "R2").await;
 
     // R3
     let (builder, controlled) = Controlled::new().await;
@@ -406,7 +440,7 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
         .with_fallback_session_environment_provider(a.provider())
         .with_session_secret_broker(controlled.broker.clone());
     let a_before_b = a.installs();
-    let builder = builder.with_session_environment_provider(b.provider());
+    let builder = builder.with_session_environment_provider(b.provider(), Some(b.clone()));
     installation_oracle(
         builder.installed_session_environment_provider(),
         &b,
@@ -415,14 +449,14 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     .unwrap_or_else(|error| panic!("R3: {error}"));
     assert_eq!(a.installs(), a_before_b, "R3: A receives nothing after B");
     assert_eq!(b.installs(), (1, 1), "R3: B receives each service once");
-    assert_built_host_serves(builder, &b, Some(&a), &controlled, "R3").await;
+    assert_built_host_serves(builder, &b, &b, Some(&a), &controlled, "R3").await;
 
     // R4: the mounter is ordered explicitly here, after A.
     let builder = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
     let a = RecordingInstallation::new("A", builder.clock());
     let b = RecordingInstallation::new("B", builder.clock());
     let builder = crate::host::with_test_memory_mounter(
-        builder.with_session_environment_provider(a.provider()),
+        builder.with_session_environment_provider(a.provider(), Some(a.clone())),
     );
     let controlled = Controlled {
         broker: Arc::new(ControlledBroker),
@@ -434,7 +468,7 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
         clock: builder.clock(),
     };
     let builder = builder
-        .with_session_environment_provider(b.provider())
+        .with_session_environment_provider(b.provider(), Some(b.clone()))
         .with_session_secret_broker(controlled.broker.clone());
     installation_oracle(
         builder.installed_session_environment_provider(),
@@ -444,9 +478,11 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     .unwrap_or_else(|error| panic!("R4: {error}"));
     assert_eq!(a.installs(), (1, 0), "R4: A never sees the later Broker");
     assert_eq!(b.installs(), (1, 1), "R4");
-    assert_built_host_serves(builder, &b, Some(&a), &controlled, "R4").await;
+    assert_built_host_serves(builder, &b, &b, Some(&a), &controlled, "R4").await;
 
-    // R5: test-support durable relocation replaces the provider too.
+    // R5: test-support durable relocation reconfigures the provider adapter,
+    // not its physical pool. The original selected capacity remains paired
+    // with that same backend; container at_root preserves its provider Arc.
     let (builder, controlled) = Controlled::new().await;
     let a = RecordingInstallation::new("A", builder.clock());
     let relocated = RecordingInstallation::new("A-relocated", builder.clock());
@@ -456,7 +492,7 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     let replacement = relocated.provider();
     let builder = builder
         .with_session_secret_broker(controlled.broker.clone())
-        .with_session_environment_provider(a.provider())
+        .with_session_environment_provider(a.provider(), Some(a.clone()))
         .with_durable_store_dir(dir.path(), repository, move |_, _| replacement.clone());
     installation_oracle(
         builder.installed_session_environment_provider(),
@@ -465,7 +501,25 @@ async fn every_installation_order_lands_the_same_broker_mounter_and_clock_on_the
     )
     .unwrap_or_else(|error| panic!("R5: {error}"));
     assert_eq!(relocated.installs(), (1, 1), "R5");
-    assert_built_host_serves(builder, &relocated, Some(&a), &controlled, "R5").await;
+    assert_built_host_serves(builder, &relocated, &a, Some(&a), &controlled, "R5").await;
+
+    // R6: an explicit fallback selection has no capacity owner. Replacing a
+    // previously selected pair must clear its pool while keeping the same
+    // broker/mounter installation rules; no stale positive capacity survives.
+    let (builder, controlled) = Controlled::new().await;
+    let a = RecordingInstallation::new("A", builder.clock());
+    let b = RecordingInstallation::new("fallback-B", builder.clock());
+    let builder = builder
+        .with_session_secret_broker(controlled.broker.clone())
+        .with_session_environment_provider(a.provider(), Some(a.clone()))
+        .with_fallback_session_environment_provider(b.provider());
+    installation_oracle(
+        builder.installed_session_environment_provider(),
+        &b,
+        &controlled,
+    )
+    .unwrap_or_else(|error| panic!("R6: {error}"));
+    assert!(builder.env.session_capacity.is_none(), "R6 no former pool");
 }
 
 #[tokio::test]
@@ -513,7 +567,7 @@ async fn installation_oracle_detects_a_removed_final_binding_or_a_kept_old_provi
         .installed_session_environment_provider()
         .installation()
         .install_secret_broker(controlled.broker.clone());
-    let builder = builder.with_session_environment_provider(b.provider());
+    let builder = builder.with_session_environment_provider(b.provider(), Some(b.clone()));
     let error = installation_oracle(
         builder.installed_session_environment_provider(),
         &b,
@@ -527,7 +581,7 @@ async fn installation_oracle_detects_a_removed_final_binding_or_a_kept_old_provi
     let foreign = RecordingInstallation::new("F", awaken_time::system_clock());
     let builder = builder
         .with_session_secret_broker(controlled.broker.clone())
-        .with_session_environment_provider(foreign.provider());
+        .with_session_environment_provider(foreign.provider(), Some(foreign.clone()));
     let error = installation_oracle(
         builder.installed_session_environment_provider(),
         &foreign,

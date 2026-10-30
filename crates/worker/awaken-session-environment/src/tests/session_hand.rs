@@ -65,9 +65,8 @@ async fn terminal_close_interrupts_an_active_hand_and_never_claims_resident_quie
         block_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environment = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
         provider.clone(),
-        None,
         Vec::new(),
         factory,
         "/usr/local/bin/awaken-sandbox",
@@ -149,9 +148,8 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
     let provider = Arc::new(FakeContainerProvider::default());
     let factory =
         ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-    let environments = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environments = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
         provider.clone(),
-        None,
         Vec::new(),
         factory,
         "/usr/local/bin/awaken-sandbox",
@@ -737,9 +735,8 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
     // Rules QR1/QR2/QR3 distinguish retry-stable checkpoint safety from the
     // existing terminal owner.
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environment = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
         provider.clone(),
-        None,
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
@@ -850,9 +847,8 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     let provider = Arc::new(FakeContainerProvider::default());
     let factory =
         ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-    let environment = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let environment = SandboxEnvironmentProvider::container_with_hand_idle(
         provider.clone(),
-        None,
         Vec::new(),
         factory.clone(),
         "/usr/local/bin/awaken-sandbox",
@@ -936,9 +932,8 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let failed = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let failed = SandboxEnvironmentProvider::container_with_hand_idle(
         failed_provider.clone(),
-        None,
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
@@ -987,9 +982,8 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
     let provider = Arc::new(FakeContainerProvider::default());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let environment = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let environment = SandboxEnvironmentProvider::container_with_hand_idle(
         provider.clone(),
-        None,
         Vec::new(),
         Arc::new(BlockingHandFactory {
             recovery: None,
@@ -1304,26 +1298,24 @@ async fn terminal_recovery_observation_failures_and_timeouts_retain_the_same_bin
             calls: std::sync::atomic::AtomicUsize::new(0),
         });
         let provider = Arc::new(FakeContainerProvider::default());
-        let environment =
-            SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
-                provider.clone(),
-                None,
-                Vec::new(),
-                Arc::new(BlockingHandFactory {
-                    recovery: Some(recovery.clone()),
-                    started: Arc::new(tokio::sync::Notify::new()),
-                    release: Arc::new(tokio::sync::Notify::new()),
-                    block_once: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                }),
-                "/usr/local/bin/awaken-sandbox",
-                std::time::Duration::ZERO,
-                awaken_session_environment_contract::ContainerHandResidency::Resident,
-                awaken_time::system_clock(),
-            )
-            .into_session_provider()
-            .create(&spec())
-            .await
-            .unwrap();
+        let environment = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
+            provider.clone(),
+            Vec::new(),
+            Arc::new(BlockingHandFactory {
+                recovery: Some(recovery.clone()),
+                started: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Notify::new()),
+                block_once: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }),
+            "/usr/local/bin/awaken-sandbox",
+            std::time::Duration::ZERO,
+            awaken_session_environment_contract::ContainerHandResidency::Resident,
+            awaken_time::system_clock(),
+        )
+        .into_session_provider()
+        .create(&spec())
+        .await
+        .unwrap();
         let request = ToolCall {
             call_id: "bound".into(),
             tool_id: "read".into(),

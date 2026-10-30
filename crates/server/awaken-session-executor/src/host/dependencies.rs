@@ -120,6 +120,8 @@ fn select(
     let skill_bundle_source = None;
     let resources =
         capability::ResourceSelection::assemble(resources, store_dir.as_deref(), &clock);
+    let (session_provider, session_capacity) =
+        crate::uninstalled_environment::default_session_provider(sandbox_root.clone());
     SessionExecutorBuilder {
         #[cfg(test)]
         realization_source: None,
@@ -128,7 +130,8 @@ fn select(
         worker: capability::WorkerTransports::default(),
         env: capability::EnvironmentProviders::new(
             sandbox_root.clone(),
-            crate::uninstalled_environment::default_session_provider(sandbox_root),
+            session_provider,
+            session_capacity,
             crate::auxiliary_sandbox::default_auxiliary_sandboxes(),
             trusted_host,
             warm_pool,

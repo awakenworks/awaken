@@ -20,6 +20,7 @@
   Session authorization and checkpoint object bytes are unchanged)
 - Amended: 2026-10-24 (crate names follow the context vocabulary: `run-ingress-*`
   becomes `dispatch-*` and non-SDK `runtime` crate names are renamed; awaken-cloud impact)
+- Amended: 2026-10-29 (Session warm capacity uses the existing Sandbox capacity owner)
 
 ## Context
 
@@ -866,3 +867,68 @@ snapshots and independent-consumer qualification remain required evidence.
 The three compatibility exports are a bounded migration obligation: keep them
 until an explicitly reviewed SDK major release can retire the original paths.
 No new contract crate, backend authority or persistence boundary is introduced.
+
+## Amendment 2026-10-29: one owner of never-used Sandbox capacity
+
+The first provider-convergence change removes `EnvironmentCapacity`. Its four
+warm-capacity operations duplicate `awaken_provisioning_contract::SandboxCapacity`,
+which remains separate from `SandboxProvider`: never-used capacity belongs to
+the deployment's selected pool, while an active Session owns its Sandbox.
+The existing `EnvironmentProviders` holds that capacity handle beside the Session
+provider. Startup selects or replaces both together from the existing
+`ContainerEnvironmentComponents`; a Workdir or Namespace selection has no capacity
+handle. No second pool, readiness record or capacity registry is introduced.
+The uninstalled startup choice retains its same unavailable adapter through
+`SandboxCapacity`, preserving its `NotReady` refusal and zero ready count.
+An installed provider with no selected pool still skips unused spec preparation
+and returns zero; no invalid unused spec becomes a new startup error.
+
+Image preparation is a provider obligation, independent of opting into a warm
+pool. Its existing `prewarm_images` method moves to `EnvironmentRealizer` and
+keeps forwarding through `SandboxEnvironmentProvider` to
+`SandboxProvider::prewarm_images`. Capacity calls continue to use that same
+adapter's `effective_spec`, including isolation and creation mounts, before
+calling the selected `SandboxCapacity`. Published shape projection and all
+local-pool, target, self-hosted and error decisions keep their existing owners.
+
+The other four Session provider roles remain for the next convergence steps.
+This does not merge Hand assembly, retained-instance rebinding, terminal data
+readability, checkpoint codecs or Session lease decisions into Sandbox supply.
+The physical provider's claim, restoration and disposal contracts are unchanged.
+
+## Amendment 2026-10-30: Session realization consumes Sandbox readiness
+
+The Session adapter's `EnvironmentRealizer` extends the existing
+`awaken_provisioning_contract::SandboxReadiness` instead of declaring a second
+`capabilities` method. The same held Workdir, Namespace or Container provider
+supplies capabilities, checkpoint formats and every explicit readiness probe.
+No provider is reconstructed and no cached readiness state is introduced.
+An uninstalled adapter retains conservative capabilities, no checkpoint format
+and its typed `NotReady` refusal. Existing callers keep their realizer handle;
+startup selection, admission, lease/CAS and physical effect sequencing do not
+change.
+
+This bounded consolidation does not remove the Session adapter's effective
+spec, Hand assembly, retained-instance rebind or terminal-readability behavior.
+The existing Sandbox provider owns physical supply and exact restore targets;
+Session adaptation still preserves the selected physical instance, the original
+effect claim, restore tuple and checkpoint codec. The other provider roles
+remain separate work rather than a mechanical rename or a new supply path.
+
+## Amendment 2026-10-30: one shared-service installation role
+
+The existing two-method `EnvironmentProviderInstallation` role moves to
+`awaken_provisioning_contract::SandboxInstallation`. `SandboxProvider` inherits
+that role rather than redeclaring Memory mounter and secret broker installation.
+The Session provider's installation handle refers to the same canonical role;
+it does not require the associated live Sandbox type. No old-name alias,
+parallel installation port or additional provider is retained.
+
+Concrete Local, Namespace, Container and warm-pool providers keep their original
+service installation bodies. The Session adapter dispatches to the same held
+physical provider, and its uninstalled choice keeps its no-op installation
+behavior. Provider selection and replacement continue to replay the selected
+broker and mounter regardless of construction order, while preserving the same
+clock and physical owner. Installation itself proves neither readiness nor
+execution authority. Session effective-spec projection, Hand assembly, retained
+rebinding, terminal readability, effect claims and restore codecs are unchanged.

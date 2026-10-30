@@ -34,11 +34,10 @@
 //!
 //! | Role | Consumers |
 //! |---|---|
-//! | `EnvironmentRealizer` — capabilities, host identity, effective spec, fenced create | Session realization, Worker projection synchronizer |
+//! | `EnvironmentRealizer` — capabilities, host identity, effective spec, image preparation, fenced create | Session realization, image warmup, Worker projection synchronizer |
 //! | `EnvironmentAdoption` — adoption layout, observation and closed-evidence validation, fenced adopt, retained rebind | environment lifecycle recovery, terminal preparation |
 //! | `EnvironmentTerminalRealization` — terminal reconstruction, exact restore, restored-target disposal | terminal preparation and cleanup, environment continuation |
-//! | `EnvironmentCapacity` — image prewarm, capacity prewarm/discard/ready/shutdown | warm capacity |
-//! | `EnvironmentProviderInstallation` — Memory mounter and secret broker installation | Host startup |
+//! | `awaken_provisioning_contract::SandboxInstallation` — Memory mounter and secret broker installation | Host startup |
 //!
 //! The provider that realized an environment may recover its own adapter from
 //! the handles to rebind or observe it; the Host never does.
@@ -74,9 +73,8 @@ pub use mcp_relay_exposure::ContainerMcpRelayExposure;
 pub use process::ProcessReaper;
 pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
 pub use provider::{
-    EnvironmentAdoption, EnvironmentCapacity, EnvironmentProviderInstallation,
-    EnvironmentRealizationKind, EnvironmentRealizer, EnvironmentTerminalRealization,
-    SessionEnvironmentProvider,
+    EnvironmentAdoption, EnvironmentRealizationKind, EnvironmentRealizer,
+    EnvironmentTerminalRealization, SessionEnvironmentProvider,
 };
 pub use realized::{
     AgentProcessEnvironment, AgentToolEnvironment, EnvironmentHarvest, EnvironmentLifecycle,

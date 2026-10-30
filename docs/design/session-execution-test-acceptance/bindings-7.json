@@ -4,7 +4,7 @@
     "source_locations": [
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 311,
+        "line": 313,
         "file_sha256": "237ef0cca83e41c1a685489662e1a6fbb0b9ab1fa7aeba5474cd5c58cc9f8c12"
       }
     ],
@@ -36,15 +36,15 @@
     "assertion_locations": [
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 322
+        "line": 324
       },
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 332
+        "line": 334
       },
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 333
+        "line": 335
       }
     ]
   },

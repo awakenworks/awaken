@@ -75,9 +75,8 @@ pub fn install_container_environment_components(
     hand_factory: Arc<dyn HandExecutorFactory>,
 ) -> SessionExecutorBuilder {
     let settings = &deployment.sandbox;
-    let provider = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let provider = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
         components.provider,
-        components.capacity,
         components.extra_mounts,
         hand_factory,
         settings.container_hand_bin.clone(),
@@ -90,7 +89,7 @@ pub fn install_container_environment_components(
         Some(initializer) => host.with_cache_volume_initializer(initializer),
         None => host,
     };
-    host.with_session_environment_provider(provider)
+    host.with_session_environment_provider(provider, components.capacity)
 }
 
 /// Install one already-configured container provider and its optional

@@ -96,7 +96,7 @@ mod tests {
         .into_session_provider();
         let host = adoption_dependencies()
             .await
-            .with_session_environment_provider(provider)
+            .with_session_environment_provider(provider, None)
             .with_ephemeral_dispatch(store.clone())
             .build()
             .unwrap();

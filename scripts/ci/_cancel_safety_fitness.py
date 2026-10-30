@@ -90,6 +90,7 @@ EFFECT_METHODS: dict[str, str] = {
     "spawn_agent_process": "an agent process inside a container",
     "spawn_prepared": "a supervised child process inside a local sandbox",
     "prewarm": "warm containers created ahead of demand",
+    "prewarm_to": "never-used Sandbox capacity through the canonical SandboxCapacity port",
     # The podman backend never reached this registry: it creates through
     # `self.run(&args)`, a name far too general to match. Its own port name is
     # the precise leaf, and the docker backend spells it identically.
@@ -100,12 +101,6 @@ EFFECT_METHODS: dict[str, str] = {
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
 CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
-    # The Session environment provider's capacity role is one delegating call
-    # to the provider's own `prewarm`, whose callers (warm capacity) stay
-    # counted under their own names.
-    "crates/worker/awaken-session-environment/src/provider.rs::prewarm": (
-        "delegates to SandboxEnvironmentProvider::prewarm; its callers are the counted effect"
-    ),
     # The port implementation is one delegating call; every caller that awaits
     # `create_rooted_sandbox` stays counted under its own name above, so the
     # ownership question is decided (and ratcheted) at those callers.
@@ -532,6 +527,19 @@ def selftest() -> None:
         "crates/worker/example/src/stage.rs::build"
     ], "T1 a production module file is scanned"
     assert scan(registered_after) == ["crates/worker/example/src/lib.rs::build"], "T6 registration after the await is reported"
+
+    # T9 cause/effect: either the physical pool spelling or the canonical
+    # SandboxCapacity spelling can create capacity. Unowned awaits remain T1;
+    # a pending registration remains T2. Moving the caller between these two
+    # existing boundaries must not lower the ratchet by making it invisible.
+    for method in ("prewarm", "prewarm_to"):
+        capacity_call = f"m.{method}(&spec, 1)"
+        assert scan(unregistered.replace("m.mount(&reference, &path, access)", capacity_call)) == [
+            "crates/worker/example/src/lib.rs::build"
+        ], f"T9 {method} keeps the physical effect visible"
+        assert scan(pending_first.replace("m.mount(&reference, &path, access)", capacity_call)) == [], (
+            f"T9 {method} retains the same pending-owner admission"
+        )
 
     # An effect that is not awaited is not a cancellation point (a stored
     # future is exactly shape 1), and a free function carries its own name.

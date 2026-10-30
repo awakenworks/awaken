@@ -66,6 +66,9 @@ pub struct EnvironmentProviders {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub session_provider: crate::session_environment::SessionEnvironmentProvider,
+    /// Never-used capacity from the same startup selection as `session_provider`.
+    /// The pool owns it; active Session environments have already left capacity.
+    pub session_capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     /// Deployment-owned byte custody for full-Environment checkpoints. Desired
     /// lifecycle state remains in the Session aggregate; this port stores bytes
     /// only. Hosted startup injects the regional encrypted adapter.
@@ -106,6 +109,7 @@ impl EnvironmentProviders {
     pub fn new(
         #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))] sandbox_root: PathBuf,
         session_provider: crate::session_environment::SessionEnvironmentProvider,
+        session_capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
         trusted_host: TrustedHostPolicy,
         warm_pool: WarmPool,
@@ -115,6 +119,7 @@ impl EnvironmentProviders {
             #[cfg(any(test, feature = "test-support"))]
             sandbox_root,
             session_provider,
+            session_capacity,
             environment_checkpoint_store: None,
             cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,

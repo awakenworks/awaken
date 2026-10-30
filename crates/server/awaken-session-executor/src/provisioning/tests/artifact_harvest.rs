@@ -79,18 +79,6 @@ impl awaken_provisioning_contract::SandboxProvider for BatchArtifactContainerPro
         awaken_sandbox_container::container_adoption_layout(handle)
     }
 
-    fn install_memory_mounter(
-        &self,
-        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-    }
-
-    fn install_secret_broker(
-        &self,
-        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
-    ) {
-    }
-
     async fn prewarm_images(
         &self,
         _specs: &[awaken_provisioning_contract::SandboxSpec],
@@ -207,6 +195,20 @@ impl awaken_provisioning_contract::SandboxProvider for BatchArtifactContainerPro
         std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
         awaken_provisioning_contract::SandboxRestoration::Unsupported
+    }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for BatchArtifactContainerProvider {
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
     }
 }
 

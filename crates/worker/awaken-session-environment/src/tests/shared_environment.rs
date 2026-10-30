@@ -466,14 +466,23 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     // Constraint: WorkspaceLayout plus Sandbox capability admission remain the
     // sole path authority. This test must not add a host-path alias, symlink, or
     // shell-command classifier to make split paths appear consistent.
+    // C5 canonical SandboxReadiness is read through the SAME selected Session
+    // adapter that creates and later rebinds this environment. N0/NR preserve
+    // the original optional/required substrate decisions; N1-N3 keep every
+    // physical filesystem, process, Hand and same-Arc assertion below.
     let base = tempfile::tempdir().unwrap();
     let mut namespace_spec = spec();
     namespace_spec.scope = "session-namespace".into();
     namespace_spec.isolation = IsolationClass::Namespace;
-    let provider = NamespaceProvider::new(base.path());
+    let selected = SandboxEnvironmentProvider::Namespace {
+        provider: NamespaceProvider::new(base.path()),
+        hand_factory: Arc::new(FakeHandExecutorFactory),
+        hand_bin: "/bin/sh".into(),
+        hand_idle_after: std::time::Duration::ZERO,
+    };
     let namespace_workspace_required =
         std::env::var("AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE").as_deref() == Ok("1");
-    if let Err(probe_error) = provider.probe_ready().await {
+    if let Err(probe_error) = selected.probe_ready().await {
         assert!(
             !namespace_workspace_required,
             "NR/E4 required Namespace /workspace substrate is unavailable: {probe_error}"
@@ -484,7 +493,7 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         let _ = probe_error;
         return;
     }
-    let capabilities = provider.capabilities();
+    let capabilities = selected.capabilities();
     if !capabilities.path_fidelity {
         assert!(
             !namespace_workspace_required,
@@ -498,14 +507,15 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         );
         return;
     }
-    let namespace = provider.create_sandbox(&namespace_spec).await.unwrap();
-    let environment = SandboxEnvironment::namespace(
-        namespace,
-        Arc::new(FakeHandExecutorFactory),
-        "/bin/sh",
-        std::time::Duration::ZERO,
-    )
-    .into_session_environment();
+    let environment = selected
+        .create_effective_for_effect(
+            &namespace_spec,
+            pc::SandboxEffect::Unattached,
+            None,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+        )
+        .await
+        .unwrap();
     // N3: either native platform must retain the mechanism selected by its
     // sole Namespace provider in the Session lifecycle handle; a mismatched
     // provider discriminator fails before Native or Hand claims path fidelity.
@@ -580,12 +590,6 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         .stop_bound_processes()
         .await
         .unwrap();
-    let selected = SandboxEnvironmentProvider::Namespace {
-        provider,
-        hand_factory: Arc::new(FakeHandExecutorFactory),
-        hand_bin: "/bin/sh".into(),
-        hand_idle_after: std::time::Duration::ZERO,
-    };
     let rebound = selected
         .rebind_retained(
             &crate::test_support::spec(),

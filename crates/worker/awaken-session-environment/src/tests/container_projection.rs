@@ -3,6 +3,119 @@
 use super::*;
 
 #[tokio::test]
+async fn session_realizer_uses_the_selected_filesystem_providers_readiness_facts() {
+    // Causes: C1 selected Workdir or Namespace adapter; C2 the existing
+    // EnvironmentRealizer handle is consumed as canonical SandboxReadiness.
+    // R1 Workdir -> exact Local capabilities and filesystem checkpoint format;
+    // R2 Namespace -> exact Namespace capabilities and no checkpoint format.
+    // R1 also probes the existing Workdir ancestor without creating a root.
+    // Neither row creates a Hand or physical Sandbox. Namespace liveness still
+    // belongs to its existing real-substrate test through the same adapter;
+    // this table does not turn an unavailable isolator into a successful probe.
+    let base = tempfile::tempdir().unwrap();
+    let workdir_root = base.path().join("workdir-not-created");
+    let namespace_root = base.path().join("namespace-not-created");
+    for (row, adapter) in [
+        ("R1", SandboxEnvironmentProvider::workdir(&workdir_root)),
+        (
+            "R2",
+            SandboxEnvironmentProvider::namespace_with_agent_stderr(
+                &namespace_root,
+                false,
+                Arc::new(UnusedHandExecutorFactory),
+                "unused-readiness-hand",
+                std::time::Duration::ZERO,
+            ),
+        ),
+    ] {
+        let (capabilities, formats) = match &adapter {
+            SandboxEnvironmentProvider::Workdir { provider, .. } => (
+                pc::SandboxReadiness::capabilities(provider),
+                pc::SandboxReadiness::checkpoint_formats(provider),
+            ),
+            SandboxEnvironmentProvider::Namespace { provider, .. } => (
+                pc::SandboxReadiness::capabilities(provider),
+                pc::SandboxReadiness::checkpoint_formats(provider),
+            ),
+            SandboxEnvironmentProvider::Container { .. } => unreachable!(),
+        };
+        let selected = adapter.into_session_provider();
+        let readiness: &dyn pc::SandboxReadiness = selected.realizer().as_ref();
+        assert_eq!(readiness.capabilities(), capabilities, "{row}");
+        assert_eq!(readiness.checkpoint_formats(), formats, "{row}");
+        if row == "R1" {
+            assert_eq!(readiness.probe_ready().await, Ok(()), "R1");
+        }
+        assert_eq!(
+            readiness.checkpoint_formats(),
+            if row == "R1" {
+                vec!["awaken-fs-tar-v1".to_string()]
+            } else {
+                Vec::new()
+            },
+            "{row} physical checkpoint support"
+        );
+    }
+    assert!(!workdir_root.exists(), "R1 no realization");
+    assert!(!namespace_root.exists(), "R2 no realization");
+}
+
+#[tokio::test]
+async fn session_realizer_probes_the_same_container_provider_without_caching_readiness() {
+    // Cause/effect graph: C1 the selected physical provider changes its
+    // readiness result and checkpoint formats after selection; C2 another
+    // provider has different state. E1 each read observes only C1's current
+    // facts; E2 errors keep their exact class and detail; E3 no creation,
+    // adoption, disposal, renewal or Hand launch occurs. Decision table:
+    // R3 Ready -> Ok; R4 NotReady -> exact error; R5 Transport -> exact error;
+    // R6 Ready again -> Ok. Every row performs one fresh probe of the same
+    // instance. Returning a cached success, constructing a replacement provider
+    // or projecting an error as Ready fails this table.
+    let physical = Arc::new(FakeContainerProvider::default());
+    let foreign = Arc::new(FakeContainerProvider::default());
+    let provider = SandboxEnvironmentProvider::container(
+        physical.clone(),
+        Vec::new(),
+        Arc::new(UnusedHandExecutorFactory),
+        "unused-readiness-hand",
+    )
+    .into_session_provider();
+    let readiness: &dyn pc::SandboxReadiness = provider.realizer().as_ref();
+    assert_eq!(readiness.capabilities(), physical.capabilities());
+    for (index, expected) in [
+        Ok(()),
+        Err(pc::SandboxError::not_ready(
+            "same provider is temporarily unavailable",
+        )),
+        Err(pc::SandboxError::transport(
+            "same provider lost its channel",
+        )),
+        Ok(()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        *physical.readiness_error.lock().unwrap() = expected.clone().err();
+        let formats = vec![format!("provider-checkpoint-{index}")];
+        *physical.checkpoint_formats.lock().unwrap() = formats.clone();
+        assert_eq!(readiness.probe_ready().await, expected, "R{}", index + 3);
+        assert_eq!(readiness.checkpoint_formats(), formats, "R{}", index + 3);
+        assert_eq!(
+            physical.readiness_calls.load(Ordering::SeqCst),
+            index + 1,
+            "R{} one current observation",
+            index + 3
+        );
+    }
+    assert_eq!(foreign.readiness_calls.load(Ordering::SeqCst), 0, "C2");
+    assert_eq!(physical.creates.load(Ordering::SeqCst), 0, "E3");
+    assert_eq!(physical.adopts.load(Ordering::SeqCst), 0, "E3");
+    assert_eq!(physical.disposals.load(Ordering::SeqCst), 0, "E3");
+    assert_eq!(physical.renews.load(Ordering::SeqCst), 0, "E3");
+    assert_eq!(physical.hand_spawns.load(Ordering::SeqCst), 0, "E3");
+}
+
+#[tokio::test]
 async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
     // U1 an unattached (unowned) Session asks for a container Rebuild: the Host
     // refuses with FenceRejected and the provider sees zero creations, rather

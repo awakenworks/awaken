@@ -1201,14 +1201,6 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             .map_err(pc::SandboxError::from)
     }
 
-    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        self.install_memory_mounter(mounter);
-    }
-
-    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        self.install_secret_broker(broker);
-    }
-
     fn adoption_layout(
         &self,
         handle: &pc::SandboxHandle,
@@ -1291,6 +1283,18 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
 
     fn restoration(&self) -> pc::SandboxRestoration<'_, Arc<dyn SessionSandbox>> {
         pc::SandboxRestoration::Targets(self)
+    }
+}
+
+impl<R: ContainerRuntime + 'static> awaken_provisioning_contract::SandboxInstallation
+    for ContainerProvider<R>
+{
+    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        self.install_memory_mounter(mounter);
+    }
+
+    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        self.install_secret_broker(broker);
     }
 }
 

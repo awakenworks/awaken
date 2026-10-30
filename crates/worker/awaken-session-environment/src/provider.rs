@@ -35,7 +35,6 @@ pub enum SandboxEnvironmentProvider {
                     Environment = dyn awaken_provisioning_contract::SessionSandbox,
                 >,
         >,
-        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
@@ -78,14 +77,6 @@ impl SandboxEnvironmentProvider {
 
     pub(crate) fn supports_host_identity(&self) -> bool {
         matches!(self, Self::Workdir { provider, .. } if provider.has_trusted_host_access())
-    }
-
-    pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
-        match self {
-            Self::Workdir { provider, .. } => pc::SandboxReadiness::capabilities(provider),
-            Self::Namespace { provider, .. } => pc::SandboxReadiness::capabilities(provider),
-            Self::Container { provider, .. } => provider.capabilities(),
-        }
     }
 
     pub fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
@@ -173,13 +164,12 @@ impl SandboxEnvironmentProvider {
     // Every argument is one independently configured part of the one container
     // Session provider the startup composition installs.
     #[allow(clippy::too_many_arguments)]
-    pub fn container_with_capacity_hand_idle_and_residency(
+    pub fn container_with_hand_idle_and_residency(
         provider: Arc<
             dyn awaken_provisioning_contract::SandboxProvider<
                     Environment = dyn awaken_provisioning_contract::SessionSandbox,
                 >,
         >,
-        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -189,7 +179,6 @@ impl SandboxEnvironmentProvider {
     ) -> Self {
         Self::Container {
             provider,
-            capacity,
             extra_mounts,
             hand_factory,
             hand_bin: hand_bin.into(),
@@ -243,7 +232,6 @@ impl SandboxEnvironmentProvider {
             ),
             Self::Container {
                 provider,
-                capacity,
                 extra_mounts,
                 hand_factory,
                 hand_bin,
@@ -252,7 +240,6 @@ impl SandboxEnvironmentProvider {
                 clock,
             } => Self::Container {
                 provider: provider.clone(),
-                capacity: capacity.clone(),
                 extra_mounts: extra_mounts.clone(),
                 hand_factory: hand_factory.clone(),
                 hand_bin: hand_bin.clone(),
@@ -260,22 +247,6 @@ impl SandboxEnvironmentProvider {
                 hand_residency: *hand_residency,
                 clock: clock.clone(),
             },
-        }
-    }
-
-    pub(crate) fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        match self {
-            Self::Workdir { provider, .. } => provider.install_memory_mounter(mounter),
-            Self::Namespace { provider, .. } => provider.install_memory_mounter(mounter),
-            Self::Container { provider, .. } => provider.install_memory_mounter(mounter),
-        }
-    }
-
-    pub(crate) fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        match self {
-            Self::Workdir { provider, .. } => provider.install_secret_broker(broker),
-            Self::Namespace { provider, .. } => provider.install_secret_broker(broker),
-            Self::Container { provider, .. } => provider.install_secret_broker(broker),
         }
     }
 
@@ -456,61 +427,6 @@ impl SandboxEnvironmentProvider {
             provider.prewarm_images(&specs).await?;
         }
         Ok(())
-    }
-
-    /// Pre-create never-used capacity for the same exact normalized container
-    /// shape that [`Self::create`] will request. Non-container and direct-provider
-    /// deployments have no capacity owner and return zero.
-    pub(crate) async fn prewarm(
-        &self,
-        spec: &pc::SandboxSpec,
-        target: usize,
-    ) -> Result<usize, pc::SandboxError> {
-        match self {
-            Self::Container {
-                capacity: Some(capacity),
-                ..
-            } => {
-                let spec = self.effective_spec(spec)?;
-                capacity.prewarm_to(&spec, target).await
-            }
-            _ => Ok(0),
-        }
-    }
-
-    pub(crate) async fn discard_capacity(&self, spec: &pc::SandboxSpec) {
-        if let Self::Container {
-            capacity: Some(capacity),
-            ..
-        } = self
-            && let Ok(spec) = self.effective_spec(spec)
-        {
-            capacity.discard_shape(&spec).await;
-        }
-    }
-
-    pub(crate) fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize {
-        if let Self::Container {
-            capacity: Some(capacity),
-            ..
-        } = self
-            && let Ok(spec) = self.effective_spec(spec)
-        {
-            return capacity.ready_capacity(&spec);
-        }
-        0
-    }
-
-    /// Drain only unused container capacity. Active Session environments are no
-    /// longer members of the pool and retain their ordinary Session lifecycle.
-    pub(crate) async fn shutdown_capacity(&self) {
-        if let Self::Container {
-            capacity: Some(capacity),
-            ..
-        } = self
-        {
-            capacity.shutdown_capacity().await;
-        }
     }
 
     /// The Host has validated the retained lifecycle owner; recheck exact
@@ -1034,17 +950,44 @@ impl SandboxEnvironmentProvider {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_environment_contract::EnvironmentRealizer for SandboxEnvironmentProvider {
+impl pc::SandboxReadiness for SandboxEnvironmentProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        SandboxEnvironmentProvider::capabilities(self)
+        match self {
+            Self::Workdir { provider, .. } => pc::SandboxReadiness::capabilities(provider),
+            Self::Namespace { provider, .. } => pc::SandboxReadiness::capabilities(provider),
+            Self::Container { provider, .. } => provider.capabilities(),
+        }
     }
 
+    fn checkpoint_formats(&self) -> Vec<String> {
+        match self {
+            Self::Workdir { provider, .. } => pc::SandboxReadiness::checkpoint_formats(provider),
+            Self::Namespace { provider, .. } => pc::SandboxReadiness::checkpoint_formats(provider),
+            Self::Container { provider, .. } => provider.checkpoint_formats(),
+        }
+    }
+
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir { provider, .. } => pc::SandboxReadiness::probe_ready(provider).await,
+            Self::Namespace { provider, .. } => pc::SandboxReadiness::probe_ready(provider).await,
+            Self::Container { provider, .. } => provider.probe_ready().await,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_environment_contract::EnvironmentRealizer for SandboxEnvironmentProvider {
     fn supports_host_identity(&self) -> bool {
         SandboxEnvironmentProvider::supports_host_identity(self)
     }
 
     fn effective_spec(&self, spec: &pc::SandboxSpec) -> Result<pc::SandboxSpec, pc::SandboxError> {
         SandboxEnvironmentProvider::effective_spec(self, spec)
+    }
+
+    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        SandboxEnvironmentProvider::prewarm_images(self, specs).await
     }
 
     async fn create_effective_for_effect(
@@ -1163,42 +1106,21 @@ impl awaken_session_environment_contract::EnvironmentTerminalRealization
     }
 }
 
-#[async_trait::async_trait]
-impl awaken_session_environment_contract::EnvironmentCapacity for SandboxEnvironmentProvider {
-    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
-        SandboxEnvironmentProvider::prewarm_images(self, specs).await
-    }
-
-    async fn prewarm(
-        &self,
-        spec: &pc::SandboxSpec,
-        target: usize,
-    ) -> Result<usize, pc::SandboxError> {
-        SandboxEnvironmentProvider::prewarm(self, spec, target).await
-    }
-
-    async fn discard_capacity(&self, spec: &pc::SandboxSpec) {
-        SandboxEnvironmentProvider::discard_capacity(self, spec).await;
-    }
-
-    fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize {
-        SandboxEnvironmentProvider::ready_capacity(self, spec)
-    }
-
-    async fn shutdown_capacity(&self) {
-        SandboxEnvironmentProvider::shutdown_capacity(self).await;
-    }
-}
-
-impl awaken_session_environment_contract::EnvironmentProviderInstallation
-    for SandboxEnvironmentProvider
-{
+impl pc::SandboxInstallation for SandboxEnvironmentProvider {
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        SandboxEnvironmentProvider::install_memory_mounter(self, mounter);
+        match self {
+            Self::Workdir { provider, .. } => provider.install_memory_mounter(mounter),
+            Self::Namespace { provider, .. } => provider.install_memory_mounter(mounter),
+            Self::Container { provider, .. } => provider.install_memory_mounter(mounter),
+        }
     }
 
     fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        SandboxEnvironmentProvider::install_secret_broker(self, broker);
+        match self {
+            Self::Workdir { provider, .. } => provider.install_secret_broker(broker),
+            Self::Namespace { provider, .. } => provider.install_secret_broker(broker),
+            Self::Container { provider, .. } => provider.install_secret_broker(broker),
+        }
     }
 }
 

@@ -63,13 +63,17 @@ impl SessionExecutorBuilder {
     /// (`awaken-execution-composition`); the Host continues to own Session
     /// routing and lifecycle. A caller that also selects a
     /// [`awaken_provisioning_contract::SecretBroker`] or Memory mounter may do
-    /// so before or after; either lands on this authoritative provider.
+    /// so before or after; either lands on this authoritative provider. Its
+    /// never-used capacity is selected in the same call, so replacement cannot
+    /// leave the old pool paired with a new provider.
     #[must_use]
     pub fn with_session_environment_provider(
         mut self,
         provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     ) -> Self {
         self.env.session_provider = provider;
+        self.env.session_capacity = capacity;
         self.env.session_provider_explicit = true;
         self.install_shared_environment_services(&self.env.session_provider);
         self
@@ -85,6 +89,7 @@ impl SessionExecutorBuilder {
         provider: awaken_session_environment_contract::SessionEnvironmentProvider,
     ) -> Self {
         self.env.session_provider = provider;
+        self.env.session_capacity = None;
         self.env.session_provider_explicit = false;
         self.install_shared_environment_services(&self.env.session_provider);
         self
@@ -144,9 +149,8 @@ impl SessionExecutorBuilder {
     ) -> Self {
         let hand = awaken_deployment_config::SandboxSettings::default();
         let environment = awaken_session_environment::SandboxEnvironmentProvider::
-            container_with_capacity_hand_idle_and_residency(
+            container_with_hand_idle_and_residency(
                 provider,
-                None,
                 Vec::new(),
                 hand_factory,
                 hand.container_hand_bin,
@@ -155,7 +159,7 @@ impl SessionExecutorBuilder {
                 self.clock.clone(),
             )
             .into_session_provider();
-        self.with_session_environment_provider(environment)
+        self.with_session_environment_provider(environment, None)
     }
 
     /// Select the process composition's auxiliary-run sandbox factory. Every
