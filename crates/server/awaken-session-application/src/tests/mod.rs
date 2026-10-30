@@ -4390,7 +4390,12 @@ impl SessionRepository for FaultingSessionRepository {
         }
         self.inner.idempotency_receipt(session_id, key).await
     }
+}
 
+use awaken_session_repository_contract::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for FaultingSessionRepository {
     async fn reconciliation_scan(
         &self,
         after: Option<&awaken_session_state_contract::SessionScanCursor>,
@@ -4426,7 +4431,6 @@ impl SessionRepository for FaultingSessionRepository {
         Ok(scan)
     }
 }
-
 #[async_trait::async_trait]
 impl awaken_session_repository_contract::LifecycleOutbox for FaultingSessionRepository {
     async fn append_lifecycle(

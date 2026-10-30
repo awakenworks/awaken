@@ -1,3 +1,6 @@
+//! `awaken-control` — the Control-only executable over the shared startup.
+#![warn(unreachable_pub)]
+
 use std::process::ExitCode;
 
 fn main() -> ExitCode {

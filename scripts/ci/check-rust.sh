@@ -344,6 +344,9 @@ scoped_step "process-startup-production" "keep fixture-only startup helpers out 
 scoped_step "coordinator-acp-role" "keep ACP physical implementations out of the isolated Coordinator product" \
   "awaken-coordinator-process" python3 scripts/ci/_dispatch_boundary_fitness.py \
   --check-acp-product-features awaken-coordinator-process
+scoped_step "control-acp-role" "keep ACP physical implementations out of the isolated Control product" \
+  "awaken-control-process" python3 scripts/ci/_dispatch_boundary_fitness.py \
+  --check-acp-product-features awaken-control-process
 scoped_step "acp-metadata-production" "compile the catalog and blob owner warning-free without execution roles" \
   "awaken-run-executor-acp" cargo clippy "${locked[@]}" -p awaken-run-executor-acp --lib --no-default-features -- -D warnings
 scoped_step "acp-metadata-compile-contract" "compile catalog and blob custody while refusing physical ACP modules" \

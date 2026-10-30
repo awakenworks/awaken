@@ -876,42 +876,6 @@ impl SessionRepository for PostgresManagedSessionRepository {
         Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
-    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        let (owners, initial, terminal, invalid, drift): (i64, i64, i64, i64, i64) =
-            sqlx::query_as(
-                "SELECT COUNT(DISTINCT work.worker_owner)::bigint, \
-                    COALESCE(MAX(work.unbound_preparation), 0)::bigint, \
-                    COALESCE(MAX(work.unbound_terminal), 0)::bigint, \
-                    COALESCE(MAX(work.demand_invalid), 0)::bigint, \
-                    COUNT(*) FILTER (WHERE work.observed_revision <> root.revision)::bigint \
-             FROM managed_session_reconciliation_work work \
-             JOIN managed_session root ON root.session_id = work.session_id",
-            )
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(storage)?;
-        let quarantined: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_session_quarantine LIMIT 1)")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        if drift != 0 || invalid != 0 || quarantined {
-            return Err(corrupt(
-                "Session Worker demand index is incomplete or quarantined",
-            ));
-        }
-        let owners = u64::try_from(owners).map_err(corrupt)?;
-        owners
-            .checked_add(u64::from(initial != 0 || terminal != 0))
-            .ok_or_else(|| storage("Session Worker demand count overflow"))
-    }
-
     async fn preparation_candidates(
         &self,
         after: Option<&awaken_session_state_contract::SessionScanCursor>,
@@ -958,15 +922,53 @@ impl SessionRepository for PostgresManagedSessionRepository {
         })
         .transpose()
     }
+}
 
+#[async_trait::async_trait]
+impl SessionReconciliation for PostgresManagedSessionRepository {
     async fn reconciliation_scan(
         &self,
         after: Option<&awaken_session_state_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         self.scan_reconcilable(after, false).await
     }
-}
 
+    async fn worker_demand(&self) -> Result<u64, SessionRepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let (owners, initial, terminal, invalid, drift): (i64, i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT COUNT(DISTINCT work.worker_owner)::bigint, \
+                    COALESCE(MAX(work.unbound_preparation), 0)::bigint, \
+                    COALESCE(MAX(work.unbound_terminal), 0)::bigint, \
+                    COALESCE(MAX(work.demand_invalid), 0)::bigint, \
+                    COUNT(*) FILTER (WHERE work.observed_revision <> root.revision)::bigint \
+             FROM managed_session_reconciliation_work work \
+             JOIN managed_session root ON root.session_id = work.session_id",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let quarantined: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_session_quarantine LIMIT 1)")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        if drift != 0 || invalid != 0 || quarantined {
+            return Err(corrupt(
+                "Session Worker demand index is incomplete or quarantined",
+            ));
+        }
+        let owners = u64::try_from(owners).map_err(corrupt)?;
+        owners
+            .checked_add(u64::from(initial != 0 || terminal != 0))
+            .ok_or_else(|| storage("Session Worker demand count overflow"))
+    }
+}
 impl PostgresManagedSessionRepository {
     /// Unpaged, fail-closed wrapper for the Workspace-bound index queries.
     fn scoped_scan(workspace_id: &str, sessions: Vec<PersistedSession>) -> SessionScan {

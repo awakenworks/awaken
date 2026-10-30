@@ -39,6 +39,10 @@ done
 ! grep -q 'ADR71_REUSE_IMAGE\|--ensure-hand' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq "import('@anthropic-ai/sdk')" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'npm ci --prefix e2e' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# Q3 the Control executable comes from its Worker-free process package;
+# resolving the old CLI target would either fail or reopen the broad closure.
+grep -Fq 'CONTROL_BIN=$(resolve_cargo_executable awaken-control-process awaken-control)' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'COORDINATOR_BIN=$(resolve_cargo_executable awaken-coordinator-process awaken-coordinator --features container-k8s)' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"' \

@@ -20,10 +20,6 @@ path = "src/lib.rs"
 name = "awaken"
 path = "src/main.rs"
 
-[[bin]]
-name = "awaken-control"
-path = "src/bin/awaken-control.rs"
-
 # The operator launcher and the AllInOne process. Every service role is the
 # process startup's; this package adds only the Worker an AllInOne process
 # co-locates with its Coordinator. The Coordinator executable is declared by

@@ -94,3 +94,29 @@ pub async fn postgres_now_ms(pool: &PgPool) -> u64 {
             .expect("configured PostgreSQL authority clock must answer");
     u64::try_from(now).expect("PostgreSQL authority clock is after the Unix epoch")
 }
+
+/// Seed immutable placement requirements that must reach the real Worker
+/// compatibility check, rather than an epoch already pruned by the SQL query.
+pub async fn seed_placement_candidate_prefix(
+    pool: &PgPool,
+    template: awaken_dispatch::RunDispatch,
+    rows: i64,
+    prefix: &str,
+    priority: i64,
+) {
+    let template = serde_json::to_value(template).unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_dispatch (run_id,thread_id,request,status,priority)
+         SELECT $2 || g, $2 || 'thread-' || g,
+          jsonb_set(jsonb_set($1::jsonb,'{activation,run_id}',to_jsonb($2 || g)),
+            '{activation,thread_id}',to_jsonb($2 || 'thread-' || g)),
+          'pending',$3 FROM generate_series(1,$4::bigint) AS g",
+    )
+    .bind(sqlx::types::Json(&template))
+    .bind(prefix)
+    .bind(priority)
+    .bind(rows)
+    .execute(pool)
+    .await
+    .unwrap();
+}

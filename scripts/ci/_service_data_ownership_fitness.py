@@ -796,7 +796,7 @@ def domain_component_violations(
         errors.append("awaken-worker lost its canonical WorkerNodeBuilder component boundary")
     if "build_worker_component" in worker_source:
         errors.append("awaken-worker added a second component builder beside WorkerNodeBuilder")
-    for session_port in ("SessionRepository", "SessionRepositoryReads", "SessionStore", "LifecycleOutbox"):
+    for session_port in ("SessionRepository", "SessionRepositoryReads", "SessionReconciliation", "SessionStore", "LifecycleOutbox"):
         if re.search(rf"\b{session_port}\b", control_source):
             errors.append("awaken-control still acquires Coordinator's Session repository")
     return errors
@@ -933,6 +933,7 @@ def process_store_ownership_violations(
     for forbidden in (
         "SessionRepository",
         "SessionRepositoryReads",
+        "SessionReconciliation",
         "SessionStore",
         "LifecycleOutbox",
         "DeploymentRepository",

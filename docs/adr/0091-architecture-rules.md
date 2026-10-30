@@ -414,3 +414,38 @@ count at zero.
    Baseline growth in any guard needs the complete review record
    `{reason, approved_by, date, remove_when}` of D8, admitted by
    `scripts/ci/_architecture_ratchet.py` `baseline_cli`.
+
+### Control executable closure (2026-10-29 amendment)
+
+`awaken-control` follows the existing Coordinator executable pattern: its thin
+entrypoint belongs to `awaken-control-process` and depends only on the shared
+`awaken-process-startup`. The aggregate CLI declares only `awaken`, including
+AllInOne composition. Both standalone service packages retain the same service
+runtime, configuration validation, migration selection, listener and drain
+owners. Moving the target changes neither command-line syntax nor HTTP routes.
+
+The lifecycle fitness check requires exactly one target in each service package
+and the Control package's single startup dependency. Its closure is consequently
+the same Worker-free startup closure already checked by Coordinator rule D4.
+Target absence, duplicate ownership, bypassed lifecycle and an additional
+Control package dependency are negative decision-table rows. The real split-role
+scenario resolves Control from its owning package before deployment.
+
+
+### Session reconciliation capability (2026-10-29 amendment)
+
+The existing `SessionRepositoryReads` remains the SELECT-only caller role.
+Checkpoint retention and Worker demand instead consume `SessionReconciliation`:
+the original paged `reconciliation_scan` (including row-local quarantine
+maintenance) and its existing `worker_demand` projection. They receive no root
+create/commit or lifecycle-outbox capability. The complete Session application's
+repository inherits this maintenance role because the application uses it.
+
+SQLite and PostgreSQL implement the moved methods once on the same repository;
+the default demand algorithm still scans that original maintenance index.
+Process startup derives read and maintenance views from its one selected Store.
+This is a coordinated Rust capability change with no new scan, root, schema,
+quarantine ledger or retry owner. Root CAS and outbox atomicity are unchanged.
+Compile-fail cases establish inability to commit; original durable reader and
+quarantine conformance owns actual persistence effects. Cloud must migrate its
+model, checkpoint and demand consumers at the same dependency pin.
