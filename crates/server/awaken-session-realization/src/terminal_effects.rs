@@ -20,16 +20,16 @@ pub mod repository_publication;
 /// optional physical owner together prevents terminal checkpoint and Sandbox
 /// cleanup from re-reading or independently interpreting the installed Session.
 pub(crate) struct TerminalEnvironmentPreparation {
-    state: awaken_session_state_contract::SessionEnvironmentState,
+    state: awaken_session_contract::SessionEnvironmentState,
     environment: PreparedBoundEnvironment,
-    pending_checkpoint: Option<awaken_session_state_contract::SandboxCheckpointRequest>,
+    pending_checkpoint: Option<awaken_session_contract::SandboxCheckpointRequest>,
 }
 
 /// Pure terminal Memory projection produced before Artifact, checkpoint, or
 /// provider effects. The contract owns the optional-handle join and intent
 /// construction; this transient plan only carries its exact result forward.
 pub(crate) struct TerminalMemoryPlan {
-    intents: Vec<awaken_session_state_contract::SessionTerminalMemoryIntent>,
+    intents: Vec<awaken_session_contract::SessionTerminalMemoryIntent>,
     acknowledged_materializations:
         Option<Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>>,
     workspace_id: Option<String>,
@@ -188,7 +188,7 @@ mod tests {
          * HT1b otherwise+Live=>E2; HT1c any+RecoverOnly=>E3. C2 dominates C1:
          * a durable Disposing gate must never be mistaken for "no artifacts"
          * merely because the aggregate state is non-Agent-authored. */
-        let resident = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        let resident = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: "binding-a".into(),
             effect_id: None,
             generation: None,
@@ -215,13 +215,13 @@ mod tests {
             "HT1a"
         );
         assert_eq!(
-            live_capture(awaken_session_state_contract::SessionEnvironmentState::Unmaterialized),
+            live_capture(awaken_session_contract::SessionEnvironmentState::Unmaterialized),
             None,
             "HT1b"
         );
 
         let disposing_non_agent_state = TerminalEnvironmentPreparation {
-            state: awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            state: awaken_session_contract::SessionEnvironmentState::Unmaterialized,
             environment: PreparedBoundEnvironment::new(
                 None,
                 None,

@@ -8,7 +8,7 @@ transition_environment(SessionEnvironmentFacts, SessionEnvironmentEvent)
     -> Result<SessionEnvironmentDecision, SessionEnvironmentRejection>
 ```
 
-It lives in `awaken-session-state-contract` (`environment/transition.rs`), next
+It lives in `awaken-session-contract` (`state/environment/transition.rs`), next
 to `PersistedSession::transition_execution`. `SessionEnvironmentFacts::project`
 folds the root, the event's asserted realization lease and the caller's `now`
 into the facts. The same domain module privately projects a directive or an
@@ -243,7 +243,7 @@ invocations already depend on that owner. No wire or durable schema changes.
 
 ## Verification
 
-- `awaken-session-state-contract` `environment::transition::tests` T1–T11,
+- `awaken-session-contract` `state::environment::transition::tests` T1–T11,
   `environment::legacy_binding::tests` L1–L4, and
   `session_repo::environment_facts_tests` (topology, Memory, continuation lease,
   the aggregate wrappers W1–W10, cleanup laws W11–W12).
@@ -257,7 +257,7 @@ invocations already depend on that owner. No wire or durable schema changes.
 - Kani `environment::transition::proofs`. Obligations are under
   `formal/obligations/session_environment/`.
 
-- `awaken-session-state-contract` `environment::effect_intent::tests`
+- `awaken-session-contract` `state::environment::effect_intent::tests`
   U1–U3 and `absent_root_facts_never_admit_another_session_event` U4;
   the complete finite sweep includes both root-presence facts.
 - `awaken-session-realization-driver` `terminal_cleanup_recovery::tests`

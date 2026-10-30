@@ -2,7 +2,7 @@
 
 use awaken_agent_contract::RunLifecycleEvent;
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_contract::{PersistedSession, SessionExecutionState};
 
 use crate::{
     DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,

@@ -972,14 +972,14 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         .insert_mcp_projection(projection.clone())
         .unwrap();
 
-    let sandbox_generation = awaken_session_state_contract::SandboxGeneration::new(
+    let sandbox_generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("mcp-staging-quiescence"),
         1,
         100,
         "environment",
         "base",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace-a",
         &awaken_session_types::SessionId::from("mcp-staging-quiescence"),
         "suspend",
@@ -1013,7 +1013,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         .install_session_environment_owner_projection(
             "mcp-staging-quiescence",
             "workspace-a",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .unwrap();
     assert!(
@@ -1173,7 +1173,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         .install_session_environment_owner_projection(
             "mcp-staging-quiescence",
             "workspace-a",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .unwrap();
     assert!(

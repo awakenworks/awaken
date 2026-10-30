@@ -3,7 +3,7 @@
 //! a lost CAS response as a conflict; the T33/T04/T17 rows also need the
 //! ambiguous `AuthorityUnavailable` a lost network response produces.
 use super::*;
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, SessionCreateResult, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationResult, SessionRepositoryError,
 };
@@ -23,7 +23,7 @@ struct Faults {
 }
 
 pub(crate) struct ResponseLossStore {
-    inner: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    inner: Arc<dyn crate::SessionStore>,
     faults: Mutex<Faults>,
     pub(crate) commits: AtomicUsize,
     pub(crate) creates: AtomicUsize,
@@ -34,7 +34,7 @@ fn lost(detail: &str) -> SessionRepositoryError {
 }
 
 impl ResponseLossStore {
-    pub(crate) fn new(inner: Arc<dyn awaken_session_repository_contract::SessionStore>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn crate::SessionStore>) -> Self {
         Self {
             inner,
             faults: Mutex::default(),
@@ -65,7 +65,7 @@ impl ResponseLossStore {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::SessionRepositoryReads for ResponseLossStore {
+impl awaken_session_contract::SessionRepositoryReads for ResponseLossStore {
     async fn get(
         &self,
         session_id: &SessionId,
@@ -79,8 +79,8 @@ impl awaken_session_repository_contract::SessionRepositoryReads for ResponseLoss
 
     async fn scan(
         &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
         self.inner.scan(query).await
     }
 
@@ -89,7 +89,7 @@ impl awaken_session_repository_contract::SessionRepositoryReads for ResponseLoss
         owner_scope: &str,
         session_id: &SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         self.inner
@@ -185,25 +185,25 @@ impl SessionRepository for ResponseLossStore {
 
     async fn count_environment_phase(
         &self,
-        phase: awaken_session_state_contract::SessionEnvironmentPhase,
+        phase: awaken_session_contract::SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
         self.inner.count_environment_phase(phase).await
     }
 }
 
-use awaken_session_repository_contract::SessionReconciliation;
+use awaken_session_contract::SessionReconciliation;
 
 #[async_trait::async_trait]
 impl SessionReconciliation for ResponseLossStore {
     async fn reconciliation_scan(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
         self.inner.reconciliation_scan(after).await
     }
 }
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::LifecycleOutbox for ResponseLossStore {
+impl awaken_session_contract::LifecycleOutbox for ResponseLossStore {
     async fn append_lifecycle(
         &self,
         fact: ManagedLifecycleFact,

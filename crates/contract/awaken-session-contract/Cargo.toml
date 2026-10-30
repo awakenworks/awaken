@@ -1,0 +1,38 @@
+[package]
+name = "awaken-session-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+product = "platform"
+bounded_context = "session"
+layer = "contract"
+kinds = ["types", "spi"]
+authority = "session"
+separation = "contract"
+
+[dependencies]
+async-trait.workspace = true
+awaken-agent-contract.workspace = true
+awaken-lease-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-time.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+awaken-reliability-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
+proptest.workspace = true
+awaken-environment-contract.workspace = true
+
+[lints]
+workspace = true

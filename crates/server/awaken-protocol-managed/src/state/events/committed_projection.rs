@@ -73,7 +73,7 @@ impl ManagedState {
         &self,
         session_id: &str,
         owner_scope: &str,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         memo: ProjectionDeliveryMemo,
     ) -> Result<CommittedPrefixBase, StateError> {
         if persisted.session_id != session_id {
@@ -145,7 +145,7 @@ impl ManagedState {
     async fn build_committed_projection_candidate_over(
         &self,
         session_id: &str,
-        persisted: awaken_session_state_contract::PersistedSession,
+        persisted: awaken_session_contract::PersistedSession,
         base: CommittedPrefixBase,
         started: awaken_time::mono::Stopwatch,
     ) -> Result<
@@ -196,7 +196,7 @@ impl ManagedState {
             &evidence.historical_pending,
         );
         let order_index = OrderIndex::new(OrderEvidence {
-            updates: awaken_session_state_contract::SessionUpdateHistory::for_session(&persisted),
+            updates: awaken_session_contract::SessionUpdateHistory::for_session(&persisted),
             session_id,
             batches: &persisted.event_batches,
             closed_intervals: &persisted.closed_runtime_intervals,

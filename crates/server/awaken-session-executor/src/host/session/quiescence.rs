@@ -14,12 +14,12 @@ impl crate::RunAssembly {
     pub(crate) async fn quiesce_environment_continuation(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[session_mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         let sessions = &self.installed_sessions;
         let realization_view = sessions.realizations();
         self.realization_executor
@@ -111,7 +111,7 @@ impl crate::RunAssembly {
         sessions
             .modify_run(thread, |run| run.context = None)
             .map_err(crate::installed_session::registry_run_error)?;
-        Ok(awaken_session_state_contract::QuiescenceReceipt {
+        Ok(awaken_session_contract::QuiescenceReceipt {
             effect_id: operation.effect_id().to_owned(),
             generation_id: generation.id().to_owned(),
             activity_epoch: operation.activity_epoch(),

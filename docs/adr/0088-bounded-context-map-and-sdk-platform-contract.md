@@ -964,3 +964,52 @@ names while accepting the original catalog and blob port. The same subject-
 scoped blob erasure/retry case runs in that graph, and the original full/default
 executor tests remain required. A combined workspace build cannot substitute
 for isolated-product evidence, and source checks do not claim native acceptance.
+
+
+## Amendment 2026-10-30: one Session contract and responsibility-named roles
+
+Session aggregate state, events, budget and persistence SPI have one defining
+boundary, `awaken-session-contract`, with private state/event/budget/repository
+modules. Consumers depend on that owner; the four former package names are not
+compatibility implementations. The existing application composition owns the
+method-less `SessionStore` helper. Physical checkpoint and restore values remain
+in `awaken-provisioning-contract` and are consumed directly, while independent
+Dream, shared identifiers and Container transport retain their existing owners.
+No second persistence, lifecycle, public-value copy or synchronization path is
+introduced by this consolidation.
+
+The existing Session execution roles retain their methods and original
+implementations under names describing their callers' responsibilities:
+
+| Former role | Defining role in `awaken-session-execution-contract` |
+|---|---|
+| `SessionRuntime` | `SessionRuns` |
+| `StreamingRunRuntime` | `StreamingRuns` |
+| `CoordinationRuntime` | `ChildRunCoordination` |
+| `ThreadReadRuntime` | `ThreadReads` |
+| `OutcomeRuntime` | `Outcomes` |
+| `BudgetRuntime` | `BudgetAccounting` |
+| `TerminalCleanupRuntime` | `TerminalCleanup` |
+| `LiveInboxRuntime` | `LiveInboxAccess` |
+
+`LiveInboxAccess` is the thread-addressed Session lookup/edit role; the existing
+SDK `LiveInbox` remains the attempt-local queue. Neither is an alias for the
+other. The four existing SDK-engine observation values whose names include
+`Runtime` keep their definitions and wire representation. The deployment
+`RunIngress` value likewise retains its Direct/Durable queue-selection meaning;
+it is not the former application role and owns no Run admission state machine.
+
+Cloud's Billing, Pro and Hosting consumers replace their old Session package
+imports and equivalent manifest declarations with the defining contract. All
+isolated Native-consuming workspace pins and locks must name the same reviewed
+Native and IAM cohort, including Hosted Worker. Flow's existing execution ACL
+consumes that same contract, its original application `SessionStore` and direct
+physical-provider types; its terminal-cleanup test implementations use the
+renamed role. Source callers keep public wire literals and the original state,
+CAS and replay behavior. These are source-API migrations within one cohort,
+without old-role aliases or an alternate compatibility service.
+
+Compile contracts and original tests remain with their owners. Public API
+snapshots, isolated consumer builds and current-source native qualification must
+cover the defining contracts and their consumers before qualified delivery;
+source navigation or a dependency metadata pass does not establish that result.

@@ -1,7 +1,7 @@
 {
   "$comment": "Shrink-only ratchet of scripts/ci/_contract_map_fitness.py (ADR-0091). Numbers may only fall; write it with `python3 scripts/ci/_contract_map_fitness.py --write-baseline`; raising one needs --reason, kept in growth_reasons.",
   "contract-crates": {
-    "contract crates": 33
+    "contract crates": 30
   },
   "optional-role": {
     "AcpToolExporter::attached_channels": 1,
@@ -17,7 +17,6 @@
     "ResourceReclamationRepository": 1,
     "ResourceRegistry": 1,
     "Sealed": 1,
-    "SessionStore": 1,
     "SessionTerminalCleanupControl": 1,
     "TenureScope": 1,
     "ToolExecutionPermit": 1,
@@ -59,7 +58,6 @@
     "awaken-session-configuration-contract": 3,
     "awaken-session-execution-contract": 51,
     "awaken-session-realization-contract": 3,
-    "awaken-session-state-contract": 7,
     "awaken-tenancy": 2,
     "awaken-worker-contract": 2
   },
@@ -69,11 +67,21 @@
     "awaken-worker-contract": 2
   },
   "aggregate-pub-field": {
+    "BudgetReachTransition": 5,
     "CheckpointReceipt": 3,
+    "DeletedSessionEventAdmissions": 2,
     "IdempotencyRecord": 2,
+    "ManagedBudgetUsageCursor": 4,
+    "ManagedLifecycleFact": 6,
+    "ManagedListPriceRequest": 2,
+    "ManagedListPriceSnapshot": 7,
+    "ManagedModelUsageCursor": 4,
+    "ManagedRuntimeListRates": 3,
+    "ManagedTokenListRates": 4,
     "PersistedSession": 23,
     "QuiescenceReceipt": 5,
     "RestoreReceipt": 4,
+    "RetainedEventAdmission": 5,
     "SandboxCheckpointRequest": 10,
     "ScopedPersistedSession": 2,
     "SessionCleanupCommand": 4,
@@ -81,8 +89,17 @@
     "SessionCleanupDisposalReceipt": 6,
     "SessionCleanupPreparation": 3,
     "SessionEnvironmentReceipt": 8,
+    "SessionEventBatch": 9,
+    "SessionEventBatchOperation": 2,
+    "SessionEventDispatchSettlementReceipt": 2,
+    "SessionEventEntry": 5,
+    "SessionEventInterrupt": 2,
+    "SessionEventProjectionAnchor": 1,
+    "SessionEventToolReply": 8,
     "SessionExecutionTransitionError": 2,
     "SessionIdempotencyReceipt": 2,
+    "SessionInitialEventPlan": 1,
+    "SessionModelUsage": 4,
     "SessionMutation": 4,
     "SessionRepositoryPublicationCommand": 3,
     "SessionRepositoryPublicationIntent": 2,
@@ -90,10 +107,19 @@
     "SessionRepositoryPublicationRejection": 3,
     "SessionResourceActivation": 10,
     "SessionResourceState": 6,
+    "SessionRuntimeInterval": 10,
+    "SessionRuntimeIntervalObservation": 5,
+    "SessionRuntimeIntervalStart": 6,
     "SessionScan": 3,
     "SessionTerminalCleanupDisposalEffect": 2,
     "SessionTerminalCleanupEffect": 2,
+    "SessionThreadToolReplyCommand": 9,
+    "SessionThreadToolReplyDelivery": 3,
+    "SessionThreadToolReplyFence": 2,
     "SessionTombstone": 3,
+    "SessionUsage": 8,
+    "SessionUserRunCommand": 8,
+    "SessionUserRunSystemInput": 2,
     "SourceDisposedReceipt": 4
   },
   "growth_reasons": {
@@ -102,6 +128,36 @@
     },
     "contract-reexport": {
       "awaken-runtime-contract": "{\"reason\": \"ADR-0088 amendment 2026-10-28: move the pure ThreadUsage vocabulary to Agent contract while preserving the three existing Runtime SDK import paths; new consumers import the owner directly.\", \"approved_by\": \"repository user: implement the reviewed crate and contract optimization, 2026-10-28\", \"date\": \"2026-10-28\", \"remove_when\": \"A reviewed SDK major migration removes the three legacy Runtime ThreadUsage import paths after downstream consumers adopt the Agent owner.\"}"
+    },
+    "aggregate-pub-field": {
+      "BudgetReachTransition": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "DeletedSessionEventAdmissions": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedBudgetUsageCursor": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedLifecycleFact": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedListPriceRequest": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedListPriceSnapshot": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedModelUsageCursor": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedRuntimeListRates": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "ManagedTokenListRates": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "RetainedEventAdmission": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventBatch": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventBatchOperation": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventDispatchSettlementReceipt": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventEntry": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventInterrupt": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventProjectionAnchor": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionEventToolReply": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionInitialEventPlan": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionModelUsage": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionRuntimeInterval": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionRuntimeIntervalObservation": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionRuntimeIntervalStart": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionThreadToolReplyCommand": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionThreadToolReplyDelivery": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionThreadToolReplyFence": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionUsage": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionUserRunCommand": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",
+      "SessionUserRunSystemInput": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}"
     }
   }
 }

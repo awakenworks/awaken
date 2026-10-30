@@ -117,3 +117,22 @@ Neither projection grants authority beside the root CAS and its realization leas
 Expired pristine cleanup-affinity eligibility and receipt visibility are also pure
 queries of that same state owner; the application obtains the receipt and performs
 the existing fenced assignment CAS.
+
+## Amendment 2026-10-30: one Session Core contract
+
+The existing Session state, Event, budget and repository contracts consolidate
+into `awaken-session-contract`, with private modules and one explicit public
+vocabulary. This changes code ownership and paths, not the aggregate transition
+laws, persistence schema, serde fields, replay/CAS rules or runtime authorities.
+The historical before-state tables above retain their original subjects.
+SessionTypes, Dream, configuration, physical provider SPI and transport contracts
+keep their existing owners. The empty `SessionStore` composition marker moves
+to the existing Session application's persistence composition; its real reader,
+maintenance, write and outbox ports remain Core-owned. Tooling conformance uses
+those Core role bounds and gains no normal application dependency.
+
+All original owned tests, proof bodies and the persisted proptest regression seed
+are retained. Previously public Event/Budget value fields retain their exact
+reachability, declarations and serde shape; their newly inherited guard measurement
+is recorded with original-source provenance, not approval of new public fields.
+Source conservation is not current native or formal qualification.

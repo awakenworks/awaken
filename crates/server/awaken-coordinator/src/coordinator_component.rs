@@ -18,8 +18,8 @@ use awaken_executable_agent_contract::{
 use awaken_protocol_managed::ManagedState;
 use awaken_resource_contract::ResourceRegistry;
 use awaken_session_application::SessionApplication;
+use awaken_session_contract::SessionRepository;
 use awaken_session_dream_contract::DreamProcessStore;
-use awaken_session_repository_contract::SessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 

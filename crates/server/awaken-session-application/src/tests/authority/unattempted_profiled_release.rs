@@ -1,7 +1,7 @@
 use super::*;
 use awaken_session_configuration_contract::resource::SessionMutationPolicy;
 use awaken_session_configuration_contract::{ControlSessionCreationInputs, SessionCreationIntent};
-use awaken_session_state_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
+use awaken_session_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
 
 pub(super) fn unattempted(id: &str) -> PersistedSession {
     unattempted_with_placement(id, awaken_session_types::SessionRuntimePlacement::Local)
@@ -71,10 +71,10 @@ fn creation_intent(
 
 fn fact(id: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
-        id: awaken_session_event_contract::session_terminated_fact_id(id),
+        id: awaken_session_contract::session_terminated_fact_id(id),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
-        event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
+        event_type: awaken_session_contract::SESSION_TERMINATED.into(),
         timestamp: 1,
         runtime_interval: None,
     }
@@ -134,15 +134,14 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
                 s.active_activity_epochs.insert(2);
             }),
             ("running-interval", |s| {
-                s.running_interval =
-                    Some(awaken_session_state_contract::SessionRuntimeIntervalStart {
-                        interval_id: "old".into(),
-                        activity_epoch: 2,
-                        started_at_unix_ms: 1,
-                        opened_revision: Default::default(),
-                        admitted_after_commit_cursor: None,
-                        observations: Vec::new(),
-                    })
+                s.running_interval = Some(awaken_session_contract::SessionRuntimeIntervalStart {
+                    interval_id: "old".into(),
+                    activity_epoch: 2,
+                    started_at_unix_ms: 1,
+                    opened_revision: Default::default(),
+                    admitted_after_commit_cursor: None,
+                    observations: Vec::new(),
+                })
             }),
             ("realization-lease", |s| {
                 s.realization = Some(crate::session_resource::SessionRealizationLease {
@@ -235,7 +234,7 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
                         &SessionId::from(&id),
                         "2026-10-10T00:00:00Z",
                         fact(&id),
-                        awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                        awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
                     )
                     .await
                     .is_err(),
@@ -295,7 +294,7 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
                     &SessionId::from(id),
                     "2026-10-10T00:00:00Z",
                     fact(id),
-                    awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                    awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
                 )
                 .await
                 .is_err(),
@@ -312,7 +311,7 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
                 &SessionId::from(id),
                 "2026-10-10T00:00:00Z",
                 fact(id),
-                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
             )
             .await
             .unwrap();
@@ -337,7 +336,7 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
                 &SessionId::from(id),
                 "another-timestamp",
                 fact(id),
-                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
             )
             .await
             .unwrap();
@@ -384,7 +383,7 @@ fn unattempted_profiled_release_and_activity_share_the_root_cas() {
                 &session_id,
                 "2026-10-10T00:00:00Z",
                 fact(id),
-                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
             )
         );
         assert_ne!(
@@ -524,7 +523,7 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                         &sid,
                         "2026-10-14T00:00:00Z",
                         fact(&id),
-                        awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                        awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
                     ),
                     app.activities
                         .begin_activity_for_operation(&sid, "racing-operation"),
@@ -537,7 +536,7 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                             &SessionId::from(&id),
                             "2026-10-14T00:00:00Z",
                             fact(&id),
-                            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                            awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
                         )
                         .await,
                     None,
@@ -571,7 +570,7 @@ fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup()
                             &SessionId::from(&id),
                             "different-display-time",
                             fact(&id),
-                            awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease
+                            awaken_session_contract::SessionArchiveAdmission::ProfiledRelease
                         )
                         .await
                         .is_err()

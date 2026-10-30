@@ -74,14 +74,14 @@ impl StateError {
     }
 }
 
-impl From<awaken_session_state_contract::SessionRepositoryError> for StateError {
-    fn from(error: awaken_session_state_contract::SessionRepositoryError) -> Self {
+impl From<awaken_session_contract::SessionRepositoryError> for StateError {
+    fn from(error: awaken_session_contract::SessionRepositoryError) -> Self {
         match error {
-            awaken_session_state_contract::SessionRepositoryError::NotFound => Self::NotFound,
-            awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                message,
-            ) => Self::Run(RunError::unavailable(message)),
-            awaken_session_state_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
+            awaken_session_contract::SessionRepositoryError::NotFound => Self::NotFound,
+            awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(message) => {
+                Self::Run(RunError::unavailable(message))
+            }
+            awaken_session_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
             error => Self::Run(RunError::classified(
                 "session_repository_invalid",
                 error.to_string(),
@@ -109,7 +109,7 @@ impl From<awaken_session_application::SessionMutationError> for StateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_state_contract::{SessionRepositoryConflict, SessionRepositoryError};
+    use awaken_session_contract::{SessionRepositoryConflict, SessionRepositoryError};
 
     #[test]
     fn repository_causes_survive_the_managed_boundary() {

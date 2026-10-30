@@ -455,7 +455,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
         } else {
             let generation = generation(thread);
             SessionEnvironmentRetirementCause::CheckpointSource {
-                operation: awaken_session_state_contract::SessionEnvironmentOperation::new(
+                operation: awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
                     &awaken_session_types::SessionId::from(thread),
                     "suspend",
@@ -596,7 +596,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
             r.environment_mut().owner = resident(thread, environment.clone());
         });
     let prepared_generation = generation(thread);
-    let prepared_operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let prepared_operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -615,14 +615,14 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
             &environment,
         )
         .expect("C1 exact Preparation owner");
-    let asserted_generation = awaken_session_state_contract::SandboxGeneration::new(
+    let asserted_generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         2,
         u64::MAX,
         "other-environment",
         "other-image",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -681,7 +681,7 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
     // branch because their source effect is non-empty.
     let thread = "legacy-suspending-projection";
     let generation = generation(thread);
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -701,12 +701,12 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Suspending {
+            &awaken_session_contract::SessionEnvironmentState::Suspending {
                 operation,
                 source_effect_id: Box::new(String::new()),
                 source_binding: "legacy-binding".into(),
                 generation,
-                suspend_phase: awaken_session_state_contract::SuspendPhase::ReadyToDispose,
+                suspend_phase: awaken_session_contract::SuspendPhase::ReadyToDispose,
                 checkpoint: None,
                 source_release_preparation: None,
             },

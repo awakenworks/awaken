@@ -20,7 +20,7 @@ pub struct SessionExecutionObservation {
     pub model: String,
     pub execution_model_ref: String,
     pub backend_ref: Option<String>,
-    pub execution: awaken_session_state_contract::SessionExecutionState,
+    pub execution: awaken_session_contract::SessionExecutionState,
     pub runs: Vec<SessionRunExecutionObservation>,
 }
 

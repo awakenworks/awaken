@@ -282,14 +282,14 @@ pub trait SessionCoordinationReads: Send + Sync {
     /// source. This is separate from complete historical/business containment.
     async fn source_dispatch_observation(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> crate::SessionSourceDispatchObservation;
 
     /// Rebuild execution containment from the observed terminal root and the
     /// original execution authority. Unsupported fixtures remain unproven.
     async fn execution_recovery_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> crate::SessionExecutionRecoveryObservation {
         crate::SessionExecutionRecoveryObservation::NotProven {
             reason: crate::SessionExecutionRecoveryGap::HistoryUnavailable,

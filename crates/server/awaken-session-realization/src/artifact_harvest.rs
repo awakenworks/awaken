@@ -292,7 +292,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
         workspace: String,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let recovery = awaken_resource_contract::ArtifactRecovery {
             workspace_id: workspace,

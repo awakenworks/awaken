@@ -413,7 +413,7 @@ macro_rules! neutral_role {
 impl $crate::SessionCoordinationReads for $ty {
             async fn source_dispatch_observation(
                 &self,
-                _session: &awaken_session_state_contract::PersistedSession,
+                _session: &awaken_session_contract::PersistedSession,
             ) -> $crate::SessionSourceDispatchObservation {
                 Default::default()
             }

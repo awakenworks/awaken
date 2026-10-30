@@ -27,7 +27,7 @@ struct ExactRepositoryRegistry {
 #[derive(Clone)]
 struct ExactTerminalPublicationControl {
     workspace_id: String,
-    command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+    command: awaken_session_contract::SessionRepositoryPublicationCommand,
     lease: Arc<Mutex<awaken_session_configuration_contract::resource::SessionRealizationLease>>,
 }
 
@@ -90,7 +90,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         _session_id: &awaken_session_types::SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        _receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        _receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         Err(
             awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
@@ -103,7 +103,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         _session_id: &awaken_session_types::SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        _rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        _rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         Err(
             awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
@@ -115,7 +115,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
 
 fn terminal_publication_command(
     session_id: &str,
-) -> awaken_session_state_contract::SessionRepositoryPublicationCommand {
+) -> awaken_session_contract::SessionRepositoryPublicationCommand {
     let intent = serde_json::from_value(serde_json::json!({
         "input": {
             "binding_id": "repository-binding",
@@ -138,7 +138,7 @@ fn terminal_publication_command(
         }
     }))
     .expect("terminal publication intent");
-    let mut operation = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut operation = awaken_session_contract::SessionCleanupOperation::default();
     operation
         .request_with_publication(&awaken_session_types::SessionId::from(session_id), intent)
         .expect("terminal publication fence");
@@ -748,7 +748,7 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
 #[tokio::test]
 async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     type PublicationFence = (
-        awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        awaken_session_contract::SessionRepositoryPublicationCommand,
         awaken_session_configuration_contract::resource::SessionRealizationLease,
     );
 

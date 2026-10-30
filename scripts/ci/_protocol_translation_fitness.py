@@ -9,7 +9,7 @@ this check refuses the lexical forms each decision needs:
 
 | Rule | Production protocol source ...                                   | Why it is a decision |
 |---|---|---|
-| T1 | depends on, or names, `awaken-session-repository-contract`       | it reaches the persistence port past the application |
+| T1 | names a canonical Core persistence SPI or the App store composition role (including same-origin re-exports) | it reaches persistence past the application |
 | T2 | constructs durable write vocabulary (`IdempotencyRecord {`,      | it authors a root mutation, a replay identity or a lifecycle fact |
 |    | `SessionMutation {`, `SessionMutationPayload::`, `SessionTombstone {`, `ManagedLifecycleFact {`) | |
 | T3 | calls an aggregate decision function (`transition_environment`,  | it evaluates the state machine itself |
@@ -33,18 +33,18 @@ import re
 from pathlib import Path
 
 import _crate_boundary_workspace
+from _contract_map_fitness import CanonicalOrigins
 
 TEST_FILES = re.compile(r"(^|/)(tests?|test_support)(\.rs|/)|_tests\.rs$")
-REPOSITORY_CONTRACT = "awaken-session-repository-contract"
+SESSION_CONTRACT = "awaken-session-contract"
+PERSISTENCE_ORIGINS = {
+    SESSION_CONTRACT: {"SessionRepository", "SessionRepositoryReads", "SessionReconciliation", "LifecycleOutbox"},
+    "awaken-session-application": {"SessionStore"},
+}
 
 LIFECYCLE_ENUMS = r"(?:SessionExecutionState|ActivationState|SessionEnvironmentPhase|McpAttachmentState)"
 VARIANT = LIFECYCLE_ENUMS + r"\s*::\s*[A-Z]\w*"
 RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
-    (
-        "T1",
-        "reaches the Session persistence port; call the application",
-        re.compile(r"\bawaken_session_repository_contract\b"),
-    ),
     (
         "T2",
         "constructs durable write vocabulary; the application authors mutations, replay identities and facts",
@@ -82,7 +82,7 @@ RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 )
 
 
-def source_violations(sources: dict[str, str]) -> list[str]:
+def source_violations(sources: dict[str, str], *, origins=None, repo_root=None) -> list[str]:
     """Rule violations in one protocol crate's compiled sources.
 
     Cause/effect graph: C1 the file is production protocol code; C2 its
@@ -90,23 +90,22 @@ def source_violations(sources: dict[str, str]) -> list[str]:
     when C1 is false or no rule matches; E2 reject once per (file, line, rule).
     """
     errors: list[str] = []
+    origins = CanonicalOrigins(PERSISTENCE_ORIGINS) if origins is None else origins
     for relative, source in sorted(sources.items()):
         if TEST_FILES.search(relative):
             continue
         syntax = _crate_boundary_workspace.rust_syntax(
             _crate_boundary_workspace.production_rust(source)
         )
+        reaches = (origins.file_reaches(Path(repo_root) / relative) if repo_root is not None
+                   else origins.source_reaches(_crate_boundary_workspace.production_rust(source)))
+        lines = sorted({line for line, _canonical_origin in reaches})
+        errors.extend(f"{relative}:{line}: protocol T1: reaches the Session persistence port; call the application"
+                      for line in lines)
         for rule, reason, pattern in RULES:
             lines = sorted({syntax.count("\n", 0, m.start()) + 1 for m in pattern.finditer(syntax)})
             errors.extend(f"{relative}:{line}: protocol {rule}: {reason}" for line in lines)
     return errors
-
-
-def manifest_violations(relative: str, manifest: dict) -> list[str]:
-    """T1 uses package identity across normal/build targets; dev is exempt."""
-    if REPOSITORY_CONTRACT in _crate_boundary_workspace.normal_dependency_names(manifest):
-        return [f"{relative}: protocol T1: {REPOSITORY_CONTRACT} is a production dependency"]
-    return []
 
 
 def protocol_manifests(repo_root: Path) -> list[Path]:
@@ -132,7 +131,7 @@ def selftest() -> None:
     | A2 | `public_status()` / `is_terminal()` / `Variant.as_str()` reads | accept |
     | A3 | a forbidden form in cfg(test), a test file, a comment, a string | accept |
     | A4 | a return/impl type naming write vocabulary; a wire `mutation_policy()` lowering | accept |
-    | R1 | `use awaken_session_repository_contract::SessionStore`        | reject T1 |
+    | R1 | `use awaken_session_application::SessionStore`        | reject T1 |
     | R2 | `IdempotencyRecord { key, payload_hash }`                     | reject T2 |
     | R3 | `ManagedLifecycleFact { .. }` / `SessionMutationPayload::Replace` | reject T2 |
     | R4 | `transition_environment(facts, event)`                         | reject T3 |
@@ -141,8 +140,8 @@ def selftest() -> None:
     | R7 | `matches!(execution, SessionExecutionState::Preparing)`       | reject T4 |
     | R8 | `baseline.mutation_policy.is_managed()`                        | reject T4 |
     | R9 | `current.attach(input)` / `input_binding(id, &request, None)`  | reject T5 |
-    | M1 | repository contract under [dev-dependencies] only             | accept |
-    | M2 | repository contract under [dependencies]                      | reject T1 |
+    | M1 | Core DTO/errors or App reconciliation report                  | accept |
+    | M2 | Core persistence origins, aliases or a root glob              | reject T1 |
     """
     path = "crates/server/awaken-protocol-x/src/state.rs"
     accepted = (
@@ -166,7 +165,7 @@ def selftest() -> None:
         {path: "// IdempotencyRecord { key } current.attach(x)\nfn f() { let _ = \"IdempotencyRecord { k }\"; }\n"}
     ) == [], "A3 prose"
     rejected = {
-        "R1": ("T1", "use awaken_session_repository_contract::SessionStore;\n"),
+        "R1": ("T1", "use awaken_session_application::SessionStore;\n"),
         "R2": ("T2", "fn f() { let r = IdempotencyRecord { key: k, payload_hash: h }; }\n"),
         "R3 fact": ("T2", "fn f() -> ManagedLifecycleFact { ManagedLifecycleFact { id } }\n"),
         "R3 payload": ("T2", "fn f() { let p = SessionMutationPayload::Replace(s); }\n"),
@@ -181,27 +180,115 @@ def selftest() -> None:
     for row, (rule, source) in rejected.items():
         found = source_violations({path: source})
         assert len(found) == 1 and f"protocol {rule}:" in found[0], (row, found)
-    dev_only = {"dependencies": {}, "dev-dependencies": {REPOSITORY_CONTRACT: {}}}
-    assert manifest_violations("x/Cargo.toml", dev_only) == [], "M1"
-    production = {"dependencies": {REPOSITORY_CONTRACT: {}}}
-    assert len(manifest_violations("x/Cargo.toml", production)) == 1, "M2"
-    # M3 aliases and workspace inheritance retain the port's package identity;
-    # M4 target-only declarations are still production; M5 build dependencies
-    # cannot bypass the boundary. Cross all three with the dev-only exemption.
-    from unittest import mock
-    inherited = {"workspace": {"dependencies": {
-        "renamed": {"package": REPOSITORY_CONTRACT, "path": "repo"}}}}
-    for section in ("dependencies", "build-dependencies", "dev-dependencies"):
-        for target in (False, True):
-            for spelling in ("original", "alias", "inherited"):
-                alias = REPOSITORY_CONTRACT if spelling == "original" else "renamed"
-                specification = ({"workspace": True} if spelling == "inherited"
-                                 else {"package": REPOSITORY_CONTRACT})
-                table = {section: {alias: specification}}
-                manifest = {"target": {"cfg(windows)": table}} if target else table
-                with mock.patch.object(_crate_boundary_workspace, "load_manifest", return_value=inherited):
-                    found = manifest_violations("x/Cargo.toml", manifest)
-                assert len(found) == int(section != "dev-dependencies"), (section, target, spelling, found)
+    # M1-M5 keep the normal/dev/build/target and inherited-alias distinctions,
+    # now through the canonical symbol origins of the combined values/SPI owner.
+    # Core DTO/errors and the similarly named App report are legitimate values.
+    ordinary = "use awaken_session_contract::{SessionEventBatch, SessionRepositoryError};\n" \
+               "use awaken_session_application::SessionReconciliation;\n"
+    assert source_violations({path: ordinary}) == [], "M1 Core values/App report"
+    for port in PERSISTENCE_ORIGINS[SESSION_CONTRACT]:
+        assert source_violations({path: f"use awaken_session_contract::{{{port} as Port}};"}), "M2 " + port
+    assert source_violations({path: "use awaken_session_contract::*;"}), "M2 root glob reaches SPI"
+    assert source_violations({path: "use awaken_session_contract as values; fn f(_: &dyn values::SessionRepository) {}"}), "M2 namespace rename"
+    _selftest_origin_reexports()
+
+
+
+def _selftest_origin_reexports() -> None:
+    """M3-M7: preserve SPI rejection through each actual origin route.
+
+    Causes: dependency alias/direct/group/namespace/glob imports; inline,
+    #[path] and literal-include module routes; two same-origin re-export hops;
+    normal/build/dev and target declaration forms. Effects: all persistence
+    origins reject; unrelated same-short-name App reports/value DTOs accept;
+    test-only branches grant no production route. Fixtures run no Cargo.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        def crate(name, source, extra=""):
+            base = root / "crates" / name
+            (base / "src").mkdir(parents=True)
+            (base / "Cargo.toml").write_text('[package]\nname = "' + name + '"\n' + extra)
+            (base / "src/lib.rs").write_text(source)
+            return base
+        core = crate(SESSION_CONTRACT, "pub struct SessionEventBatch; pub struct SessionRepositoryError;")
+        app = crate("awaken-session-application", "pub struct SessionReconciliation;")
+        first = crate("first", "pub mod inside { pub use origin::{SessionRepositoryReads as Reader}; }\n"
+                      "pub use self::inside::Reader as Public;\n",
+                      '[dependencies]\norigin = { package = "awaken-session-contract", version = "1" }\n')
+        second = crate("second", 'include!("exports.rs");\n',
+                       '[dependencies]\nfirst = { version = "1" }\n')
+        (second / "src/exports.rs").write_text("pub use first::{Public as Observation};\n")
+        selected = crate("selected", '#[path = "picked.rs"] pub mod view; pub use self::view::*;',
+                         '[dependencies]\nsecond = { version = "1" }\n')
+        (selected / "src/picked.rs").write_text("pub use second::Observation as ReadView;\n")
+        protocol = crate("protocol", "", '[dependencies]\nselected = { version = "1" }\n')
+        manifests = _crate_boundary_workspace.crate_manifests(root / "crates")
+        origins = CanonicalOrigins(PERSISTENCE_ORIGINS, manifests)
+        context = origins.libs["protocol"]
+        for source in ["use selected::ReadView;", "use selected::{ReadView as R};",
+                       "use selected::*;", "fn f(_: &dyn selected::ReadView) {}",
+                       "use selected as x; fn f(_: &dyn x::ReadView) {}"]:
+            assert origins.source_reaches(source, context), ("M3 transitive", source)
+        assert not origins.source_reaches("use awaken_session_application::SessionReconciliation;"), "M4 App report is not Core SPI"
+        assert not origins.source_reaches("use awaken_session_contract::{SessionEventBatch, SessionRepositoryError};"), "M4 Core values"
+        # The canonical walker must keep the exact original files while exposing
+        # namespace views; no independent module parser owns this origin graph.
+        views = []
+        original = _crate_boundary_workspace.production_module_files(manifests)
+        with_views = _crate_boundary_workspace.production_module_files(manifests, module_views=views)
+        assert original == with_views and any(view[2] == ("inside",) for view in views), "M5 one module walk"
+        assert any(view[3].name == "exports.rs" and view[2] == () for view in views), "M5 include same namespace"
+        for section in ("dependencies", "build-dependencies", "dev-dependencies"):
+            for target in (False, True):
+                for inherited in (False, True):
+                    table = ('[target.\'cfg(windows)\'.' + section + ']\n' if target
+                             else '[' + section + ']\n')
+                    authored = '{ workspace = true }' if inherited else '{ package = "awaken-session-contract", version = "1" }'
+                    (protocol / "Cargo.toml").write_text('[package]\nname = "protocol"\n' + table + 'named = ' + authored + '\n')
+                    index = CanonicalOrigins(PERSISTENCE_ORIGINS, manifests,
+                                             workspace_dependencies={"named": {"package": SESSION_CONTRACT}})
+                    assert index.source_reaches("use named::{LifecycleOutbox as Events};", index.libs["protocol"]), \
+                        ("M6 alias identity", section, target, inherited)
+        test_only = crate("test-only", '#[cfg(test)] mod private { pub use origin::SessionRepository; }',
+                          '[dependencies]\norigin = { package = "awaken-session-contract", version = "1" }\n')
+        index = CanonicalOrigins(PERSISTENCE_ORIGINS,
+                                 _crate_boundary_workspace.crate_manifests(root / "crates"),
+                                 workspace_dependencies={"named": {"package": SESSION_CONTRACT}})
+        assert not index.exported_symbols(index.libs["test-only"]), "M7 test-only route excluded"
+        # M8 a local module shadow cannot capture an absolute external path.
+        # The non-absolute same-short-name value is deliberately not the SPI.
+        (protocol / "Cargo.toml").write_text('[package]\nname = "protocol"\n[dependencies]\nawaken-session-contract = { version = "1" }\n')
+        shadow = "mod awaken_session_contract { pub struct SessionRepositoryReads; }\n"
+        (protocol / "src/lib.rs").write_text(shadow + "fn f(_: &dyn ::awaken_session_contract::SessionRepositoryReads) {}")
+        manifests = _crate_boundary_workspace.crate_manifests(root / "crates")
+        index = CanonicalOrigins(PERSISTENCE_ORIGINS, manifests)
+        assert index.file_reaches(protocol / "src/lib.rs"), "M8 absolute external SPI"
+        assert not index.source_reaches("fn f(_: awaken_session_contract::SessionRepositoryReads) {}", index.libs["protocol"]), "M8 local value shadow"
+        assert index.source_reaches("use ::awaken_session_contract::{SessionRepositoryReads as R};", index.libs["protocol"]), "M8 absolute grouped import"
+        # M9 uses the SAME walker uncertainty collector. Missing/nonliteral
+        # reachable inputs cannot become a green negative classification.
+        for include in ['include!(concat!(env!("OUT_DIR"), "/unknown.rs"));', 'include!("missing.rs");']:
+            (protocol / "src/lib.rs").write_text(include)
+            index = CanonicalOrigins(PERSISTENCE_ORIGINS, manifests)
+            assert index.uncertain_reachable("protocol"), "M9 unknown protocol input"
+        (protocol / "src/lib.rs").write_text('include!("known.rs");')
+        (protocol / "src/known.rs").write_text("use awaken_session_contract::SessionEventBatch;")
+        unrelated = crate("unrelated-startup", 'include!(concat!(env!("OUT_DIR"), "/assets.rs"));')
+        index = CanonicalOrigins(PERSISTENCE_ORIGINS, _crate_boundary_workspace.crate_manifests(root / "crates"))
+        assert not index.uncertain_reachable("protocol"), "M9 known DTO-only include"
+        assert not index.file_reaches(protocol / "src/known.rs"), "M9 value-only input has no SPI"
+        assert index.uncertain_reachable("unrelated-startup"), "M9 unrelated generator stays separate"
+        # M10 dependency uncertainty is also reachable even when protocol's own
+        # source is a known DTO-only module. A normal alias edge carries the
+        # unknown input; a disconnected startup generator does not.
+        uncertain = crate("uncertain-adapter", 'include!("missing-generated.rs");')
+        with (protocol / "Cargo.toml").open("a") as manifest:
+            manifest.write('adapter = { package = "uncertain-adapter", version = "1" }\n')
+        index = CanonicalOrigins(PERSISTENCE_ORIGINS, _crate_boundary_workspace.crate_manifests(root / "crates"))
+        assert index.uncertain_reachable("protocol"), "M10 aliased normal dependency input"
+
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -210,18 +297,19 @@ def check_all(repo_root: Path) -> list[str]:
     manifests = protocol_manifests(root)
     if not manifests:
         return ["protocol translation: no crate declares separation = \"protocol\""]
+    all_manifests = _crate_boundary_workspace.crate_manifests(root / "crates")
+    workspace = _crate_boundary_workspace.load_manifest(root / "Cargo.toml").get("workspace", {})
+    origins = CanonicalOrigins(PERSISTENCE_ORIGINS, all_manifests,
+                               workspace_dependencies=workspace.get("dependencies", {}))
     for manifest in manifests:
-        errors.extend(
-            manifest_violations(
-                manifest.relative_to(root).as_posix(),
-                _crate_boundary_workspace.load_manifest(manifest),
-            )
-        )
+        package = _crate_boundary_workspace.package_name(_crate_boundary_workspace.load_manifest(manifest))
+        errors.extend(f"{manifest.relative_to(root)}: protocol T1: unresolved compiled input; no negative SPI verdict: {unknown}"
+                      for unknown in origins.uncertain_reachable(package))
         sources = {
             path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
             for path in _crate_boundary_workspace.production_module_files([manifest])
         }
-        errors.extend(source_violations(sources))
+        errors.extend(source_violations(sources, origins=origins, repo_root=root))
     return errors
 
 

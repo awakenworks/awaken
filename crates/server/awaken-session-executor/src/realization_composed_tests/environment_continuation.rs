@@ -54,14 +54,14 @@ mod tests {
             host.run_assembly
                 .installed_sessions
                 .install_realization(rule, |r| r.execution_mut().authority = authority);
-            let generation = awaken_session_state_contract::SandboxGeneration::new(
+            let generation = awaken_session_contract::SandboxGeneration::new(
                 &awaken_session_types::SessionId::from(rule),
                 1,
                 30_000,
                 "env",
                 "image",
             );
-            let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+            let operation = awaken_session_contract::SessionEnvironmentOperation::new(
                 "workspace",
                 &awaken_session_types::SessionId::from(rule),
                 "suspend",
@@ -122,14 +122,14 @@ mod tests {
                 });
         };
         install(lease.clone());
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
+        let generation = awaken_session_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from(thread),
             1,
             60_000,
             "env",
             "image",
         );
-        let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+        let operation = awaken_session_contract::SessionEnvironmentOperation::new(
             "workspace",
             &awaken_session_types::SessionId::from(thread),
             "suspend",
@@ -138,7 +138,7 @@ mod tests {
             Some(lease.clone()),
             None,
         );
-        let preparation: awaken_session_state_contract::SourceReleasePreparationEffect =
+        let preparation: awaken_session_contract::SourceReleasePreparationEffect =
             serde_json::from_value(serde_json::json!({
                 "operation": operation,
                 "lease": lease,

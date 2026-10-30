@@ -67,7 +67,7 @@ from _architecture_ratchet import Counts, Places, Rule
 BASELINE = Path(__file__).with_name("single_owner_baseline.json")
 LINE_SLACK = 200
 
-STATE_CONTRACT = "awaken-session-state-contract"
+STATE_CONTRACT = "awaken-session-contract"
 REALIZATION_CRATE = "awaken-session-realization"
 # Enum -> crates allowed to construct its variants besides the state contract.
 STATE_ENUMS = {
@@ -375,7 +375,7 @@ def selftest() -> None:
     code = (
         "fn f(s: &mut S) {\n"
         "    s.transition(SessionExecutionState::Idle);\n"                              # S1
-        "    s.environment = awaken_session_state_contract::SessionEnvironmentState::Resident { binding };\n"  # S1
+        "    s.environment = awaken_session_contract::SessionEnvironmentState::Resident { binding };\n"  # S1
         "    let name = SessionExecutionState::Running.as_str();\n"                     # S1
         "    match s.execution { SessionExecutionState::Idle | SessionExecutionState::Running => {} _ => {} }\n"
         "    match e { SessionEnvironmentState::Resident { .. } if ready => {} Some(SessionExecutionState::Idle) => {} }\n"
@@ -390,9 +390,9 @@ def selftest() -> None:
     assert [(enum, code.count("\n", 0, offset) + 1) for enum, offset in found] == [
         ("SessionExecutionState", 2), ("SessionEnvironmentState", 3), ("SessionExecutionState", 4),
     ], f"S1-S3 {found}"
-    aliased = "use awaken_session_state_contract::SessionExecutionState as State;\nfn f() { g(State::Idle); }\n"
+    aliased = "use awaken_session_contract::SessionExecutionState as State;\nfn f() { g(State::Idle); }\n"
     assert [enum for enum, _ in state_constructions(aliased, both)] == ["SessionExecutionState"], "S4 alias"
-    glob = "use awaken_session_state_contract::SessionEnvironmentState::*;\nuse x::SessionExecutionState::{Idle};\n"
+    glob = "use awaken_session_contract::SessionEnvironmentState::*;\nuse x::SessionExecutionState::{Idle};\n"
     assert len(state_constructions(glob, both)) == 2, "S4 glob"
     assert state_constructions("fn f() { g(SessionExecutionState::Idle); }", set()) == [], "S5"
     assert all(not allowed for allowed in STATE_ENUMS.values()), "S5 no crate besides the contract is exempt"
@@ -411,7 +411,7 @@ def selftest() -> None:
     assert laws == {"set_resident"}, f"W2/W4 law list {laws}"
     rewrites = (
         "fn a(e: &mut SessionEnvironmentState) {}\n"                                     # W1
-        "fn b(e: &mut awaken_session_state_contract::SessionEnvironmentState) {}\n"      # W1
+        "fn b(e: &mut awaken_session_contract::SessionEnvironmentState) {}\n"      # W1
         "fn c(s: &mut S) { s.environment.set_resident(x); }\n"                           # W2
         "fn d(s: &mut S) { s.environment = SessionEnvironmentState::from_legacy_binding(None); }\n"  # W3
         "fn e(s: &mut S, o: &S) { s.environment = o.environment.clone(); }\n"            # W3

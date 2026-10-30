@@ -1,4 +1,4 @@
-use awaken_session_budget_contract::{SessionModelUsage, SessionUsage};
+use awaken_session_contract::{SessionModelUsage, SessionUsage};
 
 #[must_use]
 pub fn session_usage_from_thread_usage(

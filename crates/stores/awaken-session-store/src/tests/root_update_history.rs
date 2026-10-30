@@ -1,13 +1,13 @@
 //! Retained Session updates use the original root-mutation SQL conformance owner.
 use super::*;
-use awaken_session_budget_contract::{
-    ManagedBudgetUsageCursor, ManagedListPriceSnapshot, SessionBudgetState,
-};
 use awaken_session_configuration_contract::{
     SessionAgentConfiguration, SessionAgentRoster, SessionAgentRosterMember, SessionModelChoice,
     SessionModelSource, SessionToolConfiguration,
 };
-use awaken_session_state_contract::{SessionAggregate, SessionUpdateHistory};
+use awaken_session_contract::{
+    ManagedBudgetUsageCursor, ManagedListPriceSnapshot, SessionBudgetState,
+};
+use awaken_session_contract::{SessionAggregate, SessionUpdateHistory};
 use awaken_store_conformance::session_store::record_update;
 
 fn pricing() -> ManagedListPriceSnapshot {
@@ -129,7 +129,7 @@ fn authoring_candidate(before: &PersistedSession, field: &str) -> PersistedSessi
     root.into_snapshot()
 }
 
-async fn reject_without_publication<R: awaken_session_repository_contract::SessionStore>(
+async fn reject_without_publication<R: awaken_session_application::SessionStore>(
     repo: &R,
     before: &PersistedSession,
     candidate: PersistedSession,
@@ -150,7 +150,7 @@ async fn reject_without_publication<R: awaken_session_repository_contract::Sessi
     assert_eq!(repo.pending_lifecycle().await.unwrap(), outbox);
 }
 
-pub(super) async fn replacement_table<R: awaken_session_repository_contract::SessionStore>(
+pub(super) async fn replacement_table<R: awaken_session_application::SessionStore>(
     repo: &R,
     prefix: &str,
 ) {
@@ -233,7 +233,7 @@ fn assert_fact_payload(root: &PersistedSession, field: &str, historical: bool) {
     // Independent effect oracle: exactly the selected input field is marked;
     // optional clear is preserved, and Agent history records the full accepted
     // presentation only when the original creation actually recorded it.
-    use awaken_session_state_contract::{SessionFieldUpdate, SessionUpdateAgentConfiguration};
+    use awaken_session_contract::{SessionFieldUpdate, SessionUpdateAgentConfiguration};
     let fact = &SessionUpdateHistory::for_session(root).unwrap().facts()[0];
     assert_eq!(
         [
@@ -288,7 +288,7 @@ fn assert_fact_payload(root: &PersistedSession, field: &str, historical: bool) {
     }
 }
 
-async fn history_rewrite_table<R: awaken_session_repository_contract::SessionStore>(
+async fn history_rewrite_table<R: awaken_session_application::SessionStore>(
     repo: &R,
     before: &PersistedSession,
     prefix: &str,
@@ -338,10 +338,7 @@ async fn history_rewrite_table<R: awaken_session_repository_contract::SessionSto
     }
 }
 
-async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>(
-    repo: &R,
-    prefix: &str,
-) {
+async fn runtime_only_table<R: awaken_session_application::SessionStore>(repo: &R, prefix: &str) {
     // SQL-H6/H7: fresh/legacy x MCP realization/retry/credential renewal or
     // cumulative budget usage. A real credential revision advance changes its
     // exact generation and persists through CAS, without an Agent update.
@@ -432,7 +429,7 @@ async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>
                     .record_configuration_update(
                         &before,
                         true,
-                        awaken_session_event_contract::SessionEventProjectionAnchor {
+                        awaken_session_contract::SessionEventProjectionAnchor {
                             source_commit_cursor: 0,
                         },
                     )
@@ -487,7 +484,7 @@ async fn runtime_only_table<R: awaken_session_repository_contract::SessionStore>
     }
 }
 
-async fn retained_cold_fixtures<R: awaken_session_repository_contract::SessionStore>(
+async fn retained_cold_fixtures<R: awaken_session_application::SessionStore>(
     repo: &R,
     prefix: &str,
 ) -> Vec<PersistedSession> {
@@ -574,7 +571,7 @@ async fn retained_cold_fixtures<R: awaken_session_repository_contract::SessionSt
     expected
 }
 
-async fn assert_retained_cold_fixtures<R: awaken_session_repository_contract::SessionStore>(
+async fn assert_retained_cold_fixtures<R: awaken_session_application::SessionStore>(
     repo: &R,
     expected: Vec<PersistedSession>,
 ) {

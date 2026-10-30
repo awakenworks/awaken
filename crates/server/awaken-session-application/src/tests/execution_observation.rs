@@ -515,7 +515,7 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
             ..command.clone()
         },
         SessionThreadToolReplyCommand {
-            accompanying_system: Some(awaken_session_event_contract::SessionUserRunSystemInput {
+            accompanying_system: Some(awaken_session_contract::SessionUserRunSystemInput {
                 operation_id: "system".into(),
                 content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                     "extra",
@@ -539,31 +539,25 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
 }
 
 fn bind_user_command(session: &mut PersistedSession, idempotency_key: &str) -> RunId {
-    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+    let mut batch = awaken_session_contract::SessionEventBatch::compile(
         &session.session_id,
         format!("batch:{idempotency_key}"),
-        vec![
-            awaken_session_event_contract::SessionEventInput::UserMessage {
-                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "生成当前课件",
-                )],
-            },
-        ],
+        vec![awaken_session_contract::SessionEventInput::UserMessage {
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "生成当前课件",
+            )],
+        }],
     )
     .expect("valid User Event batch");
     batch
         .bind_idempotency(idempotency_key, format!("fingerprint:{idempotency_key}"))
         .expect("valid idempotency coordinate");
     let run_id = match &batch.events[0].event {
-        awaken_session_event_contract::SessionEventCommand::UserMessage { run_id, .. } => {
-            run_id.clone()
-        }
+        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
         _ => unreachable!("fixture contains one User Message"),
     };
     session
-        .install_initial_event_plan(awaken_session_event_contract::SessionInitialEventPlan {
-            batch,
-        })
+        .install_initial_event_plan(awaken_session_contract::SessionInitialEventPlan { batch })
         .expect("install Event batch");
     run_id
 }
@@ -798,8 +792,7 @@ async fn update_history_uses_validated_root_prefix_after_replay_and_noop_checks(
         .unwrap();
     assert!(applied.command_applied, "U2");
     let committed = repo.get(&id).await.unwrap();
-    let history =
-        awaken_session_state_contract::SessionUpdateHistory::for_session(&committed).unwrap();
+    let history = awaken_session_contract::SessionUpdateHistory::for_session(&committed).unwrap();
     assert_eq!(history.facts().len(), 1, "U2");
     assert_eq!(
         history.facts()[0].observed_runtime().source_commit_cursor,
@@ -1042,28 +1035,22 @@ fn user_run_retry_identity_has_one_aggregate_owner_and_fails_closed_on_ambiguity
     );
 
     let mut initial = observed_session("session-initial");
-    let batch = awaken_session_event_contract::SessionEventBatch::compile(
+    let batch = awaken_session_contract::SessionEventBatch::compile(
         &initial.session_id,
         "initial-batch",
-        vec![
-            awaken_session_event_contract::SessionEventInput::UserMessage {
-                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "生成初始课件",
-                )],
-            },
-        ],
+        vec![awaken_session_contract::SessionEventInput::UserMessage {
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "生成初始课件",
+            )],
+        }],
     )
     .expect("valid initial batch");
     let initial_run_id = match &batch.events[0].event {
-        awaken_session_event_contract::SessionEventCommand::UserMessage { run_id, .. } => {
-            run_id.clone()
-        }
+        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
         _ => unreachable!("fixture contains one User Message"),
     };
     initial
-        .install_initial_event_plan(awaken_session_event_contract::SessionInitialEventPlan {
-            batch,
-        })
+        .install_initial_event_plan(awaken_session_contract::SessionInitialEventPlan { batch })
         .expect("install initial batch");
     assert_eq!(
         initial.user_run_idempotency_key(&initial_run_id).unwrap(),

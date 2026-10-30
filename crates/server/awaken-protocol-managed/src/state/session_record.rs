@@ -279,7 +279,7 @@ pub(super) struct SessionRecord {
     pub(super) event_times: HashMap<String, u64>,
     pub(super) child_times: HashMap<String, ThreadTimeEvidence>,
     /// Durable source of truth for the runtime's currently applied input projection.
-    pub(super) resource_state: awaken_session_state_contract::SessionResourceState,
+    pub(super) resource_state: awaken_session_contract::SessionResourceState,
     /// Rendered projection result. Durable entries advance only through the one
     /// committed-prefix reducer; bare `evt_N` entries are transient previews.
     /// Session updates never enter this process-local path.
@@ -616,7 +616,7 @@ impl SessionRecord {
         agent_id: String,
         session: Session,
         session_revision: awaken_session_types::SessionRevision,
-        resource_state: awaken_session_state_contract::SessionResourceState,
+        resource_state: awaken_session_contract::SessionResourceState,
         root_time: RootTimeEvidence,
         events: Vec<Event>,
     ) -> Self {

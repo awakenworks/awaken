@@ -4,11 +4,11 @@ use super::{
     FaultingSessionRepository, RecordingEnvironmentSource, application, create, persisted,
 };
 use crate::SessionMutationError;
-use awaken_session_budget_contract::{
+use awaken_session_contract::{LifecycleOutbox as _, SessionRepositoryReads as _};
+use awaken_session_contract::{
     ManagedListPriceSnapshot, ManagedTokenListRates, SessionBudgetState, SessionModelUsage,
     SessionUsage,
 };
-use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads as _};
 use awaken_session_types::SessionId;
 use std::collections::BTreeMap;
 use std::sync::Arc;

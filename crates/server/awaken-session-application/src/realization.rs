@@ -13,16 +13,16 @@ use awaken_session_configuration_contract::mcp::{
     McpAttachmentState, McpGenerationRef, StageMcpAttachment,
 };
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
+use awaken_session_contract::{
+    ManagedLifecycleFact, PersistedSession, SessionEnvironmentEvent, SessionEnvironmentFacts,
+    SessionEnvironmentState, SessionExecutionState, SessionRepositoryError, transition_environment,
+};
 use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
     SessionRealizationDriveError,
-};
-use awaken_session_state_contract::{
-    ManagedLifecycleFact, PersistedSession, SessionEnvironmentEvent, SessionEnvironmentFacts,
-    SessionEnvironmentState, SessionExecutionState, SessionRepositoryError, transition_environment,
 };
 use awaken_session_types::RunError;
 
@@ -206,7 +206,7 @@ pub struct SessionRealizations {
     session_preparation_cursors: tokio::sync::Mutex<
         std::collections::BTreeMap<
             String,
-            Arc<tokio::sync::Mutex<Option<awaken_session_state_contract::SessionScanCursor>>>,
+            Arc<tokio::sync::Mutex<Option<awaken_session_contract::SessionScanCursor>>>,
         >,
     >,
 }
@@ -532,7 +532,7 @@ impl SessionRealizations {
                         continue;
                     }
                 },
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {
                     report.failures.push(SessionReconciliationFailure {
                         session_id: candidate.session_id.to_string(),

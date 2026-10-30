@@ -446,7 +446,7 @@ async fn environment_is_immutable_across_update() {
 #[tokio::test]
 async fn archived_environment_keeps_existing_session_bearer_http_scope() {
     use awaken_session_application_contract::SessionWorkerAssignment as _;
-    use awaken_session_repository_contract::SessionRepositoryReads as _;
+    use awaken_session_contract::SessionRepositoryReads as _;
     use base64::Engine as _;
     let clock = awaken_time::system_clock();
     let fixture = awaken_protocol_managed_testkit::environment_fixture(clock.clone());

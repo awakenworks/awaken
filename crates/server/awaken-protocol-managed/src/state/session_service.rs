@@ -87,7 +87,7 @@ impl ManagedState {
     /// ```compile_fail,E0599
     /// use std::sync::Arc;
     /// use awaken_protocol_managed::ManagedState;
-    /// fn replace_live(state: ManagedState, store: Arc<dyn awaken_session_repository_contract::SessionStore>) {
+    /// fn replace_live(state: ManagedState, store: Arc<dyn awaken_session_application::SessionStore>) {
     ///     let _ = state.with_session_repo(store);
     /// }
     /// ```
@@ -230,7 +230,7 @@ impl ManagedState {
     #[must_use]
     pub fn with_managed_list_price_provider(
         self,
-        provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
+        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
     ) -> Self {
         self.configure_application(|application| {
             application.set_managed_list_price_provider(provider);

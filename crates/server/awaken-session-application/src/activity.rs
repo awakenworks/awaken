@@ -12,14 +12,14 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 #[cfg(any(test, kani))]
-use awaken_session_state_contract::SessionActivitySettlementPlan;
+use awaken_session_contract::SessionActivitySettlementPlan;
 #[cfg(any(test, kani))]
-use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_contract::SessionExecutionState;
 #[cfg(any(test, kani))]
-use awaken_session_state_contract::session_activity_open_plan;
+use awaken_session_contract::session_activity_open_plan;
 #[cfg(test)]
-use awaken_session_state_contract::session_activity_settlement_plan;
-use awaken_session_state_contract::{IdempotencyRecord, PersistedSession};
+use awaken_session_contract::session_activity_settlement_plan;
+use awaken_session_contract::{IdempotencyRecord, PersistedSession};
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
@@ -51,7 +51,7 @@ pub enum SessionActivityError {
     Internal(String),
 }
 
-use awaken_session_state_contract::SessionActivityAdmissionPlan as SessionActivityOpenPlan;
+use awaken_session_contract::SessionActivityAdmissionPlan as SessionActivityOpenPlan;
 
 /// A fresh activity may consume only the root revision whose complete Runtime
 /// projection was recovered immediately before reservation. Exact activity
@@ -473,7 +473,7 @@ impl SessionActivities {
         match mutations.session_aggregate(session_id).await {
             Ok(session) if session.is_terminal() => return Err(SessionActivityError::Terminal),
             Ok(_) => {}
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Err(SessionActivityError::NotFound);
             }
             Err(error) => return Err(SessionActivityError::mutation(repository_failure(error))),

@@ -19,8 +19,8 @@ use awaken_deployment_contract::{
     DeploymentRunRecord, DeploymentRunView, DeploymentSchedule, DeploymentStatus,
     DeploymentTrigger, DeploymentView, DeploymentWriteOutcome, ScheduledRunClaimOutcome,
 };
-use awaken_session_event_contract::SessionEventProjectionAnchor;
-use awaken_session_state_contract::{
+use awaken_session_contract::SessionEventProjectionAnchor;
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
     SessionCreateResult, SessionEnvironmentPhase, SessionExecutionState, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
@@ -101,7 +101,7 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
                 transcript_prefix: None,
             },
         ),
-        awaken_session_state_contract::SessionResourceState::from_active(
+        awaken_session_contract::SessionResourceState::from_active(
             serde_json::from_value(json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -140,15 +140,15 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
 pub fn hibernated_environment(
     workspace_id: &str,
     id: &str,
-) -> awaken_session_state_contract::SessionEnvironmentState {
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+) -> awaken_session_contract::SessionEnvironmentState {
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(id),
         1,
         100_000,
         "environment",
         "base-image",
     );
-    let suspend = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
         workspace_id,
         &awaken_session_types::SessionId::from(id),
         "suspend",
@@ -157,8 +157,8 @@ pub fn hibernated_environment(
         None,
         None,
     );
-    awaken_session_state_contract::SessionEnvironmentState::Hibernated {
-        checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
+    awaken_session_contract::SessionEnvironmentState::Hibernated {
+        checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
             id: format!("checkpoint-{id}"),
             format: "awaken-fs-tar-v1".into(),
             digest: format!("digest-{id}"),
@@ -185,7 +185,9 @@ pub fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFac
     }
 }
 
-pub async fn create_session<R: awaken_session_repository_contract::SessionStore>(
+pub async fn create_session<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
     repo: &R,
     owner: &str,
     mut value: PersistedSession,
@@ -203,12 +205,14 @@ pub async fn create_session<R: awaken_session_repository_contract::SessionStore>
         .await
         .expect("create Session fixture")
     {
-        awaken_session_state_contract::SessionCreateResult::Applied(value)
-        | awaken_session_state_contract::SessionCreateResult::Replayed(value) => value,
+        awaken_session_contract::SessionCreateResult::Applied(value)
+        | awaken_session_contract::SessionCreateResult::Replayed(value) => value,
     }
 }
 
-pub async fn replace_session<R: awaken_session_repository_contract::SessionStore + ?Sized>(
+pub async fn replace_session<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox + ?Sized,
+>(
     repo: &R,
     owner: &str,
     mut value: PersistedSession,
@@ -258,9 +262,9 @@ pub fn record_update(
     before: &PersistedSession,
     candidate: PersistedSession,
     source_commit_cursor: u64,
-) -> awaken_session_state_contract::SessionAggregate {
+) -> awaken_session_contract::SessionAggregate {
     let mcp_changed = before.mcp != candidate.mcp;
-    let mut root = awaken_session_state_contract::SessionAggregate::try_from(candidate).unwrap();
+    let mut root = awaken_session_contract::SessionAggregate::try_from(candidate).unwrap();
     if !root.configuration_update_changes(before, mcp_changed).any() {
         return root;
     }
@@ -319,7 +323,7 @@ pub fn complete_terminal_cleanup(value: &mut PersistedSession) {
 /// rejected by the contract decoder/normalizer and cannot make a row deletable.
 pub fn install_legacy_completion_wire(
     session: &mut PersistedSession,
-    command: &awaken_session_state_contract::SessionCleanupCommand,
+    command: &awaken_session_contract::SessionCleanupCommand,
 ) {
     let receipt_fingerprint = awaken_agent_contract::stable_fingerprint(&(
         "session-terminal-cleanup-thread-receipt-v1",
@@ -362,7 +366,11 @@ pub fn install_legacy_completion_wire(
 // ── The universal port contract, trait-generic over any backend ──────────────────
 
 /// Round-trip: a saved aggregate reads back byte-for-byte (every field persists).
-pub async fn save_get_round_trips<R: awaken_session_repository_contract::SessionStore>(r: &R) {
+pub async fn save_get_round_trips<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
+    r: &R,
+) {
     let want = create_session(r, "default", session("sesn_1", "hello"), Vec::new()).await;
     assert_eq!(
         r.get(&SessionId::from("sesn_1")).await,
@@ -372,7 +380,11 @@ pub async fn save_get_round_trips<R: awaken_session_repository_contract::Session
 }
 
 /// Absent id → typed NotFound (no fabrication, fail-closed read).
-pub async fn absent_id_reads_none<R: awaken_session_repository_contract::SessionStore>(r: &R) {
+pub async fn absent_id_reads_none<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
+    r: &R,
+) {
     assert_eq!(
         r.get(&SessionId::from("never-saved")).await,
         Err(SessionRepositoryError::NotFound)
@@ -380,7 +392,11 @@ pub async fn absent_id_reads_none<R: awaken_session_repository_contract::Session
 }
 
 /// Idempotent upsert: saving the same id twice keeps the latest, not two rows.
-pub async fn save_is_idempotent_upsert<R: awaken_session_repository_contract::SessionStore>(r: &R) {
+pub async fn save_is_idempotent_upsert<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
+    r: &R,
+) {
     create_session(r, "default", session("sesn_1", "first"), Vec::new()).await;
     replace_session(
         r,
@@ -399,7 +415,7 @@ pub async fn save_is_idempotent_upsert<R: awaken_session_repository_contract::Se
 /// A visible row and its owner are one write: no backend may expose the row with
 /// a missing or stale scope after aggregate creation or replacement returns.
 pub async fn ownership_is_one_atomic_repository_fact<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -431,7 +447,7 @@ pub async fn ownership_is_one_atomic_repository_fact<
 /// Binding is a narrow update: it fails closed for an unknown id and changes no
 /// other aggregate field for a known Session.
 pub async fn environment_state_is_atomic_and_non_destructive<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -454,7 +470,7 @@ pub async fn environment_state_is_atomic_and_non_destructive<
         got.environment.binding(),
         Some(r#"{"provider_kind":"bwrap"}"#)
     );
-    got.environment = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+    got.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
     got.revision = Default::default();
     assert_eq!(got, want, "binding update preserves every other field");
     assert_eq!(
@@ -464,7 +480,7 @@ pub async fn environment_state_is_atomic_and_non_destructive<
 }
 
 pub async fn global_environment_phase_count_has_no_recovery_batch_limit<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     repo: &R,
 ) {
@@ -512,7 +528,9 @@ pub async fn global_environment_phase_count_has_no_recovery_batch_limit<
 
 pub async fn concurrent_phase_transition_has_one_count_snapshot<R>(repo: std::sync::Arc<R>)
 where
-    R: awaken_session_repository_contract::SessionStore + 'static,
+    R: awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox
+        + 'static,
 {
     // Causes: C1 one Hibernated root; C2 its root-CAS transition to Restoring
     // races one global count statement. Effects: E1 the count observes either
@@ -579,7 +597,9 @@ where
 
 pub async fn concurrent_root_cas_has_one_authoritative_winner<R>(repo: std::sync::Arc<R>)
 where
-    R: awaken_session_repository_contract::SessionStore + 'static,
+    R: awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox
+        + 'static,
 {
     /* Multi-instance cause/effect graph: C1 two independent callers read the
      * same Session revision; C2 they submit different replacement commands at
@@ -662,7 +682,7 @@ where
 }
 
 pub async fn vault_reference_index_returns_only_live_scoped_sessions<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -700,33 +720,33 @@ pub async fn vault_reference_index_returns_only_live_scoped_sessions<
     .await;
 
     assert_eq!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::VaultReferences {
-                workspace_id: "ws_a",
-                vault_id: "vlt-live"
-            }
-        )
+        r.scan(awaken_session_contract::SessionScanQuery::VaultReferences {
+            workspace_id: "ws_a",
+            vault_id: "vlt-live"
+        })
         .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
+        .map(awaken_session_contract::SessionScan::into_sessions)
         .unwrap(),
         vec![live],
         "rollout targets only live Sessions in the exact Workspace"
     );
     assert!(
-        r.scan(
-            awaken_session_state_contract::SessionScanQuery::VaultReferences {
-                workspace_id: "ws_a",
-                vault_id: "vlt-other"
-            }
-        )
+        r.scan(awaken_session_contract::SessionScanQuery::VaultReferences {
+            workspace_id: "ws_a",
+            vault_id: "vlt-other"
+        })
         .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
+        .map(awaken_session_contract::SessionScan::into_sessions)
         .unwrap()
         .is_empty()
     );
 }
 
-pub async fn scan_query_decision_table<R: awaken_session_repository_contract::SessionStore>(r: &R) {
+pub async fn scan_query_decision_table<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+>(
+    r: &R,
+) {
     // Scan query cause/effect graph. C1 the query is the Workspace listing,
     // a reference index, or the reconciliation index; C2 a row belongs to the
     // queried Workspace or another one; C3 the row is live or terminal.
@@ -745,8 +765,8 @@ pub async fn scan_query_decision_table<R: awaken_session_repository_contract::Se
     // | Q4   | Vault index | same    | terminal | E2+E3   |
     // | Q5   | Reconcile   | any     | any      | E4      |
     // | Q6   | outbox view | -       | -        | E5      |
-    use awaken_session_repository_contract::LifecycleOutbox;
-    use awaken_session_state_contract::SessionScanQuery;
+    use awaken_session_contract::LifecycleOutbox;
+    use awaken_session_contract::SessionScanQuery;
     let with_vault = |id: &str, execution| {
         let mut value = session(id, id);
         value.execution = execution;
@@ -893,7 +913,7 @@ fn run_free_worker_candidate(id: &str) -> PersistedSession {
     baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     // W1: this legal opt-in uses the same assignment command as production;
     // no model Run, owner or extra persistence effect is introduced by setup.
-    let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(pending)
+    let mut aggregate = awaken_session_contract::SessionAggregate::try_from(pending)
         .expect("valid run-free fixture");
     aggregate
         .assignment()
@@ -908,7 +928,7 @@ fn run_free_worker_candidate(id: &str) -> PersistedSession {
 }
 
 pub async fn unbound_preparation_demand_decision_table<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -945,7 +965,7 @@ pub async fn unbound_preparation_demand_decision_table<
 }
 
 pub async fn worker_realization_owner_scan_decision_table<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -959,7 +979,7 @@ pub async fn worker_realization_owner_scan_decision_table<
     // earlier unbound work already needs that slot; C5 appears in the
     // preparation candidate query. Expiry is never physical-exit evidence.
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_state_contract::{SessionScanQuery, SessionWorkerObligation};
+    use awaken_session_contract::{SessionScanQuery, SessionWorkerObligation};
     let prior_demand = r.worker_demand().await.expect("R3 prior repository demand");
     let mut prior_unbound = false;
     let mut prior_cursor = None;
@@ -1107,7 +1127,7 @@ pub async fn worker_realization_owner_scan_decision_table<
 }
 
 pub async fn credential_source_dependency_decision_table<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -1130,13 +1150,15 @@ pub async fn credential_source_dependency_decision_table<
     // | S6 | match | A | delete | E5 |
     // One typed SELECT adapter for every rule below; expected roots and
     // transaction assertions stay at their original rule sites.
-    async fn references<R: awaken_session_repository_contract::SessionStore>(
+    async fn references<
+        R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
+    >(
         repository: &R,
         id: &str,
     ) -> Vec<PersistedSession> {
         repository
             .scan(
-                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws_a",
                     source_id: &awaken_credential_contract::CredentialSourceId(id.into()),
                 },
@@ -1282,7 +1304,7 @@ pub async fn credential_source_dependency_decision_table<
 /// The lifecycle fact is committed in the same repository transaction as the
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 pub async fn lifecycle_outbox_tracks_every_committed_transition<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {
@@ -1313,7 +1335,7 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
         "sesn_lifecycle",
         "session.runtime_interval_closed",
     );
-    created.runtime_interval = Some(awaken_session_state_contract::SessionRuntimeInterval {
+    created.runtime_interval = Some(awaken_session_contract::SessionRuntimeInterval {
         interval_id: "evt:create".into(),
         activity_epoch: 7,
         started_at_unix_ms: 1_700_000_000_100,
@@ -1430,7 +1452,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
     repo: &R,
     arm_outbox_failure: Arm,
 ) where
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
     Arm: FnOnce() -> Armed,
     Armed: std::future::Future<Output = ()>,
 {
@@ -1616,7 +1638,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
 /// | I3 | terminal | failed | no | absent | E2 absent |
 /// | I4 | terminal | failed | no | resident | E3 indexed for restoration |
 pub async fn pending_resource_activation_index_is_durable<
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     r: &R,
 ) {

@@ -40,13 +40,13 @@ fn paused_session(id: &str) -> PersistedSession {
         legacy.budget,
     );
     session.execution = legacy.execution;
-    session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    session.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
         consumed_numerator: u128::from(CONSUMED_MINOR)
-            * awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+            * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "t12-prices-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
@@ -58,7 +58,7 @@ fn paused_session(id: &str) -> PersistedSession {
         reach_transitions: Vec::new(),
     };
     assert!(
-        awaken_session_state_contract::session_is_budget_paused(&session),
+        awaken_session_contract::session_is_budget_paused(&session),
         "fixture is budget paused"
     );
     session
@@ -80,7 +80,7 @@ fn interrupt_only() -> SessionEventInput {
 struct Fixture {
     _directory: tempfile::TempDir,
     path: String,
-    store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    store: Arc<dyn crate::SessionStore>,
     runtime: Arc<EventBatchRuntime>,
     app: SessionApplication,
 }
@@ -93,7 +93,7 @@ async fn fixture(id: &str) -> Fixture {
         .to_str()
         .unwrap()
         .to_owned();
-    let store: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let store: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .await
             .expect("T12 file SQLite"),
@@ -119,7 +119,7 @@ async fn append(
     session: &SessionId,
     input: SessionEventInput,
     key: &str,
-) -> Result<awaken_session_event_contract::SessionEventBatch, RunError> {
+) -> Result<awaken_session_contract::SessionEventBatch, RunError> {
     app.event_batches
         .append_session_event_batch_idempotent(
             session,
@@ -142,7 +142,7 @@ fn assert_nothing_activated(fixture: &Fixture, root: &PersistedSession, row: &st
     );
     assert_eq!(
         root.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "{row}/O0 still idle"
     );
 }
@@ -212,7 +212,7 @@ async fn budget_paused_session_retains_ordinary_batches_without_execution() {
     let reopened = awaken_session_store::SqliteManagedSessionRepository::open(&fixture.path)
         .await
         .expect("P4 reopen");
-    use awaken_session_repository_contract::SessionRepositoryReads as _;
+    use awaken_session_contract::SessionRepositoryReads as _;
     assert_eq!(
         reopened.get(&session).await.unwrap(),
         root,

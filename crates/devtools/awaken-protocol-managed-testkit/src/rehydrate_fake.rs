@@ -12,8 +12,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_session_contract::PersistedSession;
 use awaken_session_execution_contract::ToolPermissionDecision;
-use awaken_session_state_contract::PersistedSession;
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use awaken_session_application_contract::DelegatedRun;
@@ -34,17 +34,17 @@ pub async fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
 }
 
 pub async fn create_session_fixture(
-    repo: &dyn awaken_session_repository_contract::SessionStore,
+    repo: &dyn awaken_session_application::SessionStore,
     owner: &str,
     mut session: PersistedSession,
 ) {
     session.revision = awaken_session_types::SessionRevision(0);
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(session.clone());
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
     let payload_hash = payload.stable_hash();
     repo.create(
         owner,
         session.clone(),
-        awaken_session_state_contract::IdempotencyRecord {
+        awaken_session_contract::IdempotencyRecord {
             key: format!("test:create:{}:{payload_hash}", session.session_id),
             payload_hash,
         },
@@ -140,9 +140,7 @@ pub struct RehydrateFake {
         >,
     >,
     pub usage_by_thread: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, awaken_session_budget_contract::SessionUsage>,
-        >,
+        std::sync::Mutex<std::collections::HashMap<String, awaken_session_contract::SessionUsage>>,
     >,
     /// Test-only commit interleaving: return the current child transcript, then
     /// atomically expose the supplied newer transcript/lifecycle facts. This
@@ -651,7 +649,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }

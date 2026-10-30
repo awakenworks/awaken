@@ -33,7 +33,7 @@ pub fn remember_ticket_await_target<'a>(
 
 /// The committed state command that records one Thread's usage.
 pub fn fixture_usage_command(
-    usage: awaken_session_budget_contract::SessionUsage,
+    usage: awaken_session_contract::SessionUsage,
 ) -> awaken_agent_contract::agent::state::Command {
     let mut attributed = awaken_runtime_contract::llm::ThreadUsage::default();
     let token_usage =

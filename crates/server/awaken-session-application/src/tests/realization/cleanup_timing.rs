@@ -24,7 +24,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
     let clock = Arc::new(ManualClock::new(1_000_000));
     let id = SessionId::from("clock-usage");
     let mut session = persisted(id.as_str(), false, "idle");
-    session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "typed-usage-fixture".into(),
         effect_id: None,
         generation: None,
@@ -144,7 +144,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
         );
         let id = SessionId::from("clock-cleanup");
         let mut requested = persisted(id.as_str(), true, "terminated");
-        requested.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        requested.resources = awaken_session_contract::SessionResourceState::from_active(
             file_resources("clock-cleanup-file"),
         );
         assert!(requested.terminal_cleanup.request(&id));

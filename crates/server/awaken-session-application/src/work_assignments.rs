@@ -16,8 +16,8 @@ use awaken_session_application_contract::{
     SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership, SessionWorkerAssignment,
     SessionWorkerLeases, WorkDispatchFailure, WorkDispatchReconciliation,
 };
-use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::{PersistedSession, SessionRepositoryError};
+use awaken_session_contract::SessionRepository;
+use awaken_session_contract::{PersistedSession, SessionRepositoryError};
 use awaken_session_types::{RunError, SessionId};
 use awaken_time::WallClockExt as _;
 

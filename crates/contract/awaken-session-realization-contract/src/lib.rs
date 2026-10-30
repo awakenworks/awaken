@@ -23,8 +23,8 @@ pub(crate) use awaken_session_configuration_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, SessionBaselineInputs, SessionNetworkPolicy,
 };
 #[cfg(test)]
-pub(crate) use awaken_session_state_contract::SessionCleanupCommand;
-pub(crate) use awaken_session_state_contract::{
+pub(crate) use awaken_session_contract::SessionCleanupCommand;
+pub(crate) use awaken_session_contract::{
     SessionCleanupDisposalReceipt, SessionCleanupPreparation, SessionEnvironmentOperation,
     SessionEnvironmentState, SessionRepositoryPublicationCommand,
     SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,

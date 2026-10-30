@@ -1,6 +1,6 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // awaken-allow(file-limit-ceiling): 3821 (legacy oversized test file: split, never grow)
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 use std::collections::BTreeMap;
 
@@ -206,7 +206,7 @@ fn normalization_fixture(first: &mut PersistedSession, upgrade: bool) -> (String
 }
 
 async fn assert_pre_upgrade_writer_fenced(
-    repo: &impl awaken_session_repository_contract::SessionStore,
+    repo: &impl awaken_session_application::SessionStore,
     current: &PersistedSession,
 ) {
     // N5: a cached pre-upgrade root with a fresh mutation key cannot restore
@@ -423,7 +423,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     assert!(
         matches!(
             sqlite
-                .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+                .scan(awaken_session_contract::SessionScanQuery::Workspace {
                     workspace_id: "workspace"
                 })
                 .await,
@@ -839,7 +839,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                 transcript_prefix: None,
             },
         ),
-        awaken_session_state_contract::SessionResourceState::from_active(
+        awaken_session_contract::SessionResourceState::from_active(
             serde_json::from_value(serde_json::json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -2035,13 +2035,13 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     ] {
         assert_eq!(
             repo.scan(
-                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws-source",
                     source_id: &awaken_credential_contract::CredentialSourceId(source_id.into())
                 }
             )
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()[0]
                 .session_id,
             session_id,
@@ -2066,13 +2066,13 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     assert_eq!(
         reopened
             .scan(
-                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws-source",
                     source_id: &awaken_credential_contract::CredentialSourceId("source-v1".into())
                 }
             )
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()[0]
             .session_id,
         "sesn_source_v1",
@@ -2131,13 +2131,13 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
     let source_id = awaken_credential_contract::CredentialSourceId("source-pg-v1".into());
     assert_eq!(
         repo.scan(
-            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "ws-source",
                 source_id: &source_id
             }
         )
         .await
-        .map(awaken_session_state_contract::SessionScan::into_sessions)
+        .map(awaken_session_contract::SessionScan::into_sessions)
         .unwrap()[0]
             .session_id,
         session.session_id,
@@ -2160,13 +2160,13 @@ async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_roo
     assert_eq!(
         restarted
             .scan(
-                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "ws-source",
                     source_id: &source_id
                 }
             )
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
+            .map(awaken_session_contract::SessionScan::into_sessions)
             .unwrap()[0]
             .session_id,
         session.session_id,
@@ -2191,7 +2191,7 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
     }
 }
 
-pub(crate) async fn create_fixture<R: awaken_session_repository_contract::SessionStore>(
+pub(crate) async fn create_fixture<R: awaken_session_application::SessionStore>(
     repo: &R,
     owner: &str,
     mut session: PersistedSession,
@@ -2213,19 +2213,19 @@ pub(crate) async fn create_fixture<R: awaken_session_repository_contract::Sessio
         .await
         .expect("create Session fixture")
     {
-        awaken_session_state_contract::SessionCreateResult::Applied(session)
-        | awaken_session_state_contract::SessionCreateResult::Replayed(session) => session,
+        awaken_session_contract::SessionCreateResult::Applied(session)
+        | awaken_session_contract::SessionCreateResult::Replayed(session) => session,
     }
 }
 
-async fn delete_fixture<R: awaken_session_repository_contract::SessionStore>(
+async fn delete_fixture<R: awaken_session_application::SessionStore>(
     repo: &R,
     owner: &str,
     session_id: &str,
     fact: ManagedLifecycleFact,
 ) {
     let current = repo.get(&SessionId::from(session_id)).await.unwrap();
-    let payload = SessionMutationPayload::Delete(awaken_session_state_contract::SessionTombstone {
+    let payload = SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
         session_id: session_id.into(),
         deleted_revision: SessionRevision(current.revision.0 + 1),
         deleted_at: fact.timestamp.to_string(),
@@ -2275,7 +2275,7 @@ fn make_deletable(session: &mut PersistedSession) {
 /// the two-stage preparation/disposal authority.
 fn install_legacy_completion_wire(
     session: &mut PersistedSession,
-    command: &awaken_session_state_contract::SessionCleanupCommand,
+    command: &awaken_session_contract::SessionCleanupCommand,
 ) {
     let receipt_fingerprint = awaken_agent_contract::stable_fingerprint(&(
         "session-terminal-cleanup-thread-receipt-v1",
@@ -2437,7 +2437,7 @@ fn current_mutation_admission_rejects_unreadable_or_foreign_observation_authorit
 /// a first observation. Unknown creation must never be invented by an update.
 /// The same table is invoked by both real SQL adapters through the existing
 /// root-mutation conformance owner, without a second backend test framework.
-async fn root_observation_replacement_table<R: awaken_session_repository_contract::SessionStore>(
+async fn root_observation_replacement_table<R: awaken_session_application::SessionStore>(
     repo: &R,
     prefix: &str,
 ) {
@@ -2599,7 +2599,7 @@ async fn root_observation_replacement_table<R: awaken_session_repository_contrac
 /// | R3 | T | F | - | F/T | idempotency mismatch |
 /// | R4 | F | - | F | F | revision conflict |
 /// | R5 | F | - | - | T | tombstone conflict |
-async fn root_mutation_decision_table<R: awaken_session_repository_contract::SessionStore>(
+async fn root_mutation_decision_table<R: awaken_session_application::SessionStore>(
     repo: &R,
     id: &str,
 ) {
@@ -2660,7 +2660,7 @@ async fn root_mutation_decision_table<R: awaken_session_repository_contract::Ses
     );
 
     let delete_payload =
-        SessionMutationPayload::Delete(awaken_session_state_contract::SessionTombstone {
+        SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {
             session_id: id.into(),
             deleted_revision: SessionRevision(3),
             deleted_at: "3".into(),
@@ -3236,7 +3236,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
     assert!(completed.terminal_cleanup.is_completed());
     assert!(matches!(
         completed.environment,
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
 }
 

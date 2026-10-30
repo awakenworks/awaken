@@ -216,14 +216,14 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     // | F5 | exact | Unmaterialized + pending source owner | E3 |
     // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
     let installed_sessions = Arc::new(InstalledSessions::default());
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("mcp-admission"),
         1,
         100,
         "environment",
         "base",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from("mcp-admission"),
         "suspend",
@@ -264,7 +264,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
             .is_err(),
         "F2/E2"
     );
-    let old_resident = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let old_resident = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "source-binding".into(),
         effect_id: Some("source-effect".into()),
         generation: Some(generation.clone()),
@@ -292,10 +292,10 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
             .expect("installed Sessions"),
         "F3/E3 old Resident"
     );
-    let wrong_generation = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let wrong_generation = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "restored-binding".into(),
         effect_id: Some("restore-effect".into()),
-        generation: Some(awaken_session_state_contract::SandboxGeneration::new(
+        generation: Some(awaken_session_contract::SandboxGeneration::new(
             &awaken_session_types::SessionId::from("mcp-admission"),
             2,
             100,
@@ -326,7 +326,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
             .expect("installed Sessions"),
         "F3/E3 wrong generation"
     );
-    let restored = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let restored = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "restored-binding".into(),
         effect_id: Some("restore-effect".into()),
         generation: Some(generation),
@@ -381,7 +381,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                 installed
                     .realization
                     .reopen_mcp_realization_admission_from_projection(
-                        &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+                        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
                         installed.run.context.is_some(),
                     )
             })
@@ -395,7 +395,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
                 installed
                     .realization
                     .reopen_mcp_realization_admission_from_projection(
-                        &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+                        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
                         installed.run.context.is_some(),
                     )
             })

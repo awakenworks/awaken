@@ -241,7 +241,7 @@ impl awaken_session_execution_contract::BudgetRuntime for SessionBudgets {
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.thread_reads
             .session_thread_usage(
                 thread,
@@ -254,7 +254,7 @@ impl awaken_session_execution_contract::BudgetRuntime for SessionBudgets {
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.thread_reads
             .session_thread_usage(
                 session_id.as_str(),

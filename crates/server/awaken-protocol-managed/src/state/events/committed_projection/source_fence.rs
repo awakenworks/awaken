@@ -25,7 +25,7 @@ impl ManagedState {
     pub(super) async fn candidate_source_moved(
         &self,
         session_id: &str,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         evidence: &CandidateEvidence,
     ) -> Result<bool, StateError> {
         if evidence.outcome_query_incomplete {

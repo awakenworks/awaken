@@ -14,8 +14,7 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
     // | D1 | capacity, repeated past the budget | n/a | E1 |
     // | D2 | retryable, after D1 | below then at | E2 |
     // | D3 | capacity on a non-retryable failure | any | E3 |
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
+    let repo: Arc<dyn crate::SessionStore> = sqlite_session_repository("session repository").await;
     create(
         repo.as_ref(),
         persisted("capacity-budget", false, "preparing"),
@@ -155,7 +154,7 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
         ),
     ];
     for (name, failure, failures_to_absorb) in rows {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn crate::SessionStore> =
             sqlite_session_repository("session repository").await;
         let session = format!("budget-{name}");
         create(repo.as_ref(), persisted(&session, false, "preparing")).await;
@@ -242,8 +241,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     // FMECA: an unbounded retry can strand create
     // forever (S8/O5/D6), while immediate terminal failure loses recoverability
     // (S8/O4/D4); persisted attempts plus lease expiry bound both modes.
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
+    let repo: Arc<dyn crate::SessionStore> = sqlite_session_repository("session repository").await;
     create(repo.as_ref(), persisted("retry-budget", false, "preparing")).await;
     let refresh = Arc::new(ToggleProjectionRefresh::default());
     refresh.fail.store(true, Ordering::SeqCst);
@@ -387,8 +385,7 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
     // generation; old failure replay cannot mutate that successor. The existing
     // running-realization test owns interval/terminal settlement. The HTTP MCP
     // hot-swap test additionally proves the previous Active server still runs.
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
+    let repo: Arc<dyn crate::SessionStore> = sqlite_session_repository("session repository").await;
     let app = application_with_configuration(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -522,8 +519,7 @@ async fn running_recovery_failures_spend_the_budget_their_claims_never_count() {
     // | V1   | not-ready | 3 rounds      | E1, nothing counted       |
     // | V2   | retryable | below budget  | E1, one uncounted failure |
     // | V3   | retryable | budget        | E2                        |
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        sqlite_session_repository("session repository").await;
+    let repo: Arc<dyn crate::SessionStore> = sqlite_session_repository("session repository").await;
     create(
         repo.as_ref(),
         persisted("recovery-budget", false, "running"),

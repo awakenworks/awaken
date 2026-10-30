@@ -267,11 +267,9 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                         .update_session(
                             &id,
                             awaken_session_application::SessionUpdateCommand {
-                                title: Some(
-                                    awaken_session_state_contract::SessionFieldUpdate::Replace(
-                                        "competing publisher".into(),
-                                    ),
-                                ),
+                                title: Some(awaken_session_contract::SessionFieldUpdate::Replace(
+                                    "competing publisher".into(),
+                                )),
                                 metadata: None,
                                 budget: None,
                                 tools: None,
@@ -298,12 +296,11 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                         .session(&SessionId::from(&id))
                         .await
                         .unwrap();
-                    let fact =
-                        awaken_session_state_contract::SessionUpdateHistory::for_session(&durable)
-                            .unwrap()
-                            .facts()
-                            .last()
-                            .unwrap();
+                    let fact = awaken_session_contract::SessionUpdateHistory::for_session(&durable)
+                        .unwrap()
+                        .facts()
+                        .last()
+                        .unwrap();
                     assert!(
                         fact.changes().title(),
                         "R1 actual competing Root fact is retained"
@@ -415,7 +412,7 @@ async fn aggregate_usage_reuses_fenced_snapshots_without_independent_accounting_
             for (thread, tokens) in [(&id[..], root_tokens), ("refresh-child", child_tokens)] {
                 runtime.usage_by_thread.lock().unwrap().insert(
                     thread.into(),
-                    awaken_session_budget_contract::SessionUsage {
+                    awaken_session_contract::SessionUsage {
                         input_tokens: tokens,
                         active_seconds: 999,
                         ..Default::default()

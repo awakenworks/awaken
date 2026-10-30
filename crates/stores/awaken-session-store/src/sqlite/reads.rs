@@ -48,9 +48,9 @@ impl SessionRepositoryReads for SqliteManagedSessionRepository {
 
     async fn scan(
         &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
+        query: awaken_session_contract::SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError> {
-        use awaken_session_state_contract::SessionScanQuery;
+        use awaken_session_contract::SessionScanQuery;
         match query {
             SessionScanQuery::WorkerRealizationOwner { worker_id } => {
                 self.scan_worker_realization_owner(worker_id).await
@@ -82,7 +82,7 @@ impl SessionRepositoryReads for SqliteManagedSessionRepository {
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         sqlx::query_as::<_, (i64, Option<String>)>("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=?1 AND scope_id=?2")

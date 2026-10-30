@@ -27,7 +27,7 @@
 //! supplies the backends.
 
 use awaken_deployment_contract::{DeploymentRepository, DeploymentWriteOutcome};
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_store_conformance::session_store::*;
 use sqlx::Executor as _;
@@ -497,10 +497,10 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
 #[ignore = "explicit local PostgreSQL capacity observation; seeds many canonical Session roots"]
 async fn postgres_session_capacity_reference_and_indexed_observation() {
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_repository_contract::{SessionReconciliation as _, SessionRepository as _};
-    use awaken_session_state_contract::{
+    use awaken_session_contract::{
         SessionEnvironmentPhase, SessionEnvironmentState, SessionWorkerObligation,
     };
+    use awaken_session_contract::{SessionReconciliation as _, SessionRepository as _};
     use awaken_session_store::PostgresManagedSessionRepository;
 
     // Causes: C1 10k..1M otherwise idle, canonical Session roots retain one

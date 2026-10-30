@@ -3,7 +3,7 @@
 use super::sample_persisted;
 use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
 use awaken_dream_application::DreamSessionSource as _;
-use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_contract::SessionExecutionState;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -21,7 +21,7 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
     // | D5 | updated at/before cutoff or unrecorded | E2 |
     // | D6 | Deleted (hidden) | E2 |
     // | D7 | another Workspace | E2 |
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     let root = |id: &str, updated: Option<u64>| {
         let mut root = sample_persisted(id);
@@ -36,7 +36,7 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
         .metadata
         .insert("awaken.session.origin".into(), "dream".into());
     let mut deleted = root("dream-d6-deleted", Some(3_000));
-    deleted.disposition = awaken_session_state_contract::SessionDisposition::Deleted;
+    deleted.disposition = awaken_session_contract::SessionDisposition::Deleted;
     for (workspace, session) in [
         ("workspace-a", root("dream-d1-idle", Some(2_000))),
         ("workspace-a", root("dream-d2-newer", Some(4_000))),
@@ -51,7 +51,7 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
         repo.create(
             workspace,
             session,
-            awaken_session_state_contract::IdempotencyRecord {
+            awaken_session_contract::IdempotencyRecord {
                 key: format!("dream-eligibility:{}", id.as_str()),
                 payload_hash: "fixture".into(),
             },

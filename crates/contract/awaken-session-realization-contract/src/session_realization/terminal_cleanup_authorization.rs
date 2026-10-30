@@ -13,7 +13,7 @@
 //! the unchanged public contract consumed by Control and Runtime adapters.
 
 use super::{FrozenSessionProjection, SessionRealizationControlFailure};
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
 
 /// One cold Worker assignment for an already-fenced terminal Session.
 ///
@@ -39,14 +39,14 @@ pub struct SessionTerminalCleanupAssignment {
 /// and Runtime's local owner observation. Absence of a witness remains Unknown.
 pub fn validate_terminal_no_create_witness(
     creation_not_attempted: bool,
-    environment: &awaken_session_state_contract::SessionEnvironmentState,
+    environment: &awaken_session_contract::SessionEnvironmentState,
     owner_vacant: bool,
     materialization_admitted: bool,
 ) -> Result<(), crate::RunError> {
     if creation_not_attempted
         && (!matches!(
             environment,
-            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+            awaken_session_contract::SessionEnvironmentState::Unmaterialized
         ) || !owner_vacant
             || materialization_admitted)
     {
@@ -69,7 +69,7 @@ mod no_create_witness_tests {
         // any contradiction -> classified rejection. Cross the eight original
         // rows with both C4 values: present-empty supplies no witness; admitted
         // pending/origin contradicts a true witness even without binding.
-        use awaken_session_state_contract::SessionEnvironmentState;
+        use awaken_session_contract::SessionEnvironmentState;
         for (witness, unmaterialized, vacant, allowed) in [
             (false, false, false, true),
             (false, false, true, true),
@@ -274,7 +274,7 @@ impl SessionTerminalCleanupPreparationAuthorization {
     /// physical closure or granting source access from an absent projection.
     pub fn verify_runtime_source(
         &self,
-        expected_restore: Option<&awaken_session_state_contract::SandboxRestoreRequest>,
+        expected_restore: Option<&awaken_provisioning_contract::SandboxRestoreRequest>,
         reads_live_source: bool,
     ) -> Result<(), awaken_session_types::RunError> {
         use awaken_session_types::RunError;
@@ -316,7 +316,7 @@ impl SessionTerminalCleanupPreparationAuthorization {
 pub fn terminal_cleanup_worker_requirements(
     owner_scope: &str,
     session: &PersistedSession,
-    action: &awaken_session_state_contract::SessionTerminalCleanupAction,
+    action: &awaken_session_contract::SessionTerminalCleanupAction,
 ) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure> {
     // Model credentials are irrelevant to cleanup; the physical process owner
     // is not. Preserve this requirement even after resource harvesting so the
@@ -337,7 +337,7 @@ pub fn terminal_cleanup_worker_requirements(
         };
     if matches!(
         action,
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { .. }
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose { .. }
     ) {
         return Ok(physical_requirements(
             awaken_worker_contract::PlacementRequirements::terminal_cleanup(false, false, None),

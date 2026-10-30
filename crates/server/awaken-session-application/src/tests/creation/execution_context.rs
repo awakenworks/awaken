@@ -29,7 +29,7 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
                     .metadata
                     .insert("awaken.timezone".into(), zone.into());
             }
-            command.idempotency = Some(awaken_session_state_contract::IdempotencyRecord {
+            command.idempotency = Some(awaken_session_contract::IdempotencyRecord {
                 key: format!("create:{id}"),
                 payload_hash: format!("authoring:{id}"),
             });
@@ -100,7 +100,7 @@ async fn profiled_context_admission_freezes_once_and_rejects_invalid_authoring()
         assert!(
             matches!(
                 repository.get(&SessionId::from(id)).await,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                Err(awaken_session_contract::SessionRepositoryError::NotFound)
             ),
             "E2 no root"
         );

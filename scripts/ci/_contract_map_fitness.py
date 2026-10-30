@@ -96,10 +96,8 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     # merging it into Runtime would reverse the extension ownership boundary.
     "awaken-web-policy-contract": ("SDK release", ()),
     "awaken-session-types": ("Session", ()),
-    "awaken-session-contract": ("Session", (
-        "awaken-session-state-contract", "awaken-session-event-contract", "awaken-session-budget-contract",
-        "awaken-session-repository-contract",
-    )),
+    # Completed Core consolidation: all original definitions have one owner.
+    "awaken-session-contract": ("Session", ()),
     # Dream owns its own aggregate, durable job and recovery protocol. Sharing
     # the Session context does not make it part of the Session transaction.
     "awaken-session-dream-contract": ("Session", ()),
@@ -141,7 +139,7 @@ STORAGE_LAYER = "infrastructure"
 STORAGE_NAME = "store"
 FAT_TRAIT_METHODS = 12
 # Session aggregate state: the state contract and the merge target of TARGET_MAP that absorbs it.
-AGGREGATE_STATE_CRATES = frozenset({"awaken-session-state-contract", "awaken-session-contract"})
+AGGREGATE_STATE_CRATES = frozenset({"awaken-session-contract"})
 
 RULES = (
     Rule("contract-crates", "merge contracts on the same boundary instead of adding one (ADR-0091 D2)"),
@@ -282,6 +280,296 @@ def use_leaves(tree: str) -> list[str]:
             start = cursor + 1
     parts.append(inner[start:])
     return [tree[:opening] + leaf for part in parts for leaf in use_leaves(part)]
+
+
+
+class CanonicalOrigins:
+    """One source-origin graph over the canonical module walker and use-tree lexer.
+
+    Only caller-supplied canonical symbols are authority seeds. Values with the
+    same short name in another owner are not those symbols. Namespace aliases,
+    grouped/glob imports, type aliases, supertraits and transitive re-exports
+    propagate the same origin; this creates no new port or source scanner.
+    """
+    def __init__(self, seeds, manifests=(), *, workspace_dependencies=None):
+        self.local = defaultdict(lambda: defaultdict(set))
+        self.public = defaultdict(lambda: defaultdict(set))
+        self.modules = set()
+        self.deps = defaultdict(dict)
+        self.fragments = defaultdict(list)
+        manifests = tuple(Path(p).resolve() for p in manifests)
+        documents = {p: _crate_boundary_workspace.load_manifest(p) for p in manifests}
+        self.libs = {}
+        for p, doc in documents.items():
+            package = _crate_boundary_workspace.package_name(doc)
+            path = p.parent / doc.get("lib", {}).get("path", "src/lib.rs")
+            if path.is_file():
+                self.libs[package] = (package, str(path.resolve()), ())
+        for package in seeds:
+            self.libs.setdefault(package, (package, "", ()))
+        for package, names in seeds.items():
+            node = self.libs[package]
+            self.modules.add(node)
+            for name in names:
+                binding = ("symbol", package + "::" + name)
+                self.local[node][name].add(binding)
+                self.public[node][name].add(binding)
+        views = []
+        unresolved = []
+        _crate_boundary_workspace.production_module_files(
+            manifests, module_views=views, unresolved_includes=unresolved)
+        self.unknown_inputs = defaultdict(list)
+        self.normal_dependencies = defaultdict(set)
+        fragments = []
+        for manifest, root, module, path, source, offset in views:
+            package = _crate_boundary_workspace.package_name(documents[manifest])
+            node = (package, str(root), module)
+            self.modules.add(node)
+            self.fragments[path].append((node, source, offset))
+            fragments.append((node, source))
+        owners = defaultdict(set)
+        for path, fragments_for_path in self.fragments.items():
+            owners[str(path)].update(node[0] for node, _source, _offset in fragments_for_path)
+        for diagnostic in unresolved:
+            path = diagnostic.split(": unresolved include ", 1)[0]
+            for package in owners.get(path, ()):
+                self.unknown_inputs[package].append(diagnostic)
+        for node in tuple(self.modules):
+            if node[2]:
+                parent = (*node[:2], node[2][:-1])
+                self.local[parent][node[2][-1]].add(("namespace", node))
+        for manifest, doc in documents.items():
+            package = _crate_boundary_workspace.package_name(doc)
+            if package in self.libs:
+                self.deps[package][package.replace("-", "_")] = ("namespace", self.libs[package])
+            self.normal_dependencies[package].update(
+                dep.package for dep in _crate_boundary_workspace.dependency_declarations(
+                    doc, include_build=False, workspace_dependencies=workspace_dependencies))
+            # Origins must resolve an authored alias even if a production
+            # source wrongly relies on a dev-only declaration/feature union.
+            dev = {"dependencies": doc.get("dev-dependencies", {}),
+                   "target": {target: {"dependencies": data.get("dev-dependencies", {})}
+                              for target, data in doc.get("target", {}).items()}}
+            declarations = [*_crate_boundary_workspace.dependency_declarations(
+                doc, workspace_dependencies=workspace_dependencies),
+                *_crate_boundary_workspace.dependency_declarations(
+                    dev, workspace_dependencies=workspace_dependencies)]
+            for dep in declarations:
+                if dep.package in self.libs:
+                    self.deps[package][dep.alias.replace("-", "_")] = ("namespace", self.libs[dep.package])
+        self.virtual = ("__source__", "", ())
+        self.modules.add(self.virtual)
+        for package, node in self.libs.items():
+            self.deps[self.virtual[0]][package.replace("-", "_")] = ("namespace", node)
+        uses = []
+        aliases = []
+        for node, source in fragments:
+            syntax = _crate_boundary_workspace.rust_syntax(source)
+            depth = self.depths(syntax)
+            for match in re.finditer(r"\bpub\s+mod\s+(\w+)", syntax):
+                if depth[match.start()] == 0:
+                    child = (*node[:2], (*node[2], match.group(1)))
+                    if child in self.modules:
+                        self.public[node][match.group(1)].add(("namespace", child))
+            for offset, visibility, leaves in self.uses(source, top=True):
+                uses.append((node, visibility == "pub", leaves))
+            for match in re.finditer(r"\b(pub\s+)?type\s+(\w+)[^;=]*=([^;]+);", syntax):
+                if depth[match.start()] == 0:
+                    aliases.append((node, bool(match.group(1)), match.group(2), match.group(3)))
+            for match in re.finditer(r"\b(pub\s+)?trait\s+(\w+)\s*:\s*([^{}]+)\{", syntax):
+                if depth[match.start()] == 0:
+                    aliases.append((node, bool(match.group(1)), match.group(2), match.group(3)))
+        changed = True
+        while changed:
+            changed = False
+            for node, visible, leaves in uses:
+                for leaf in leaves:
+                    target, name, glob = self.leaf(leaf)
+                    bindings = self.resolve(node, target)
+                    if glob:
+                        for binding in bindings:
+                            if binding[0] == "namespace":
+                                for item, values in tuple(self.public[binding[1]].items()):
+                                    changed |= self.publish(node, item, values, visible)
+                    else:
+                        changed |= self.publish(node, name, bindings, visible)
+            for node, visible, name, rhs in aliases:
+                bindings = set()
+                for path in self.paths(rhs):
+                    bindings |= {b for b in self.resolve(node, path) if b[0] == "symbol"}
+                changed |= self.publish(node, name, bindings, visible)
+
+    @staticmethod
+    def depths(syntax):
+        depth = 0
+        found = []
+        for char in syntax:
+            found.append(depth)
+            depth += (char == "{") - (char == "}")
+        return found
+
+    @classmethod
+    def uses(cls, source, *, top=False):
+        syntax = _crate_boundary_workspace.rust_syntax(source)
+        depth = cls.depths(syntax) if top else None
+        for match in re.finditer(r"\b(?:(pub(?:\([^)]*\))?)\s+)?use\s+([^;]+);", syntax):
+            if depth is None or depth[match.start()] == 0:
+                yield match.start(), match.group(1), use_leaves(match.group(2))
+
+    @staticmethod
+    def leaf(leaf):
+        parts = re.split(r"\s+as\s+", leaf.strip())
+        absolute = parts[0].startswith("::")
+        path = tuple(p.strip() for p in parts[0].removeprefix("::").split("::"))
+        if absolute:
+            path = ("", *path)
+        name = parts[1] if len(parts) == 2 else (path[-2] if path[-1] == "self" and len(path) > 1 else path[-1])
+        return path[:-1] if path[-1] in {"*", "self"} else path, name, path[-1] == "*"
+
+    @staticmethod
+    def path_parts(raw):
+        absolute = raw.startswith("::")
+        parts = tuple(re.split(r"\s*::\s*", raw.removeprefix("::")))
+        # In `&dyn ::external::Trait` the lexical run may begin at the
+        # qualifier. That keyword is not a module; :: still names extern prelude.
+        if parts and parts[0] in {"dyn", "impl", "as", "mut", "const", "return", "break", "yield"}:
+            parts, absolute = parts[1:], True
+        return ("", *parts) if absolute else parts
+
+    @staticmethod
+    def paths(syntax):
+        for match in re.finditer(r"(?<![\w$])(?:::)?\w+(?:\s*::\s*\w+)*", syntax):
+            raw = match.group()
+            yield CanonicalOrigins.path_parts(raw)
+
+    def publish(self, node, name, values, visible):
+        if not values or name == "_":
+            return False
+        old = len(self.local[node][name])
+        self.local[node][name].update(values)
+        changed = len(self.local[node][name]) != old
+        if visible:
+            old = len(self.public[node][name])
+            self.public[node][name].update(values)
+            changed |= len(self.public[node][name]) != old
+        return changed
+
+    def resolve(self, context, parts, overlay=None):
+        if not parts:
+            return set()
+        parts = list(parts)
+        first = parts.pop(0)
+        if first == "":
+            # A leading :: uses the external prelude, never a local module or
+            # import whose short name shadows the canonical dependency.
+            if not parts:
+                return set()
+            external = parts.pop(0)
+            binding = self.deps[context[0]].get(external)
+            values = {binding} if binding is not None else set()
+        elif first == "crate":
+            values = {("namespace", (*context[:2], ()))}
+        elif first in {"self", "super"}:
+            module = context[2][:-1] if first == "super" else context[2]
+            while parts and parts[0] == "super":
+                module = module[:-1]
+                parts.pop(0)
+            values = {("namespace", (*context[:2], module))}
+        else:
+            local = overlay if overlay is not None else self.local[context]
+            values = set(local.get(first, ()))
+            if not values and first in self.deps[context[0]]:
+                values.add(self.deps[context[0]][first])
+            if not values:
+                child = (*context[:2], (*context[2], first))
+                if child in self.modules:
+                    values.add(("namespace", child))
+        for part in parts:
+            next_values = set()
+            for kind, value in values:
+                if kind == "symbol":
+                    next_values.add((kind, value))
+                    continue
+                table = self.local if value[:2] == context[:2] else self.public
+                next_values.update(table[value].get(part, ()))
+            values = next_values
+        return values
+
+    def exported_symbols(self, namespace, seen=None):
+        seen = set() if seen is None else seen
+        if namespace in seen:
+            return set()
+        seen.add(namespace)
+        found = set()
+        for values in self.public[namespace].values():
+            for kind, value in values:
+                if kind == "symbol":
+                    found.add(value)
+                else:
+                    found |= self.exported_symbols(value, seen)
+        return found
+
+    def source_reaches(self, source, context=None):
+        context = self.virtual if context is None else context
+        syntax = _crate_boundary_workspace.rust_syntax(source)
+        overlay = {name: set(values) for name, values in self.local[context].items()}
+        uses = list(self.uses(source))
+        changed = True
+        while changed:
+            changed = False
+            for _offset, _visibility, leaves in uses:
+                for leaf in leaves:
+                    path, name, glob = self.leaf(leaf)
+                    values = self.resolve(context, path, overlay)
+                    if glob:
+                        for kind, node in values:
+                            if kind == "namespace":
+                                for item, bindings in self.public[node].items():
+                                    old = len(overlay.setdefault(item, set()))
+                                    overlay[item].update(bindings)
+                                    changed |= old != len(overlay[item])
+                    elif name != "_":
+                        old = len(overlay.setdefault(name, set()))
+                        overlay[name].update(values)
+                        changed |= old != len(overlay[name])
+        found = []
+        for offset, _visibility, leaves in uses:
+            for leaf in leaves:
+                path, _name, glob = self.leaf(leaf)
+                origins = set()
+                for kind, value in self.resolve(context, path, overlay):
+                    origins |= {value} if kind == "symbol" else self.exported_symbols(value) if glob else set()
+                if origins:
+                    found.append((source[:offset].count("\n") + 1, origins))
+        for match in re.finditer(r"(?<![\w$])(?:::)?\w+(?:\s*::\s*\w+)+", syntax):
+            raw = match.group()
+            path = self.path_parts(raw)
+            origins = {value for kind, value in self.resolve(context, path, overlay) if kind == "symbol"}
+            if origins:
+                found.append((source[:match.start()].count("\n") + 1, origins))
+        return found
+
+    def uncertain_reachable(self, package):
+        """Unknown compiled input cannot establish a negative origin verdict.
+
+        Follow only this product's conservative normal declaration closure;
+        unrelated generators (for example Startup's assets) are not its inputs.
+        """
+        seen, pending, found = set(), [package], []
+        while pending:
+            owner = pending.pop()
+            if owner in seen:
+                continue
+            seen.add(owner)
+            found.extend(self.unknown_inputs.get(owner, ()))
+            pending.extend(self.normal_dependencies.get(owner, ()))
+        return sorted(set(found))
+
+    def file_reaches(self, path):
+        found = []
+        for context, source, offset in self.fragments[Path(path).resolve()]:
+            found.extend((line + offset, origins) for line, origins in self.source_reaches(source, context))
+        return found
 
 
 def renamed(leaf: str) -> bool:
@@ -620,9 +908,9 @@ def _selftest_target_map() -> None:
                                    contexts=provider_contexts)
         assert any(missing in error and "absent target" in error for error in errors), \
             "T4 deleting a retained boundary is not a completed merge"
-    assert set(TARGET_MAP["awaken-session-contract"][1]) == {
-        "awaken-session-state-contract", "awaken-session-event-contract",
-        "awaken-session-budget-contract", "awaken-session-repository-contract"}, "T4 Session aggregate only"
+    # T4 Core is the actual completed target, not four retained aliases. Types,
+    # Dream and physical provider SPI still have their separate targets above.
+    assert TARGET_MAP["awaken-session-contract"] == ("Session", ()), "T4 Session Core one owner"
     for mapping in (
         {"t": ("b", ("old", "old"))},
         {"t": ("b", ("old",)), "other": ("b", ("old",))},
@@ -733,11 +1021,11 @@ def _selftest_aggregate_fields() -> None:
     sources = tuple(_architecture_ratchet.CrateSource(
         crate.name, crate.metadata, crate.directory,
         {path: _crate_boundary_workspace.production_rust(text) for path, text in crate.files.items()})
-        for crate in (_crate("awaken-session-state-contract", "contract", "session", code),
+        for crate in (_crate("awaken-session-contract", "contract", "session", code),
                       _crate("other", "contract", "session", "pub struct Open { pub value: u8 }\n")))
     counts, places, _contracts = measure(sources, Path("/w"))
     assert counts["aggregate-pub-field"] == {"State": 3, "Pair": 1}, f"A1-A4 {counts['aggregate-pub-field']}"
-    assert places["aggregate-pub-field"]["Pair"] == ["awaken-session-state-contract/src/lib.rs:9"], "A3 where"
+    assert places["aggregate-pub-field"]["Pair"] == ["awaken-session-contract/src/lib.rs:9"], "A3 where"
     rules = tuple(rule for rule in RULES if rule.name == "aggregate-pub-field")
     held = {"aggregate-pub-field": {"State": 3, "Pair": 1}}
     assert _architecture_ratchet.compare(rules, counts, places, held, "b.json") == [], "A5 equal"
@@ -890,7 +1178,7 @@ def _selftest_baseline_snapshot() -> None:
     # The target map is a hard boundary, independent of numeric ratchets. Every
     # writer/reason mode must leave the original record untouched on ambiguity.
     ambiguous = dict(TARGET_MAP)
-    ambiguous["awaken-session-types"] = ("Session", ("awaken-session-state-contract",))
+    ambiguous["awaken-session-types"] = ("Session", ("awaken-session-contract",))
     for argv in modes:
         status, before, after, reads, measured, errors = invoke(argv, target_map=ambiguous)
         assert status == 1 and before == after and len(reads) == len(measured) == 1 \
@@ -903,7 +1191,7 @@ def _selftest_baseline_snapshot() -> None:
     del mixed["awaken-session-environment-contract"]
     boundary, pending = mixed["awaken-session-contract"]
     mixed["awaken-session-contract"] = (boundary, (*pending, "awaken-session-environment-contract"))
-    sources = (_crate("awaken-session-state-contract", "contract", "session", ""),
+    sources = (_crate("awaken-session-contract", "contract", "session", ""),
                _crate("awaken-session-environment-contract", "contract", "environment", ""))
     for argv in modes:
         status, before, after, _reads, _measured, errors = invoke(argv, target_map=mixed, sources=sources)

@@ -13,7 +13,7 @@ fn terminal_after_idle_interrupt_preserves_the_admitted_prefix() {
     // terminal facts close this admission prefix. The production position
     // kernel is used; no wall time or previously delivered order is an input.
     use crate::{AnchoredEvent, CoordinationEvents, EventAnchor, position_events};
-    use awaken_session_event_contract::{
+    use awaken_session_contract::{
         SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
     };
     let children = HashMap::new();

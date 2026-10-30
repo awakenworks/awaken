@@ -154,10 +154,10 @@ PROFILES: dict[str, Profile] = {
         "cadical",
     ),
     "activity-admission-height-v1": Profile(
-        "awaken-session-state-contract", ACTIVITY_HEIGHT_LOOPS, None,
+        "awaken-session-contract", ACTIVITY_HEIGHT_LOOPS, None,
     ),
     "activity-terminal-height-v1": Profile(
-        "awaken-session-state-contract", ACTIVITY_HEIGHT_LOOPS[:7], None,
+        "awaken-session-contract", ACTIVITY_HEIGHT_LOOPS[:7], None,
     ),
     # Real two-ID output reversal swaps three 8-byte chunks of each String.
     # The bound and solver are owned by this profile, as the ledger states.

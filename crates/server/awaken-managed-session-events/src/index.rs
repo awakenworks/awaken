@@ -26,12 +26,10 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_session_application_contract::Pending;
-use awaken_session_event_contract::SessionAgentRunBoundary;
-use awaken_session_event_contract::SessionEventBatch;
+use awaken_session_contract::SessionAgentRunBoundary;
+use awaken_session_contract::SessionEventBatch;
+use awaken_session_contract::{PersistedSession, SessionExecutionState, SessionRuntimeInterval};
 use awaken_session_execution_contract::{CommittedOutcomeProjection, CoordinatedThreadLink};
-use awaken_session_state_contract::{
-    PersistedSession, SessionExecutionState, SessionRuntimeInterval,
-};
 
 use crate::interval::{budget_reach_projection_close_cursor, interval_close_cursor, is_opening};
 use crate::order::historical_pending_projection_order;
@@ -51,7 +49,7 @@ use crate::{
 pub struct OrderEvidence<'a> {
     pub session_id: &'a str,
     /// Retained inbound batches, in root-revision order.
-    pub updates: Option<&'a awaken_session_state_contract::SessionUpdateHistory>,
+    pub updates: Option<&'a awaken_session_contract::SessionUpdateHistory>,
     pub batches: &'a [SessionEventBatch],
     /// Closed Session runtime intervals, in root-revision order.
     pub closed_intervals: &'a [SessionRuntimeInterval],
@@ -1049,7 +1047,7 @@ mod tests {
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record, RunState};
     use awaken_agent_contract::agent::state::StateKey;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_session_event_contract::{SessionEventInput, SessionEventProjectionAnchor};
+    use awaken_session_contract::{SessionEventInput, SessionEventProjectionAnchor};
 
     const SESSION: &str = "session";
 

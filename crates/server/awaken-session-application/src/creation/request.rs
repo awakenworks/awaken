@@ -27,7 +27,7 @@ use awaken_session_configuration_contract::{
     AgentCapabilities, SessionModelChoice, SessionModelSource, SessionSystemPromptSelection,
     SessionToolConfiguration, validate_mcp_toolset_pairing,
 };
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
 use awaken_session_types::RunError;
 
 use crate::session_input::{self, SessionInputRequest};
@@ -58,7 +58,7 @@ pub struct SessionCreateRequest {
     pub owner_scope: String,
     /// A caller-chosen id (deterministic replay); otherwise one is minted.
     pub explicit_id: Option<String>,
-    pub idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
+    pub idempotency: Option<awaken_session_contract::IdempotencyRecord>,
     pub agent_id: String,
     /// The exact Agent publication revision the request pins.
     pub agent_version: Option<u64>,
@@ -103,7 +103,7 @@ pub trait SessionCreateProtocol: Send + Sync {
     fn initial_event_plan(
         &self,
         session_id: &str,
-    ) -> Result<Option<awaken_session_event_contract::SessionInitialEventPlan>, RunError>;
+    ) -> Result<Option<awaken_session_contract::SessionInitialEventPlan>, RunError>;
 
     /// Admit the selected model under the protocol's placement policy.
     async fn admit_model(
@@ -137,7 +137,7 @@ pub enum SessionCreateRequestError {
     #[error("vault `{0}` does not exist")]
     VaultNotFound(String),
     #[error(transparent)]
-    Repository(#[from] awaken_session_state_contract::SessionRepositoryError),
+    Repository(#[from] awaken_session_contract::SessionRepositoryError),
     #[error(transparent)]
     Preparation(#[from] SessionPreparationError),
     #[error(transparent)]
@@ -338,9 +338,7 @@ impl SessionCreationCommands {
                             .session(&awaken_session_types::SessionId::from(&candidate))
                             .await
                         {
-                            Err(
-                                awaken_session_state_contract::SessionRepositoryError::NotFound,
-                            ) => true,
+                            Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
                             Ok(_) => false,
                             Err(error) => return Err(SessionCreateRequestError::from(error)),
                         };
@@ -505,7 +503,7 @@ impl SessionCreationCommands {
             )
             .await?
             .snapshot;
-        let coordinator_realized = awaken_session_state_contract::SessionPlacementClass::new(
+        let coordinator_realized = awaken_session_contract::SessionPlacementClass::new(
             self.runtime_placement(),
             environment.self_hosted,
         )
@@ -610,24 +608,21 @@ impl SessionCreationCommands {
                     budget_model_refs.expect("a budgeted Session compiled its exact model roster");
                 let snapshot = self
                     .resolve_managed_list_price_snapshot(
-                        awaken_session_budget_contract::ManagedListPriceRequest {
+                        awaken_session_contract::ManagedListPriceRequest {
                             occurred_at_unix_ms: self.clock.now_ms(),
                             model_refs,
                         },
                     )
                     .await
                     .map_err(|error| match error {
-                        awaken_session_budget_contract::ManagedListPriceError::Unavailable(_) => {
+                        awaken_session_contract::ManagedListPriceError::Unavailable(_) => {
                             RunError::unavailable(error.to_string())
                         }
                         _ => RunError::bad_request(error.to_string()),
                     })?;
-                awaken_session_budget_contract::SessionBudgetState::active(
-                    max_list_cost_minor,
-                    snapshot,
-                )
+                awaken_session_contract::SessionBudgetState::active(max_list_cost_minor, snapshot)
             }
-            None => awaken_session_budget_contract::SessionBudgetState::Absent,
+            None => awaken_session_contract::SessionBudgetState::Absent,
         };
         // Cause/effect rules for Session-owned Repository participants:
         // R1 all pure Environment/Skill/tool/budget validation succeeds ->

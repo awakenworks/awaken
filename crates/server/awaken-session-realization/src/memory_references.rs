@@ -12,7 +12,7 @@ pub trait SessionMemoryReferenceEncoder:
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_session_realization_contract::SessionResourceMaterializationIntent,
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_state_contract::SessionTerminalMemoryIntent,
+        awaken_session_contract::SessionTerminalMemoryIntent,
     >
 {
 }
@@ -23,7 +23,7 @@ impl<T> SessionMemoryReferenceEncoder for T where
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_session_realization_contract::SessionResourceMaterializationIntent,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_session_state_contract::SessionTerminalMemoryIntent,
+            awaken_session_contract::SessionTerminalMemoryIntent,
         >
 {
 }

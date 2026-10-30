@@ -1525,7 +1525,7 @@ mod tests {
             "W1/E1"
         );
 
-        source.complete_scan_for_test(&awaken_session_state_contract::SessionScan::default(), 0, 0);
+        source.complete_scan_for_test(&awaken_session_contract::SessionScan::default(), 0, 0);
         let (status, body) = tcp_get_json(address, path).await;
         assert_eq!(status, 200, "W2/E2");
         assert_eq!(

@@ -208,13 +208,12 @@ mod tests {
 
         let mut legacy_bound = projection;
         legacy_bound.previous_resource_manifest = None;
-        legacy_bound.environment =
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding: "durable-environment".into(),
-                effect_id: None,
-                generation: None,
-                idle_since_unix_ms: None,
-            };
+        legacy_bound.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: "durable-environment".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
         let error = control_projection_matches_dispatched_manifest(&legacy_bound, &desired)
             .expect_err("R5 legacy bound projection cannot authorize effects");
         assert_eq!(error.code, "session_resource_transition_missing", "R5/E3");

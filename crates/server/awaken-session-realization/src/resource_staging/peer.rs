@@ -88,7 +88,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     async fn stage_terminal_repository_publication_input(
         &self,
         workspace: &str,
-        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         ResourceStaging::stage_terminal_repository_publication_input(
@@ -107,7 +107,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
         realizer: &dyn pc::RepositoryRealizer,
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {

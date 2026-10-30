@@ -60,12 +60,9 @@ awaken-session-configuration-contract = { path = "crates/contract/awaken-session
 awaken-session-application-contract = { path = "crates/contract/awaken-session-application-contract" }
 awaken-session-types = { path = "crates/contract/awaken-session-types" }
 awaken-session-execution-contract = { path = "crates/contract/awaken-session-execution-contract" }
-awaken-session-repository-contract = { path = "crates/contract/awaken-session-repository-contract" }
+awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
 awaken-session-realization-contract = { path = "crates/contract/awaken-session-realization-contract" }
-awaken-session-state-contract = { path = "crates/contract/awaken-session-state-contract" }
-awaken-session-budget-contract = { path = "crates/contract/awaken-session-budget-contract" }
 awaken-session-dream-contract = { path = "crates/contract/awaken-session-dream-contract" }
-awaken-session-event-contract = { path = "crates/contract/awaken-session-event-contract" }
 awaken-session-application = { path = "crates/server/awaken-session-application" }
 awaken-managed-session-events = { path = "crates/server/awaken-managed-session-events" }
 awaken-session-realization-driver = { path = "crates/server/awaken-session-realization-driver" }

@@ -27,12 +27,12 @@ use awaken_agent_contract::{
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency};
 use awaken_session_application_contract::{Pending, StepOutcome};
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
+use awaken_session_contract::SessionExecutionState;
+use awaken_session_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::{
     AdmitSessionRun, CommittedOutcomeProjection, OutcomeDrive, OutcomeIteration, OutcomeReport,
     SessionRunReservation, SessionRuntime, ToolPermissionDecision,
 };
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_session_types::RunError;
 use axum::Router;
@@ -312,7 +312,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         .unwrap();
     assert!(matches!(
         repo.get(&SessionId::from(id)).await,
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
     ));
     let restarted = support::shared_state_over(EchoFake::default(), repo).await;
     let cold = support::edge_stamped(
@@ -1039,10 +1039,10 @@ impl awaken_session_execution_contract::RealizationEffects for EchoFake {
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -1052,8 +1052,8 @@ impl awaken_session_execution_contract::RealizationEffects for EchoFake {
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 }
@@ -1370,7 +1370,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EchoFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for EchoFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -1576,9 +1576,9 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EchoFake {
 impl awaken_session_execution_contract::TerminalCleanupRuntime for EchoFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
             &authorization,
@@ -1592,7 +1592,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EchoFake {
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -1606,7 +1606,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EchoFake {
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -3181,7 +3181,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ToolAwaitingFake
 impl awaken_session_execution_contract::SessionCoordinationReads for ToolAwaitingFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -3921,7 +3921,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for OutcomeFake {
         executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
     {
-        let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
+        let outcome_id = awaken_session_contract::session_outcome_convenience_id(
             thread,
             description,
             rubric,
@@ -5005,7 +5005,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -5957,7 +5957,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for InterruptRedirec
 impl awaken_session_execution_contract::SessionCoordinationReads for InterruptRedirectFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }

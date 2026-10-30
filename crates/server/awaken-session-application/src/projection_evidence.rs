@@ -19,12 +19,12 @@ use crate::agent_configuration::{
 };
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
+use awaken_session_contract::PersistedSession;
+use awaken_session_contract::{SessionEventBatch, SessionEventCommand};
 use awaken_session_execution_contract::{
     CommittedSessionFacts, CoordinatedThreadLink, ProjectionThreadSnapshots,
     SessionProjectionReadTimings, committed_lifecycle_prefix, outcome_terminal_commit_cursor,
 };
-use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 
 use crate::{
@@ -32,7 +32,7 @@ use crate::{
     SessionProjectionRecoveryError, SessionQueries, SessionRootReads, session_repository_error,
 };
 use awaken_session_configuration_contract::SessionBaselineState;
-use awaken_session_state_contract::SessionRepositoryError;
+use awaken_session_contract::SessionRepositoryError;
 
 #[async_trait::async_trait]
 impl SessionProjectionReads for SessionQueries {
@@ -54,7 +54,7 @@ impl SessionProjectionReads for SessionQueries {
         })?;
 
         if let Some(configuration) =
-            awaken_session_state_contract::SessionUpdateHistory::agent_configuration(persisted)
+            awaken_session_contract::SessionUpdateHistory::agent_configuration(persisted)
         {
             return Ok((baseline, configuration));
         }

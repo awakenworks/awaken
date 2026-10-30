@@ -78,7 +78,7 @@ impl crate::environment_holding::EnvironmentHolding {
         // Workdir and Namespace rebuilds are owned by their realization marker.
         let intent = if matches!(
             effect.authorization.intent().kind(),
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
+            awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. }
         ) {
             awaken_session_environment_contract::EnvironmentRealizationKind::Rebuild
         } else {
@@ -334,14 +334,14 @@ impl crate::environment_holding::EnvironmentHolding {
         let realizations = self.sessions.clone();
         let exec = &self;
         let candidate = match effect.authorization.intent().kind() {
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt => {
                 exec.begin_session_environment_adoption(peers, thread, environment.clone(), Some(effect.authorization.intent()))?
             }
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create
-            | awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
+            awaken_session_contract::SessionEnvironmentEffectKind::Create
+            | awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
                 exec.begin_session_environment_preparation(peers, thread, environment.clone(), Some(effect.authorization.intent()))?
             }
-            awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+            awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
             } => {
                 return Err(RealizationError::invariant(
@@ -501,13 +501,13 @@ impl crate::environment_holding::EnvironmentHolding {
             .flatten();
         let (kind, source_binding) = match &rebuild_source {
             Some((source_binding, source_generation_id)) => (
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
+                awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
                     source_generation_id: source_generation_id.clone(),
                 },
                 Some(source_binding.as_str()),
             ),
             None => (
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 None,
             ),
         };
@@ -520,14 +520,14 @@ impl crate::environment_holding::EnvironmentHolding {
                     .new_environment_effect_intent(thread, kind, source_binding)?,
             )
             .await?;
-        if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
             ..
         } = &effect.authorization
         {
             return self
-                .adopt_already_applied_environment_under_lifecycle(lifecycle, peers,
-                    thread, provider, binding, &effect,
+                .adopt_already_applied_environment_under_lifecycle(
+                    lifecycle, peers, thread, provider, binding, &effect,
                 )
                 .await;
         }

@@ -34,8 +34,7 @@ awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
-awaken-session-state-contract.workspace = true
-awaken-session-event-contract.workspace = true
+awaken-session-contract.workspace = true
 # Per-Session MCP lifecycle and Worker relay; the installed Session holds its state.
 awaken-session-mcp.workspace = true
 awaken-session-types.workspace = true
@@ -101,7 +100,6 @@ test-support = [
 k8s-tests = ["awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
-awaken-session-budget-contract.workspace = true
 awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
 # Unit fixtures reuse the testkit's sole storage-dir extraction selection.
 # It returns the common MemoryExtractionRepository port, never a second Host.
@@ -118,7 +116,6 @@ awaken-session-realization = { workspace = true, features = ["test-support"] }
 awaken-worker-contract.workspace = true
 # Managed fixtures use the real Session Root/sink and its existing Store port.
 awaken-session-application = { workspace = true, features = ["test-support"] }
-awaken-session-repository-contract.workspace = true
 # Private Root fixtures guard unused Environment roles; ScenarioHost owns real Work composition.
 awaken-executable-environment-contract.workspace = true
 awaken-coordinator-client.workspace = true

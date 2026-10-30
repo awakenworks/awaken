@@ -18,7 +18,7 @@ use awaken_resource_contract::{
     FileCatalog, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,
     ResourceReferenceRecord,
 };
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionAggregate,
 };
 
@@ -145,7 +145,7 @@ impl SessionResourceReferences {
         let authoritative = self.mutations.session_aggregate(session_id).await;
         let repair = match authoritative {
             Ok(session) => self.synchronize(owner_scope, &session).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 match &self.retention {
                     Some((references, _)) => references
                         .replace_references(

@@ -227,7 +227,7 @@ coverage percentage or proof of all platform/backend combinations.
 | Risk | Required dimensions and state oracle | Evidence owner |
 |---|---|---|
 | Environment revision/lifecycle | maximum revision: change/no-op/invalid request; archive followed by update/bind; error leaves revision, definition and execution registration unchanged | `awaken-environment-contract::revision_boundary_rejects_changes_atomically_and_admits_noop_replay`; `awaken-environment-application::archive_is_terminal_for_every_environment_mutation_path` |
-| Paged Worker demand | empty index, multiple empty pages, repeated/rewound cursor, later read failure and quarantined root; incomplete authority never reports zero demand | `awaken-session-repository-contract`, `src/tests/demand.rs` |
+| Paged Worker demand | empty index, multiple empty pages, repeated/rewound cursor, later read failure and quarantined root; incomplete authority never reports zero demand | `awaken-session-contract`, `src/repository/tests/demand.rs` |
 | Lost acknowledgement | scheduled effect chain with normal/lost finish response; retry the exact ACK without repeating either effect | `awaken-dispatch::a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive` |
 | Process crash before settle | kill after claim/input delivery and before settlement; reopen SQLite, recover the same input, consume it once, reject stale ownership | `awaken-dispatch::sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once` |
 | Stale fence and occupied physical attempt | stale/current settlement, lease replacement while predecessor remains occupied, duplicate begin/finish and release; stale owner cannot settle or execute successor work | `awaken-dispatch-testkit`, `src/conformance/reliability.rs` |

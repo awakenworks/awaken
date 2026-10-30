@@ -13,7 +13,7 @@ use awaken_session_application::SessionAccessError;
 use awaken_session_types::{RunErrorKind, SessionId};
 use std::time::Duration;
 
-fn cold_state(repo: Arc<dyn awaken_session_repository_contract::SessionStore>) -> ManagedState {
+fn cold_state(repo: Arc<dyn awaken_session_application::SessionStore>) -> ManagedState {
     let clock = awaken_time::system_clock();
     crate::state::test_support::managed_state_from_parts(
         Arc::new(RehydrateFake::default()),

@@ -47,7 +47,7 @@ pub enum SessionEventKind {
     /// The usage a budget reach was counted at, its rounded public list cost
     /// and the cap it crossed.
     BudgetReachUsage {
-        usage: awaken_session_budget_contract::SessionUsage,
+        usage: awaken_session_contract::SessionUsage,
         list_cost_minor: Option<u64>,
         max_list_cost_minor: u64,
     },

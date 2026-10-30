@@ -24,9 +24,9 @@ use std::sync::{
 
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
+use awaken_session_contract::PersistedSession;
+use awaken_session_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionRuntime};
-use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 use awaken_time::system_clock;
 use {
@@ -38,8 +38,8 @@ use super::*;
 use crate::work_assignments::reconcile_work_dispatches;
 use awaken_agent_contract::McpTarget;
 use awaken_session_configuration_contract::validate_sandbox_provisioning_runtime;
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_contract::SessionExecutionState;
+use awaken_session_contract::SessionRepositoryReads;
 
 /// Execute the canonical complete-projection effects for a Session Application
 /// test double. Domain mode decisions come from `SessionProjectionInstallMode`;
@@ -165,8 +165,8 @@ struct RecordingBoundaryBudgetRuntime {
         >,
     >,
     admission_reads: AtomicUsize,
-    root_usage: Mutex<awaken_session_budget_contract::SessionUsage>,
-    child_usage: Mutex<awaken_session_budget_contract::SessionUsage>,
+    root_usage: Mutex<awaken_session_contract::SessionUsage>,
+    child_usage: Mutex<awaken_session_contract::SessionUsage>,
     child_target: awaken_session_execution_contract::CoordinatedThreadTarget,
     continuations: AtomicUsize,
     usage_relationship_reads: AtomicUsize,
@@ -472,7 +472,7 @@ impl RecordingBoundaryBudgetRuntime {
         *self.admission_observations.lock().unwrap() = observations.into_iter().collect();
     }
 
-    fn new(child_usage: awaken_session_budget_contract::SessionUsage) -> Self {
+    fn new(child_usage: awaken_session_contract::SessionUsage) -> Self {
         Self {
             admission_observations: Mutex::new(VecDeque::new()),
             admission_reads: AtomicUsize::new(0),
@@ -500,11 +500,11 @@ impl RecordingBoundaryBudgetRuntime {
         self
     }
 
-    fn set_root_usage(&self, usage: awaken_session_budget_contract::SessionUsage) {
+    fn set_root_usage(&self, usage: awaken_session_contract::SessionUsage) {
         *self.root_usage.lock().unwrap() = usage;
     }
 
-    fn set_child_usage(&self, usage: awaken_session_budget_contract::SessionUsage) {
+    fn set_child_usage(&self, usage: awaken_session_contract::SessionUsage) {
         *self.child_usage.lock().unwrap() = usage;
     }
 
@@ -599,20 +599,19 @@ struct RecordingCleanupRuntime {
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
     fail_publication_once: AtomicBool,
-    intents: Mutex<Vec<awaken_session_state_contract::SessionCleanupCommand>>,
+    intents: Mutex<Vec<awaken_session_contract::SessionCleanupCommand>>,
     effective_ids: Mutex<BTreeSet<String>>,
     block_quiesce: AtomicBool,
     quiesce_entered: tokio::sync::Notify,
     quiesce_release: tokio::sync::Notify,
     delegated_snapshot: Mutex<awaken_session_application_contract::DelegatedRunSnapshot>,
-    publication_intents:
-        Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationCommand>>,
+    publication_intents: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
     reject_publication: AtomicBool,
     close_publication_source: AtomicBool,
     terminal_effect_order: Mutex<Vec<String>>,
     terminal_assignments:
         Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
-    acknowledged_effects: Mutex<Vec<awaken_session_state_contract::SessionTerminalCleanupEffect>>,
+    acknowledged_effects: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
     acknowledged_completed: Mutex<Vec<(String, crate::session_resource::SessionRealizationLease)>>,
     ordinary_resource_apply_calls: AtomicUsize,
 }
@@ -999,10 +998,10 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -1012,9 +1011,11 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
+        ))
     }
 }
 
@@ -1052,7 +1053,7 @@ impl awaken_session_execution_contract::BudgetRuntime for NoopRuntime {
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .session_usage(thread)
             .await
@@ -1067,7 +1068,7 @@ impl awaken_session_execution_contract::BudgetRuntime for NoopRuntime {
         &self,
         _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         self.session_usage(thread_id).await
     }
 }
@@ -1078,16 +1079,16 @@ no_committed_threads!(NoopRuntime);
 impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         authorization
             .verify_for(&effect)
             .map_err(|error| RunError::internal(error.to_string()))?;
         let provider_prepared_effect_fence = effect
             .sandbox_effect_fence()
             .map_err(|error| RunError::internal(error.to_string()))?;
-        awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             provider_prepared_effect_fence,
             Vec::new(),
@@ -1102,7 +1103,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -1116,7 +1117,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -1533,7 +1534,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRu
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingReplyRuntime {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -2183,7 +2184,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads
 {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -2792,7 +2793,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads
 {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -2947,7 +2948,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RecordingBoundaryBudge
     async fn session_usage(
         &self,
         _thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         Ok(self.root_usage.lock().unwrap().clone())
     }
 
@@ -2955,7 +2956,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RecordingBoundaryBudge
         &self,
         session_id: &SessionId,
         child_thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.usage_thread_reads
             .lock()
             .unwrap()
@@ -3448,7 +3449,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanup
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingCleanupRuntime {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         self.source_observation_steps
             .lock()
@@ -3599,13 +3600,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingCleanupR
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
-    {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
@@ -3660,9 +3660,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, awaken_session_types::RunError>
-    {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -3676,13 +3675,11 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_state_contract::SourceReleasePreparedReceipt,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -3695,8 +3692,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
@@ -3708,8 +3705,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
     /// Restore a distinct environment from the exact durable checkpoint.
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, awaken_session_types::RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -3722,7 +3719,7 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
@@ -3741,9 +3738,9 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         let exact = self
             .terminal_assignments
             .lock()
@@ -3786,30 +3783,27 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
                 })
                 .map(str::to_owned)
                 .ok_or_else(|| RunError::internal("closure fixture has no exact source"))?;
-            let rejection = awaken_session_state_contract::SessionRepositoryPublicationRejection::source_closed(
-                &command,
-                &binding,
-                awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
-                    physical_incarnation: None,
-                },
-            ).map_err(|error| RunError::internal(error.to_string()))?;
-            return Ok(
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
-                    rejection,
-                ),
-            );
-        }
-        if self.reject_publication.load(Ordering::SeqCst) {
             let rejection =
-                awaken_session_state_contract::SessionRepositoryPublicationRejection::new(
+                awaken_session_contract::SessionRepositoryPublicationRejection::source_closed(
                     &command,
-                    awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+                    &binding,
+                    awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
+                        physical_incarnation: None,
+                    },
                 )
                 .map_err(|error| RunError::internal(error.to_string()))?;
             return Ok(
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
-                    rejection,
-                ),
+                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(rejection),
+            );
+        }
+        if self.reject_publication.load(Ordering::SeqCst) {
+            let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
+                &command,
+                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+            )
+            .map_err(|error| RunError::internal(error.to_string()))?;
+            return Ok(
+                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(rejection),
             );
         }
         let crate::session_resource::ResolvedInputSource::Repository {
@@ -3823,8 +3817,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
             ));
         };
         Ok(
-            awaken_session_state_contract::SessionRepositoryPublicationEffect::Published(
-                awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
+            awaken_session_contract::SessionRepositoryPublicationEffect::Published(
+                awaken_session_contract::SessionRepositoryPublicationReceipt::new(
                     &command,
                     awaken_provisioning_contract::RepositoryPublicationReceipt {
                         repository_id: repository_id.to_string(),
@@ -3839,13 +3833,15 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         self.terminal_effect_order
             .lock()
             .unwrap()
             .push("dispose".into());
-        Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
+        ))
     }
 }
 
@@ -3903,14 +3899,14 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingCleanupRunti
 pub(crate) struct PausedSessionMutation {
     pub(crate) entered: tokio::sync::Notify,
     pub(crate) release: tokio::sync::Notify,
-    pub(crate) candidate: Mutex<Option<awaken_session_state_contract::SessionMutation>>,
-    pub(crate) result: Mutex<Option<awaken_session_state_contract::SessionMutationResult>>,
+    pub(crate) candidate: Mutex<Option<awaken_session_contract::SessionMutation>>,
+    pub(crate) result: Mutex<Option<awaken_session_contract::SessionMutationResult>>,
 }
 
 pub(crate) struct FaultingSessionRepository {
     pause_mutation_once: Mutex<Option<(String, Arc<PausedSessionMutation>)>>,
     create_crash_boundary: Mutex<Option<(bool, std::path::PathBuf)>>,
-    inner: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    inner: Arc<dyn crate::SessionStore>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
     get_override_once: Mutex<Option<PersistedSession>>,
     pub(crate) fail_get_on_call_once: AtomicUsize,
@@ -3940,18 +3936,18 @@ pub(crate) struct FaultingSessionRepository {
 }
 
 fn report_committed_mutation_as_conflict(
-    result: awaken_session_state_contract::SessionMutationResult,
-) -> awaken_session_state_contract::SessionMutationResult {
+    result: awaken_session_contract::SessionMutationResult,
+) -> awaken_session_contract::SessionMutationResult {
     match result {
-        awaken_session_state_contract::SessionMutationResult::Applied { new_revision }
-        | awaken_session_state_contract::SessionMutationResult::Replayed { new_revision }
-        | awaken_session_state_contract::SessionMutationResult::Conflict {
+        awaken_session_contract::SessionMutationResult::Applied { new_revision }
+        | awaken_session_contract::SessionMutationResult::Replayed { new_revision }
+        | awaken_session_contract::SessionMutationResult::Conflict {
             current_revision: new_revision,
-        } => awaken_session_state_contract::SessionMutationResult::Conflict {
+        } => awaken_session_contract::SessionMutationResult::Conflict {
             current_revision: new_revision,
         },
-        awaken_session_state_contract::SessionMutationResult::IdempotencyMismatch => {
-            awaken_session_state_contract::SessionMutationResult::IdempotencyMismatch
+        awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+            awaken_session_contract::SessionMutationResult::IdempotencyMismatch
         }
     }
 }
@@ -3965,7 +3961,7 @@ impl FaultingSessionRepository {
         }
     }
 
-    pub(crate) fn new(inner: Arc<dyn awaken_session_repository_contract::SessionStore>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn crate::SessionStore>) -> Self {
         Self {
             inner,
             pause_mutation_once: Mutex::new(None),
@@ -4085,20 +4081,20 @@ impl FaultingSessionRepository {
         concurrent: PersistedSession,
         operation: &str,
     ) -> Result<
-        awaken_session_state_contract::SessionMutationResult,
-        awaken_session_state_contract::SessionRepositoryError,
+        awaken_session_contract::SessionMutationResult,
+        awaken_session_contract::SessionRepositoryError,
     > {
         let session_id = concurrent.session_id.clone();
         let expected_revision = concurrent.revision;
-        let payload = awaken_session_state_contract::SessionMutationPayload::Replace(concurrent);
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(concurrent);
         let payload_hash = payload.stable_hash();
         let result = self
             .inner
             .commit(
                 owner_scope,
-                awaken_session_state_contract::SessionMutation {
+                awaken_session_contract::SessionMutation {
                     expected_revision,
-                    idempotency: awaken_session_state_contract::IdempotencyRecord {
+                    idempotency: awaken_session_contract::IdempotencyRecord {
                         key: format!("test:{operation}:{session_id}:{}", expected_revision.0),
                         payload_hash,
                     },
@@ -4112,11 +4108,11 @@ impl FaultingSessionRepository {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSessionRepository {
+impl awaken_session_contract::SessionRepositoryReads for FaultingSessionRepository {
     async fn get(
         &self,
         session_id: &SessionId,
-    ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError> {
+    ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
         let get_call = {
             let mut observed = self.observed_gets.lock().unwrap();
             observed.push(session_id.to_string());
@@ -4146,7 +4142,7 @@ impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSess
                 .is_ok()
         {
             return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "injected Session read failure".into(),
                 ),
             );
@@ -4155,7 +4151,7 @@ impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSess
             return Ok(session);
         }
         if self.get_not_found_once.swap(false, Ordering::SeqCst) {
-            return Err(awaken_session_state_contract::SessionRepositoryError::NotFound);
+            return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
         let result = self.inner.get(session_id).await;
         self.completed_gets
@@ -4169,17 +4165,15 @@ impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSess
     async fn owner(
         &self,
         session_id: &SessionId,
-    ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+    ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
         self.inner.owner(session_id).await
     }
 
     async fn scan(
         &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
         self.inner.scan(query).await
     }
 
@@ -4188,8 +4182,8 @@ impl awaken_session_repository_contract::SessionRepositoryReads for FaultingSess
         owner_scope: &str,
         session_id: &SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner
             .deleted_event_admissions(owner_scope, session_id)
@@ -4203,11 +4197,11 @@ impl SessionRepository for FaultingSessionRepository {
         &self,
         owner_scope: &str,
         session: PersistedSession,
-        idempotency: awaken_session_state_contract::IdempotencyRecord,
-        lifecycle_facts: Vec<awaken_session_state_contract::ManagedLifecycleFact>,
+        idempotency: awaken_session_contract::IdempotencyRecord,
+        lifecycle_facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
     ) -> Result<
-        awaken_session_state_contract::SessionCreateResult,
-        awaken_session_state_contract::SessionRepositoryError,
+        awaken_session_contract::SessionCreateResult,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.pause_at_create_boundary(false).await;
         let result = self
@@ -4215,7 +4209,7 @@ impl SessionRepository for FaultingSessionRepository {
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await?;
         self.pause_at_create_boundary(true).await;
-        if let awaken_session_state_contract::SessionCreateResult::Applied(session) = &result {
+        if let awaken_session_contract::SessionCreateResult::Applied(session) = &result {
             self.applied_create_roots
                 .lock()
                 .unwrap()
@@ -4228,9 +4222,8 @@ impl SessionRepository for FaultingSessionRepository {
         &self,
         owner_scope: &str,
         session_id: &SessionId,
-        idempotency: &awaken_session_state_contract::IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, awaken_session_state_contract::SessionRepositoryError>
-    {
+        idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
         self.inner
             .replay_create(owner_scope, session_id, idempotency)
             .await
@@ -4239,10 +4232,10 @@ impl SessionRepository for FaultingSessionRepository {
     async fn commit(
         &self,
         owner_scope: &str,
-        mutation: awaken_session_state_contract::SessionMutation,
+        mutation: awaken_session_contract::SessionMutation,
     ) -> Result<
-        awaken_session_state_contract::SessionMutationResult,
-        awaken_session_state_contract::SessionRepositoryError,
+        awaken_session_contract::SessionMutationResult,
+        awaken_session_contract::SessionRepositoryError,
     > {
         // One test scheduling cut before the real repository CAS. Consume the
         // cut and capture the detached request under the lock, then release the
@@ -4272,7 +4265,7 @@ impl SessionRepository for FaultingSessionRepository {
         if should_fail {
             self.fail_operation_once.lock().unwrap().take();
             return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "injected root-CAS outage".into(),
                 ),
             );
@@ -4304,20 +4297,20 @@ impl SessionRepository for FaultingSessionRepository {
             let session_id = mutation.payload.session_id().to_string();
             let mut concurrent = self.inner.get(&SessionId::from(session_id)).await?;
             concurrent.begin_activity_epoch().ok_or_else(|| {
-                awaken_session_state_contract::SessionRepositoryError::InvalidMutation(
+                awaken_session_contract::SessionRepositoryError::InvalidMutation(
                     "injected concurrent activity exhausted its epoch".into(),
                 )
             })?;
             concurrent
-                .transition_execution(awaken_session_state_contract::SessionExecutionState::Running)
+                .transition_execution(awaken_session_contract::SessionExecutionState::Running)
                 .map_err(|error| {
-                    awaken_session_state_contract::SessionRepositoryError::InvalidMutation(
+                    awaken_session_contract::SessionRepositoryError::InvalidMutation(
                         error.to_string(),
                     )
                 })?;
             if !concurrent.begin_runtime_interval(1, 0) {
                 return Err(
-                    awaken_session_state_contract::SessionRepositoryError::InvalidMutation(
+                    awaken_session_contract::SessionRepositoryError::InvalidMutation(
                         "injected concurrent activity could not open its interval".into(),
                     ),
                 );
@@ -4364,20 +4357,20 @@ impl SessionRepository for FaultingSessionRepository {
         if should_tombstone {
             let session_id = mutation.payload.session_id().to_string();
             let committed_revision = match self.inner.commit(owner_scope, mutation).await? {
-                awaken_session_state_contract::SessionMutationResult::Applied { new_revision }
-                | awaken_session_state_contract::SessionMutationResult::Replayed { new_revision } => {
+                awaken_session_contract::SessionMutationResult::Applied { new_revision }
+                | awaken_session_contract::SessionMutationResult::Replayed { new_revision } => {
                     new_revision
                 }
-                conflict @ awaken_session_state_contract::SessionMutationResult::Conflict { .. }
-                | conflict @ awaken_session_state_contract::SessionMutationResult::IdempotencyMismatch => {
+                conflict @ awaken_session_contract::SessionMutationResult::Conflict { .. }
+                | conflict @ awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
                     return Ok(conflict);
                 }
             };
             let deleted_revision = awaken_session_types::SessionRevision(
                 committed_revision.0.checked_add(1).expect("test revision"),
             );
-            let payload = awaken_session_state_contract::SessionMutationPayload::Delete(
-                awaken_session_state_contract::SessionTombstone {
+            let payload = awaken_session_contract::SessionMutationPayload::Delete(
+                awaken_session_contract::SessionTombstone {
                     session_id: SessionId::from(&session_id),
                     deleted_revision,
                     deleted_at: "2026-08-21T00:00:00Z".into(),
@@ -4388,9 +4381,9 @@ impl SessionRepository for FaultingSessionRepository {
                 .inner
                 .commit(
                     owner_scope,
-                    awaken_session_state_contract::SessionMutation {
+                    awaken_session_contract::SessionMutation {
                         expected_revision: committed_revision,
-                        idempotency: awaken_session_state_contract::IdempotencyRecord {
+                        idempotency: awaken_session_contract::IdempotencyRecord {
                             key: format!("test:concurrent-tombstone:{session_id}"),
                             payload_hash,
                         },
@@ -4401,10 +4394,10 @@ impl SessionRepository for FaultingSessionRepository {
                 .await?;
             assert!(matches!(
                 result,
-                awaken_session_state_contract::SessionMutationResult::Applied { .. }
-                    | awaken_session_state_contract::SessionMutationResult::Replayed { .. }
+                awaken_session_contract::SessionMutationResult::Applied { .. }
+                    | awaken_session_contract::SessionMutationResult::Replayed { .. }
             ));
-            return Err(awaken_session_state_contract::SessionRepositoryError::NotFound);
+            return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
         let result = self.inner.commit(owner_scope, mutation).await;
         if let (Some(pause), Ok(result)) = (pause, &result) {
@@ -4415,24 +4408,22 @@ impl SessionRepository for FaultingSessionRepository {
 
     async fn count_environment_phase(
         &self,
-        phase: awaken_session_state_contract::SessionEnvironmentPhase,
-    ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
+        phase: awaken_session_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
         if self
             .corrupt_environment_phase_count_once
             .swap(false, Ordering::SeqCst)
         {
-            return Err(
-                awaken_session_state_contract::SessionRepositoryError::Corrupt(
-                    "injected corrupt Session root during Environment phase count".into(),
-                ),
-            );
+            return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
+                "injected corrupt Session root during Environment phase count".into(),
+            ));
         }
         if self
             .fail_environment_phase_count_once
             .swap(false, Ordering::SeqCst)
         {
             return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "injected Environment phase count outage".into(),
                 ),
             );
@@ -4445,15 +4436,15 @@ impl SessionRepository for FaultingSessionRepository {
         session_id: &SessionId,
         key: &str,
     ) -> Result<
-        Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Option<awaken_session_contract::SessionIdempotencyReceipt>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         if self
             .fail_idempotency_receipt_once
             .swap(false, Ordering::SeqCst)
         {
             return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "injected command receipt read outage".into(),
                 ),
             );
@@ -4462,17 +4453,15 @@ impl SessionRepository for FaultingSessionRepository {
     }
 }
 
-use awaken_session_repository_contract::SessionReconciliation;
+use awaken_session_contract::SessionReconciliation;
 
 #[async_trait::async_trait]
 impl SessionReconciliation for FaultingSessionRepository {
     async fn reconciliation_scan(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
+        after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
         let call = self.recovery_scan_count.fetch_add(1, Ordering::SeqCst) + 1;
         if self.hold_recovery_scan_on_call.load(Ordering::SeqCst) == call {
             self.recovery_scan_entered.notify_one();
@@ -4482,7 +4471,7 @@ impl SessionReconciliation for FaultingSessionRepository {
             || self.fail_recovery_scan_on_call.load(Ordering::SeqCst) == call
         {
             return Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "injected recovery scan outage".into(),
                 ),
             );
@@ -4502,19 +4491,19 @@ impl SessionReconciliation for FaultingSessionRepository {
     }
 }
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::LifecycleOutbox for FaultingSessionRepository {
+impl awaken_session_contract::LifecycleOutbox for FaultingSessionRepository {
     async fn append_lifecycle(
         &self,
-        fact: awaken_session_state_contract::ManagedLifecycleFact,
-    ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
+        fact: awaken_session_contract::ManagedLifecycleFact,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
         self.inner.append_lifecycle(fact).await
     }
 
     async fn pending_lifecycle(
         &self,
     ) -> Result<
-        Vec<awaken_session_state_contract::ManagedLifecycleFact>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Vec<awaken_session_contract::ManagedLifecycleFact>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner.pending_lifecycle().await
     }
@@ -4522,7 +4511,7 @@ impl awaken_session_repository_contract::LifecycleOutbox for FaultingSessionRepo
     async fn complete_lifecycle(
         &self,
         fact_id: &str,
-    ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
         self.inner.complete_lifecycle(fact_id).await
     }
 }
@@ -4889,15 +4878,12 @@ pub(crate) fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedS
     serde_json::from_value(wire).unwrap()
 }
 
-pub(crate) async fn create(
-    repo: &dyn awaken_session_repository_contract::SessionStore,
-    session: PersistedSession,
-) {
+pub(crate) async fn create(repo: &dyn crate::SessionStore, session: PersistedSession) {
     let id = session.session_id.clone();
     repo.create(
         "workspace",
         session,
-        awaken_session_state_contract::IdempotencyRecord {
+        awaken_session_contract::IdempotencyRecord {
             key: format!("create:{id}"),
             payload_hash: format!("payload:{id}"),
         },
@@ -5023,8 +5009,8 @@ fn credentialed_repository_resources(
 
 fn repository_publication_intent(
     resources: &crate::session_resource::ResolvedSessionResources,
-) -> awaken_session_state_contract::SessionRepositoryPublicationIntent {
-    awaken_session_state_contract::SessionRepositoryPublicationIntent {
+) -> awaken_session_contract::SessionRepositoryPublicationIntent {
+    awaken_session_contract::SessionRepositoryPublicationIntent {
         input: resources.inputs()[0].clone(),
         expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/issue-coding".into(),

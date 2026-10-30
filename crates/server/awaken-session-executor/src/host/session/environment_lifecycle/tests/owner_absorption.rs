@@ -190,9 +190,9 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     );
 }
 
-fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestoreRequest {
+fn restore_request(thread: &str) -> awaken_provisioning_contract::SandboxRestoreRequest {
     let generation = generation(thread);
-    let suspend = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -201,7 +201,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         None,
         None,
     );
-    let checkpoint = awaken_session_state_contract::SandboxCheckpointRef {
+    let checkpoint = awaken_provisioning_contract::SandboxCheckpointRef {
         id: format!("checkpoint-{thread}"),
         format: "portable-test-v1".into(),
         digest: format!("digest-{thread}"),
@@ -213,7 +213,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         excluded_mounts: Vec::new(),
         suspend_effect_id: suspend.effect_id().to_owned(),
     };
-    let restore = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let restore = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "restore",
@@ -222,7 +222,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         None,
         Some(&checkpoint),
     );
-    awaken_session_state_contract::SandboxRestoreRequest {
+    awaken_provisioning_contract::SandboxRestoreRequest {
         workspace_id: "workspace".into(),
         session_id: thread.into(),
         effect_id: restore.effect_id().to_owned(),
@@ -513,7 +513,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
                 ProjectedEnvironmentOwner::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "foreign-generation-receipt".into(),
-                        generation: awaken_session_state_contract::SandboxGeneration::new(
+                        generation: awaken_session_contract::SandboxGeneration::new(
                             &awaken_session_types::SessionId::from(thread),
                             2,
                             u64::MAX,
@@ -633,7 +633,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     host.run_assembly
         .install_test_resident_session_environment(thread, environment.clone());
     let generation = generation(thread);
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -667,7 +667,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .unwrap();
     assert!(
@@ -691,7 +691,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+            &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
         )
         .unwrap();
     assert!(
@@ -847,7 +847,7 @@ async fn terminal_takeover_is_highest_priority_and_other_causes_cannot_overwrite
         .into_session_provider();
     let environment = environment(&provider, thread).await;
     let generation = generation(thread);
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -1115,19 +1115,18 @@ fn owner_after_projection_derives_a_new_owner_and_keeps_the_held_one() {
     // the held owner is unchanged, because installing waits for the installed Session lock.
     let thread = "after-projection";
     let held = SessionEnvironmentOwner::Vacant;
-    let unmaterialized = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+    let unmaterialized = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
     let projected = held
         .after_projection(thread, "ws", &unmaterialized, true, false)
         .expect("A1");
     assert!(matches!(projected, SessionEnvironmentOwner::Vacant), "A1");
-    let resident = |effect_id: Option<&str>| {
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let resident =
+        |effect_id: Option<&str>| awaken_session_contract::SessionEnvironmentState::Resident {
             binding: "binding-a".into(),
             effect_id: effect_id.map(str::to_owned),
             generation: Some(generation(thread)),
             idle_since_unix_ms: None,
-        }
-    };
+        };
     let projected = held
         .after_projection(thread, "ws", &resident(Some("effect-a")), true, false)
         .expect("A2");

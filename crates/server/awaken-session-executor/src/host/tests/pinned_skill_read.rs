@@ -69,9 +69,9 @@ struct GatedSkillBindingSink {
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedSkillBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.inner.authorize(intent).await
@@ -79,14 +79,12 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedS
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         if matches!(
             receipt.kind,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create
+            awaken_session_contract::SessionEnvironmentEffectKind::Create
         ) {
             self.creates.fetch_add(1, Ordering::SeqCst);
             self.entered.notify_one();

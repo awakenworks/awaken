@@ -214,13 +214,13 @@ pub(crate) struct RemoteTerminalCleanupControl {
             awaken_session_realization_contract::SessionTerminalCleanupAssignment,
         >,
     >,
-    pub(crate) session: Mutex<Option<awaken_session_state_contract::PersistedSession>>,
-    pub(crate) preparations: Mutex<Vec<awaken_session_state_contract::SessionCleanupPreparation>>,
-    pub(crate) disposals: Mutex<Vec<awaken_session_state_contract::SessionCleanupDisposalReceipt>>,
+    pub(crate) session: Mutex<Option<awaken_session_contract::PersistedSession>>,
+    pub(crate) preparations: Mutex<Vec<awaken_session_contract::SessionCleanupPreparation>>,
+    pub(crate) disposals: Mutex<Vec<awaken_session_contract::SessionCleanupDisposalReceipt>>,
     pub(crate) publication_receipts:
-        Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationReceipt>>,
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
     pub(crate) publication_rejections:
-        Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationRejection>>,
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
     pub(crate) events: Mutex<Vec<String>>,
     pub(crate) disposal_response_loss_once: AtomicBool,
     pub(crate) authorization_barrier:
@@ -533,7 +533,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 {
     async fn authorize_terminal_cleanup_effect(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
         awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -576,7 +576,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
     async fn record_terminal_cleanup_preparation(
         &self,
         lease: &crate::session_resource::SessionRealizationLease,
-        preparation: awaken_session_state_contract::SessionCleanupPreparation,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let (projection, current) = self.authority.lock().unwrap().clone().ok_or(
             awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
@@ -600,10 +600,10 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
         ) {
             Ok(_) => Ok(candidate),
             Err(
-                awaken_session_state_contract::SessionCleanupError::RepositoryPreparationReceiptMismatch,
+                awaken_session_contract::SessionCleanupError::RepositoryPreparationReceiptMismatch,
             ) => {
                 let repository_preparation =
-                    awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+                    awaken_session_contract::SessionCleanupRepositoryPreparation::new(
                         &preparation.effect.command.session_id,
                         &projection.workspace_id,
                         &session.resources,
@@ -644,7 +644,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 {
     async fn authorize_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let authority = self.authority.lock().unwrap().clone().ok_or(
             awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
@@ -672,7 +672,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
     async fn record_terminal_cleanup_disposal(
         &self,
         lease: &crate::session_resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let current = self
             .authority
@@ -782,7 +782,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         session_id: &SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let current = self
             .session
@@ -822,7 +822,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         session_id: &SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
-        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let current = self
             .session

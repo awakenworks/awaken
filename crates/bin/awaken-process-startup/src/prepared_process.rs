@@ -9,8 +9,8 @@ use std::sync::Arc;
 pub struct CoordinatorAuthorityHandles {
     pub runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     pub worker_directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
-    pub sessions: Arc<dyn awaken_session_repository_contract::SessionRepositoryReads>,
-    pub session_reconciliation: Arc<dyn awaken_session_repository_contract::SessionReconciliation>,
+    pub sessions: Arc<dyn awaken_session_contract::SessionRepositoryReads>,
+    pub session_reconciliation: Arc<dyn awaken_session_contract::SessionReconciliation>,
     /// The one process-owned Coordinator pool. Hosted adapters and the
     /// process-readiness probe clone this handle rather than reconnecting.
     pub postgres_pool: Option<sqlx::PgPool>,

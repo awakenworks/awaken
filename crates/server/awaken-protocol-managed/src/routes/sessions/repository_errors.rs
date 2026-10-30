@@ -5,7 +5,7 @@
 use super::error_response;
 use crate::state::StateError;
 use awaken_session_application::SessionMutationError;
-use awaken_session_state_contract::{SessionRepositoryConflict, SessionRepositoryError};
+use awaken_session_contract::{SessionRepositoryConflict, SessionRepositoryError};
 use axum::http::StatusCode;
 
 #[test]

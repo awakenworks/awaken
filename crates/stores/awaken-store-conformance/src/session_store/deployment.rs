@@ -47,7 +47,9 @@ pub fn deployment_fact(id: &str, object_id: &str) -> DeploymentLifecycleFact {
 }
 
 pub async fn deployment_cas_decision_table<
-    R: DeploymentRepository + awaken_session_repository_contract::SessionStore,
+    R: DeploymentRepository
+        + awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox,
 >(
     repo: &R,
     replicas: [&dyn DeploymentRepository; 3],

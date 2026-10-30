@@ -51,7 +51,7 @@ mod scoped_cases {
     ) -> (
         SessionRunDispatchReads,
         Arc<Probe>,
-        Arc<dyn awaken_session_repository_contract::SessionStore>,
+        Arc<dyn awaken_session_application::SessionStore>,
     ) {
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1));
         let repository = awaken_protocol_managed_testkit::ephemeral_session_repository().await;

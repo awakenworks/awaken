@@ -21,7 +21,7 @@ async fn worker_rollout_waits_for_actual_adoption_and_keeps_draining_sources_dis
         ManagedCredentialOperation::Archive,
         ManagedCredentialOperation::Delete,
     ] {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let id = SessionId::from("worker-rollout");
         let mut root = persisted_with_mcp_source(id.as_str(), "source-a", "vault-event");
@@ -112,7 +112,7 @@ async fn worker_rollout_waits_for_actual_adoption_and_keeps_draining_sources_dis
         }
         let references = repo
             .scan(
-                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: "workspace-a",
                     source_id: &event.source_id,
                 },
@@ -146,7 +146,7 @@ async fn unattempted_preparation_rotates_credentials_without_losing_reserved_act
     // activity coordinate. Runtime publication can remain pending: a changed
     // pin is not convergence. This reproduces the deployed pre-Run wait cycle.
     for with_activity in [false, true] {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         create_session_fixture(
             repo.as_ref(),

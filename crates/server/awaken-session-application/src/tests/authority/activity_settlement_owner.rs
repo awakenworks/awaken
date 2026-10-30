@@ -2,11 +2,12 @@ use crate::tests::{
     FaultingSessionRepository, NoopRuntime, application_with_persistence, create, persisted,
 };
 use crate::{SessionActivityError, SessionPersistence};
-use awaken_session_repository_contract::{
-    LifecycleOutbox as _, SessionRepositoryReads as _, SessionStore,
-};
 use awaken_session_types::SessionId;
 use std::sync::Arc;
+use {
+    crate::SessionStore, awaken_session_contract::LifecycleOutbox as _,
+    awaken_session_contract::SessionRepositoryReads as _,
+};
 
 #[tokio::test]
 async fn activity_settlement_owner_survives_app_drop_and_root_cas_faults() {

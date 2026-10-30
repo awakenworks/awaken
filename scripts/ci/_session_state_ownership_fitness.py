@@ -8,15 +8,15 @@ from pathlib import Path
 import _crate_boundary_workspace
 
 
-SESSION_CONTRACT = "crates/contract/awaken-session-state-contract/src/session_repo.rs"
+SESSION_CONTRACT = "crates/contract/awaken-session-contract/src/state/session_repo.rs"
 SESSION_PERSISTED_CONTRACT = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/persisted_session.rs"
 )
 SESSION_DISPOSITION_CONTRACT = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/disposition.rs"
 )
 SESSION_EXECUTION_STATE_CONTRACT = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/execution_state.rs"
 )
 SESSION_MUTATION_ROOTS = (
     "crates/server/awaken-session-application/src",
@@ -226,7 +226,7 @@ impl PersistedSession {
     # C3 controlled command/read; C4 test-only fixture. E1 only C1/C2 rejected.
     for text in (
         "fn bypass(s: &mut PersistedSession) { s.title = None; }",
-        "fn bypass(s: &mut awaken_session_state_contract::PersistedSession) {}",
+        "fn bypass(s: &mut awaken_session_contract::PersistedSession) {}",
         "session.resources = Default::default();",
         "root.realization_progress = Default::default();",
         "current.budget = Default::default();",

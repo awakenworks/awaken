@@ -316,7 +316,10 @@ impl ActiveToolBatch {
     ) -> Result<ToolExecutionDomainFootprint, ToolBatchError> {
         let mut domains = std::collections::BTreeMap::new();
         let mut returned = std::collections::BTreeSet::new();
-        let mut entered_calls = std::collections::BTreeMap::new();
+        let mut entered_calls: std::collections::BTreeMap<
+            (String, String, usize),
+            (ToolCall, ToolRecoveryPolicy, Option<ToolOutput>),
+        > = std::collections::BTreeMap::new();
         // The original log position identifies an entry, not a fabricated epoch.
         // Resume legally returns to attempt 1, so attempt alone cannot key it.
         let mut entries = std::collections::BTreeMap::new();

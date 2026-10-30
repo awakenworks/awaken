@@ -142,11 +142,11 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     let session_id = "mixed-update-one-root";
     let repo = authority_repository("mixed update repository").await;
     let mut session = persisted(session_id, false, "idle");
-    session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    session.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 10,
         consumed_numerator: 0,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "mixed-prices-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,

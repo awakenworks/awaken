@@ -1,15 +1,10 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 use super::*;
 use awaken_lease_testkit::ManualClock;
-use awaken_session_state_contract::{
-    IdempotencyRecord, SessionMutationPayload, SessionRepositoryError,
-};
+use awaken_session_contract::{IdempotencyRecord, SessionMutationPayload, SessionRepositoryError};
 use awaken_session_store::SqliteManagedSessionRepository;
 
-fn timed_application(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    now: u64,
-) -> SessionApplication {
+fn timed_application(repo: Arc<dyn crate::SessionStore>, now: u64) -> SessionApplication {
     SessionApplicationBuilder::fixture(
         Arc::new(NoopRuntime),
         Arc::new(NoopMcpRealizer),
@@ -166,9 +161,7 @@ async fn postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack()
     mutation_time_receipt_table(Arc::new(repo)).await;
 }
 
-async fn mutation_time_receipt_table(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
-) {
+async fn mutation_time_receipt_table(repo: Arc<dyn crate::SessionStore>) {
     let mut create = command();
     // Keep the real Postgres case repeatable without deleting shared database
     // state: every test process owns a distinct Session identity.
@@ -208,7 +201,7 @@ async fn mutation_time_receipt_table(
         .mutations
         .commit_session_snapshot_with_record(
             &owner,
-            awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
+            awaken_session_contract::SessionAggregate::try_from(desired.clone())
                 .expect("valid test snapshot"),
             key.clone(),
             vec![],
@@ -227,7 +220,7 @@ async fn mutation_time_receipt_table(
                 .mutations
                 .commit_session_snapshot_with_record(
                     &owner,
-                    awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
+                    awaken_session_contract::SessionAggregate::try_from(desired.clone())
                         .expect("valid test snapshot"),
                     conflicting,
                     vec![]
@@ -244,7 +237,7 @@ async fn mutation_time_receipt_table(
                 .mutations
                 .commit_session_snapshot_with_record(
                     &owner,
-                    awaken_session_state_contract::SessionAggregate::try_from(desired)
+                    awaken_session_contract::SessionAggregate::try_from(desired)
                         .expect("valid test snapshot"),
                     stale,
                     vec![]
@@ -328,7 +321,7 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
     );
     let id = "archive-time-new";
     create(repo.as_ref(), persisted(id, false, "idle")).await;
-    let fact = awaken_session_state_contract::ManagedLifecycleFact {
+    let fact = awaken_session_contract::ManagedLifecycleFact {
         id: format!("{id}:terminated"),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
@@ -347,7 +340,7 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
 
     let old_id = "archive-time-legacy";
     let mut old = persisted(old_id, false, "terminated");
-    old.disposition = awaken_session_state_contract::SessionDisposition::Archived {
+    old.disposition = awaken_session_contract::SessionDisposition::Archived {
         archived_at: "2026-01-01T00:00:00Z".into(),
         archived_at_unix_ms: None,
     };
@@ -373,7 +366,7 @@ async fn first_archive_time_is_durable_and_legacy_archive_stays_unknown() {
     let legacy = cold_repo.get(&SessionId::from(old_id)).await.unwrap();
     assert_eq!(legacy.archived_at_unix_ms(), None, "A3");
     assert_eq!(legacy.archived_at(), Some("2026-01-01T00:00:00Z"), "A3 v1");
-    let old_fact = awaken_session_state_contract::ManagedLifecycleFact {
+    let old_fact = awaken_session_contract::ManagedLifecycleFact {
         id: format!("{old_id}:terminated"),
         object_id: old_id.into(),
         workspace_id: Some("workspace".into()),
@@ -413,7 +406,7 @@ async fn concurrent_archives_keep_only_the_winning_clock_sample() {
     );
     let id = "archive-time-race";
     create(repo.as_ref(), persisted(id, false, "idle")).await;
-    let fact = awaken_session_state_contract::ManagedLifecycleFact {
+    let fact = awaken_session_contract::ManagedLifecycleFact {
         id: format!("{id}:terminated"),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),

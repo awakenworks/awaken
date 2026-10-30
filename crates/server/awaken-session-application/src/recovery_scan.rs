@@ -9,9 +9,9 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_contract::SessionRepository;
 use {
-    awaken_session_state_contract::{SessionRepositoryError, SessionScan, SessionScanQuery},
+    awaken_session_contract::{SessionRepositoryError, SessionScan, SessionScanQuery},
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
@@ -43,7 +43,7 @@ pub struct WorkerRealizationObservation {
 pub(super) async fn worker_realizations(
     repository: &dyn SessionRepository,
     worker_id: &str,
-) -> Result<Vec<awaken_session_state_contract::ScopedPersistedSession>, SessionRepositoryError> {
+) -> Result<Vec<awaken_session_contract::ScopedPersistedSession>, SessionRepositoryError> {
     let scan = repository
         .scan(SessionScanQuery::WorkerRealizationOwner { worker_id })
         .await?;
@@ -145,7 +145,7 @@ pub(super) async fn recovery_candidates(
 pub(super) struct ContinuationDiagnostics {
     observed: BTreeMap<
         awaken_session_types::SessionId,
-        awaken_session_state_contract::SessionEnvironmentRejection,
+        awaken_session_contract::SessionEnvironmentRejection,
     >,
 }
 
@@ -155,7 +155,7 @@ impl ContinuationDiagnostics {
         candidates: &SessionRecoveryCandidates,
     ) -> Vec<(
         awaken_session_types::SessionId,
-        awaken_session_state_contract::SessionEnvironmentRejection,
+        awaken_session_contract::SessionEnvironmentRejection,
     )> {
         let current: BTreeMap<_, _> = candidates
             .sessions

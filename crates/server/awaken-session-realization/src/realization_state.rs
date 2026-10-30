@@ -400,7 +400,7 @@ impl SessionRealization {
     pub fn publish_frozen_projection(
         &mut self,
         owner: SessionEnvironmentOwner,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
+        state: &awaken_session_contract::SessionEnvironmentState,
         holds_context: bool,
         receipt: awaken_session_realization_contract::FrozenProjectionReceipt,
         has_mcp_attachment: bool,
@@ -478,7 +478,7 @@ impl SessionRealization {
     pub fn install_owner(
         &mut self,
         owner: SessionEnvironmentOwner,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
+        state: &awaken_session_contract::SessionEnvironmentState,
         holds_context: bool,
     ) {
         self.environment.owner = owner;
@@ -491,7 +491,7 @@ impl SessionRealization {
     /// during the gap between their durable transition and source cleanup.
     pub fn reopen_mcp_realization_admission_from_projection(
         &mut self,
-        environment: &awaken_session_state_contract::SessionEnvironmentState,
+        environment: &awaken_session_contract::SessionEnvironmentState,
         holds_context: bool,
     ) -> bool {
         let Some(fence) = self.staging.mcp.quiescence_fence() else {
@@ -514,7 +514,7 @@ impl SessionRealization {
                             binding: owner_binding,
                         },
                     ),
-                    awaken_session_state_contract::SessionEnvironmentState::Resident {
+                    awaken_session_contract::SessionEnvironmentState::Resident {
                         binding,
                         effect_id: Some(effect_id),
                         generation: Some(generation),
@@ -534,7 +534,7 @@ impl SessionRealization {
                         binding: owner_binding,
                         ..
                     }),
-                    awaken_session_state_contract::SessionEnvironmentState::Resident {
+                    awaken_session_contract::SessionEnvironmentState::Resident {
                         binding,
                         effect_id: Some(effect_id),
                         generation: Some(generation),
@@ -547,7 +547,7 @@ impl SessionRealization {
         } else {
             matches!(
                 environment,
-                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+                awaken_session_contract::SessionEnvironmentState::Unmaterialized
             ) && matches!(&self.environment.owner, SessionEnvironmentOwner::Vacant)
         };
         if !authoritative_reopen {

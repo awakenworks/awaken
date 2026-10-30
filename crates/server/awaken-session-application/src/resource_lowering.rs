@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use awaken_agent_contract::stable_fingerprint;
 use awaken_resource_contract::{InputBinding, RepositoryId};
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
 use awaken_session_types::RunError;
 
 use crate::session_input::{

@@ -19,21 +19,21 @@ use std::sync::Arc;
 struct ScenarioListPriceProvider;
 
 #[async_trait::async_trait]
-impl awaken_session_budget_contract::ManagedListPriceProvider for ScenarioListPriceProvider {
+impl awaken_session_contract::ManagedListPriceProvider for ScenarioListPriceProvider {
     async fn resolve_snapshot(
         &self,
-        request: awaken_session_budget_contract::ManagedListPriceRequest,
+        request: awaken_session_contract::ManagedListPriceRequest,
     ) -> Result<
-        awaken_session_budget_contract::ManagedListPriceSnapshot,
-        awaken_session_budget_contract::ManagedListPriceError,
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
     > {
-        let rates = awaken_session_budget_contract::ManagedTokenListRates {
+        let rates = awaken_session_contract::ManagedTokenListRates {
             input_micros_per_million: 5_000_000_000,
             output_micros_per_million: 5_000_000_000,
             cache_read_micros_per_million: 5_000_000_000,
             cache_creation_micros_per_million: 5_000_000_000,
         };
-        Ok(awaken_session_budget_contract::ManagedListPriceSnapshot {
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "scenario-list-prices-v1".into(),
             version: 1,
             effective_at_unix_ms: request.occurred_at_unix_ms,

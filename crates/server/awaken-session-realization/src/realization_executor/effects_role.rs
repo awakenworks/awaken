@@ -24,8 +24,8 @@ impl awaken_session_execution_contract::RealizationEffects for RealizationExecut
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
         self.checkpoint_environment_continuation(thread, request)
             .await
     }
@@ -33,10 +33,10 @@ impl awaken_session_execution_contract::RealizationEffects for RealizationExecut
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, RunError> {
         self.prepare_environment_continuation_source_release(
             thread,
             preparation,
@@ -49,23 +49,23 @@ impl awaken_session_execution_contract::RealizationEffects for RealizationExecut
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
         self.dispose_prepared_environment_continuation_source(thread, disposal)
             .await
     }
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         self.restore_environment_continuation(request).await
     }
 
     async fn delete_session_checkpoint(
         &self,
         _thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         self.delete_environment_continuation_checkpoint(checkpoint)
             .await
@@ -82,9 +82,9 @@ impl awaken_session_execution_contract::RealizationEffects for RealizationExecut
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         self.effects()
             .publish_terminal_repository(self.peers(), command, lease)
             .await
@@ -92,8 +92,8 @@ impl awaken_session_execution_contract::RealizationEffects for RealizationExecut
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         self.effects()
             .dispose_terminal_cleanup_effect(self.peers(), effect)
             .await

@@ -387,7 +387,7 @@ async fn assemble_control_component(
 /// queue. They share the exact durable store opened by process startup; split
 /// Control neither mirrors it nor owns a fallback token directory.
 struct ExecutionStores {
-    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    sessions: Arc<dyn awaken_session_application::SessionStore>,
     application_access: Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>,
     dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
     capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,

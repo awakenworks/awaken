@@ -21,13 +21,13 @@
 //! | NC | complete T4 commit, then its receipt row removed (a half-committed batch) | - | the same atomicity checker rejects it |
 use std::time::Duration;
 
-use awaken_session_event_contract::{
-    SessionEventBatch, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
-};
-use awaken_session_repository_contract::SessionStore;
-use awaken_session_state_contract::{
+use awaken_session_application::SessionStore;
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionAggregate, SessionMutation,
     SessionMutationResult,
+};
+use awaken_session_contract::{
+    SessionEventBatch, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
 };
 use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 use awaken_session_types::{SessionId, SessionRevision};
@@ -39,14 +39,14 @@ const CONSUMED_MINOR: u64 = 2;
 
 fn paused(id: &str) -> PersistedSession {
     let mut value = session(id, "paused");
-    value.execution = awaken_session_state_contract::SessionExecutionState::Idle;
-    value.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    value.execution = awaken_session_contract::SessionExecutionState::Idle;
+    value.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
         consumed_numerator: u128::from(CONSUMED_MINOR)
-            * awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+            * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "t12-prices-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
@@ -71,7 +71,7 @@ fn ordinary(text: &str) -> SessionEventInput {
 fn interrupt_only() -> SessionEventInput {
     SessionEventInput::Interrupt(SessionEventInterrupt {
         requested_target: None,
-        targets: vec![awaken_session_event_contract::SessionThreadTarget::Primary],
+        targets: vec![awaken_session_contract::SessionThreadTarget::Primary],
     })
 }
 
@@ -87,7 +87,7 @@ struct BatchCommand {
 fn batch_command(root: &PersistedSession, row: &str, input: SessionEventInput) -> BatchCommand {
     let mut aggregate = SessionAggregate::try_from(root.clone()).expect("T12 aggregate");
     let next = SessionRevision(root.revision.0 + 1);
-    let batch_id = awaken_session_event_contract::session_event_batch_id(&root.session_id, next)
+    let batch_id = awaken_session_contract::session_event_batch_id(&root.session_id, next)
         .expect("T12 batch id");
     let mut batch = SessionEventBatch::compile(&root.session_id, batch_id.clone(), vec![input])
         .expect("T12 grammar-valid batch");
@@ -107,9 +107,8 @@ fn batch_command(root: &PersistedSession, row: &str, input: SessionEventInput) -
         root.session_id.as_str(),
         "session.status_idled",
     );
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(
-        aggregate.snapshot().clone(),
-    );
+    let payload =
+        awaken_session_contract::SessionMutationPayload::Replace(aggregate.snapshot().clone());
     let idempotency = IdempotencyRecord {
         key: key.clone(),
         payload_hash: payload.stable_hash(),
@@ -128,7 +127,7 @@ fn batch_command(root: &PersistedSession, row: &str, input: SessionEventInput) -
 #[derive(Debug, PartialEq)]
 struct Observed {
     root: PersistedSession,
-    receipt: Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
+    receipt: Option<awaken_session_contract::SessionIdempotencyReceipt>,
     facts: Vec<ManagedLifecycleFact>,
     raw: RawRows,
 }
@@ -193,7 +192,7 @@ async fn rollback_table<S: SessionStore, B: Backend>(
     let session_id = SessionId::from(id);
     let created = create_session(store, "ws_a", paused(id), Vec::new()).await;
     assert!(
-        awaken_session_state_contract::session_is_budget_paused(&created),
+        awaken_session_contract::session_is_budget_paused(&created),
         "T12 root is budget paused"
     );
 
@@ -406,7 +405,7 @@ async fn sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction() {
     let reopened = SqliteManagedSessionRepository::open(path_str)
         .await
         .expect("T5 reopen");
-    use awaken_session_repository_contract::SessionRepositoryReads as _;
+    use awaken_session_contract::SessionRepositoryReads as _;
     assert_eq!(
         reopened.get(&SessionId::from(id)).await.unwrap(),
         durable,

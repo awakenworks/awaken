@@ -1896,7 +1896,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .install_session_environment_owner_projection(
             thread,
             host.run_assembly.local_workspace(),
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+            &awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: "worker-owned-binding".into(),
                 effect_id: None,
                 generation: None,

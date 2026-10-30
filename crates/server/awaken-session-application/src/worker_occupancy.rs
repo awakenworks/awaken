@@ -14,11 +14,11 @@
 
 use std::sync::Arc;
 
-use awaken_session_realization_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
-use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::{
+use awaken_session_contract::SessionRepository;
+use awaken_session_contract::{
     SessionEnvironmentState, SessionExecutionState, SessionTerminalCleanupAction,
 };
+use awaken_session_realization_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
 use awaken_session_types::RunError;
 use awaken_worker_contract::WorkerIdentity;
 
@@ -268,7 +268,7 @@ impl SessionWorkerOccupancy {
                     ));
                     continue;
                 }
-                if awaken_session_state_contract::session_has_no_create_evidence(&session)
+                if awaken_session_contract::session_has_no_create_evidence(&session)
                     && session.execution == SessionExecutionState::Idle
                     && !session.has_active_activities()
                     && session.running_interval.is_none()
@@ -320,7 +320,7 @@ impl SessionWorkerOccupancy {
 }
 
 fn blocker(
-    session: &awaken_session_state_contract::PersistedSession,
+    session: &awaken_session_contract::PersistedSession,
     reason: WorkerRetirementBlockReason,
 ) -> WorkerRetirementBlocker {
     WorkerRetirementBlocker {

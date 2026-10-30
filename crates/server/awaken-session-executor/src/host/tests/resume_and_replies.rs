@@ -769,7 +769,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
             PermissionDecision::Allow { note: None },
         ),
-        accompanying_system: Some(awaken_session_event_contract::SessionUserRunSystemInput {
+        accompanying_system: Some(awaken_session_contract::SessionUserRunSystemInput {
             operation_id: "coordinated-reply-system".into(),
             content: vec![ContentBlock::text("reply context")],
         }),

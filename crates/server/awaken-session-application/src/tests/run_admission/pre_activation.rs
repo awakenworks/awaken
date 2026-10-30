@@ -191,7 +191,7 @@ async fn paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_
     assert!(after_failure.active_activity_epochs.is_empty(), "Z2");
     assert_eq!(
         after_failure.execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "Z2"
     );
 

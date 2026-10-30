@@ -24,7 +24,7 @@ use crate::staged_resources::{
 };
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_state_contract::SessionEnvironmentEffectIntent;
+use awaken_session_contract::SessionEnvironmentEffectIntent;
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
@@ -138,7 +138,7 @@ pub trait StagingPeer: Send + Sync {
     async fn stage_terminal_repository_publication_input(
         &self,
         workspace: &str,
-        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError>;
     #[allow(clippy::too_many_arguments)]
@@ -151,7 +151,7 @@ pub trait StagingPeer: Send + Sync {
         realizer: &dyn pc::RepositoryRealizer,
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError>;

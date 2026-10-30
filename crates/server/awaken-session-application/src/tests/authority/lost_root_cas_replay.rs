@@ -19,13 +19,13 @@ async fn publication_race_fixture(
     );
     let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
     let mut session = persisted(session_id, false, "idle");
-    session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: format!("{session_id}-source"),
         effect_id: None,
         generation: None,
         idle_since_unix_ms: None,
     };
-    session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+    session.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), session).await;
@@ -123,8 +123,7 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
         candidate.expected_revision, origin.revision,
         "C1 both requests really start from the one origin revision"
     );
-    let awaken_session_state_contract::SessionMutationPayload::Replace(delayed_root) =
-        &candidate.payload
+    let awaken_session_contract::SessionMutationPayload::Replace(delayed_root) = &candidate.payload
     else {
         panic!("C1 archive replaces one root")
     };
@@ -168,7 +167,7 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
     assert!(
         matches!(
             pause.result.lock().unwrap().clone().unwrap(),
-            awaken_session_state_contract::SessionMutationResult::Replayed { .. }
+            awaken_session_contract::SessionMutationResult::Replayed { .. }
         ),
         "C2 the delayed candidate really lost a root CAS by receipt replay"
     );
@@ -344,7 +343,7 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
         assert!(
             matches!(
                 pause.result.lock().unwrap().clone().unwrap(),
-                awaken_session_state_contract::SessionMutationResult::Replayed { .. }
+                awaken_session_contract::SessionMutationResult::Replayed { .. }
             ),
             "C2 {case} the delayed candidate really lost the root CAS by receipt replay"
         );
@@ -428,9 +427,7 @@ async fn resource_manifest_replay_uses_the_committed_receipt_without_a_late_quer
         .await
         .unwrap()
     {
-        awaken_session_state_contract::SessionMutationResult::Applied { new_revision } => {
-            new_revision
-        }
+        awaken_session_contract::SessionMutationResult::Applied { new_revision } => new_revision,
         other => panic!("R9 exact compiled command must apply first: {other:?}"),
     };
     let applied = durable.get(&id).await.unwrap();
@@ -465,7 +462,7 @@ async fn resource_manifest_replay_uses_the_committed_receipt_without_a_late_quer
     assert!(
         matches!(
             pause.result.lock().unwrap().clone().unwrap(),
-            awaken_session_state_contract::SessionMutationResult::Replayed { new_revision }
+            awaken_session_contract::SessionMutationResult::Replayed { new_revision }
                 if new_revision == original_revision
         ),
         "R9 actual canonical CAS replay, not a selector or mock shortcut"

@@ -24,7 +24,7 @@ pub struct FrozenSessionProjection {
     /// Exact root-owned original materialization facts, never a Worker cache truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_materialization:
-        Option<Box<awaken_session_state_contract::SessionEnvironmentMaterialization>>,
+        Option<Box<awaken_session_contract::SessionEnvironmentMaterialization>>,
     #[serde(default)]
     pub resource_revision: u64,
     pub resources: crate::ResolvedSessionResources,
@@ -113,8 +113,8 @@ impl FrozenSessionProjection {
         &self,
         session_id: &str,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, crate::RunError> {
-        use awaken_session_state_contract::SessionEnvironmentReceiptError as Error;
-        awaken_session_state_contract::SessionEnvironmentMaterialization::original_create_fence(
+        use awaken_session_contract::SessionEnvironmentReceiptError as Error;
+        awaken_session_contract::SessionEnvironmentMaterialization::original_create_fence(
             self.environment_materialization.as_deref(),
             session_id,
         )

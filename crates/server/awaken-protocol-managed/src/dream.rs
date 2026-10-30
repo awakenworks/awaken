@@ -60,7 +60,7 @@ impl DreamSessionSource for crate::ManagedState {
 /// Select Dream input from durable roots: visible, not Running, not itself a
 /// Dream Session, and updated after the policy cutoff; newest first.
 fn dream_eligible_sessions(
-    persisted: Vec<awaken_session_state_contract::PersistedSession>,
+    persisted: Vec<awaken_session_contract::PersistedSession>,
     updated_after_ms: u64,
     limit: usize,
 ) -> Vec<awaken_session_types::SessionId> {
@@ -68,7 +68,7 @@ fn dream_eligible_sessions(
         .into_iter()
         .filter(|session| !session.is_hidden())
         .filter(|session| {
-            session.public_status() != awaken_session_state_contract::SessionPublicStatus::Running
+            session.public_status() != awaken_session_contract::SessionPublicStatus::Running
         })
         .filter(|session| {
             session

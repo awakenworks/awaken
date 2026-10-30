@@ -677,7 +677,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-        "line": 11967,
+        "line": 11941,
         "file_sha256": "11640504e0e22a8e267aba867a274dc87d1364b65294c60b6fa5cbdad0b27bc0"
       }
     ],
@@ -745,7 +745,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches.rs",
-        "line": 1954,
+        "line": 1953,
         "file_sha256": "d5a835661f961f443c7799c1c209856d0b0966397c62e5cbb9e727f2d8dc1cd4"
       }
     ],

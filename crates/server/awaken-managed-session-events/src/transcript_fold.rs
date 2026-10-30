@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::event::{Fact, ToolDisposition};
-use awaken_session_event_contract::SessionEventBatch;
+use awaken_session_contract::SessionEventBatch;
 
 use crate::{EventIdentity, FactProvenance, ManagedEventType, ToolResultSource, TranscriptRole};
 
@@ -344,11 +344,9 @@ mod tests {
         let batch = SessionEventBatch::compile(
             &session,
             "batch",
-            vec![
-                awaken_session_event_contract::SessionEventInput::UserMessage {
-                    content: ordinary.content.clone(),
-                },
-            ],
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: ordinary.content.clone(),
+            }],
         )
         .unwrap();
         let managed = Message::text(

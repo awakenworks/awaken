@@ -12,7 +12,7 @@ use crate::session_environment::{
     SessionEnvironmentProvider,
 };
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_state_contract::SessionEnvironmentEffectIntent;
+use awaken_session_contract::SessionEnvironmentEffectIntent;
 use std::sync::Arc;
 
 use super::EnvironmentHolding;

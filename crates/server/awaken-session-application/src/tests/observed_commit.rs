@@ -2,12 +2,12 @@
 //! Direct execution of the existing asynchronous replacement boundary.
 use crate::SessionMutations;
 mod classification;
-use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionRepositoryConflict, SessionRepositoryError,
 };
+use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_types::SessionId;
 use awaken_session_types::SessionRevision;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,7 +22,7 @@ struct ObservedCommitPort {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::SessionRepositoryReads for ObservedCommitPort {
+impl awaken_session_contract::SessionRepositoryReads for ObservedCommitPort {
     async fn get(
         &self,
         _session_id: &SessionId,
@@ -36,8 +36,8 @@ impl awaken_session_repository_contract::SessionRepositoryReads for ObservedComm
 
     async fn scan(
         &self,
-        _query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        _query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
 
@@ -46,7 +46,7 @@ impl awaken_session_repository_contract::SessionRepositoryReads for ObservedComm
         _owner_scope: &str,
         _session_id: &SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         panic!("unexpected repository operation")
@@ -93,7 +93,7 @@ impl SessionRepository for ObservedCommitPort {
 
     async fn count_environment_phase(
         &self,
-        _phase: awaken_session_state_contract::SessionEnvironmentPhase,
+        _phase: awaken_session_contract::SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
@@ -106,14 +106,14 @@ impl SessionRepository for ObservedCommitPort {
     }
 }
 
-use awaken_session_repository_contract::SessionReconciliation;
+use awaken_session_contract::SessionReconciliation;
 
 #[async_trait::async_trait]
 impl SessionReconciliation for ObservedCommitPort {
     async fn reconciliation_scan(
         &self,
-        _after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        _after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
 }
@@ -213,7 +213,7 @@ fn check_observed_commit(old: Option<u64>, now: u64, has_fact: bool, pending_onc
         pending_once,
         result,
     };
-    let mut session = awaken_session_state_contract::SessionAggregate::try_from(session)
+    let mut session = awaken_session_contract::SessionAggregate::try_from(session)
         .expect("valid observed candidate");
     {
         let mut future = std::pin::pin!(SessionMutations::commit_observed_snapshot(

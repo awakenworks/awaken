@@ -7,7 +7,7 @@
 // @formal reason: Managed Resource tests; this is a product-requirement classification, not a direct
 // @formal reason: formal-proof claim.
 //! Live-session typed input CRUD and durable resource activation coordination.
-//! The persisted [`SessionResourceState`](awaken_session_state_contract::SessionResourceState)
+//! The persisted [`SessionResourceState`](awaken_session_contract::SessionResourceState)
 //! is authoritative. Wire DTOs project its desired manifest; Runtime owns
 //! realization of that manifest.
 
@@ -88,7 +88,7 @@ impl ManagedState {
     }
 
     fn resource_manifest_view(
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> crate::types::resource::SessionResourceManifest {
         let applying = session.resources.pending.is_some();
         crate::types::resource::SessionResourceManifest {
@@ -153,7 +153,7 @@ impl ManagedState {
 
     fn resource_dto_for_binding(
         session_id: &str,
-        state: &awaken_session_state_contract::SessionResourceState,
+        state: &awaken_session_contract::SessionResourceState,
         binding_id: &str,
     ) -> Option<crate::types::resource::SessionResource> {
         state

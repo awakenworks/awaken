@@ -4,22 +4,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 488,
+        "line": 487,
         "file_sha256": "602a595e8d3d2bf9c52cfe7b2bb1a3216619b86e009e0fb132a38310c47db8be"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 497
+        "line": 496
       },
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 502
+        "line": 501
       },
       {
         "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
-        "line": 518
+        "line": 517
       }
     ],
     "execution_witnesses": [

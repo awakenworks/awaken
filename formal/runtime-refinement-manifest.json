@@ -341,7 +341,7 @@
       },
       "processed-first-replay-terminal": {
         "family": "processed",
-        "source": "crates/contract/awaken-session-event-contract/src/lib.rs",
+        "source": "crates/contract/awaken-session-contract/src/event/mod.rs",
         "rules": [
           "first",
           "replay",

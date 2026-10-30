@@ -364,7 +364,7 @@ impl CoordinatedRuntimeFake {
         &self,
         text: &str,
         admission: awaken_session_execution_contract::SessionRunActivityAdmission,
-    ) -> awaken_session_state_contract::SessionRuntimeIntervalObservation {
+    ) -> awaken_session_contract::SessionRuntimeIntervalObservation {
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         use awaken_agent_contract::agent::run::{EndCause, RunState};
         let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
@@ -377,7 +377,7 @@ impl CoordinatedRuntimeFake {
             panic!("deferred child requires the committed activity receipt");
         };
         let source_commit_cursor = base + 5;
-        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+        let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: session_activity_epoch,
             thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
             run_id: run_id.clone(),
@@ -1093,7 +1093,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRunti
 impl awaken_session_execution_contract::SessionCoordinationReads for CoordinatedRuntimeFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -1242,7 +1242,7 @@ impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         Ok(
             awaken_session_application_contract::session_usage_from_thread_usage(
                 Self::committed_usage(thread),
@@ -1254,7 +1254,7 @@ impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake
         &self,
         _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         Ok(
             awaken_session_application_contract::session_usage_from_thread_usage(
                 Self::committed_usage(thread_id),

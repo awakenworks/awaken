@@ -21,7 +21,7 @@
 //! | P3 | retry after the fault clears | revision 3 installs; rev-1 identity Released |
 use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
-use awaken_session_state_contract::ActivationState;
+use awaken_session_contract::ActivationState;
 
 const SESSION: &str = "t14-partial-preparation";
 

@@ -34,10 +34,10 @@ if [ "${1:-}" = "--session-observations" ]; then
   # package directly: compiling it only as a dependency cannot execute the
   # observation test required by the same fresh evidence manifest.
   cargo test --locked --features awaken-store-sqlite/test-support \
-    -p awaken-session-event-contract -p awaken-session-configuration-contract \
+    -p awaken-session-contract -p awaken-session-configuration-contract \
     -p awaken-session-application-contract -p awaken-session-execution-contract \
-    -p awaken-session-realization-contract -p awaken-session-state-contract \
-    -p awaken-session-repository-contract \
+    -p awaken-session-realization-contract  \
+     \
     -p awaken-session-configuration-contract -p awaken-worker-contract \
     -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
@@ -70,9 +70,9 @@ cleanup_mutation_artifacts() {
   cargo clean -p awaken-tool-contract -p awaken-agent-contract -p awaken-lease-contract -p awaken-time \
     -p awaken-session-types >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
-    -p awaken-session-event-contract -p awaken-session-realization-contract \
-    -p awaken-session-repository-contract -p awaken-session-execution-contract \
-    -p awaken-session-state-contract >/dev/null 2>&1 || true
+    -p awaken-session-contract -p awaken-session-realization-contract \
+     -p awaken-session-execution-contract \
+     >/dev/null 2>&1 || true
   cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
 }
 python3 scripts/ci/check_reliability.py
@@ -172,9 +172,9 @@ python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch
 # Shared production metadata/authorization reducers: every selected mutation
 # must be caught by the domain decision tables; baseline/build failures do not
 # qualify as kills. cargo-mutants owns isolation and the outcome artifact.
-cargo mutants --package awaken-session-event-contract \
+cargo mutants --package awaken-session-contract \
   --output "$mutation_evidence/session-event-observations" \
-  --file crates/contract/awaken-session-event-contract/src/lib.rs \
+  --file crates/contract/awaken-session-contract/src/event/mod.rs \
   --re 'mark_processed_observation' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::DelegatedRun;
-use awaken_session_budget_contract::SessionUsage;
+use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::{
     BudgetRuntime, CoordinationRuntime, SessionCoordinationReads, ThreadReadRuntime,
 };
@@ -319,7 +319,7 @@ impl SessionObservations {
     /// The observing owner supplies its existing Clock sample; a projection
     /// cannot silently select an ambient second time authority.
     pub fn project_session_usage(
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
         threads: impl IntoIterator<Item = SessionUsage>,
         now_unix_ms: u64,
     ) -> SessionUsage {

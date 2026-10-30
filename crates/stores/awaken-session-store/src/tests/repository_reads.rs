@@ -1,7 +1,7 @@
 //! Real SQL evidence for the selected read capability, not a new Store fake.
 use super::*;
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_state_contract::SessionScanQuery;
+use awaken_session_contract::SessionRepositoryReads;
+use awaken_session_contract::SessionScanQuery;
 use sqlx::Executor as _;
 
 const COMMAND_SNAPSHOT_SQL: &str = "SELECT session_id,idempotency_key,payload_hash,committed_revision FROM managed_session_idempotency ORDER BY session_id,idempotency_key";

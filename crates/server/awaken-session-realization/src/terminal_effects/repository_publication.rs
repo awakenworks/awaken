@@ -9,7 +9,7 @@
 //! Runtime execution of the one aggregate-derived terminal Repository effect.
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
     SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
 };

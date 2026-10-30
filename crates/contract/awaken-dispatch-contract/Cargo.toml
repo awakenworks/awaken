@@ -41,7 +41,7 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 awaken-environment-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-realization-contract.workspace = true
-awaken-session-state-contract.workspace = true
+awaken-session-contract.workspace = true
 
 [lints]
 workspace = true

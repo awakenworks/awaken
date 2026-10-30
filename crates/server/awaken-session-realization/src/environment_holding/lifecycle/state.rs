@@ -28,7 +28,7 @@ impl BoundSessionEnvironment {
     /// changes no owner and grants no lease, preparation or physical effect.
     pub fn matches_source_projection(
         &self,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
+        state: &awaken_session_contract::SessionEnvironmentState,
         workspace_id: &str,
         session_id: &str,
     ) -> Result<bool, RealizationError> {
@@ -97,7 +97,7 @@ impl SessionEnvironmentOwner {
         &self,
         thread: &str,
         workspace_id: &str,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
+        state: &awaken_session_contract::SessionEnvironmentState,
         newer: bool,
         pending_resource_reservation: bool,
     ) -> Result<SessionEnvironmentOwner, RealizationError> {
@@ -360,8 +360,8 @@ impl SessionEnvironmentOwner {
     pub fn begin_preparing(
         &mut self,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
-        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
+        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+        intent: Option<&awaken_session_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         if let Some(intent) = intent {
             intent.verify().map_err(RealizationError::from)?;
@@ -374,14 +374,14 @@ impl SessionEnvironmentOwner {
         let binding = serde_json::to_string(&environment.lifecycle().handle())
             .map_err(RealizationError::from)?;
         let origin = match (&mut *self, kind) {
-            (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Create) => {
+            (Self::Vacant, awaken_session_contract::SessionEnvironmentEffectKind::Create) => {
                 UnboundSessionEnvironmentOrigin::New
             }
             (
                 Self::Vacant,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. },
+                awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. },
             ) if intent.is_some() => UnboundSessionEnvironmentOrigin::New,
-            (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt) => {
+            (Self::Vacant, awaken_session_contract::SessionEnvironmentEffectKind::Adopt) => {
                 UnboundSessionEnvironmentOrigin::Adoption
             }
             (
@@ -389,7 +389,7 @@ impl SessionEnvironmentOwner {
                     identity,
                     binding: expected,
                 }),
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+                awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
             ) if *expected == binding => {
                 UnboundSessionEnvironmentOrigin::AdoptionFrom(identity.clone())
             }
@@ -405,12 +405,12 @@ impl SessionEnvironmentOwner {
                         (
                             UnboundSessionEnvironmentOrigin::New
                                 | UnboundSessionEnvironmentOrigin::DurableCreate(_),
-                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create
+                            awaken_session_contract::SessionEnvironmentEffectKind::Create
                         ) | (
                             UnboundSessionEnvironmentOrigin::Adoption
                                 | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
                                 | UnboundSessionEnvironmentOrigin::DurableAdoption(_),
-                            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
+                            awaken_session_contract::SessionEnvironmentEffectKind::Adopt
                         )
                     );
                 if existing.intent.as_deref() != intent || !same_kind {
@@ -491,7 +491,7 @@ impl SessionEnvironmentOwner {
 
     pub fn begin_restore(
         &mut self,
-        request: &awaken_session_state_contract::SandboxRestoreRequest,
+        request: &awaken_provisioning_contract::SandboxRestoreRequest,
     ) -> Result<(), RealizationError> {
         match self {
             Self::Vacant => {
@@ -687,13 +687,13 @@ impl SessionEnvironmentOwner {
         &mut self,
         expected: &RetiringSessionEnvironment,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
+        intent: Option<&awaken_session_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<(), RealizationError> {
         if let Some(intent) = intent {
             intent.verify().map_err(RealizationError::from)?;
             if !matches!(
                 intent.kind(),
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
+                awaken_session_contract::SessionEnvironmentEffectKind::Adopt
             ) {
                 return Err(RealizationError::invariant(
                     "re-adoption changed its captured effect kind",

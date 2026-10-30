@@ -3,9 +3,9 @@
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::thread::usage::ThreadUsage;
-use awaken_session_budget_contract::SessionUsage;
+use awaken_session_contract::SessionRuntimeInterval;
+use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::ProjectionThreadSnapshots;
-use awaken_session_state_contract::SessionRuntimeInterval;
 
 use crate::ProjectionError;
 
@@ -246,7 +246,7 @@ mod usage_as_of_tests {
             observations: observations
                 .iter()
                 .map(
-                    |cursor| awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                    |cursor| awaken_session_contract::SessionRuntimeIntervalObservation {
                         activity_epoch: 1,
                         thread_id: ThreadId("root".into()),
                         run_id: RunId(id.into()),

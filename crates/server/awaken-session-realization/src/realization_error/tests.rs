@@ -259,15 +259,15 @@ fn decision_table() -> Vec<(&'static str, RealizationError, Disposition)> {
     }
     rows.push((
         "D13 malformed evidence",
-        RealizationError::from(awaken_session_state_contract::SessionCleanupError::ReceiptMismatch),
+        RealizationError::from(awaken_session_contract::SessionCleanupError::ReceiptMismatch),
         Disposition::Terminal,
     ));
     // D15: an aggregate refusal is classified by its own recovery action, not
     // by its name. The oracle is the contract's documented class per row.
     {
-        use awaken_session_state_contract::SessionEnvironmentReceiptError as Receipt;
-        use awaken_session_state_contract::SessionEnvironmentRejection as Rejection;
-        use awaken_session_state_contract::SessionEnvironmentTransitionError as Transition;
+        use awaken_session_contract::SessionEnvironmentReceiptError as Receipt;
+        use awaken_session_contract::SessionEnvironmentRejection as Rejection;
+        use awaken_session_contract::SessionEnvironmentTransitionError as Transition;
         for (rule, error, disposition) in [
             (
                 "D15 receipt fenced by another owner retries",
@@ -332,9 +332,9 @@ fn an_environment_refusal_reads_its_own_recovery_classification() {
     // classifies, the realization disposition is Retry exactly when the
     // refusal's own recovery action is Retry, and Terminal when it is Reject.
     // No refusal is told apart by its variant name.
-    use awaken_session_state_contract::SessionEnvironmentReceiptError as Receipt;
-    use awaken_session_state_contract::SessionEnvironmentRejection as Rejection;
-    use awaken_session_state_contract::SessionEnvironmentTransitionError as Transition;
+    use awaken_session_contract::SessionEnvironmentReceiptError as Receipt;
+    use awaken_session_contract::SessionEnvironmentRejection as Rejection;
+    use awaken_session_contract::SessionEnvironmentTransitionError as Transition;
     let rejections = [
         Rejection::Terminal,
         Rejection::NotTerminal,

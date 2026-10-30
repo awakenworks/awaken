@@ -101,7 +101,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     }
     let memory_store_id = awaken_resource_contract::MemoryStoreId::from("page-two-memory");
     let mut blocker = persisted("page-z-blocker", true, "idle");
-    blocker.resources = awaken_session_state_contract::SessionResourceState::from_active(
+    blocker.resources = awaken_session_contract::SessionResourceState::from_active(
         crate::session_resource::ResolvedSessionResources::try_new(
             vec![crate::session_resource::ResolvedInput {
                 created_at_unix_ms: None,
@@ -124,7 +124,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
         .expect("valid page-two MemoryStore binding"),
     );
     create(repo.as_ref(), blocker).await;
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = repo.clone();
+    let repository: Arc<dyn crate::SessionStore> = repo.clone();
 
     let failing_recovery = Arc::new(FaultingSessionRepository::new(repository.clone()));
     failing_recovery.fail_recovery_scan_on_call(2);

@@ -31,7 +31,7 @@ pub async fn shared_state(
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
 pub async fn shared_state_over(
     runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
-    repository: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repository: std::sync::Arc<dyn awaken_session_application::SessionStore>,
 ) -> std::sync::Arc<awaken_protocol_managed::ManagedState> {
     std::sync::Arc::new({
         let session_fixture_runtime = runtime;
@@ -64,11 +64,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationResult, SessionRepositoryError,
 };
+use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::http::StatusCode;
 
@@ -306,7 +306,7 @@ pub struct ScheduledConflictRepository {
     unavailable: Mutex<BTreeSet<usize>>,
     resource_changes: Mutex<BTreeMap<usize, ResourceRace>>,
     metadata_changes: Mutex<BTreeMap<usize, (String, String)>>,
-    disposition_changes: Mutex<BTreeMap<usize, awaken_session_state_contract::SessionDisposition>>,
+    disposition_changes: Mutex<BTreeMap<usize, awaken_session_contract::SessionDisposition>>,
 }
 
 #[allow(dead_code)]
@@ -380,7 +380,7 @@ impl ScheduledConflictRepository {
     pub fn disposition_change_on_next(
         &self,
         offset: usize,
-        disposition: awaken_session_state_contract::SessionDisposition,
+        disposition: awaken_session_contract::SessionDisposition,
     ) {
         let call = self.commit_calls.load(Ordering::SeqCst) + offset;
         self.conflicts.lock().unwrap().insert(call);
@@ -408,7 +408,7 @@ pub async fn session_repository(expect: &str) -> Arc<SqliteManagedSessionReposit
 
 #[allow(dead_code)]
 pub async fn replace_session_fixture(
-    repo: &dyn awaken_session_repository_contract::SessionStore,
+    repo: &dyn awaken_session_application::SessionStore,
     owner: &str,
     session: PersistedSession,
     key: &str,
@@ -420,7 +420,7 @@ pub async fn replace_session_fixture(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::SessionRepositoryReads for ScheduledConflictRepository {
+impl awaken_session_contract::SessionRepositoryReads for ScheduledConflictRepository {
     async fn get(
         &self,
         session_id: &SessionId,
@@ -434,11 +434,9 @@ impl awaken_session_repository_contract::SessionRepositoryReads for ScheduledCon
 
     async fn scan(
         &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
         self.inner.scan(query).await
     }
 
@@ -447,8 +445,8 @@ impl awaken_session_repository_contract::SessionRepositoryReads for ScheduledCon
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner
             .deleted_event_admissions(owner_scope, session_id)
@@ -464,7 +462,7 @@ impl SessionRepository for ScheduledConflictRepository {
         session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<awaken_session_state_contract::SessionCreateResult, SessionRepositoryError> {
+    ) -> Result<awaken_session_contract::SessionCreateResult, SessionRepositoryError> {
         self.inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await
@@ -576,28 +574,26 @@ impl SessionRepository for ScheduledConflictRepository {
 
     async fn count_environment_phase(
         &self,
-        phase: awaken_session_state_contract::SessionEnvironmentPhase,
-    ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
+        phase: awaken_session_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
         self.inner.count_environment_phase(phase).await
     }
 }
 
-use awaken_session_repository_contract::SessionReconciliation;
+use awaken_session_contract::SessionReconciliation;
 
 #[async_trait::async_trait]
 impl SessionReconciliation for ScheduledConflictRepository {
     async fn reconciliation_scan(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
+        after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
         self.inner.reconciliation_scan(after).await
     }
 }
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::LifecycleOutbox for ScheduledConflictRepository {
+impl awaken_session_contract::LifecycleOutbox for ScheduledConflictRepository {
     async fn append_lifecycle(
         &self,
         fact: ManagedLifecycleFact,

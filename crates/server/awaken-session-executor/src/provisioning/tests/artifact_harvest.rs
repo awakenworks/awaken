@@ -607,13 +607,12 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
             .unwrap_or(false),
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
     );
-    let repository_preparation =
-        awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
-            &awaken_session_types::SessionId::from("session-artifacts"),
-            &workspace_id,
-            &session.resources,
-        )
-        .unwrap();
+    let repository_preparation = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+        &awaken_session_types::SessionId::from("session-artifacts"),
+        &workspace_id,
+        &session.resources,
+    )
+    .unwrap();
     session
         .record_terminal_cleanup_preparation(
             &workspace_id,
@@ -627,10 +626,10 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .unwrap()
         .expect("R4 durable preparation projects disposal")
     {
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => command,
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => command,
         action => panic!("R4 expected aggregate disposal action, got {action:?}"),
     };
-    let disposal = awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
+    let disposal = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
         disposal_command,
         effect.lease,
     );
@@ -903,7 +902,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     let thread = "container-artifact-receipt-only";
     install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
 
-    let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
     assert!(
         cleanup.request(&awaken_session_types::SessionId::from(thread)),
         "B2 terminal request"
@@ -911,7 +910,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     cleanup
         .freeze_targets(&awaken_session_types::SessionId::from(thread), [], 0, 0)
         .expect("B2 freeze root target");
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         cleanup
             .command_for(&awaken_session_types::SessionId::from(thread), thread)
             .expect("B2 root command"),
@@ -998,7 +997,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     // read and never substitute the process-local Workspace. This is the
     // fail-closed complement to H2/H3 above; the root assignment is the
     // only tenant authority for both live publication and readback.
-    let mut operation = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut operation = awaken_session_contract::SessionCleanupOperation::default();
     assert!(operation.request(&awaken_session_types::SessionId::from("missing-root")));
     operation
         .freeze_targets(
@@ -1014,7 +1013,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
             "missing-child",
         )
         .unwrap();
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         command,
         terminal_cleanup_test_lease(),
     );

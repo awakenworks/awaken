@@ -6,11 +6,11 @@ use super::*;
 use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
+use awaken_session_contract::SessionResourceState;
 use awaken_session_realization_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
     SessionRealizationControl, SessionRealizationTarget, SessionResourceMaterializationControl,
 };
-use awaken_session_state_contract::SessionResourceState;
 use awaken_session_types::SessionId;
 
 /// Cause/effect design: C1 retained claim pins A; C2 replacement B is pending;
@@ -26,7 +26,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
     for status in ["idle", "running"] {
         for replace in [false, true] {
             for successor in [false, true] {
-                let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+                let repo: Arc<dyn crate::SessionStore> = Arc::new(
                     awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                         .await
                         .unwrap(),
@@ -276,7 +276,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
 async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
     use awaken_session_realization_contract::SessionResourceMaterializationIntent;
     for lifecycle in ["pending", "rollback", "committed"] {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repo: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .unwrap(),
@@ -379,7 +379,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
 #[tokio::test]
 async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources() {
     for revision in [1, 2, 99] {
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repo: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .unwrap(),
@@ -473,7 +473,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     let pending_revision;
 
     {
-        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .await
                 .expect("open Session authority"),
@@ -502,7 +502,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
         assert_eq!(before_restart.resources.activations[0].attempts, 1, "R1/E1");
     }
 
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .await
             .expect("reopen Session authority"),
@@ -539,7 +539,7 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     assert_eq!(settled.resources.activations[0].attempts, 2, "R2/E2");
     assert_eq!(
         settled.resources.activations[0].state,
-        awaken_session_state_contract::ActivationState::Active,
+        awaken_session_contract::ActivationState::Active,
         "R2/E3"
     );
     assert!(
@@ -571,7 +571,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
     // The lifecycle classifier and terminal-release record transitions are
     // covered independently by their contract decision tables; this test owns
     // the application-to-Runtime negative effect boundary.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("Session authority"),
@@ -617,7 +617,7 @@ async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case
                 == awaken_resource_contract::InputResourceId::File(
                     awaken_resource_contract::FileId::from("never-active"),
                 )
-                && activation.state == awaken_session_state_contract::ActivationState::Failed
+                && activation.state == awaken_session_contract::ActivationState::Failed
         }),
         "R2/E3"
     );

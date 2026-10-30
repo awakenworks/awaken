@@ -13,7 +13,7 @@ impl ManagedState {
     pub(super) fn close_aggregate(
         &self,
         record: &mut SessionRecord,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         evidence: &CandidateEvidence,
         root: &RootProjection,
         plan: &awaken_managed_session_events::AggregatePlan,
@@ -78,7 +78,7 @@ impl ManagedState {
     /// identities exist. This adapter never reselects a lifecycle period.
     fn render_aggregate_fallback(
         record: &mut SessionRecord,
-        persisted: &awaken_session_state_contract::PersistedSession,
+        persisted: &awaken_session_contract::PersistedSession,
         evidence: &CandidateEvidence,
         plan: &awaken_managed_session_events::AggregatePlan,
     ) -> Result<(), StateError> {

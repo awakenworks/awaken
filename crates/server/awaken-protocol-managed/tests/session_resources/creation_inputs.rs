@@ -118,7 +118,7 @@ async fn both_create_routes_finalize_resources_before_root_or_runtime_effects() 
             assert!(
                 matches!(
                     sessions.get(&SessionId::from(owner.session_id())).await,
-                    Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound)
                 ),
                 "no root"
             );
@@ -270,7 +270,7 @@ async fn both_create_routes_pin_exact_credentials_and_profiled_drift_stays_after
             sessions
                 .get(&SessionId::from("finalizer-profiled-drift"))
                 .await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "F7 no root"
     );

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_authz_enforce::{ApplicationGrant, ApplicationThreadBinding};
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_contract::SessionRepository;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -170,7 +170,7 @@ pub async fn issue_application_access(
             .await
         {
             Ok(owner) => owner,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Err(ApplicationAccessIssuanceError::SessionNotFound);
             }
             Err(_) => {
@@ -187,7 +187,7 @@ pub async fn issue_application_access(
             .await
         {
             Ok(session) => session,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return Err(ApplicationAccessIssuanceError::SessionNotFound);
             }
             Err(_) => {
@@ -376,7 +376,7 @@ mod tests {
 
     use async_trait::async_trait;
     use awaken_authz_enforce::ApplicationAccessAuthenticator;
-    use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
+    use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use serde_json::{Value, json};
@@ -403,32 +403,29 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_repository_contract::SessionRepositoryReads for TestSessions {
+    impl awaken_session_contract::SessionRepositoryReads for TestSessions {
         async fn get(
             &self,
             session_id: &awaken_session_types::SessionId,
-        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
-        {
+        ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
             if self.failure == Some(TestSessionReadFailure::Get) {
-                return Err(
-                    awaken_session_state_contract::SessionRepositoryError::Corrupt(
-                        "get-backend-diagnostic-456".into(),
-                    ),
-                );
+                return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
+                    "get-backend-diagnostic-456".into(),
+                ));
             }
             self.rows
                 .get(session_id.as_str())
                 .map(|(_, session)| session.clone())
-                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }
 
         async fn owner(
             &self,
             session_id: &awaken_session_types::SessionId,
-        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+        ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
             if self.failure == Some(TestSessionReadFailure::Owner) {
                 return Err(
-                    awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                         "owner-backend-diagnostic-123".into(),
                     ),
                 );
@@ -436,18 +433,18 @@ mod tests {
             self.rows
                 .get(session_id.as_str())
                 .map(|(owner, _)| owner.clone())
-                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }
 
         async fn scan(
             &self,
-            _query: awaken_session_state_contract::SessionScanQuery<'_>,
+            _query: awaken_session_contract::SessionScanQuery<'_>,
         ) -> Result<
-            awaken_session_state_contract::SessionScan,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionScan,
+            awaken_session_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions does not own Session indexing".into(),
                 ),
             )
@@ -458,11 +455,11 @@ mod tests {
             _owner_scope: &str,
             _session_id: &awaken_session_types::SessionId,
         ) -> Result<
-            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-            awaken_session_state_contract::SessionRepositoryError,
+            Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+            awaken_session_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions does not retain deletion evidence".into(),
                 ),
             )
@@ -475,14 +472,14 @@ mod tests {
             &self,
             _owner_scope: &str,
             _session: PersistedSession,
-            _idempotency: awaken_session_state_contract::IdempotencyRecord,
+            _idempotency: awaken_session_contract::IdempotencyRecord,
             _lifecycle_facts: Vec<ManagedLifecycleFact>,
         ) -> Result<
-            awaken_session_state_contract::SessionCreateResult,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionCreateResult,
+            awaken_session_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions".into(),
                 ),
             )
@@ -492,11 +489,11 @@ mod tests {
             &self,
             _owner_scope: &str,
             _session_id: &awaken_session_types::SessionId,
-            _idempotency: &awaken_session_state_contract::IdempotencyRecord,
-        ) -> Result<Option<PersistedSession>, awaken_session_state_contract::SessionRepositoryError>
+            _idempotency: &awaken_session_contract::IdempotencyRecord,
+        ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
         {
             Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions".into(),
                 ),
             )
@@ -505,13 +502,13 @@ mod tests {
         async fn commit(
             &self,
             _owner_scope: &str,
-            _mutation: awaken_session_state_contract::SessionMutation,
+            _mutation: awaken_session_contract::SessionMutation,
         ) -> Result<
-            awaken_session_state_contract::SessionMutationResult,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionMutationResult,
+            awaken_session_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions".into(),
                 ),
             )
@@ -519,10 +516,10 @@ mod tests {
 
         async fn count_environment_phase(
             &self,
-            _phase: awaken_session_state_contract::SessionEnvironmentPhase,
-        ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
+            _phase: awaken_session_contract::SessionEnvironmentPhase,
+        ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
             Err(
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions does not count Environment phases".into(),
                 ),
             )
@@ -533,25 +530,25 @@ mod tests {
             _session_id: &awaken_session_types::SessionId,
             _key: &str,
         ) -> Result<
-            Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-            awaken_session_state_contract::SessionRepositoryError,
+            Option<awaken_session_contract::SessionIdempotencyReceipt>,
+            awaken_session_contract::SessionRepositoryError,
         > {
             Ok(None)
         }
     }
 
-    use awaken_session_repository_contract::SessionReconciliation;
+    use awaken_session_contract::SessionReconciliation;
 
     #[async_trait::async_trait]
     impl SessionReconciliation for TestSessions {
         async fn reconciliation_scan(
             &self,
-            _after: Option<&awaken_session_state_contract::SessionScanCursor>,
+            _after: Option<&awaken_session_contract::SessionScanCursor>,
         ) -> Result<
-            awaken_session_state_contract::SessionScan,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionScan,
+            awaken_session_contract::SessionRepositoryError,
         > {
-            Ok(awaken_session_state_contract::SessionScan::default())
+            Ok(awaken_session_contract::SessionScan::default())
         }
     }
     fn frozen_session(id: &str, status: &str) -> PersistedSession {

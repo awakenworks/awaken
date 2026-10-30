@@ -16,9 +16,15 @@ use super::{
     worker_realization_owner_scan_decision_table,
 };
 
+// Core migration CM1: the same factory supplies both actual Core ports on one
+// R. These bounds are exactly the former empty SessionStore marker's blanket
+// condition. Every original case/callback and assertion remains; the tooling
+// suite gains no application dependency or persistence authority of its own.
 pub async fn run_suite<R, F>(fresh: impl Fn() -> F)
 where
-    R: awaken_session_repository_contract::SessionStore + 'static,
+    R: awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox
+        + 'static,
     F: std::future::Future<Output = R>,
 {
     // Construct each table's future inside its callback. This bounds the native

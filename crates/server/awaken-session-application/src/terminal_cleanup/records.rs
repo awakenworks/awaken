@@ -7,11 +7,11 @@
 //! publication outcome, plus the delete tombstone that ends a deleted Session.
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_realization_contract::SessionRealizationControlFailure;
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     PersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionTombstone,
 };
+use awaken_session_realization_contract::SessionRealizationControlFailure;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 
@@ -112,7 +112,7 @@ impl SessionTerminalCleanups {
 
     pub(crate) async fn authorize_terminal_cleanup_disposal_from_root(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, SessionRealizationControlFailure> {
         let session = self
             .mutations
@@ -164,7 +164,7 @@ impl SessionTerminalCleanups {
                 .session_aggregate(session_id)
                 .await
                 .map_err(|error| match error {
-                    awaken_session_state_contract::SessionRepositoryError::NotFound => {
+                    awaken_session_contract::SessionRepositoryError::NotFound => {
                         SessionRealizationControlFailure::NotFound
                     }
                     error => SessionRealizationControlFailure::Unavailable(error.to_string()),
@@ -218,12 +218,12 @@ impl SessionTerminalCleanups {
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_effect_from_root(
             session_id,
             lease,
-            awaken_session_state_contract::SessionRepositoryPublicationEffect::Published(receipt),
+            awaken_session_contract::SessionRepositoryPublicationEffect::Published(receipt),
         )
         .await
     }
@@ -232,12 +232,12 @@ impl SessionTerminalCleanups {
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_effect_from_root(
             session_id,
             lease,
-            awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(rejection),
+            awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(rejection),
         )
         .await
     }
@@ -246,7 +246,7 @@ impl SessionTerminalCleanups {
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-        effect: awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        effect: awaken_session_contract::SessionRepositoryPublicationEffect,
     ) -> Result<(), SessionRealizationControlFailure> {
         let mutations = &self.mutations;
         for attempt in 0..ROOT_CAS_ATTEMPTS {
@@ -257,7 +257,7 @@ impl SessionTerminalCleanups {
                 .session_aggregate(session_id)
                 .await
                 .map_err(|error| match error {
-                    awaken_session_state_contract::SessionRepositoryError::NotFound => {
+                    awaken_session_contract::SessionRepositoryError::NotFound => {
                         SessionRealizationControlFailure::NotFound
                     }
                     error => SessionRealizationControlFailure::Unavailable(error.to_string()),
@@ -271,12 +271,12 @@ impl SessionTerminalCleanups {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
             let changed = match effect.clone() {
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Published(
-                    receipt,
-                ) => session
-                    .cleanup()
-                    .record_repository_publication_receipt(receipt),
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
+                awaken_session_contract::SessionRepositoryPublicationEffect::Published(receipt) => {
+                    session
+                        .cleanup()
+                        .record_repository_publication_receipt(receipt)
+                }
+                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
                     rejection,
                 ) => session
                     .lifecycle()
@@ -321,7 +321,7 @@ impl SessionTerminalCleanups {
     pub(crate) async fn record_terminal_cleanup_preparation_from_root(
         &self,
         lease: &SessionRealizationLease,
-        preparation: awaken_session_state_contract::SessionCleanupPreparation,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
         let mutations = &self.mutations;
         let session_id = preparation.effect.command.session_id.clone();
@@ -424,7 +424,7 @@ impl SessionTerminalCleanups {
     pub(crate) async fn record_terminal_cleanup_disposal_from_root(
         &self,
         lease: &SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
         let mutations = &self.mutations;
         let session_id = receipt.session_id.clone();
@@ -502,7 +502,7 @@ impl SessionTerminalCleanups {
         let payload_hash = payload.stable_hash();
         let mutation = SessionMutation {
             expected_revision: session.revision,
-            idempotency: awaken_session_state_contract::IdempotencyRecord {
+            idempotency: awaken_session_contract::IdempotencyRecord {
                 key: format!(
                     "session:delete:{}:{}:{payload_hash}",
                     session.session_id, session.revision.0

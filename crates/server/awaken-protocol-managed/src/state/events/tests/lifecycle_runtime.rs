@@ -420,7 +420,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for LifecycleRuntime
 impl awaken_session_execution_contract::SessionCoordinationReads for LifecycleRuntime {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }

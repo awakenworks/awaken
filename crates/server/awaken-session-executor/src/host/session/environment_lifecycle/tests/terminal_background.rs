@@ -265,7 +265,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         };
         // A changed aggregate Environment is a new root-CAS snapshot.
         projection.revision.0 += 1;
-        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
             effect_id: durable.then(|| create_fence.operation_id().to_owned()),
             generation: durable.then(|| durable_generation.clone()),
@@ -384,10 +384,10 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .await
             .expect("C1 install exact terminal projection after any revocation");
 
-        let mut aggregate = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        let mut aggregate = awaken_session_contract::PersistedSession::frozen_with_budget(
             thread,
             projection.baseline.clone(),
-            awaken_session_state_contract::SessionResourceState::from_active(
+            awaken_session_contract::SessionResourceState::from_active(
                 projection.resources.clone(),
             ),
             Default::default(),
@@ -398,7 +398,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
         aggregate.environment = projection.environment.clone();
         aggregate.realization = Some(lease.clone());
-        aggregate.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+        aggregate.execution = awaken_session_contract::SessionExecutionState::Terminated;
         assert!(aggregate.ensure_terminal_cleanup_fence());
         aggregate
             .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)
@@ -407,10 +407,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .terminal_cleanup
             .command_for(&awaken_session_types::SessionId::from(thread), thread)
             .expect("C3 aggregate terminal command");
-        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-            command,
-            lease.clone(),
-        );
+        let effect =
+            awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
         let inherited_provider_disposal = aggregate
             .authorize_terminal_cleanup_effect(&effect)
             .expect("C3 aggregate preparation authorization");
@@ -435,7 +433,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         child_aggregate
             .freeze_terminal_cleanup_targets([child.clone()], 0, 0)
             .unwrap();
-        let child_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        let child_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
             child_aggregate
                 .terminal_cleanup
                 .command_for(&thread.into(), &child)
@@ -592,7 +590,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
 
         let repository_preparation =
-            awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+            awaken_session_contract::SessionCleanupRepositoryPreparation::new(
                 &awaken_session_types::SessionId::from(thread),
                 &projection.workspace_id,
                 &aggregate.resources,
@@ -615,16 +613,13 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .expect("C5 project canonical terminal action")
             .expect("C5 complete Preparation projects Disposal")
         {
-            awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => {
-                command
-            }
+            awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => command,
             action => panic!("C5 expected Disposal, got {action:?}"),
         };
-        let disposal_effect =
-            awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
-                disposal_command,
-                lease.clone(),
-            );
+        let disposal_effect = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
+            disposal_command,
+            lease.clone(),
+        );
         let disposal_receipt = host
             .realization_executor
             .effects()
@@ -695,7 +690,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     );
     assert!(matches!(
         projection.environment,
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
     let lease = session_resource::SessionRealizationLease {
         owner: "terminal-worker".into(),
@@ -725,9 +720,9 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         )
         .await
         .unwrap();
-    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         thread,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         Some(lease.clone()),
     )
     .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
@@ -753,12 +748,12 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .join("unpublished.txt");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"unpublished source must not become an Artifact").unwrap();
-    aggregate.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    aggregate.execution = awaken_session_contract::SessionExecutionState::Terminated;
     assert!(aggregate.ensure_terminal_cleanup_fence());
     aggregate
         .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)
         .unwrap();
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         aggregate
             .terminal_cleanup
             .command_for(&awaken_session_types::SessionId::from(thread), thread)
@@ -895,7 +890,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             &lease,
             preparation,
             Some(
-                awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+                awaken_session_contract::SessionCleanupRepositoryPreparation::new(
                     &awaken_session_types::SessionId::from(thread),
                     &projection.workspace_id,
                     &aggregate.resources,
@@ -908,15 +903,13 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .effects()
         .acknowledge_terminal_cleanup_preparation(&host.run_assembly.mcp, &effect)
         .await;
-    let awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } =
+    let awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } =
         aggregate.terminal_cleanup_work_action().unwrap().unwrap()
     else {
         panic!("U3 aggregate must authorize Disposal")
     };
-    let disposal = awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
-        command,
-        lease.clone(),
-    );
+    let disposal =
+        awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(command, lease.clone());
     // A Disposal can reconstruct under its own exact operation only when the
     // provider has supplied it. A retained unrelated terminal owner is not that
     // predecessor; neither a valid receipt nor its fingerprint relabels it.
@@ -1004,7 +997,7 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
         thread,
     ))
     .unwrap();
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",

@@ -128,7 +128,7 @@ async fn raced_activity(
 
 fn captured_record(
     capture: &Arc<PausedSessionMutation>,
-) -> awaken_session_state_contract::IdempotencyRecord {
+) -> awaken_session_contract::IdempotencyRecord {
     capture
         .candidate
         .lock()

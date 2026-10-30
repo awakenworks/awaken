@@ -4,22 +4,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 80,
+        "line": 77,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 99
+        "line": 96
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 104
+        "line": 101
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 114
+        "line": 111
       }
     ],
     "execution_witnesses": [
@@ -54,22 +54,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 208,
+        "line": 205,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 215
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
+        "line": 216
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
         "line": 218
-      },
-      {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 219
-      },
-      {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 221
       }
     ],
     "execution_witnesses": [
@@ -105,22 +105,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 286,
+        "line": 283,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 294
+        "line": 291
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 319
+        "line": 316
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 320
+        "line": 317
       }
     ],
     "execution_witnesses": [
@@ -154,22 +154,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 351,
+        "line": 348,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 369
+        "line": 366
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 393
+        "line": 388
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 411
+        "line": 406
       }
     ],
     "execution_witnesses": [

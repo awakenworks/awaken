@@ -15,7 +15,7 @@ fn lifecycle_cancellation_interrupts_a_held_recovery_scan() {
         // No held read may prevent process shutdown; cancellation does not release any
         // physical predecessor or commit a synthetic successful recovery.
         for held_call in [1, 2, 3] {
-            let durable: Arc<dyn awaken_session_repository_contract::SessionStore> =
+            let durable: Arc<dyn crate::SessionStore> =
                 sqlite_session_repository("session repository").await;
             let observed = Arc::new(FaultingSessionRepository::new(durable));
             observed
@@ -68,7 +68,7 @@ async fn lifecycle_maintenance_is_not_starved_by_a_held_recovery_scan() {
     // and exits. Rules LM1=C1+C2=>E1+E2; LM2=C3=>E3. The repository scan count
     // is the observable dispatch boundary: call 1 is startup dispatch, call 2
     // is the held recovery, and call 3 can only be cadence maintenance.
-    let durable: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let durable: Arc<dyn crate::SessionStore> =
         sqlite_session_repository("session repository").await;
     let observed = Arc::new(FaultingSessionRepository::new(durable));
     observed
@@ -120,7 +120,7 @@ async fn lifecycle_maintenance_is_not_starved_by_a_held_recovery_scan() {
 #[test]
 fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
     run_composed_async_test(|| async {
-        let durable: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let durable: Arc<dyn crate::SessionStore> =
             sqlite_session_repository("session repository").await;
         let observed = Arc::new(FaultingSessionRepository::new(durable));
         let application = Arc::new(application(

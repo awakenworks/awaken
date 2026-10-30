@@ -1,5 +1,5 @@
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_event_contract::{SessionEventInput, SessionInitialEventPlan};
+use awaken_session_contract::{SessionEventInput, SessionInitialEventPlan};
 
 use super::*;
 
@@ -24,7 +24,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     // V5/V6: final scan succeeds but global phase count is unavailable/corrupt
     // -> error and previous snapshot unchanged. Global count scope/nonzero
     // truth is covered by repository conformance; Q1 owns value projection.
-    let inner: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let inner: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("validation repository"),
@@ -103,9 +103,9 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
             .expect("valid retained Event batch"),
         )
         .expect("install retained Event batch");
-    terminal.execution = awaken_session_state_contract::SessionExecutionState::Running;
+    terminal.execution = awaken_session_contract::SessionExecutionState::Running;
     terminal
-        .transition_execution(awaken_session_state_contract::SessionExecutionState::Terminated)
+        .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
         .expect("terminal aggregate");
     create(inner.as_ref(), terminal).await;
 

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 pub struct AuthorizedSessionEnvironmentEffect {
     /// The contract result owns the operation's sole immutable intent.
-    pub authorization: awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+    pub authorization: awaken_session_contract::SessionEnvironmentEffectAuthorization,
     pub provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
     /// Captured before provider I/O; renewal can advance expiry but cannot
     /// lend this operation another installed Session allocation or Worker generation.

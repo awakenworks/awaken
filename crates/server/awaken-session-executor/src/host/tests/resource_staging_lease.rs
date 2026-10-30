@@ -261,7 +261,7 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
                 SessionEnvironmentPreparation::AwaitingAdoption {
                     identity: BoundSessionEnvironmentIdentity::Durable {
                         effect_id: "unadopted-effect".into(),
-                        generation: awaken_session_state_contract::SandboxGeneration::new(
+                        generation: awaken_session_contract::SandboxGeneration::new(
                             &awaken_session_types::SessionId::from(unknown.as_str()),
                             1,
                             u64::MAX,
@@ -432,13 +432,18 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 assert!(
                     host.realization_executor
                         .environments()
-                        .authorize_environment_effect_before_io(host.realization_executor.peers(),
+                        .authorize_environment_effect_before_io(
+                            host.realization_executor.peers(),
                             SESSION,
-                            &host.realization_executor.authority().new_environment_effect_intent(
-                                SESSION,
-                                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                                None
-                            ).expect("installed Sessions"),
+                            &host
+                                .realization_executor
+                                .authority()
+                                .new_environment_effect_intent(
+                                    SESSION,
+                                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                                    None
+                                )
+                                .expect("installed Sessions"),
                         )
                         .await
                         .is_err(),

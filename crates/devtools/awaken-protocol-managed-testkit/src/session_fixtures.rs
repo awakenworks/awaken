@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
 use awaken_session_types::SessionId;
 
 pub struct RecordingProjectionRefresh {
@@ -117,7 +117,7 @@ pub fn sample_persisted(id: &str) -> PersistedSession {
                 transcript_prefix: None,
             },
         ),
-        awaken_session_state_contract::SessionResourceState::from_active(sample_inputs()),
+        awaken_session_contract::SessionResourceState::from_active(sample_inputs()),
         mcp,
         Some("My session".to_string()),
         metadata,
@@ -193,7 +193,7 @@ pub fn persisted_with_mcp_source(
 /// logical admission, never evidence of a realization or MCP effect.
 pub fn preparing_session_with_mcp_source(
     with_activity: bool,
-) -> awaken_session_state_contract::PersistedSession {
+) -> awaken_session_contract::PersistedSession {
     let old = persisted_with_mcp_source("preparing", "source-a", "vault-event");
     let mut baseline = old.frozen_baseline().unwrap().clone();
     baseline.mutation_policy =
@@ -204,7 +204,7 @@ pub fn preparing_session_with_mcp_source(
         awaken_session_configuration_contract::mcp::McpAttachmentState::Requested;
     mcp.attachments[0].publication_acknowledged = false;
     mcp.attachments[0].realization = None;
-    let mut root = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+    let mut root = awaken_session_contract::PersistedSession::frozen_with_budget(
         "preparing",
         baseline,
         Default::default(),
@@ -216,8 +216,7 @@ pub fn preparing_session_with_mcp_source(
     );
     root.created_at_unix_ms = Some(1);
     if with_activity {
-        let mut aggregate =
-            awaken_session_state_contract::SessionAggregate::try_from(root).unwrap();
+        let mut aggregate = awaken_session_contract::SessionAggregate::try_from(root).unwrap();
         assert_eq!(
             aggregate.activity().open(
                 None,
@@ -231,7 +230,7 @@ pub fn preparing_session_with_mcp_source(
                     &awaken_agent_contract::RunId("reserved-run".into())
                 )),
             ),
-            awaken_session_state_contract::SessionActivityAdmissionPlan::Open(1)
+            awaken_session_contract::SessionActivityAdmissionPlan::Open(1)
         );
         root = aggregate.into_snapshot();
     }

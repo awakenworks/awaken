@@ -100,7 +100,7 @@ impl ManagedState {
             // never mistake an Awaiting Run with an isolated/corrupt ticket for
             // that no-op. Interrupt needs topology and lifecycle facts, not reply
             // authority, so it deliberately does not materialize ResumeTickets.
-            if awaken_session_state_contract::session_is_budget_paused(&persisted_session)
+            if awaken_session_contract::session_is_budget_paused(&persisted_session)
                 && !has_awaiting_run
             {
                 return Ok(ValidatedEventBatch {
@@ -203,7 +203,7 @@ impl ManagedState {
         // no pending reply, a reached shared cap makes interrupt an accepted
         // no-op; it must not create an event/receipt or touch Runtime state.
         let ignore_budget_pause_interrupts =
-            awaken_session_state_contract::session_is_budget_paused(&persisted_session)
+            awaken_session_contract::session_is_budget_paused(&persisted_session)
                 && candidates.is_empty();
         let mut inputs = Vec::with_capacity(events.len());
         let mut drive = ValidatedEventBatchDrive::PreferredBatch;
@@ -473,7 +473,7 @@ impl ManagedState {
             }
         };
         let receipt_response =
-            |batch: &awaken_session_event_contract::SessionEventBatch| SendEventsResponse {
+            |batch: &awaken_session_contract::SessionEventBatch| SendEventsResponse {
                 data: accepted_inbound_receipts(session_id, batch)
                     .into_iter()
                     .map(|projection| projection.event)

@@ -122,7 +122,7 @@ async fn creation_finalization_preserves_resolution_skill_and_pin_failure_stages
         assert!(
             matches!(
                 sessions.get(&SessionId::from(&id)).await,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                Err(awaken_session_contract::SessionRepositoryError::NotFound)
             ),
             "{rule} no root"
         );
@@ -191,7 +191,7 @@ async fn creation_finalization_retains_exact_successful_bindings_and_skill_selec
     assert!(
         matches!(
             sessions.get(&SessionId::from("finalizer-success")).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "F5 no invented root"
     );
@@ -239,7 +239,7 @@ async fn creation_finalization_failure_cannot_dispose_replayed_adopted_or_unread
         };
         if rule == "adopted" {
             let mut root = persisted(&id, false, "idle");
-            root.resources = awaken_session_state_contract::SessionResourceState::from_active(
+            root.resources = awaken_session_contract::SessionResourceState::from_active(
                 repository_retirement_resources(
                     &id,
                     configured

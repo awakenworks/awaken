@@ -18,12 +18,12 @@ use awaken_session_configuration_contract::resource::binding_checks::REPOSITORY_
 use awaken_session_configuration_contract::resource::binding_checks::{
     repository_binding_code, repository_binding_run_error,
 };
+use awaken_session_contract::SessionEnvironmentReceiptRecoveryAction;
 use awaken_session_realization_contract::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
     SessionRealizationControlDisposition, effect_failure_disposition, environment_effect_error,
     provisioning_disposition,
 };
-use awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction;
 use awaken_session_types::{RunError, RunErrorKind};
 
 /// What a caller does next with a failed realization operation.
@@ -252,7 +252,7 @@ pub enum EvidenceFault {
     #[error(transparent)]
     MemoryReference(#[from] awaken_resource_contract::MemoryMaterializationReferenceError),
     #[error(transparent)]
-    TerminalCleanup(#[from] awaken_session_state_contract::SessionCleanupError),
+    TerminalCleanup(#[from] awaken_session_contract::SessionCleanupError),
 }
 
 /// Each evidence source converts through [`EvidenceFault`].
@@ -271,7 +271,7 @@ evidence_sources!(
     awaken_agent_contract::CanonicalJsonHashError,
     awaken_session_configuration_contract::resource::SessionInputError,
     awaken_resource_contract::MemoryMaterializationReferenceError,
-    awaken_session_state_contract::SessionCleanupError,
+    awaken_session_contract::SessionCleanupError,
 );
 
 impl From<EvidenceFault> for RealizationError {
@@ -287,9 +287,9 @@ impl From<EvidenceFault> for RealizationError {
 #[derive(Debug, thiserror::Error)]
 pub enum EnvironmentRefusal {
     #[error(transparent)]
-    Receipt(#[from] awaken_session_state_contract::SessionEnvironmentReceiptError),
+    Receipt(#[from] awaken_session_contract::SessionEnvironmentReceiptError),
     #[error(transparent)]
-    Transition(#[from] awaken_session_state_contract::SessionEnvironmentTransitionError),
+    Transition(#[from] awaken_session_contract::SessionEnvironmentTransitionError),
 }
 
 impl EnvironmentRefusal {
@@ -316,8 +316,8 @@ macro_rules! refusal_sources {
 }
 
 refusal_sources!(
-    awaken_session_state_contract::SessionEnvironmentReceiptError,
-    awaken_session_state_contract::SessionEnvironmentTransitionError,
+    awaken_session_contract::SessionEnvironmentReceiptError,
+    awaken_session_contract::SessionEnvironmentTransitionError,
 );
 
 /// Why a request cannot be realized as stated. Retrying it unchanged fails

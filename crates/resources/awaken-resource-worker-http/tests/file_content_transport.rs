@@ -22,11 +22,11 @@ use awaken_resource_contract::FileContentSource as _;
 use awaken_resource_contract::{FileReadPurpose, ResolvedFileContent};
 use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
-use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_realization_contract::SessionFileReadAuthorization as _;
-use awaken_session_repository_contract::{
+use awaken_session_contract::{
     LifecycleOutbox as _, SessionRepository as _, SessionRepositoryReads as _,
 };
+use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_realization_contract::SessionFileReadAuthorization as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(
@@ -202,7 +202,7 @@ fn frozen_application_session(
     session_id: &str,
     file_id: &str,
     identity: &WorkerIdentity,
-) -> awaken_session_state_contract::PersistedSession {
+) -> awaken_session_contract::PersistedSession {
     let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "env-worker".into(),
         revision: awaken_environment_contract::EnvironmentRevision(1),
@@ -219,14 +219,14 @@ fn frozen_application_session(
         credential_realization:
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
-    let mut resource_state = awaken_session_state_contract::SessionResourceState::default();
+    let mut resource_state = awaken_session_contract::SessionResourceState::default();
     resource_state
         .prepare(
             &awaken_session_types::SessionId::from(session_id),
             resources(file_id),
         )
         .expect("prepare Worker Session resources");
-    let mut legacy = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+    let mut legacy = awaken_session_contract::PersistedSession::frozen_with_budget(
         session_id,
         awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
@@ -253,7 +253,7 @@ fn frozen_application_session(
         Default::default(),
         Default::default(),
     );
-    legacy.execution = awaken_session_state_contract::SessionExecutionState::Running;
+    legacy.execution = awaken_session_contract::SessionExecutionState::Running;
     legacy.realization = Some(
         awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: identity.worker_id.clone(),
@@ -611,7 +611,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         .create(
             "workspace-file",
             session,
-            awaken_session_state_contract::IdempotencyRecord {
+            awaken_session_contract::IdempotencyRecord {
                 key: "create:session-application-file".into(),
                 payload_hash: "payload:session-application-file".into(),
             },

@@ -20,10 +20,8 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 # `Pending`: the one answerable-ticket vocabulary a timeline pause refers to.
 awaken-session-application-contract.workspace = true
-awaken-session-budget-contract.workspace = true
-awaken-session-event-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-session-execution-contract.workspace = true
-awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,7 +1,7 @@
 //! One explicit test composition around the production Session Root and CAS.
 
 use super::compile_complete_test_session_projection;
-use awaken_session_repository_contract::SessionRepositoryReads;
+use awaken_session_contract::SessionRepositoryReads;
 use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
@@ -78,20 +78,20 @@ impl ManagedSessionRootFixture {
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
-        use awaken_session_repository_contract::SessionRepository as _;
-        use awaken_session_state_contract::{
+        use awaken_session_contract::SessionRepository as _;
+        use awaken_session_contract::{
             PersistedSession, SessionCreateResult, SessionMutationPayload, SessionResourceState,
         };
         if projection.resource_revision != 0
             || !matches!(
                 projection.environment,
-                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+                awaken_session_contract::SessionEnvironmentState::Unmaterialized
             )
             || projection
                 .environment_materialization
                 .as_deref()
                 .is_some_and(
-                    awaken_session_state_contract::SessionEnvironmentMaterialization::has_admitted,
+                    awaken_session_contract::SessionEnvironmentMaterialization::has_admitted,
                 )
         {
             return Err(awaken_session_types::RunError::bad_request(
@@ -270,11 +270,10 @@ impl ManagedSessionRootFixture {
     async fn commit_assignment(
         &self,
         owner: &str,
-        root: awaken_session_state_contract::PersistedSession,
+        root: awaken_session_contract::PersistedSession,
         lease: crate::session_resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::PersistedSession, awaken_session_types::RunError>
-    {
-        use awaken_session_state_contract::SessionAggregate;
+    ) -> Result<awaken_session_contract::PersistedSession, awaken_session_types::RunError> {
+        use awaken_session_contract::SessionAggregate;
         let mut aggregate = SessionAggregate::try_from(root)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         aggregate
@@ -442,11 +441,10 @@ impl ManagedSessionRootFixture {
     async fn commit_aggregate(
         &self,
         owner: &str,
-        mut aggregate: awaken_session_state_contract::SessionAggregate,
-    ) -> Result<awaken_session_state_contract::PersistedSession, awaken_session_types::RunError>
-    {
-        use awaken_session_repository_contract::SessionRepository as _;
-        use awaken_session_state_contract::{
+        mut aggregate: awaken_session_contract::SessionAggregate,
+    ) -> Result<awaken_session_contract::PersistedSession, awaken_session_types::RunError> {
+        use awaken_session_contract::SessionRepository as _;
+        use awaken_session_contract::{
             IdempotencyRecord, SessionMutationPayload, SessionMutationResult,
         };
         let id = aggregate.session_id.clone();
@@ -485,7 +483,7 @@ impl ManagedSessionRootFixture {
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
-        root: awaken_session_state_contract::PersistedSession,
+        root: awaken_session_contract::PersistedSession,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
@@ -532,7 +530,7 @@ impl ManagedSessionRootFixture {
 
     fn project_root(
         mut projection: awaken_session_realization_contract::FrozenSessionProjection,
-        root: &awaken_session_state_contract::PersistedSession,
+        root: &awaken_session_contract::PersistedSession,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
@@ -565,7 +563,7 @@ impl ManagedSessionRootFixture {
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
-        root: awaken_session_state_contract::PersistedSession,
+        root: awaken_session_contract::PersistedSession,
         expected: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
@@ -640,8 +638,8 @@ mod retry_hint_tests {
         // for a live root violates the real port contract and hid the defect.
         // Worker-domain physical/Work/Registry gates remain separately required;
         // the existing Coordinator decision table covers each refusal.
+        use awaken_session_contract::SessionRepository as _;
         use awaken_session_realization_contract::WorkerSourceRetentionSubjects as _;
-        use awaken_session_repository_contract::SessionRepository as _;
         let roots = ManagedSessionRootFixture::new().await;
         let host = roots
             .configure(
@@ -658,7 +656,7 @@ mod retry_hint_tests {
         baseline.environment.self_hosted = false;
         baseline.environment.sandbox_provisioning =
             awaken_session_configuration_contract::SandboxProvisioning::OnToolUse;
-        let mut root = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        let mut root = awaken_session_contract::PersistedSession::frozen_with_budget(
             "live-no-create-composition",
             baseline,
             Default::default(),
@@ -668,7 +666,7 @@ mod retry_hint_tests {
             Default::default(),
             Default::default(),
         );
-        root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        root.execution = awaken_session_contract::SessionExecutionState::Idle;
         root.realization = Some(
             awaken_session_configuration_contract::resource::SessionRealizationLease {
                 owner: identity.worker_id.clone(),
@@ -683,7 +681,7 @@ mod retry_hint_tests {
             .create(
                 "workspace",
                 root,
-                awaken_session_state_contract::IdempotencyRecord {
+                awaken_session_contract::IdempotencyRecord {
                     key: "create-live-no-create-composition".into(),
                     payload_hash: "same-create".into(),
                 },
@@ -954,7 +952,7 @@ mod retry_hint_tests {
 
     fn assert_process_dispatch_placement_uses_the_selected_instance(
         host: &Arc<crate::ExecutorComponents>,
-        root: &awaken_session_state_contract::PersistedSession,
+        root: &awaken_session_contract::PersistedSession,
     ) {
         use awaken_session_realization_contract::SessionPreparationPlacement;
         let selected: Arc<dyn SessionPreparationPlacement> =

@@ -91,8 +91,7 @@ axum = { version = "0.8", features = ["multipart"] }
 awaken-ext-builtin-tools.workspace = true
 # The webhook plane test drives lifecycle delivery through the Session outbox relay.
 awaken-session-application.workspace = true
-awaken-session-repository-contract.workspace = true
-awaken-session-state-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }

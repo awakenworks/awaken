@@ -10,7 +10,7 @@ use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
-use awaken_session_event_contract::{
+use awaken_session_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
@@ -26,7 +26,7 @@ const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
 /// observations may enrich the public row but can never replace this coordinate.
 #[must_use]
 const fn inbound_admission_order(
-    anchor: Option<awaken_session_event_contract::SessionEventProjectionAnchor>,
+    anchor: Option<awaken_session_contract::SessionEventProjectionAnchor>,
 ) -> Option<(u64, u16)> {
     match anchor {
         Some(anchor) => Some((
@@ -100,11 +100,9 @@ fn inbound_admission_receipt_is_stable_across_processing_races() {
 fn inbound_order_is_fixed_before_effect_observation() {
     let admission_cursor: u64 = kani::any();
     let _later_effect_cursor: u64 = kani::any();
-    let anchor = Some(
-        awaken_session_event_contract::SessionEventProjectionAnchor {
-            source_commit_cursor: admission_cursor,
-        },
-    );
+    let anchor = Some(awaken_session_contract::SessionEventProjectionAnchor {
+        source_commit_cursor: admission_cursor,
+    });
     let issued = inbound_admission_order(anchor);
     assert_eq!(
         issued,
@@ -121,7 +119,7 @@ fn inbound_order_is_fixed_before_effect_observation() {
 
 fn inbound_projections(
     session_id: &str,
-    batches: &[awaken_session_event_contract::SessionEventBatch],
+    batches: &[awaken_session_contract::SessionEventBatch],
     view: InboundProjectionView,
 ) -> Vec<DurableInboundProjection> {
     let mut projections = Vec::new();
@@ -144,14 +142,14 @@ fn inbound_projections(
 /// original DTO from their lossy execution payloads.
 fn durable_inbound_projections(
     session_id: &str,
-    batches: &[awaken_session_event_contract::SessionEventBatch],
+    batches: &[awaken_session_contract::SessionEventBatch],
 ) -> Vec<DurableInboundProjection> {
     inbound_projections(session_id, batches, InboundProjectionView::DurableHistory)
 }
 
 fn accepted_inbound_receipts(
     session_id: &str,
-    batch: &awaken_session_event_contract::SessionEventBatch,
+    batch: &awaken_session_contract::SessionEventBatch,
 ) -> Vec<DurableInboundProjection> {
     inbound_projections(
         session_id,
@@ -162,7 +160,7 @@ fn accepted_inbound_receipts(
 
 fn inbound_projection(
     session_id: &str,
-    entry: &awaken_session_event_contract::SessionEventEntry,
+    entry: &awaken_session_contract::SessionEventEntry,
     view: InboundProjectionView,
 ) -> DurableInboundProjection {
     DurableInboundProjection {

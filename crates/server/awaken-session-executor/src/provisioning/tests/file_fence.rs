@@ -234,10 +234,10 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
         access: awaken_resource_contract::ResourceAccess::ReadOnly,
         instructions: None,
     };
-    let command = awaken_session_state_contract::SessionRepositoryPublicationCommand {
+    let command = awaken_session_contract::SessionRepositoryPublicationCommand {
         session_id: awaken_session_types::SessionId::from("session-a"),
         effect_id: "terminal-file".into(),
-        intent: awaken_session_state_contract::SessionRepositoryPublicationIntent {
+        intent: awaken_session_contract::SessionRepositoryPublicationIntent {
             input,
             expectation: pc::RepositoryPublicationExpectation {
                 branch: "main".into(),

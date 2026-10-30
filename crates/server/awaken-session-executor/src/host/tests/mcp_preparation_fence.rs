@@ -68,14 +68,14 @@ impl Event {
 fn fire(host: &ExecutorComponents, session: &str, event: Event) {
     match event {
         Event::CloseAdmission => {
-            let sandbox_generation = awaken_session_state_contract::SandboxGeneration::new(
+            let sandbox_generation = awaken_session_contract::SandboxGeneration::new(
                 &awaken_session_types::SessionId::from(session),
                 1,
                 100,
                 "environment",
                 "base",
             );
-            let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+            let operation = awaken_session_contract::SessionEnvironmentOperation::new(
                 "workspace-a",
                 &awaken_session_types::SessionId::from(session),
                 "suspend",

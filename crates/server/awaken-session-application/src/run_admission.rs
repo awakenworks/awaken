@@ -21,11 +21,11 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_session_application_contract::{
     OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
+use awaken_session_contract::SessionRepositoryError;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
     session_run_activity_operation_id, session_run_activity_receipt_plan,
 };
-use awaken_session_state_contract::SessionRepositoryError;
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
@@ -36,7 +36,7 @@ use crate::{
 
 pub struct RecoveredSessionProjection {
     pub owner_scope: String,
-    pub session: awaken_session_state_contract::PersistedSession,
+    pub session: awaken_session_contract::PersistedSession,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -838,7 +838,7 @@ impl crate::ProfiledSessionCommands for SessionRunAdmissions {
     async fn accept_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
         self.creation_commands
             .accept_profiled_session(command)
             .await

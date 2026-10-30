@@ -15,7 +15,7 @@
 //!
 //! A factory that does not reach the same durable authority fails R1.
 use super::{create_session, fact, record, record_update, session};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     ManagedLifecycleFact, PersistedSession, SessionMutation, SessionMutationPayload,
     SessionMutationResult,
 };
@@ -29,12 +29,14 @@ const T_UPDATED: u64 = 1_786_000_005_000;
 pub struct DurableSessionImage {
     pub root: PersistedSession,
     pub owner: String,
-    pub create_receipt: Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-    pub replace_receipt: Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
+    pub create_receipt: Option<awaken_session_contract::SessionIdempotencyReceipt>,
+    pub replace_receipt: Option<awaken_session_contract::SessionIdempotencyReceipt>,
     pub pending_facts: Vec<ManagedLifecycleFact>,
 }
 
-pub async fn durable_session_image<R: awaken_session_repository_contract::SessionStore + ?Sized>(
+pub async fn durable_session_image<
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox + ?Sized,
+>(
     r: &R,
     id: &SessionId,
     create_key: &str,
@@ -59,7 +61,7 @@ pub async fn durable_session_image<R: awaken_session_repository_contract::Sessio
 
 pub async fn reopen_preserves_authority<R, F>(first: R, reopen: impl Fn() -> F)
 where
-    R: awaken_session_repository_contract::SessionStore,
+    R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
     F: std::future::Future<Output = R>,
 {
     let id = SessionId::from("sesn_t34_reopen");

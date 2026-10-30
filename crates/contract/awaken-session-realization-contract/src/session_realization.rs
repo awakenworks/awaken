@@ -302,7 +302,7 @@ pub trait SessionPreparationControl: Send + Sync {
 pub trait SessionPreparationPlacement: Send + Sync {
     fn requirements(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure>;
 }
 

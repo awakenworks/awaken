@@ -12,9 +12,10 @@
 //! | M5 | old index hides M3 | prove hidden, operational reopen restores it |
 //! | M6 | PostgreSQL server opener sees M5 | explicit refusal, no index repair |
 use super::*;
-use awaken_session_repository_contract::{SessionRepository as _, SessionStore};
-use awaken_session_state_contract::{
+use awaken_session_application::SessionStore;
+use awaken_session_contract::{
     PersistedSession, SessionActivityAdmissionPlan, SessionAggregate, SessionMutationResult,
+    SessionRepository as _,
 };
 use awaken_session_types::SessionId;
 
@@ -90,7 +91,7 @@ async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession 
     assert!(unbound.realization.is_none() && unbound.mcp.needs_realization());
     assert_eq!(
         unbound.execution,
-        awaken_session_state_contract::SessionExecutionState::Preparing
+        awaken_session_contract::SessionExecutionState::Preparing
     );
     assert!(
         !unbound.is_run_free_preparation_candidate(),
@@ -129,7 +130,7 @@ async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession 
         template.tools,
         template.budget,
     );
-    root.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+    root.execution = awaken_session_contract::SessionExecutionState::Idle;
     root.realization = Some(
         awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "original-worker".into(),
@@ -209,9 +210,7 @@ async fn activity<R: SessionStore>(repo: &R, busy: bool) -> PersistedSession {
         SCOPE,
         record(
             key,
-            &awaken_session_state_contract::SessionMutationPayload::Replace(
-                root.snapshot().clone(),
-            ),
+            &awaken_session_contract::SessionMutationPayload::Replace(root.snapshot().clone()),
         ),
         Vec::new(),
         if busy { 10 } else { 20 },

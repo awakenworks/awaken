@@ -89,7 +89,7 @@ impl SessionOutcomeReconciliation {
         for candidate in &candidates.sessions {
             let session = match self.mutations.repository().get(&candidate.session_id).await {
                 Ok(session) => session,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {
                     report
                         .failures

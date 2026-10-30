@@ -24,13 +24,13 @@ use crate::types::{
     SessionCreateParams, SessionError, SessionStats, SessionStatus, SessionThread,
     SessionThreadAgent, SessionThreadStatus, StopReason, Usage,
 };
+use awaken_session_contract::PersistedSession;
 #[cfg(test)]
-use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::SessionDisposition;
 #[cfg(test)]
-use awaken_session_state_contract::SessionDisposition;
+use awaken_session_contract::SessionRepository;
 #[cfg(test)]
-use awaken_session_state_contract::{ManagedLifecycleFact, SessionExecutionState};
+use awaken_session_contract::{ManagedLifecycleFact, SessionExecutionState};
 
 mod application;
 pub(crate) use application::agent_mcp_candidate;
@@ -67,8 +67,8 @@ pub(crate) use managed_state::SessionApplicationRoles;
 
 #[cfg(test)]
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
+use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::CommittedOutcomeProjection;
 #[cfg(test)]
 use awaken_session_execution_contract::SessionRuntime;

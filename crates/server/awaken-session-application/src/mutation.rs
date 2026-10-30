@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::SessionCreationError;
-use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
-use awaken_session_state_contract::SessionAggregate;
-use awaken_session_state_contract::{
+use awaken_session_contract::SessionAggregate;
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
     SessionRepositoryError,
 };
+use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 
@@ -69,7 +69,7 @@ pub(crate) async fn session_owner(
 /// ```compile_fail,E0451
 /// use awaken_session_application::SnapshotCommit;
 ///
-/// fn fabricate(session: awaken_session_state_contract::PersistedSession) -> SnapshotCommit {
+/// fn fabricate(session: awaken_session_contract::PersistedSession) -> SnapshotCommit {
 ///     SnapshotCommit {
 ///         session,
 ///         transitioned: true,
@@ -168,7 +168,7 @@ impl From<SessionMutationError>
 /// before invoking this kernel, and only the repository CAS can persist it.
 #[cfg(any(test, kani))]
 fn observe_root_update(previous: &mut Option<u64>, now: u64) {
-    *previous = awaken_session_state_contract::session_root_update_observation(*previous, now);
+    *previous = awaken_session_contract::session_root_update_observation(*previous, now);
 }
 
 /// Interpret the actual repository receipt once. Both successful variants keep
@@ -378,10 +378,10 @@ impl SessionMutations {
             .await
             .map_err(SessionCreationError::repository)?;
         match result {
-            awaken_session_state_contract::SessionCreateResult::Applied(session) => Ok(
+            awaken_session_contract::SessionCreateResult::Applied(session) => Ok(
                 CompleteSessionCreateResult::Applied(DurableSessionRoot::from_applied(session)?),
             ),
-            awaken_session_state_contract::SessionCreateResult::Replayed(session) => {
+            awaken_session_contract::SessionCreateResult::Replayed(session) => {
                 Ok(CompleteSessionCreateResult::Replayed(
                     DurableSessionRoot::from_recovery(session)
                         .map_err(|message| SessionCreationError::Internal(message.into()))?,

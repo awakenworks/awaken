@@ -10,7 +10,7 @@ use awaken_dispatch_contract::{
     SessionRunAdmissionReads,
 };
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_contract::SessionRepository;
 use std::sync::Arc;
 
 pub struct SessionCredentialExecutionAuthority {

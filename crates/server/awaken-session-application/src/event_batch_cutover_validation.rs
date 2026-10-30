@@ -7,9 +7,9 @@
 // @formal reason: tests; this is a product-requirement classification, not a direct formal-proof claim.
 use std::sync::RwLock;
 
-use awaken_session_state_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
+use awaken_session_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
 
-use awaken_session_repository_contract::SessionRepository;
+use awaken_session_contract::SessionRepository;
 
 /// Secret-free cutover facts from a final Session scan and global phase count.
 ///
@@ -122,9 +122,7 @@ impl SessionEventBatchCutoverValidationSource {
 
 #[cfg(test)]
 mod tests {
-    use {
-        awaken_session_state_contract::SessionScan, awaken_session_types::SessionRecoveryQuarantine,
-    };
+    use {awaken_session_contract::SessionScan, awaken_session_types::SessionRecoveryQuarantine};
 
     use super::*;
 

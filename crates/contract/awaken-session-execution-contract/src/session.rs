@@ -17,7 +17,7 @@ mod projection_evidence;
 mod projection_source;
 mod roles;
 
-use awaken_session_budget_contract::SessionUsage;
+use awaken_session_contract::SessionUsage;
 pub use neutral::NeutralRuntime;
 pub use projection_evidence::{
     CommittedEvidenceError, CommittedSessionFacts, ProjectionThreadSnapshots,

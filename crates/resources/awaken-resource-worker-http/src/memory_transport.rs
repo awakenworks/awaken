@@ -15,9 +15,9 @@ use awaken_resource_contract::{
     MemoryMaterializationReferenceError, MemoryQueries, MemorySnapshotSource, MemoryWriter,
     ResourceAccess,
 };
+use awaken_session_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_realization_contract::SessionResourceMaterializationIntent;
-use awaken_session_state_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -1565,8 +1565,8 @@ mod tests {
     }
 
     fn terminal_intent() -> SessionTerminalMemoryIntent {
-        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-            awaken_session_state_contract::SessionCleanupCommand::new(
+        let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+            awaken_session_contract::SessionCleanupCommand::new(
                 &awaken_session_types::SessionId::from("session-memory"),
                 "session-memory",
                 "cleanup-root",

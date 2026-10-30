@@ -11,7 +11,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use awaken_agent_contract::agent::thread::read::recovery::RunRecoverySource;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_time::WallClockExt as _;
 
 type ReleaseFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;

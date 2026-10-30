@@ -260,7 +260,7 @@ fn fences() -> Vec<(&'static str, ResourceOperationFence)> {
             "repository_publication",
             ResourceOperationFence::RepositoryPublication {
                 command: Box::new(
-                    awaken_session_state_contract::SessionRepositoryPublicationCommand {
+                    awaken_session_contract::SessionRepositoryPublicationCommand {
                         session_id: session.clone(),
                         effect_id: "publication-effect".into(),
                         intent: serde_json::from_value(serde_json::json!({
@@ -293,8 +293,8 @@ fn fences() -> Vec<(&'static str, ResourceOperationFence)> {
         (
             "terminal",
             ResourceOperationFence::Terminal(
-                awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-                    awaken_session_state_contract::SessionCleanupCommand::new(
+                awaken_session_contract::SessionTerminalCleanupEffect::new(
+                    awaken_session_contract::SessionCleanupCommand::new(
                         &session,
                         "workspace-golden",
                         "cleanup-root",

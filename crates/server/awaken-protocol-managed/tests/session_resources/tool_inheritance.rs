@@ -167,7 +167,7 @@ async fn requested_profile_and_override_cannot_skip_runtime_custom_tool_validati
     );
     assert!(
         sessions
-            .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+            .scan(awaken_session_contract::SessionScanQuery::Workspace {
                 workspace_id: "default",
             })
             .await
@@ -259,7 +259,7 @@ async fn profiled_tool_compiler_rejection_preserves_repository_compensation_orde
     assert!(
         matches!(
             sessions.get(&SessionId::from(id)).await,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "E4: exact absence, never a storage failure"
     );

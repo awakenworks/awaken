@@ -21,7 +21,7 @@ mod tests {
     #[derive(Default)]
     struct LegacyUnownedEnvironmentBindingSink {
         requested_kinds:
-            std::sync::Mutex<Vec<awaken_session_state_contract::SessionEnvironmentEffectKind>>,
+            std::sync::Mutex<Vec<awaken_session_contract::SessionEnvironmentEffectKind>>,
     }
 
     #[async_trait::async_trait]
@@ -30,9 +30,9 @@ mod tests {
     {
         async fn authorize(
             &self,
-            intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+            intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+            awaken_session_contract::SessionEnvironmentEffectAuthorization,
             awaken_session_types::RunError,
         > {
             self.requested_kinds
@@ -40,7 +40,7 @@ mod tests {
                 .unwrap()
                 .push(intent.kind().clone());
             Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned {
                     intent: Box::new(intent.clone()),
                 },
             )
@@ -48,11 +48,9 @@ mod tests {
 
         async fn persist(
             &self,
-            _receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-        ) -> Result<
-            awaken_session_state_contract::SessionEnvironmentState,
-            awaken_session_types::RunError,
-        > {
+            _receipt: awaken_session_contract::SessionEnvironmentReceipt,
+        ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+        {
             panic!("legacy aggregate-Unowned recovery must not persist a durable binding")
         }
     }
@@ -477,7 +475,7 @@ mod tests {
                         .authority()
                         .new_environment_effect_intent(
                             thread,
-                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                            awaken_session_contract::SessionEnvironmentEffectKind::Create,
                             None,
                         )
                         .expect("installed Sessions"),
@@ -757,14 +755,14 @@ mod tests {
                 foreign.revision.0 += 1;
                 if foreign.environment.binding().is_none() {
                     foreign.environment =
-                        awaken_session_state_contract::SessionEnvironmentState::Resident {
+                        awaken_session_contract::SessionEnvironmentState::Resident {
                             binding: binding.clone(),
                             effect_id: None,
                             generation: None,
                             idle_since_unix_ms: None,
                         };
                 }
-                if let awaken_session_state_contract::SessionEnvironmentState::Resident {
+                if let awaken_session_contract::SessionEnvironmentState::Resident {
                     binding,
                     generation,
                     ..
@@ -772,7 +770,7 @@ mod tests {
                 {
                     if foreign_generation {
                         let source = generation.as_ref().unwrap();
-                        *generation = Some(awaken_session_state_contract::SandboxGeneration::new(
+                        *generation = Some(awaken_session_contract::SandboxGeneration::new(
                             &awaken_session_types::SessionId::from("foreign-session"),
                             source.created_at_unix_ms(),
                             source.expires_at_unix_ms(),
@@ -1441,7 +1439,7 @@ mod tests {
         }).expect("installed Sessions").unwrap();
         assert_eq!(
             sink.requested_kinds.lock().unwrap().as_slice(),
-            &[awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt],
+            &[awaken_session_contract::SessionEnvironmentEffectKind::Adopt],
             "CR1/E2 one rejected Adopt, zero new Create; persist would panic"
         );
     }

@@ -94,7 +94,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub fn begin_session_environment_restore(
         &self,
         thread: &str,
-        request: &awaken_session_state_contract::SandboxRestoreRequest,
+        request: &awaken_provisioning_contract::SandboxRestoreRequest,
     ) -> Result<(), RealizationError> {
         self.sessions
             .update_realization(thread, |r| r.environment_mut().owner.begin_restore(request))?
@@ -381,10 +381,10 @@ impl crate::environment_holding::EnvironmentHolding {
     pub fn resident_checkpoint_source_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         self.validate_suspend_operation(thread, operation, generation)?;
         let expected_identity =
@@ -437,8 +437,8 @@ impl crate::environment_holding::EnvironmentHolding {
     pub fn retain_checkpoint_source_environment_for_disposal(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<(), RealizationError> {
@@ -612,8 +612,8 @@ impl crate::environment_holding::EnvironmentHolding {
     pub fn validate_suspend_operation(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        _generation: &awaken_session_state_contract::SandboxGeneration,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        _generation: &awaken_session_contract::SandboxGeneration,
     ) -> Result<(), RealizationError> {
         // The Session aggregate is the sole operation writer. Existing durable
         // operations, including legacy fingerprints, replay opaquely; Runtime
@@ -712,8 +712,8 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
         authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
     ) -> Result<(), RealizationError> {
@@ -873,7 +873,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         thread,
                         &peers.authority.new_environment_effect_intent(
                             thread,
-                            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+                            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
                             Some(encoded),
                         )?,
                     )
@@ -890,7 +890,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 "unacknowledged Candidate recovery requires current aggregate adoption authority",
             ));
         }
-        if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
             ..
         } = &effect.authorization
@@ -1045,7 +1045,7 @@ impl crate::environment_holding::EnvironmentHolding {
                 if unavailable_policy == SessionEnvironmentUnavailablePolicy::Rebuild {
                     exec.authorize_environment_effect_before_io(peers,
                         thread,
-                        &peers.authority.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
+                        &peers.authority.new_environment_effect_intent(thread, awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
                             source_generation_id: source_generation_id.map(str::to_owned),
                         },
                         Some(encoded))?,

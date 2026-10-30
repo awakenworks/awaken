@@ -4,13 +4,13 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use awaken_reliability_testkit::CrashProcess;
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionExecutionState,
     SessionMutationPayload,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
-async fn repository(path: &str) -> Box<dyn awaken_session_repository_contract::SessionStore> {
+async fn repository(path: &str) -> Box<dyn awaken_session_application::SessionStore> {
     if let Some(pool) = awaken_reliability_testkit::postgres_crash_pool(path).await {
         return Box::new(
             awaken_session_store::PostgresManagedSessionRepository::with_pool(pool)

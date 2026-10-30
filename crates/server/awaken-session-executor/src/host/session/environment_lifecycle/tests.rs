@@ -113,8 +113,8 @@ async fn dispose_current_environment(
         .expect("dispose current Environment through aggregate effect fence");
 }
 
-fn generation(thread: &str) -> awaken_session_state_contract::SandboxGeneration {
-    awaken_session_state_contract::SandboxGeneration::new(
+fn generation(thread: &str) -> awaken_session_contract::SandboxGeneration {
+    awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
         u64::MAX,

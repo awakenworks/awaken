@@ -69,7 +69,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .authority()
             .new_environment_effect_intent(
                 thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 None,
             )
             .expect("installed Sessions");

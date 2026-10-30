@@ -228,7 +228,7 @@ async fn forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive() 
         .events
         .iter()
         .filter_map(|entry| match &entry.event {
-            awaken_session_event_contract::SessionEventCommand::ToolReply { reply, .. } => {
+            awaken_session_contract::SessionEventCommand::ToolReply { reply, .. } => {
                 Some(reply.clone())
             }
             _ => None,
@@ -384,7 +384,7 @@ async fn ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive() 
 
 /// The exact admitted reply input, then forged at the application boundary.
 async fn forged_application_reply(
-    mutate: impl FnOnce(&mut awaken_session_event_contract::SessionEventToolReply),
+    mutate: impl FnOnce(&mut awaken_session_contract::SessionEventToolReply),
 ) -> (
     RehydrateFake,
     Arc<ManagedState>,
@@ -398,7 +398,7 @@ async fn forged_application_reply(
         .validate_event_batch(&session_id, &tool_result(&public_event_id).events)
         .await
         .expect("the exact reply is admissible");
-    let Some(awaken_session_event_contract::SessionEventInput::ToolReply(reply)) =
+    let Some(awaken_session_contract::SessionEventInput::ToolReply(reply)) =
         validated.inputs.first_mut()
     else {
         panic!("the exact reply lowers to one ToolReply input");

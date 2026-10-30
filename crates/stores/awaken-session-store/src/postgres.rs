@@ -556,9 +556,9 @@ impl SessionRepositoryReads for PostgresManagedSessionRepository {
 
     async fn scan(
         &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
+        query: awaken_session_contract::SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError> {
-        use awaken_session_state_contract::SessionScanQuery;
+        use awaken_session_contract::SessionScanQuery;
         match query {
             SessionScanQuery::WorkerRealizationOwner { worker_id } => {
                 self.scan_worker_realization_owner(worker_id).await
@@ -590,7 +590,7 @@ impl SessionRepositoryReads for PostgresManagedSessionRepository {
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
@@ -878,7 +878,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
 
     async fn preparation_candidates(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         self.scan_reconcilable(after, true).await
     }
@@ -897,10 +897,8 @@ impl SessionRepository for PostgresManagedSessionRepository {
         &self,
         session_id: &awaken_session_types::SessionId,
         key: &str,
-    ) -> Result<
-        Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-        SessionRepositoryError,
-    > {
+    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
+    {
         let row = sqlx::query(
             "SELECT payload_hash, committed_revision FROM managed_session_idempotency
              WHERE session_id = $1 AND idempotency_key = $2",
@@ -912,7 +910,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
         .map_err(storage)?;
         row.map(|row| {
             let revision: i64 = row.try_get("committed_revision").map_err(storage)?;
-            Ok(awaken_session_state_contract::SessionIdempotencyReceipt {
+            Ok(awaken_session_contract::SessionIdempotencyReceipt {
                 payload_hash: row.try_get("payload_hash").map_err(storage)?,
                 committed_revision: SessionRevision(
                     u64::try_from(revision)
@@ -928,7 +926,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
 impl SessionReconciliation for PostgresManagedSessionRepository {
     async fn reconciliation_scan(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         self.scan_reconcilable(after, false).await
     }
@@ -986,7 +984,7 @@ impl PostgresManagedSessionRepository {
 
     async fn scan_reconcilable(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+        after: Option<&awaken_session_contract::SessionScanCursor>,
         preparation_only: bool,
     ) -> Result<SessionScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
@@ -1007,9 +1005,8 @@ impl PostgresManagedSessionRepository {
                 .ok_or_else(|| storage("recovery lookahead produced an empty page"))?
                 .try_get::<String, _>("session_id")
                 .map_err(storage)?;
-            scan.next_cursor = Some(
-                awaken_session_state_contract::SessionScanCursor::after_session_id(session_id),
-            );
+            scan.next_cursor =
+                Some(awaken_session_contract::SessionScanCursor::after_session_id(session_id));
         }
         for row in rows {
             let session_id: String = row.try_get("session_id").map_err(storage)?;

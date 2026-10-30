@@ -20,15 +20,13 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
             let id = format!("failed-time-{failure_time:?}-{sourced}");
             let repository = Arc::new(ephemeral_session_repo().await);
             let mut persisted = crate::state::tests::sample_persisted(&id);
-            persisted.execution =
-                awaken_session_state_contract::SessionExecutionState::ActivationFailed;
+            persisted.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
             let source_run_id = sourced.then(|| RunId("failed-time-run".into()));
             if let Some(now) = failure_time {
                 // W3/R1: the existing assignment command owns known failure
                 // time and the exact optional source; release time is distinct.
-                let mut aggregate =
-                    awaken_session_state_contract::SessionAggregate::try_from(persisted)
-                        .expect("valid failed Session fixture");
+                let mut aggregate = awaken_session_contract::SessionAggregate::try_from(persisted)
+                    .expect("valid failed Session fixture");
                 aggregate.assignment().record_failure(
                     "activation failed".into(),
                     now,

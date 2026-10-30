@@ -2562,7 +2562,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         &activation.snapshot,
     );
     projection.baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
-    projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "opaque-worker-owned-environment".into(),
         effect_id: None,
         generation: None,

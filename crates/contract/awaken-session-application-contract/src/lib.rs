@@ -13,10 +13,10 @@ mod run_coordination;
 mod step_outcome;
 mod usage;
 
-pub(crate) use awaken_session_event_contract::DeletedSessionEventAdmissions;
+pub(crate) use awaken_session_contract::DeletedSessionEventAdmissions;
 #[cfg(any(test, kani))]
-pub(crate) use awaken_session_event_contract::RetainedEventAdmission;
-pub(crate) use awaken_session_event_contract::{
+pub(crate) use awaken_session_contract::RetainedEventAdmission;
+pub(crate) use awaken_session_contract::{
     SessionEventBatch, SessionEventBatchAdmissionClass, classify_session_event_batch_admission,
 };
 pub(crate) use awaken_session_types::{RunError, RunErrorKind};

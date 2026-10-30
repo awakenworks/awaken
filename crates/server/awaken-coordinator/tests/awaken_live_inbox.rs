@@ -470,7 +470,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for QueueFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for QueueFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -1206,7 +1206,7 @@ async fn app_with_session_application(
     impl awaken_session_execution_contract::SessionCoordinationReads for Shared {
         async fn source_dispatch_observation(
             &self,
-            _session: &awaken_session_state_contract::PersistedSession,
+            _session: &awaken_session_contract::PersistedSession,
         ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
             Default::default()
         }

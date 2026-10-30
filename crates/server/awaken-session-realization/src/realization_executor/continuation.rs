@@ -59,7 +59,7 @@ impl RealizationExecutor {
     pub fn continuation_effect_fence(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RunError> {
         let asserted = operation.realization().ok_or_else(|| {
             RunError::unavailable_classified(
@@ -86,7 +86,7 @@ impl RealizationExecutor {
     pub fn continuation_preparation_effect_fence(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RunError> {
         self.continuation_current_lease(
             thread,
@@ -109,7 +109,7 @@ impl RealizationExecutor {
     fn continuation_source_disposal_authorization(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, RunError> {
         self.continuation_current_lease(
             thread,
@@ -129,8 +129,8 @@ impl RealizationExecutor {
     pub async fn checkpoint_environment_continuation(
         &self,
         thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
         let realizations = self.sessions.clone();
         if request.session_id != thread {
             return Err(RunError::internal(
@@ -179,7 +179,7 @@ impl RealizationExecutor {
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         awaken_provisioning_contract::with_current_sandbox_effect(&effect_fence, &authority, |_| {
-            Ok(awaken_session_state_contract::CheckpointReceipt {
+            Ok(awaken_session_contract::CheckpointReceipt {
                 effect_id: provider_request.effect_id,
                 generation_id: provider_request.generation_id,
                 checkpoint,
@@ -191,10 +191,10 @@ impl RealizationExecutor {
     pub async fn prepare_environment_continuation_source_release(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, RunError> {
         let exec = &self.environments;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let Some(resources) = self.staging.thread_resource_manifest(thread)? else {
@@ -234,7 +234,7 @@ impl RealizationExecutor {
         // pure step precedes provider observation and every externally visible
         // source-dependent effect.
         let acknowledged_materializations =
-            awaken_session_state_contract::validate_continuation_memory_materializations(
+            awaken_session_contract::validate_continuation_memory_materializations(
                 resources.resources.inputs(),
                 materializations,
             )
@@ -318,7 +318,7 @@ impl RealizationExecutor {
                 )
             })?;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let receipt = awaken_session_state_contract::SourceReleasePreparedReceipt::try_new(
+        let receipt = awaken_session_contract::SourceReleasePreparedReceipt::try_new(
             preparation.clone(),
             provider_prepared_effect_fence,
             generation,
@@ -344,8 +344,8 @@ impl RealizationExecutor {
     pub async fn dispose_prepared_environment_continuation_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
         let realizations = self.sessions.clone();
         let operation = disposal.operation();
         let generation = disposal.generation();
@@ -366,7 +366,7 @@ impl RealizationExecutor {
             .await
             .map_err(awaken_session_types::RunError::from)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
-        Ok(awaken_session_state_contract::SourceDisposedReceipt {
+        Ok(awaken_session_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id().to_owned(),
             generation_id: generation.id().to_owned(),
             source_binding: source_binding.to_string(),
@@ -376,8 +376,8 @@ impl RealizationExecutor {
 
     pub async fn restore_environment_continuation(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         let realizations = self.sessions.clone();
         let exec = self;
         request
@@ -429,7 +429,7 @@ impl RealizationExecutor {
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let binding = serde_json::to_string(&handle)
             .map_err(crate::realization_error::RealizationError::from)?;
-        Ok(awaken_session_state_contract::RestoreReceipt {
+        Ok(awaken_session_contract::RestoreReceipt {
             effect_id: request.effect_id,
             generation_id: request.generation_id,
             checkpoint_id: request.checkpoint.id,
@@ -439,7 +439,7 @@ impl RealizationExecutor {
 
     pub async fn delete_environment_continuation_checkpoint(
         &self,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         let store = self
             .environments

@@ -233,7 +233,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+            &awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: "not-a-sandbox-handle".into(),
                 effect_id: Some("durable-effect".into()),
                 generation: Some(generation(thread)),
@@ -368,14 +368,14 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         );
     host.run_assembly
         .install_test_resident_session_environment(thread, environment.clone());
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
         u64::MAX,
         "environment",
         "image",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -604,7 +604,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+            &awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: binding.clone(),
                 effect_id: Some(effect_id),
                 generation: Some(generation),
@@ -757,7 +757,7 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
                 effect_id: "terminal-A".into(),
             },
             SessionEnvironmentRetirementCause::CheckpointSource {
-                operation: awaken_session_state_contract::SessionEnvironmentOperation::new(
+                operation: awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
                     &awaken_session_types::SessionId::from("owner-A"),
                     "suspend",

@@ -142,7 +142,7 @@ mod tests {
         // | D2 | present | exact | exact | E2+E4 |
         // | D3 | present | exact | different | E3 |
         // | D4 | present | different | exact | E3 |
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let state = Arc::new({
             let session_fixture_runtime = RehydrateFake::default();

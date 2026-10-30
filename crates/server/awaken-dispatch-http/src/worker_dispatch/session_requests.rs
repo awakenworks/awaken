@@ -46,21 +46,21 @@ pub(super) struct SessionPreparationClaimNextReq {
 pub(super) struct SessionCleanupPreparationRecordReq {
     pub(super) identity: WorkerIdentity,
     pub(super) lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    pub(super) preparation: awaken_session_state_contract::SessionCleanupPreparation,
+    pub(super) preparation: awaken_session_contract::SessionCleanupPreparation,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionCleanupPreparationAuthorizeReq {
     pub(super) identity: WorkerIdentity,
-    pub(super) effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+    pub(super) effect: awaken_session_contract::SessionTerminalCleanupEffect,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionCleanupDisposalAuthorizeReq {
     pub(super) identity: WorkerIdentity,
-    pub(super) effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    pub(super) effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
 }
 
 #[derive(Deserialize)]
@@ -68,7 +68,7 @@ pub(super) struct SessionCleanupDisposalAuthorizeReq {
 pub(super) struct SessionCleanupDisposalRecordReq {
     pub(super) identity: WorkerIdentity,
     pub(super) lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    pub(super) receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+    pub(super) receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
 }
 
 #[derive(Deserialize)]
@@ -82,12 +82,12 @@ pub(super) struct SessionRealizationReq<T> {
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionEnvironmentIntentReq {
     pub(super) identity: WorkerIdentity,
-    pub(super) intent: awaken_session_state_contract::SessionEnvironmentEffectIntent,
+    pub(super) intent: awaken_session_contract::SessionEnvironmentEffectIntent,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionEnvironmentReceiptReq {
     pub(super) identity: WorkerIdentity,
-    pub(super) receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
+    pub(super) receipt: awaken_session_contract::SessionEnvironmentReceipt,
 }
