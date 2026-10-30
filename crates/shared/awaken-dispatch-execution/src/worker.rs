@@ -84,6 +84,18 @@ pub(crate) use claim_renewal::{
     ClaimLeaseRenewal, combine_attempt_cancellation, renew_claim_while_active,
 };
 
+/// A heap-pinned claim-path future.
+///
+/// The claimed drive and the terminal settlement operations it awaits at many
+/// sites return this instead of an `async fn` state machine. An unoptimized
+/// build gives every awaited callee future its own slot in the caller's poll
+/// frame, so awaiting these by value made each claim-path frame grow with the
+/// sum of every callee it awaits, and nested entries repeated those sizes. A
+/// boxed future is constructed in its synchronous constructor's short frame and
+/// costs its awaiting caller only a pointer.
+pub(super) type ClaimFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, Error>> + Send + 'a>>;
+
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
 pub const DEFAULT_LEASE_MS: u64 = 30_000;
 
@@ -862,17 +874,28 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// guard that already covered pre-drive resolution. Its Pool owner retains
     /// that one guard until this awaited drive returns; no second renewal task
     /// starts at the Worker boundary.
-    pub(crate) async fn drive_claimed_with_cancellation(
+    ///
+    /// This is the heap boundary of the one claimed-drive state machine. Every
+    /// claim entry (`start_run`, `resume_run`, `tick`, `tick_run`, the pool and
+    /// child scheduling) reaches the drive body here. Awaited by value, the
+    /// body was embedded in every entry future and copied through each entry's
+    /// poll frame; beneath them a whole Runtime attempt and its claim-fenced
+    /// commit run on the same stack, which exceeded a 2 MiB thread stack in an
+    /// unoptimized build. See [`ClaimFuture`].
+    pub(crate) fn drive_claimed_with_cancellation(
         &self,
         claimed: Claimed,
         clock: Arc<dyn WallClock>,
         claim_cancellation: CancellationToken,
         execution_capacity: Option<ExecutionCapacity>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
+    ) -> ClaimFuture<'_, Option<(RunId, RunState)>> {
         if claimed.session_activity_admission_required {
-            return self
-                .drive_claimed_inner(claimed, clock, claim_cancellation, execution_capacity)
-                .await;
+            return Box::pin(self.drive_claimed_inner(
+                claimed,
+                clock,
+                claim_cancellation,
+                execution_capacity,
+            ));
         }
 
         // One executable claim owns one durable trace relay. Keep execution,
@@ -880,9 +903,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // inside the same `wake.dispatch` span; fragmenting the span around only
         // the executor future disconnects post-commit background effects.
         let dispatch = Self::claimed_dispatch_span(&claimed);
-        self.drive_claimed_inner(claimed, clock, claim_cancellation, execution_capacity)
-            .instrument(dispatch)
-            .await
+        Box::pin(
+            self.drive_claimed_inner(claimed, clock, claim_cancellation, execution_capacity)
+                .instrument(dispatch),
+        )
     }
 
     async fn drive_claimed_inner(
