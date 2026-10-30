@@ -200,6 +200,9 @@ pub struct K8sRuntime {
     clock: Option<Arc<dyn awaken_time::WallClock>>,
     /// Bound on waiting for the scheduler to place a Sandbox Pod (ADR-0092).
     unschedulable_wait: std::time::Duration,
+    /// Operator CPU/memory bounds and the disposable-Pod deadline every hosted
+    /// Sandbox Pod carries; never absent, so no Pod is BestEffort or unbounded.
+    pod_bounds: awaken_container_contract::K8sPodBounds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -289,6 +292,7 @@ impl K8sRuntime {
             creation_attempts: Mutex::new(Default::default()),
             clock: None,
             unschedulable_wait: awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT,
+            pod_bounds: awaken_container_contract::K8sPodBounds::default(),
         };
         runtime
             .network_policy_attestation
@@ -405,6 +409,7 @@ impl K8sRuntime {
             creation_attempts: Mutex::new(Default::default()),
             clock: Some(awaken_time::system_clock()),
             unschedulable_wait: awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT,
+            pod_bounds: awaken_container_contract::K8sPodBounds::default(),
         }
     }
 
@@ -509,6 +514,7 @@ impl K8sRuntime {
             self.sandbox_control_forwarder.as_ref(),
             self.repository_gateway_trust.as_ref(),
         );
+        pod_security::apply_pod_bounds(&mut pod, plan.filesystem_continuity, &self.pod_bounds);
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
         labels.insert(
             awaken_container_contract::MANAGED_SANDBOX_LABEL.to_string(),

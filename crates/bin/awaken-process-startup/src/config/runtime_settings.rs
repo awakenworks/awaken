@@ -89,6 +89,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         // preserves ephemeral roots and cannot advertise retained Session support.
         k8s_continuation_volume: file.k8s_continuation_volume.clone(),
         k8s_image_prewarm: file.k8s_image_prewarm.clone(),
+        k8s_pod_bounds: file.k8s_pod_bounds.unwrap_or_default(),
         container_hand_bin: file
             .container_hand_bin
             .clone()
@@ -127,6 +128,10 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     }
     .apply(sandbox_tier, &mut sandbox)?;
     sandbox.apply_k8s_unschedulable_wait_secs(sandbox_tier, file.k8s_unschedulable_wait_secs)?;
+    if file.k8s_pod_bounds.is_some() && sandbox_tier != SandboxTier::K8s {
+        return Err("k8s_pod_bounds requires sandbox_tier=k8s".into());
+    }
+    sandbox.k8s_pod_bounds.validate()?;
     if sandbox.container_hand_residency == ContainerHandResidency::Resident
         && sandbox_tier != SandboxTier::K8s
     {

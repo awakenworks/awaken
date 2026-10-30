@@ -54,6 +54,87 @@ impl K8sImagePrewarm {
     }
 }
 
+/// CPU and memory reservation and ceiling for one Kubernetes Sandbox container
+/// role. Requests make the Pod Burstable instead of BestEffort, so node memory
+/// pressure no longer selects it first; limits bound one runaway container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct K8sContainerBounds {
+    pub cpu_request_millis: u64,
+    pub memory_request_bytes: u64,
+    pub cpu_limit_millis: u64,
+    pub memory_limit_bytes: u64,
+}
+
+impl K8sContainerBounds {
+    fn validate(&self, role: &str) -> Result<(), String> {
+        if self.cpu_request_millis == 0 || self.memory_request_bytes == 0 {
+            return Err(format!(
+                "k8s_pod_bounds.{role} requires non-zero cpu and memory requests"
+            ));
+        }
+        if self.cpu_request_millis > self.cpu_limit_millis
+            || self.memory_request_bytes > self.memory_limit_bytes
+        {
+            return Err(format!(
+                "k8s_pod_bounds.{role} requests must not exceed limits"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Operator-authored bounds every hosted Kubernetes Sandbox Pod carries.
+///
+/// `agent` fills only the CPU/memory fields a Session plan leaves unset;
+/// runtime-owned sidecars and init containers always carry `sidecar`. A
+/// positive `ephemeral_active_deadline_secs` lets kubelet terminate a
+/// disposable child/probe Pod whose owner never disposed it, releasing its
+/// node capacity without granting anyone deletion authority. Retained Session
+/// Pods are never deadline-bounded. Zero disables the deadline. Every emptyDir
+/// volume without its own `sizeLimit` receives `empty_dir_size_limit_bytes`,
+/// so kubelet evicts a runaway workspace before it fills the node disk; zero
+/// disables that bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct K8sPodBounds {
+    pub agent: K8sContainerBounds,
+    pub sidecar: K8sContainerBounds,
+    pub ephemeral_active_deadline_secs: u64,
+    pub empty_dir_size_limit_bytes: u64,
+}
+
+const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
+
+impl Default for K8sPodBounds {
+    fn default() -> Self {
+        Self {
+            agent: K8sContainerBounds {
+                cpu_request_millis: 250,
+                memory_request_bytes: 512 * MIB,
+                cpu_limit_millis: 4_000,
+                memory_limit_bytes: 8 * GIB,
+            },
+            sidecar: K8sContainerBounds {
+                cpu_request_millis: 10,
+                memory_request_bytes: 32 * MIB,
+                cpu_limit_millis: 500,
+                memory_limit_bytes: 256 * MIB,
+            },
+            ephemeral_active_deadline_secs: 6 * 60 * 60,
+            empty_dir_size_limit_bytes: 20 * GIB,
+        }
+    }
+}
+
+impl K8sPodBounds {
+    pub fn validate(&self) -> Result<(), String> {
+        self.agent.validate("agent")?;
+        self.sidecar.validate("sidecar")
+    }
+}
+
 /// Deployment-owned policy for a Kubernetes Session's retained active volume.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +175,24 @@ mod tests {
             };
             assert_eq!(policy.validate().is_ok(), (1..=256).contains(&max_images));
         }
+    }
+
+    #[test]
+    fn pod_bounds_default_is_valid_and_rejects_unbounded_or_inverted_roles() {
+        // Decision table B1 the shipped default admits; B2 a zero request (a
+        // BestEffort role) rejects; B3 a request above its limit rejects; B4 a
+        // partial authored table keeps the remaining defaults.
+        assert!(K8sPodBounds::default().validate().is_ok(), "B1");
+        let mut zero = K8sPodBounds::default();
+        zero.sidecar.memory_request_bytes = 0;
+        assert!(zero.validate().is_err(), "B2");
+        let mut inverted = K8sPodBounds::default();
+        inverted.agent.cpu_request_millis = inverted.agent.cpu_limit_millis + 1;
+        assert!(inverted.validate().is_err(), "B3");
+        let partial: K8sPodBounds =
+            serde_json::from_str(r#"{"ephemeral_active_deadline_secs":0}"#).unwrap();
+        assert_eq!(partial.agent, K8sPodBounds::default().agent, "B4");
+        assert_eq!(partial.ephemeral_active_deadline_secs, 0, "B4");
     }
 
     #[test]
