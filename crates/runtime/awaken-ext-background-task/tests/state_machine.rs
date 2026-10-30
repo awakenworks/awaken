@@ -9,6 +9,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskClaim, TaskExecutionPolicy,
+    TaskHeartbeatCheckpointError, TaskHeartbeatCheckpointOutcome,
 };
 use awaken_lease_contract::fence::{Epoch, Tenure};
 use awaken_tool_contract::tool::{
@@ -68,6 +69,272 @@ fn execution_task(phase: usize) -> BackgroundTask {
         task.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap();
     }
     task
+}
+
+fn heartbeat_task(phase: usize) -> BackgroundTask {
+    // Reuse the original phase fixture and add the remaining wait/None forms.
+    if phase < 7 {
+        return execution_task(phase);
+    }
+    let mut task = execution_task(1);
+    let fence = task.tenure().unwrap();
+    if matches!(phase, 8 | 9) {
+        task.wait(&fence, BackgroundWait::Resource).unwrap();
+    }
+    if matches!(phase, 7 | 9) {
+        task.request_cancel().unwrap();
+    }
+    task
+}
+
+fn expected_heartbeat(mut task: BackgroundTask, target_ms: u64) -> BackgroundTask {
+    // Full-aggregate oracle: deadline and revision are the only changed fields.
+    match &mut task.lifecycle {
+        BackgroundTaskLifecycle::Running { attempt }
+        | BackgroundTaskLifecycle::Waiting { attempt, .. }
+        | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
+            attempt.lease_expires_at_ms = target_ms;
+        }
+        _ => panic!("only an attempt-bearing fixture can apply a heartbeat"),
+    }
+    task.revision += 1;
+    task
+}
+
+#[test]
+fn checkpoint_errors_preserve_the_existing_aggregate_error_contract() {
+    // Compatibility cause/effect table: C1 each original aggregate error;
+    // C2 direct or checkpoint-wrapped use. R1 an unchanged exhaustive external
+    // match must compile for C1; R2 both C2 forms retain the original Display.
+    // R3 checkpoint expiry is a separate negative error with its exact message,
+    // not an added variant of the existing enum. This is a downstream source
+    // contract witness; the checkpoint decision table below owns admission.
+    fn original_error_text(error: &BackgroundTaskError) -> &'static str {
+        match error {
+            BackgroundTaskError::InvalidIdentity => "background task id must not be empty",
+            BackgroundTaskError::InvalidClaim => {
+                "background task claim requires a worker and a positive lease"
+            }
+            BackgroundTaskError::Busy => "background task is already owned",
+            BackgroundTaskError::Terminal => "background task is terminal",
+            BackgroundTaskError::InvalidTransition => "background task transition is invalid",
+            BackgroundTaskError::StaleFence => "background task fence is stale",
+            BackgroundTaskError::NonMonotonicLease => {
+                "background task lease must advance monotonically"
+            }
+            BackgroundTaskError::InvalidContinuation => {
+                "remote continuation requires an owner, binding, task id, and a positive poll interval when present"
+            }
+            BackgroundTaskError::ClockOverflow => "background task clock overflow",
+            BackgroundTaskError::EpochOverflow => "background task epoch overflow",
+            BackgroundTaskError::RevisionOverflow => "background task revision overflow",
+            BackgroundTaskError::InvalidPersistedState => {
+                "background task persisted state violates its aggregate invariants"
+            }
+        }
+    }
+    for error in [
+        BackgroundTaskError::InvalidIdentity,
+        BackgroundTaskError::InvalidClaim,
+        BackgroundTaskError::Busy,
+        BackgroundTaskError::Terminal,
+        BackgroundTaskError::InvalidTransition,
+        BackgroundTaskError::StaleFence,
+        BackgroundTaskError::NonMonotonicLease,
+        BackgroundTaskError::InvalidContinuation,
+        BackgroundTaskError::ClockOverflow,
+        BackgroundTaskError::EpochOverflow,
+        BackgroundTaskError::RevisionOverflow,
+        BackgroundTaskError::InvalidPersistedState,
+    ] {
+        let expected = original_error_text(&error);
+        assert_eq!(error.to_string(), expected, "R1/R2 original error");
+        let wrapped = TaskHeartbeatCheckpointError::from(error.clone());
+        assert_eq!(
+            wrapped.to_string(),
+            expected,
+            "R2 transparent checkpoint error"
+        );
+        assert_eq!(wrapped, TaskHeartbeatCheckpointError::Task(error));
+    }
+    assert_eq!(
+        TaskHeartbeatCheckpointError::LeaseExpired.to_string(),
+        "background task lease expired before the heartbeat checkpoint applied",
+        "R3 separate negative checkpoint error"
+    );
+}
+
+#[test]
+fn fixed_target_heartbeat_checkpoint_follows_the_complete_decision_table() {
+    // Causes: C1 Requested/Running/remote or both local wait forms/Cancelling
+    // intent with no wait/Ended;
+    // C2 exact tenure or foreign task/holder/epoch; C3 target zero/below/equal/
+    // above current D=10/MAX; C4 commit time before/at/after D/MAX; C5 revision
+    // has capacity/is MAX. Effects: E1 unchanged ACK; E2 only deadline=T and
+    // revision+1, preserving the complete phase/wait/identity/policy; E3 typed
+    // error with complete aggregate equality. Constraints: C1 without attempt
+    // and C2 mismatch precede all other causes; no caller supplies liveness.
+    // Checkpoint-only LeaseExpired remains a negative result. Other failures
+    // wrap the unchanged BackgroundTaskError; legacy heartbeat/finish callers
+    // retain that original exhaustive enum and its exact errors/display.
+    //
+    // | Rule | Current attempt/tenure | T | now | revision | Effect |
+    // | C1 | absent or mismatched | any | any | any | StaleFence/E3 |
+    // | C2 | exact | 0 | any | any | InvalidClaim/E3 |
+    // | C3 | exact | 0<T<=D | any | any | ACK/E1 |
+    // | C4 | exact | T>D | >=D | any | LeaseExpired/E3 |
+    // | C5 | exact | T>D | <D | MAX | RevisionOverflow/E3 |
+    // | C6 | exact | T>D | <D | capacity | Applied/E2 |
+    // C9 applies E2's full-field oracle to every wait form and Cancelling(None).
+    for phase in 0..10 {
+        for foreign in 0..4 {
+            for revision_max in [false, true] {
+                for now_ms in [9, 10, 11, u64::MAX] {
+                    for target_ms in [0, 9, 10, 11, 20, u64::MAX] {
+                        let mut current = heartbeat_task(phase);
+                        if revision_max {
+                            current.revision = u64::MAX;
+                        }
+                        let fence = Tenure::granted(
+                            if foreign == 1 {
+                                BackgroundTaskId::new("another-task").unwrap()
+                            } else {
+                                current.id.clone()
+                            },
+                            if foreign == 2 {
+                                "another-holder"
+                            } else {
+                                "worker"
+                            }
+                            .into(),
+                            if foreign == 3 {
+                                Epoch::FIRST.next().unwrap()
+                            } else {
+                                Epoch::FIRST
+                            },
+                        );
+                        let before = current.clone();
+                        let expected = if matches!(phase, 0 | 4) || foreign != 0 {
+                            Err(TaskHeartbeatCheckpointError::Task(
+                                BackgroundTaskError::StaleFence,
+                            ))
+                        } else if target_ms == 0 {
+                            Err(TaskHeartbeatCheckpointError::Task(
+                                BackgroundTaskError::InvalidClaim,
+                            ))
+                        } else if target_ms <= 10 {
+                            Ok(TaskHeartbeatCheckpointOutcome::Acknowledged)
+                        } else if now_ms >= 10 {
+                            Err(TaskHeartbeatCheckpointError::LeaseExpired)
+                        } else if revision_max {
+                            Err(TaskHeartbeatCheckpointError::Task(
+                                BackgroundTaskError::RevisionOverflow,
+                            ))
+                        } else {
+                            Ok(TaskHeartbeatCheckpointOutcome::Applied)
+                        };
+                        let result = current.heartbeat_checkpoint(&fence, target_ms, now_ms);
+                        assert_eq!(
+                            result, expected,
+                            "phase={phase} foreign={foreign} T={target_ms} now={now_ms} max={revision_max}"
+                        );
+                        let after = if result == Ok(TaskHeartbeatCheckpointOutcome::Applied) {
+                            expected_heartbeat(before, target_ms)
+                        } else {
+                            before
+                        };
+                        assert_eq!(current, after, "C1-C6 complete aggregate effect");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fixed_target_checkpoint_replay_is_inert_even_after_expiry() {
+    // C7 an exact checkpoint first applies while live, then the response is
+    // lost and the SAME target is retried before/at/after its deadline/MAX.
+    // E1 every retry ACKs without moving deadline, revision or any other field;
+    // E2 late ACK never authorizes execution. Cross all attempt-bearing phase
+    // forms so a Cancelling phase or exact remote handle cannot be rewritten.
+    for phase in [1, 2, 3, 5, 6, 7, 8, 9] {
+        let expected = heartbeat_task(phase);
+        let fence = expected.tenure().unwrap();
+        let mut current = expected.clone();
+        assert_eq!(
+            current.heartbeat_checkpoint(&fence, 20, 9),
+            Ok(TaskHeartbeatCheckpointOutcome::Applied),
+            "C7 first application"
+        );
+        let applied = current.clone();
+        for now_ms in [9, 19, 20, 21, u64::MAX] {
+            assert_eq!(
+                current.heartbeat_checkpoint(&fence, 20, now_ms),
+                Ok(TaskHeartbeatCheckpointOutcome::Acknowledged),
+                "C7/E1"
+            );
+            assert_eq!(current, applied, "C7/E1 exact replay stutter");
+            if now_ms >= 20 {
+                assert!(
+                    !current.admits_execution_of(&expected, now_ms),
+                    "C7/E2 historical ACK grants no effect"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_checkpoint_for_the_predecessor_cannot_ack_a_successor_tenure() {
+    // C8 the same Task has reached T under epoch 1, then canonical reclaim
+    // assigns epoch 2 with a later deadline. E1 the epoch-1 retry refuses even
+    // though current deadline>=T; E2 no successor field changes. Reclaim keeps
+    // remote Cancelling intact; it remains the sole ownership-transfer owner.
+    for phase in [1, 2, 3] {
+        let mut current = execution_task(phase);
+        let prior = current.tenure().unwrap();
+        current.heartbeat_checkpoint(&prior, 20, 9).unwrap();
+        let TaskClaim::Acquired(successor) = current.reclaim("next-worker", 20, 30).unwrap() else {
+            panic!("C8 canonical reclaim must advance this replayable/remote attempt")
+        };
+        assert!(successor.epoch() > prior.epoch(), "C8 successor tenure");
+        let before = current.clone();
+        assert_eq!(
+            current.heartbeat_checkpoint(&prior, 20, 50),
+            Err(TaskHeartbeatCheckpointError::Task(
+                BackgroundTaskError::StaleFence
+            )),
+            "C8/E1 tenure precedes historical ACK"
+        );
+        assert_eq!(current, before, "C8/E2 successor is unchanged");
+    }
+}
+
+#[test]
+fn local_relative_heartbeat_retains_its_expired_renewal_and_replay_errors() {
+    // L1 the original local entry receives now at/after D=10, a positive TTL
+    // and revision capacity: it still applies now+TTL, including target MAX.
+    // L2 repeating the same local now/TTL remains NonMonotonicLease, not an
+    // ACK. E1 only deadline/revision change; E2 rejected replay is fully inert.
+    // Original stale/zero/clock/monotonic/revision precedence assertions below
+    // remain unchanged; checkpoint's stricter application is a distinct input.
+    for phase in [1, 2, 3, 5, 6, 7, 8, 9] {
+        for now_ms in [10, 11, u64::MAX - 20] {
+            let mut current = heartbeat_task(phase);
+            let fence = current.tenure().unwrap();
+            let expected = expected_heartbeat(current.clone(), now_ms + 20);
+            current.heartbeat(&fence, now_ms, 20).unwrap();
+            assert_eq!(current, expected, "L1/E1 original relative heartbeat");
+            let before = current.clone();
+            assert_eq!(
+                current.heartbeat(&fence, now_ms, 20),
+                Err(BackgroundTaskError::NonMonotonicLease),
+                "L2/E2 local replay retains its error"
+            );
+            assert_eq!(current, before, "L2/E2 complete aggregate stutter");
+        }
+    }
 }
 
 #[test]
