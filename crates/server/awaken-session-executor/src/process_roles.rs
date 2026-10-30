@@ -1,6 +1,9 @@
-// @formal surface exclude=composition_wiring
-// @formal owner crates/server/awaken-session-run-delivery/src/session_applications.rs
-// @formal reason: Checks complete process capability selection before service construction; domain authority and claim laws remain with their existing owners.
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Worker source-retention observations reuse the Environment owner's source identity
+// @formal reason: law, exact local Arc and handle, original provider proof and generation-scoped
+// @formal reason: BackgroundRuns activity. Source-retention decision tables exercise this adapter;
+// @formal reason: provider/storage facts and async scheduling remain external proof boundaries.
+// Startup capability lifetimes still use the SessionApplications composition owner.
 //! Claiming-Worker roles over the executor's selected components.
 
 use std::sync::Arc;
@@ -195,12 +198,80 @@ impl WorkerRoles {
         projection: &awaken_session_realization_contract::FrozenSessionProjection,
         source_prepared: bool,
     ) -> Result<bool, awaken_session_types::RunError> {
-        self.assembly
+        // Provider retention is not quiescence of this Actor. Observe the same
+        // original owner on both sides of the async read; its one activity key
+        // also makes an unreadable BackgroundRuns registry refuse retirement.
+        let original = self.source_retention_owner(session_id)?;
+        if let Some(original) = original.as_ref()
+            && !original
+                .matches_source_projection(
+                    &projection.environment,
+                    &projection.workspace_id,
+                    session_id.as_str(),
+                )
+                .map_err(awaken_session_types::RunError::from)?
+        {
+            return Ok(false);
+        }
+        // exact_matches may compare the same mutable Arc twice. Capture the
+        // SandboxHandle VALUE before suspension, not another view of that Arc.
+        let original_handle = original
+            .as_ref()
+            .map(|owner| owner.environment.lifecycle().handle());
+        if self.source_retention_background_busy(session_id, original.as_ref()) {
+            return Ok(false);
+        }
+        let retained = self
+            .assembly
             .realization_executor
             .environments()
             .observe_source_retention(session_id, projection, source_prepared)
             .await
+            .map_err(awaken_session_types::RunError::from)?;
+        if !retained {
+            return Ok(false);
+        }
+        let current = self.source_retention_owner(session_id)?;
+        let same_owner = match (&original, &current) {
+            (Some(original), Some(current)) => {
+                original.exact_matches(current)
+                    && original_handle.as_ref() == Some(&current.environment.lifecycle().handle())
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        Ok(same_owner && !self.source_retention_background_busy(session_id, current.as_ref()))
+    }
+
+    fn source_retention_owner(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<
+        Option<awaken_session_realization::environment_owner::BoundSessionEnvironment>,
+        awaken_session_types::RunError,
+    > {
+        self.assembly
+            .realization_executor
+            .sessions()
+            .read_realization(session_id.as_str(), |realization| {
+                realization.environment().owner.terminal_bound_environment()
+            })
+            .map(Option::flatten)
             .map_err(awaken_session_types::RunError::from)
+    }
+
+    fn source_retention_background_busy(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        owner: Option<&awaken_session_realization::environment_owner::BoundSessionEnvironment>,
+    ) -> bool {
+        owner.is_some_and(|owner| {
+            self.assembly
+                .resources
+                .memory
+                .background()
+                .has_shared_environment_work(session_id.as_str(), &owner.activity_generation_id())
+        })
     }
 
     /// The process wall clock this Worker drives its claims on.

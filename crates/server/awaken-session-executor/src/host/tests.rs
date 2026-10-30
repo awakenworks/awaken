@@ -264,6 +264,7 @@ mod run_boundary;
 mod session_projection;
 mod session_realizations;
 mod skill_delivery;
+mod source_retention;
 mod terminal_disposal;
 mod terminal_memory;
 mod unattempted_terminal_cleanup;
@@ -1567,6 +1568,9 @@ struct TerminalRecoveryProvider {
 struct TerminalFenceRefreshProbe {
     physical_disposal_entries: Mutex<Vec<pc::SandboxDisposalAuthorization>>,
 
+    retention_entered: tokio::sync::Notify,
+    retention_release: tokio::sync::Notify,
+    retention_source_handle: Mutex<Option<pc::SandboxHandle>>,
     restored_release: tokio::sync::Notify,
     artifact_entered: tokio::sync::Notify,
     artifact_release: tokio::sync::Notify,
@@ -1686,6 +1690,10 @@ impl awaken_provisioning_contract::SandboxProvider for TerminalRecoveryProvider 
                     pc::SandboxObservationPurpose::WorkerRetirement { .. }
                 ));
                 self.events.lock().unwrap().push("observe-source-retention");
+                if let Some(probe) = &self.fence_refresh_probe {
+                    probe.retention_entered.notify_one();
+                    probe.retention_release.notified().await;
+                }
                 outcome.clone()
             }
             TerminalRecoveryScenario::OrphanClaim => {
@@ -1943,6 +1951,14 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
+        if self.mode == TerminalRecoveryEnvironmentMode::LiveMemory
+            && let Some(handle) = self
+                .fence_refresh_probe
+                .as_ref()
+                .and_then(|probe| probe.retention_source_handle.lock().unwrap().clone())
+        {
+            return handle;
+        }
         self.handle.clone()
     }
 
@@ -2181,8 +2197,33 @@ impl awaken_provisioning_contract::SessionSandbox for TerminalRecoveryEnvironmen
 
     fn record_owned_path(
         &self,
-        _path: &str,
+        path: &str,
     ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        if self.mode == TerminalRecoveryEnvironmentMode::LiveMemory
+            && let Some(probe) = &self.fence_refresh_probe
+        {
+            let mut selected = probe.retention_source_handle.lock().unwrap();
+            if let Some(handle) = selected.as_mut() {
+                // This private probe selects only the original V2 fixture;
+                // rebuilding it must never drop restore or Memory evidence.
+                assert_eq!(handle.provider_kind(), "container");
+                assert_eq!(handle.payload_schema().unwrap().version(), 2);
+                assert!(handle.restoration().is_none());
+                assert!(
+                    handle
+                        .memory_materializations()?
+                        .is_none_or(|items| items.is_empty())
+                );
+                let mut payload = handle
+                    .decode_provider_payload::<awaken_sandbox_container::ContainerSandboxHandleV2>(
+                    )?;
+                payload.owned_paths.push(path.into());
+                payload.owned_paths.sort();
+                payload.owned_paths.dedup();
+                *handle = pc::SandboxHandle::container_v2(handle.sandbox_id.clone(), payload);
+                return Ok(());
+            }
+        }
         Err(awaken_provisioning_contract::SandboxError::unsupported(
             "test container environment does not support durable owned-path evidence",
         ))
