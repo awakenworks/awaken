@@ -33,6 +33,7 @@ class DependencyUse(NamedTuple):
     production: bool
     tests: bool
     turns_on_features: bool
+    unresolved: tuple[str, ...] = ()
 
 
 def dependency_use_errors(uses: Iterable[DependencyUse], enables: dict[str, frozenset[str]]) -> list[str]:
@@ -49,6 +50,9 @@ def dependency_use_errors(uses: Iterable[DependencyUse], enables: dict[str, froz
             if not use.turns_on_features:
                 errors.append(f"{use.crate} lists {use.dependency} in metadata.awaken.enables but turns on "
                               "none of its features; remove the dependency")
+        elif use.unresolved:
+            errors.append(f"{use.crate} cannot classify {use.dependency}: {'; '.join(use.unresolved)}; "
+                          "retain the declaration until compiler evidence resolves this negative candidate")
         elif use.tests:
             errors.append(f"{use.crate} names {use.dependency} only in test code; move it to [dev-dependencies]")
         else:
@@ -82,8 +86,19 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
     rust = sorted(root.rglob("*.rs"))
     in_source = [path for path in rust if path.relative_to(root).parts[0] in {"src", "build.rs"}]
     in_tests = [path for path in rust if path.relative_to(root).parts[0] in {"tests", "benches", "examples"}]
-    production = [_production_source(path.read_text(encoding="utf-8")) for path in in_source]
-    whole = [path.read_text(encoding="utf-8") for path in in_source + in_tests]
+    unresolved: list[str] = []
+    production_paths = _crate_boundary_workspace.production_module_files(
+        [manifest_path], project=_production_source, unresolved_includes=unresolved,
+    )
+    production = [_production_source(path.read_text(encoding="utf-8")) for path in sorted(production_paths)]
+    # Preserve the whole-source test scan, and include custom Cargo roots and
+    # their external modules through the same canonical walker. A detached test
+    # mention can require a dev edge, but cannot justify a normal edge.
+    compiled_paths = _crate_boundary_workspace.production_module_files(
+        [manifest_path], project=_crate_boundary_workspace.rust_without_comments, include_test_targets=True,
+    )
+    whole = [path.read_text(encoding="utf-8")
+             for path in sorted({*in_source, *in_tests, *compiled_paths})]
     feature_refs = {
         entry.removeprefix("dep:").split("/")[0].rstrip("?")
         for entries in manifest.get("features", {}).values()
@@ -97,6 +112,7 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
             tests=any(_names(whole, dependency.alias) for dependency in declarations),
             turns_on_features=any(dependency.specification.get("features")
                                   or dependency.alias in feature_refs for dependency in declarations),
+            unresolved=tuple(unresolved),
         )
         for name, declarations in declared.items()
     ]
@@ -107,16 +123,21 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
 def check_all(crates: Path) -> list[str]:
     uses: list[DependencyUse] = []
     enables: dict[str, frozenset[str]] = {}
+    errors: list[str] = []
     manifests = _crate_boundary_workspace.crate_manifests(crates)
     members = frozenset(
         _crate_boundary_workspace.package_name(_crate_boundary_workspace.load_manifest(path)) for path in manifests
     )
     for path in manifests:
-        crate_use, listed = crate_uses(path, members)
+        try:
+            crate_use, listed = crate_uses(path, members)
+        except ValueError as error:
+            errors.append(f"dependency-use: {error}")
+            continue
         uses += crate_use
         if listed:
             enables[_crate_boundary_workspace.package_name(_crate_boundary_workspace.load_manifest(path))] = listed
-    return dependency_use_errors(uses, enables)
+    return errors + dependency_use_errors(uses, enables)
 
 
 def selftest() -> None:
@@ -171,4 +192,78 @@ def selftest() -> None:
             observed, listed = crate_uses(manifest, frozenset({"awaken-t", "awaken-k"}))
             assert not listed
             assert observed == [DependencyUse("fixture", "awaken-t", production, tests, True)], "D7"
+    # NI1 cause/effect table: the module edge, not the child's filename, owns
+    # production reachability. T01 test parent -> test-only; T02 ordinary/path
+    # module -> production; T03 mixed feature/test and T05 platform -> possible
+    # production; T04 Kani -> normal dependency (the existing policy). T08 a
+    # literal include follows the same parent law. T09 generated include is
+    # unknown, never proof of unused. T10 custom Cargo roots are production,
+    # while build.rs/test/example/bench sources cannot justify a normal edge.
+    # D7 above retains the T06 alias/target union; D4 retains T07 enables law.
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "src").mkdir()
+        manifest = root / "Cargo.toml"
+        manifest.write_text('[package]\nname="fixture"\n'
+                            '[dependencies]\nrenamed={package="awaken-t"}\n')
+        child = root / "src/child.rs"
+        child.write_text("use renamed as pc;\n")
+        cases = [
+            ("T01", "#[cfg(test)] mod child;", False),
+            ("T02", "mod child;", True),
+            ("T02 path", '#[path="child.rs"] mod other;', True),
+            ("T03", '#[cfg(any(test, feature="support"))] mod child;', True),
+            ("T04", "#[cfg(kani)] mod child;", True),
+            ("T05", '#[cfg(windows)] mod child;', True),
+            ("T08", 'include!("child.rs");', True),
+            ("T08 test", '#[cfg(test)] mod tests { include!("child.rs"); }', False),
+            ("T10 detached", "", False),
+        ]
+        for label, text, production in cases:
+            (root / "src/lib.rs").write_text(text)
+            observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+            assert observed == [DependencyUse("fixture", "awaken-t", production, True, False)], label
+            errors = dependency_use_errors(observed, {})
+            assert bool(errors) != production, (label, errors)
+        child.unlink()
+        for relative in ["build.rs", "tests/case.rs", "benches/case.rs", "examples/case.rs"]:
+            path = root / relative
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("use renamed::Thing;")
+        (root / "src/lib.rs").write_text("")
+        observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+        assert not observed[0].production and observed[0].tests, "T10 dev/build are not normal"
+        (root / "entry").mkdir()
+        (root / "entry/root.rs").write_text("mod child;")
+        (root / "entry/child.rs").write_text("use renamed::Thing;")
+        with manifest.open("a") as output:
+            output.write('[lib]\npath="entry/root.rs"\n')
+        observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+        assert observed[0].production and observed[0].tests, "T10 explicit lib root"
+        (root / "entry/root.rs").write_text('include!(concat!(env!("OUT_DIR"), "/generated.rs"));')
+        # T09a known positive references/valid enablers are independent of an
+        # unknown include. T09b only a negative candidate needs compiler input;
+        # it is neither accepted as used nor misreported as unused/test-only.
+        observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+        errors = dependency_use_errors(observed, {})
+        assert len(errors) == 1 and "cannot classify" in errors[0] and "root.rs" in errors[0], "T09b"
+        with (root / "entry/root.rs").open("a") as output:
+            output.write("\nuse renamed::Thing;")
+        observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+        assert observed[0].production and observed[0].unresolved, "T09a positive plus unknown"
+        assert dependency_use_errors(observed, {}) == [], "T09a positive is sufficient"
+        assert dependency_use_errors([DependencyUse("fixture", "awaken-t", False, False, True,
+                                                   observed[0].unresolved)],
+                                     {"fixture": frozenset({"awaken-t"})}) == [], "T09a feature enabler"
+        (root / "entry/root.rs").write_text('include!(concat!(env!("OUT_DIR"), "/generated.rs"));')
+        assert _crate_boundary_workspace.production_module_files([manifest]), "T09 default inventory unchanged"
+        errors = dependency_use_errors(crate_uses(manifest, frozenset({"awaken-t"}))[0], {})
+        assert len(errors) == 1 and "cannot classify" in errors[0], "T09b actionable candidate refusal"
+        (root / "entry/root.rs").write_text('#[cfg(test)] mod tests { include!(concat!(env!("OUT_DIR"), "/g.rs")); }')
+        observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+        assert not observed[0].production and not observed[0].unresolved, "T09c test-only generation"
+        assert "only in test code" in dependency_use_errors(observed, {})[0], "T09c test classification"
+        (root / "entry/root.rs").write_text('include!("missing.rs");')
+        observed, _ = crate_uses(manifest, frozenset({"awaken-t"}))
+        assert "cannot classify" in dependency_use_errors(observed, {})[0], "T09b missing literal"
     print("_dependency_use_fitness selftest: the decision table holds")

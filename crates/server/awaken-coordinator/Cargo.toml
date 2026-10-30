@@ -60,7 +60,6 @@ awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-protocol-mcp = { workspace = true }
 awaken-agent-config.workspace = true
-awaken-resource-persistence = { workspace = true, optional = true }
 awaken-session-store = { workspace = true }
 awaken-credential-contract.workspace = true
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
@@ -124,8 +123,6 @@ url.workspace = true
 test-support = [
     "awaken-session-application/test-support",
     "dep:awaken-store-inmem",
-    "dep:awaken-resource-persistence",
-    "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
     "awaken-dispatch-http/test-support",
@@ -149,6 +146,7 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
+awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-application = { workspace = true, features = ["test-support"] }
 # The Broker regressions retain the original real Kube client/ledger fixture.
 awaken-worker-fleet-kubernetes.workspace = true

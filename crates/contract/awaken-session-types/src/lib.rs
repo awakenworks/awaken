@@ -189,6 +189,8 @@ mod tests {
 
     #[test]
     fn wire_form_is_the_bare_string_in_both_directions() {
+        // JSON is dev-only; the production serde type stays identical. Moving
+        // the driver must retain every original stored spelling and rejection.
         // C1 an id is serialized; C2 a historical bare string is decoded.
         // E1 the JSON is exactly the legacy string; E2 decoding admits every
         // stored spelling, including ids outside the minted `sesn_` shape and

@@ -26,9 +26,7 @@ awaken-time.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
-proptest.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true

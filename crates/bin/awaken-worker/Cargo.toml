@@ -106,7 +106,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }

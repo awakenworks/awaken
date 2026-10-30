@@ -1320,7 +1320,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -1459,7 +1458,6 @@ dependencies = [
  "awaken-time",
  "proptest",
  "serde",
- "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -1668,14 +1666,12 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
- "blake3",
  "futures",
  "object_store",
  "proptest",
  "serde_json",
  "sqlx",
  "tempfile",
- "thiserror",
  "tokio",
 ]
 
@@ -1834,10 +1830,8 @@ name = "awaken-lease-contract"
 version = "1.0.0"
 dependencies = [
  "awaken-time",
- "proptest",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2587,7 +2581,6 @@ dependencies = [
  "awaken-sql-storage",
  "awaken-sqlite-pool",
  "awaken-store-conformance",
- "parking_lot",
  "proptest",
  "serde",
  "serde_json",
@@ -2702,7 +2695,6 @@ dependencies = [
  "awaken-time",
  "awaken-tool-contract",
  "futures-util",
- "jsonschema",
  "parking_lot",
  "schemars 1.2.1",
  "serde",
@@ -3011,6 +3003,7 @@ dependencies = [
  "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-erasure",
+ "awaken-dispatch-execution",
  "awaken-dispatch-testkit",
  "awaken-dream-application",
  "awaken-environment-application",
@@ -3055,6 +3048,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-service-lifecycle",
  "awaken-session-application",
+ "awaken-session-application-contract",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
  "awaken-session-executor",
@@ -3203,7 +3197,6 @@ dependencies = [
  "awaken-tool-contract",
  "chrono",
  "chrono-tz",
- "http",
  "proptest",
  "schemars 1.2.1",
  "serde",
@@ -3325,9 +3318,8 @@ dependencies = [
  "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
  "awaken-dispatch-testkit",
- "awaken-environment-application",
  "awaken-environment-contract",
- "awaken-executable-environment-catalog",
+ "awaken-executable-environment-contract",
  "awaken-ext-background-task",
  "awaken-ext-builtin-tools",
  "awaken-ext-compact",
@@ -3355,7 +3347,6 @@ dependencies = [
  "awaken-sandbox-container",
  "awaken-sandbox-control",
  "awaken-sandbox-local",
- "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
@@ -3380,7 +3371,6 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
- "awaken-work-store",
  "awaken-worker-contract",
  "awaken-worker-registry",
  "axum",
@@ -3394,7 +3384,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tower",
  "tracing",
  "url",
  "uuid",
@@ -3407,13 +3396,11 @@ dependencies = [
  "awaken-deployment-config",
  "awaken-dispatch",
  "awaken-dispatch-erasure",
- "awaken-dispatch-execution",
  "awaken-ext-memory",
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-resource-application",
  "awaken-resource-contract",
- "awaken-resource-persistence",
  "awaken-runtime-contract",
  "awaken-session-environment",
  "awaken-session-executor",
@@ -3607,7 +3594,6 @@ dependencies = [
 name = "awaken-session-state-contract"
 version = "1.0.0"
 dependencies = [
- "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-contract",
@@ -3623,7 +3609,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -3659,7 +3644,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -3823,7 +3807,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "serde",
  "serde_json",
 ]
 
@@ -3942,7 +3925,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
- "thiserror",
  "tokio",
  "url",
  "uuid",
