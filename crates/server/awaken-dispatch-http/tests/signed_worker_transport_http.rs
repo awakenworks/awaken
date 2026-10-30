@@ -221,6 +221,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority
                     1,
                     now_ms + 60_000,
                 )
+                .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .expect("nonzero epoch"),
             )
         };
@@ -233,7 +234,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority
 
     async fn release_session_work(
         &self,
-        lease: &awaken_session_types::SessionWorkLease,
+        lease: &awaken_session_application_contract::SessionWorkGrant,
     ) -> Result<bool, awaken_session_types::RunError> {
         self.released_sessions
             .lock()

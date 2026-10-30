@@ -30,6 +30,7 @@ thiserror.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 axum.workspace = true
 awaken-reliability-testkit.workspace = true

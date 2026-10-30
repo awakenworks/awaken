@@ -435,6 +435,14 @@ pub trait WorkQueries: Send + Sync {
 }
 
 /// Environment-credential Worker polling and owner mutations. Session access is bound atomically at claim.
+///
+/// `worker_id` names the lease's credential principal, which need not be a
+/// physical process: the Managed adapter derives it from the Environment key,
+/// while the optional Worker label is a polling observation. Requests on this
+/// compatibility role carry no generation, so identical credentials cannot
+/// identify a restarted process. For Session Work, [`SessionWorkLeaseControl`]
+/// supplies the exact authenticated Work generation. Healthchecks on this role
+/// retain the credential-principal boundary.
 #[async_trait]
 pub trait WorkConsumer: Send + Sync {
     /// Poll as `worker_id` at wall time `now_ms`: first reclaim any `active` item
@@ -542,7 +550,9 @@ pub trait SessionWorkLeaseControl: Send + Sync {
         _now_ms: u64,
         _heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError>;
-    /// Stop only the exact lease epoch recovered from a sessions token.
+    /// Stop only the exact lease epoch recovered from a sessions token. A
+    /// retained original proof may replay completion after lease release;
+    /// this never restores authority or authenticates a revoked bearer.
     async fn stop_with_session_access(
         &self,
         _access: &WorkSessionAccess,
@@ -889,6 +899,7 @@ mod tests {
         // | A4 | Leased | foreign | no |
         let lease = |owner: &str| {
             SessionWorkLease::from_persisted("work", "environment", "session".into(), owner, 7, 11)
+                .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .unwrap()
         };
         for (rule, ownership, expected) in [

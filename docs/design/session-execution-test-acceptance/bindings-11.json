@@ -4,18 +4,18 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 357,
-        "file_sha256": "8f30d77c9c9c187163903f66a6969515660f7b64009965cf3b3399c2916a0d17"
+        "line": 360,
+        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 358
+        "line": 361
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 369
+        "line": 372
       }
     ],
     "execution_witnesses": [
@@ -49,22 +49,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 390,
-        "file_sha256": "8f30d77c9c9c187163903f66a6969515660f7b64009965cf3b3399c2916a0d17"
+        "line": 396,
+        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 403
+        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "line": 1571
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 409
+        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "line": 1593
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 415
+        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "line": 1633
       }
     ],
     "execution_witnesses": [
@@ -198,22 +198,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 131,
-        "file_sha256": "93a8b58a759a8eac304cfb9e5af789eed6ada3c795c1777923d9ae76fad94e3c"
+        "line": 132,
+        "file_sha256": "0df4a5d39dd8dae3ad2a0fbc8660d33df35f44d3e8013bc176ceab0798953b21"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 164
+        "line": 165
       },
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 169
+        "line": 170
       },
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 174
+        "line": 175
       }
     ],
     "execution_witnesses": [
@@ -249,22 +249,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 565,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 617,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 53
+        "line": 557
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 55
+        "line": 558
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 59
+        "line": 587
       }
     ],
     "execution_witnesses": [
@@ -290,7 +290,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B211"
   },
   {
@@ -298,22 +298,26 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 560,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 612,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 53
+        "line": 462
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 55
+        "line": 463
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 59
+        "line": 498
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 523
       }
     ],
     "execution_witnesses": [
@@ -340,7 +344,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B212"
   },
   {
@@ -349,7 +353,7 @@
       {
         "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 375,
-        "file_sha256": "6b70a5172a5eb79ad8d71439e4dfd5950c44013be4ad2e419ca4b9259514a277"
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
       }
     ],
     "assertion_locations": [
@@ -381,7 +385,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B213"
   },
   {
@@ -389,14 +393,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 554,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 606,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 382
+        "line": 289
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 293
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 434
       }
     ],
     "execution_witnesses": [
@@ -424,7 +436,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B214"
   },
   {
@@ -432,18 +444,26 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 570,
-        "file_sha256": "225aa3fbeec1dccf6c5a4086b5686e5208fc737e9bab88144d9e41b895ada4fb"
+        "line": 622,
+        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 82
+        "line": 289
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 87
+        "line": 293
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 462
+      },
+      {
+        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "line": 558
       }
     ],
     "execution_witnesses": [
@@ -471,7 +491,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B215"
   },
   {
@@ -480,7 +500,7 @@
       {
         "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 375,
-        "file_sha256": "6b70a5172a5eb79ad8d71439e4dfd5950c44013be4ad2e419ca4b9259514a277"
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
       }
     ],
     "assertion_locations": [
@@ -513,7 +533,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B216"
   },
   {
@@ -522,7 +542,7 @@
       {
         "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 387,
-        "file_sha256": "6b70a5172a5eb79ad8d71439e4dfd5950c44013be4ad2e419ca4b9259514a277"
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
       }
     ],
     "assertion_locations": [
@@ -559,7 +579,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "Current coordinates refreshed for typed Work epochs. E16 keeps its original source/log identities; this source refresh does not relabel historical execution as a pass of this revision or imply full scenario acceptance.",
     "id": "B217"
   },
   {

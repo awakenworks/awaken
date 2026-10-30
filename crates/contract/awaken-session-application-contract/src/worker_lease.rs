@@ -6,9 +6,9 @@
 
 #[cfg(kani)]
 use crate::worker_lease_types::proof_representative_lease;
-use crate::{SessionWork, SessionWorkAcquisition, SessionWorkOwnership};
+use crate::{SessionWork, SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership};
 use awaken_lease_contract::fence::{Epoch, Tenure, ZeroEpoch};
-use awaken_session_types::{RunError, SessionId, SessionWorkLease};
+use awaken_session_types::{RunError, SessionId};
 
 /// Session admission over the Environment queue's one existing lease authority.
 /// Queue adapters cannot implement this decision in place of the Session owner.
@@ -26,7 +26,7 @@ pub trait SessionWorkerLeaseAuthority: Send + Sync {
     ) -> Result<SessionWorkOwnership, RunError>;
 
     /// Release only the exact Session, Environment, Work owner and lease epoch.
-    async fn release_session_work(&self, lease: &SessionWorkLease) -> Result<bool, RunError>;
+    async fn release_session_work(&self, lease: &SessionWorkGrant) -> Result<bool, RunError>;
 
     /// Return this exact Worker incarnation's non-terminal assignments to the queue.
     async fn release_worker_session_work(&self, worker_owner: &str) -> Result<usize, RunError>;
@@ -240,18 +240,10 @@ pub async fn acquire_session_work_receipt(
     ))
 }
 
-// Reconstruct the one canonical fence value from validated transfer coordinates.
-// This performs no grant, epoch advance, renewal or expiry calculation.
-fn lease_tenure(lease: &SessionWorkLease) -> Tenure<SessionWork> {
-    Tenure::granted(
-        (
-            lease.work_id().into(),
-            lease.environment_id().into(),
-            lease.session_id().clone(),
-        ),
-        lease.owner().into(),
-        Epoch::from_persisted(lease.epoch()).expect("transfer epoch is nonzero"),
-    )
+// Reuse the canonical tenure already owned by the observed grant.
+// This performs no second coordinate reconstruction or lease mutation.
+fn lease_tenure(lease: &SessionWorkGrant) -> Tenure<SessionWork> {
+    lease.tenure().clone()
 }
 
 #[cfg(kani)]
@@ -324,7 +316,7 @@ mod tests {
         let lease =
             |work: &str, environment: &str, session: &str, owner: &str, epoch: u64, expiry: u64| {
                 SessionWorkOwnership::Leased(
-                    SessionWorkLease::from_persisted(
+                    awaken_session_types::SessionWorkLease::from_persisted(
                         work,
                         environment,
                         session.into(),
@@ -332,6 +324,7 @@ mod tests {
                         epoch,
                         expiry,
                     )
+                    .map(SessionWorkGrant::from_transfer)
                     .unwrap(),
                 )
             };
