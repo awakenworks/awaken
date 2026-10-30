@@ -25,20 +25,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
-        "line": 144,
-        "file_sha256": "a43abbca8c432fd4ef685e1b329d80fd8c6dfe0295527517c18dd48e89010c8e"
+        "line": 143,
+        "file_sha256": "aba2692957f256eb42745f3877f2dda7f082c057b424c214b0699596dcb4e6a5"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T10-C03": {
-        "oracles": [],
+        "oracles": [
+          "不具备能力时给出可操作的拒绝"
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: an adapter without recovery evidence returns an untyped internal execution error",
-    "limitation": "Not execution evidence. Follow-up: run-executor-a2a recovery error (S)",
+    "review": "Enabled valid Running/Prepared execute and cancel assertions: Conflict with a stable diagnostic code and original operation/context/message identity; original cause retained; zero resolver, peer request or new commit; physical uncertainty blocks continuation.",
+    "limitation": "Scripted peer and in-process retained state only. This assertion binding is not a historical execution witness, physical restart proof, or full T10 acceptance.",
     "id": "B252"
   },
   {

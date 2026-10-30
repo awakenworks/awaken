@@ -594,7 +594,7 @@
           "B220",
           "B252"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -614,11 +614,16 @@
           ]
         },
         "product_gap": {
-          "reason": "无恢复证据的适配器返回未分类的内部执行错误，没有可操作的拒绝",
-          "follow_up": "run-executor-a2a 恢复错误（S）",
+          "reason": "The Prepared-operation refusal now retains remote uncertainty and exposes Conflict/a2a_operation_recovery_unconfirmed with its original cause and correlation identities.",
+          "follow_up": "Qualify remaining native/provider recovery, crash and common-gate facets separately; the scripted refusal subset does not establish complete T10 recovery.",
           "reproducers": [
             "incapable_recovery_is_a_typed_actionable_rejection"
           ]
+        },
+        "a2a_windows_follow_up": {
+          "implementation": "crates/server/awaken-run-executor-a2a/src/executor.rs",
+          "scope": "Valid Running/Prepared execute and cancel use the existing uncertainty gate before resolver/peer/root effects; existing Accepted-task recovery remains a separate positive path.",
+          "acceptance": "pending; keep all historical source and execution identities unchanged"
         }
       }
     ],
