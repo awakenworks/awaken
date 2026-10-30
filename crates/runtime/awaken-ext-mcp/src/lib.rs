@@ -2,20 +2,27 @@
 //!
 //! Connects to external MCP servers and exposes their tools as awaken runtime
 //! tools ([`RawTool`](awaken_tool_contract::tool::RawTool)), namespaced
-//! `mcp__<server>__<tool>`. The wire protocol is spoken through the `mcp` SDK,
-//! which stays the anti-corruption boundary: only neutral runtime values
-//! (`ToolOutput`, `ToolDescriptor`) cross out of this crate.
+//! `mcp__<server>__<tool>`. This crate owns the client adapters; the shared
+//! JSON-RPC peer, SSE parser and progress vocabulary belong to `awaken-mcp-wire`.
+//! Tools cross into the runtime through its existing `ToolOutput` and
+//! `ToolDescriptor` contracts.
 //!
 //! This is an extension (never the kernel): like `awaken-ext-builtin-tools` it
-//! depends only on `awaken-runtime-contract` and the host wires it in.
+//! consumes the SDK contracts and the host wires its connections and plugins in.
 //!
-//! # Phasing
+//! # Client capabilities and lifetime
 //!
-//! Full parity with the reference MCP crates (goal / awaken-next) is built in
-//! phases: P0 (this) covers tool discovery/invocation and the error three-state;
-//! later phases add the stdio/HTTP transports, the connection manager,
-//! `tools/list_changed` refresh, sampling, progress, resources, prompts, and
-//! credentials.
+//! [`StdioTransport`] and [`HttpTransport`] implement the existing client
+//! protocol, including discovery/invocation, negotiated Tasks, notifications,
+//! sampling, progress, resources and prompts. HTTP also owns credential
+//! challenge/refresh handling. Availability follows each connection's negotiated
+//! capabilities; these exports do not grant unsupported server operations.
+//!
+//! [`McpServer`] owns its tool registry and refresh lifetime; [`McpManager`]
+//! groups servers and reports their health. The manager reports dead-server
+//! liveness and the host decides whether to replace that server; automatic
+//! health-budget replacement is not implemented. This is distinct from the
+//! HTTP transport's existing SSE reconnect handling.
 
 pub mod client;
 pub mod credential;

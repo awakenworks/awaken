@@ -5,8 +5,9 @@
 //! [`RawTool`]s. Ordinary descriptors are model-visible; task-capable ones are
 //! `DetachedOnly` and therefore selectable only through the runtime's detached
 //! wrapper. A host adds the descriptors to its run config and registers the
-//! tools with the runtime — the same shape as the built-in hand tools. Dynamic
-//! re-discovery on `tools/list_changed` is a later phase.
+//! tools with the runtime — the same shape as the built-in hand tools. Hosts
+//! that need dynamic `tools/list_changed` refresh use the existing
+//! [`McpServer`](crate::McpServer) registry and [`McpPlugin`](crate::McpPlugin).
 
 use std::sync::Arc;
 
