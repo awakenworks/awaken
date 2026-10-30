@@ -1,6 +1,6 @@
 //! Profiled creation must retain the same immutable presentation as Managed creation.
 use super::*;
-use awaken_session_state_contract::{SessionUpdateAgentConfiguration, SessionUpdateHistory};
+use awaken_session_contract::{SessionUpdateAgentConfiguration, SessionUpdateHistory};
 
 /// Decorate the existing Profiled root fixture; the source changes its current
 /// child only after returning that child's first real publication.
@@ -144,7 +144,7 @@ async fn profiled_without_a_profile_keeps_capability_selection_and_missing_child
     // missing child gets the original version-one default. An empty captured
     // Some would silently turn BOTH into defaults. No root profile still has
     // the original empty transitive Skill graph, not a newly imposed policy.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -211,7 +211,7 @@ async fn profiled_creation_keeps_pinned_and_current_occurrences_of_the_same_chil
     // [7,8], in order with both occurrences. The existing source decorator
     // advances after its first child read. This checks the composition edge,
     // not only the compiler table; the old captured first-id match emits [7,7].
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -280,12 +280,11 @@ async fn profiled_roster_and_skill_cap_share_the_original_selected_child() {
     for accepted in [false, true] {
         for pin in [None, Some(7)] {
             for (first, later, allowed) in [(499, 500, true), (500, 0, false)] {
-                let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                            .await
-                            .unwrap(),
-                    );
+                let repository: Arc<dyn crate::SessionStore> = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                        .await
+                        .unwrap(),
+                );
                 let source = Arc::new(ObservedProfiledChildren::new(pin, first, later));
                 let mut app = application(repository.clone(), Arc::new(AdmissionEnvironment));
                 app.set_config_source(source.clone());
@@ -319,7 +318,7 @@ async fn profiled_roster_and_skill_cap_share_the_original_selected_child() {
                     assert!(
                         matches!(
                             repository.get(&"captured-profiled".into()).await,
-                            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                            Err(awaken_session_contract::SessionRepositoryError::NotFound)
                         ),
                         "R2 no insert, not an unavailable store"
                     );
@@ -353,12 +352,11 @@ async fn profiled_capture_keeps_missing_child_errors_and_its_existing_geography_
     for pin in [None, Some(7)] {
         for missing in [false, true] {
             for model in [None, Some("published-model")] {
-                let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                            .await
-                            .unwrap(),
-                    );
+                let repository: Arc<dyn crate::SessionStore> = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                        .await
+                        .unwrap(),
+                );
                 let mut observed = ObservedProfiledChildren::new(pin, 0, 0);
                 observed.missing = missing;
                 observed.geo =
@@ -387,7 +385,7 @@ async fn profiled_capture_keeps_missing_child_errors_and_its_existing_geography_
                     );
                     assert!(matches!(
                         repository.get(&"profiled-child-policy".into()).await,
-                        Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
+                        Err(awaken_session_contract::SessionRepositoryError::NotFound)
                     ));
                 } else {
                     assert!(result.is_ok(), "R4 no new geography policy: {result:?}");
@@ -403,7 +401,7 @@ async fn profiled_creation_records_the_selected_default_without_inventing_a_publ
     // Both retain exactly the selected process model and Default provenance,
     // version-one presentation, and no invented publication revision.
     for accepted in [false, true] {
-        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .unwrap(),
@@ -443,12 +441,11 @@ async fn profiled_creation_records_configuration_before_acceptance_and_mcp_updat
     for accepted in [false, true] {
         for revision in [None, Some(7)] {
             for explicit_model in [false, true] {
-                let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                            .await
-                            .unwrap(),
-                    );
+                let repository: Arc<dyn crate::SessionStore> = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                        .await
+                        .unwrap(),
+                );
                 let mut app = application(repository.clone(), Arc::new(AdmissionEnvironment));
                 app.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
                 let model = if revision.is_some() {

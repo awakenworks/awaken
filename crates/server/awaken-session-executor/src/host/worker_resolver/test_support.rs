@@ -308,7 +308,7 @@ pub(crate) async fn available_local_environment_binding(
         .authority()
         .new_environment_effect_intent(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
             None,
         )
         .expect("installed Sessions");
@@ -319,18 +319,14 @@ pub(crate) async fn available_local_environment_binding(
         .await
         .expect("admit original available-Environment Create under its existing Root");
     let (binding, environment) = match &effect.authorization {
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
-            ..
-        } => {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
             panic!("available-Environment fixture requires its actual Managed Root")
         }
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
             ..
         } => (binding.clone(), None),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
-            ..
-        } => {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized { .. } => {
             let provider = host
                 .realization_executor
                 .environments()
@@ -470,16 +466,16 @@ pub(super) struct ToggleBindingSink {
 }
 
 pub(super) fn committed_environment(
-    receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-) -> awaken_session_state_contract::SessionEnvironmentState {
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    receipt: awaken_session_contract::SessionEnvironmentReceipt,
+) -> awaken_session_contract::SessionEnvironmentState {
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &receipt.session_id,
         1,
         u64::MAX,
         "test-environment",
         "test-image",
     );
-    awaken_session_state_contract::SessionEnvironmentState::Resident {
+    awaken_session_contract::SessionEnvironmentState::Resident {
         binding: receipt.binding,
         effect_id: Some(receipt.effect_id),
         generation: Some(generation),
@@ -491,9 +487,9 @@ pub(super) fn committed_environment(
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         let binding = self.binding.lock().unwrap().clone();
@@ -504,22 +500,24 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Toggle
                 ))
             }
             Some(binding) => Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding,
                     intent: Box::new(intent.clone()),
                 },
             ),
-            None => Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent.clone()) }),
+            None => Ok(
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(intent.clone()),
+                },
+            ),
         }
     }
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         *self.binding.lock().unwrap() = Some(receipt.binding.clone());
         if self.fail.load(Ordering::SeqCst) {
@@ -575,9 +573,9 @@ impl BlockingBindingSink {
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         // Cancellation fixture rule: C1 the aggregate authorizes the effect;
@@ -587,7 +585,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
         match &self.delegate {
             Some(delegate) => delegate.authorize(intent).await,
             None => Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
                     intent: Box::new(intent.clone()),
                 },
             ),
@@ -596,11 +594,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         // Fault schedules share one blocking seam. With a delegate, the real
         // fixture root owns authorization and commitment; cancellation before

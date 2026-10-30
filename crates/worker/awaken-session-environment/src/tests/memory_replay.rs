@@ -116,12 +116,12 @@ impl pc::MemoryMount for RestartMemoryMount {
 }
 
 fn install_restart_memory_mounter(
-    provider: SessionEnvironmentProvider,
+    provider: SandboxProviderRoles,
     outcomes: impl IntoIterator<Item = pc::Realization>,
     mount_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_failures: Arc<std::sync::atomic::AtomicUsize>,
-) -> SessionEnvironmentProvider {
+) -> SandboxProviderRoles {
     provider
         .installation()
         .install_memory_mounter(Arc::new(RestartMemoryMounter {
@@ -139,7 +139,7 @@ fn restart_namespace_provider(
     outcomes: impl IntoIterator<Item = pc::Realization>,
     mount_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
-) -> SessionEnvironmentProvider {
+) -> SandboxProviderRoles {
     let provider = SandboxEnvironmentProvider::namespace_with_agent_stderr(
         root,
         false,
@@ -147,7 +147,7 @@ fn restart_namespace_provider(
         "/bin/sh",
         std::time::Duration::ZERO,
     )
-    .into_session_provider();
+    .into_provider_roles();
     install_restart_memory_mounter(
         provider,
         outcomes,
@@ -212,15 +212,15 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
-            .into_session_provider()
+            .into_provider_roles()
         } else if trusted {
             SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
                 fuse_root.path(),
                 false,
             )
-            .into_session_provider()
+            .into_provider_roles()
         } else {
-            SandboxEnvironmentProvider::workdir(fuse_root.path()).into_session_provider()
+            SandboxEnvironmentProvider::workdir(fuse_root.path()).into_provider_roles()
         };
         let fuse_provider = install_restart_memory_mounter(
             base_provider,
@@ -553,7 +553,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
     let hot_mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hot_teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hot_provider = install_restart_memory_mounter(
-        SandboxEnvironmentProvider::workdir(hot_root.path()).into_session_provider(),
+        SandboxEnvironmentProvider::workdir(hot_root.path()).into_provider_roles(),
         [pc::Realization::Fuse],
         hot_mounts.clone(),
         hot_teardowns.clone(),
@@ -627,9 +627,9 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
-            .into_session_provider()
+            .into_provider_roles()
         } else {
-            SandboxEnvironmentProvider::workdir(root.path()).into_session_provider()
+            SandboxEnvironmentProvider::workdir(root.path()).into_provider_roles()
         };
         let provider = install_restart_memory_mounter(
             base_provider,
@@ -847,9 +847,9 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                         "/bin/sh",
                         std::time::Duration::ZERO,
                     )
-                    .into_session_provider()
+                    .into_provider_roles()
                 } else {
-                    SandboxEnvironmentProvider::workdir(root.path()).into_session_provider()
+                    SandboxEnvironmentProvider::workdir(root.path()).into_provider_roles()
                 };
                 let mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1190,8 +1190,9 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     ));
     assert!(
         container
-            .into_session_provider()
-            .create(&spec())
+            .into_provider_roles()
+            .realizer()
+            .create_unattached(&spec())
             .await
             .is_err()
     );

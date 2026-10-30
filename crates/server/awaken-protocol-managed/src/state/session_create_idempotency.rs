@@ -245,7 +245,7 @@ mod tests {
         // Constraints/invariants: the owner-scoped key plus canonical request
         // fingerprint selects exactly one durable Session; cache rehydration may
         // project that truth but cannot create or replace another aggregate.
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let original = Arc::new({
             let session_fixture_runtime = RehydrateFake::default();

@@ -15,6 +15,7 @@
       "awaken_agent_contract::stream::checkpoint": 2,
       "awaken_agent_contract::stream::sink": 1,
       "awaken_agent_contract::thread::commit": 5,
+      "awaken_agent_contract::thread::read::RunRecoverySource": 1,
       "awaken_runtime_contract::activation": 1,
       "awaken_runtime_contract::resume": 1
     },

@@ -12,13 +12,13 @@
 //! exact evidence through `SessionRealizationControl`; it persists no cursor,
 //! retry record, receipt, or topology-specific state.
 
+use awaken_session_contract::{
+    SessionRepositoryPublicationEffect, SessionTerminalCleanupAction,
+    SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect,
+};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionTerminalCleanupControl,
     SessionTerminalCleanupWork, realization_lease_generation_authorizes,
-};
-use awaken_session_state_contract::{
-    SessionRepositoryPublicationEffect, SessionTerminalCleanupAction,
-    SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect,
 };
 use awaken_session_types::RunError;
 
@@ -79,7 +79,7 @@ pub async fn drive_session_terminal_cleanup(
     control: &dyn SessionTerminalCleanupControl,
     realization: &dyn awaken_session_execution_contract::RealizationRuntime,
     effects: &dyn awaken_session_execution_contract::RealizationEffects,
-    runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
+    runtime: &dyn awaken_session_execution_contract::TerminalCleanup,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
     let mut lease = asserted_lease.clone();
     'drive: for _ in 0..8 {
@@ -297,13 +297,13 @@ pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_session_application_contract::StepOutcome;
-    use awaken_session_execution_contract::SessionRuntime;
+    use awaken_session_contract::{
+        SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
+    };
+    use awaken_session_execution_contract::SessionRuns;
     use awaken_session_execution_contract::ToolPermissionDecision;
     use awaken_session_realization_contract::{
         FrozenSessionProjection, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
-    };
-    use awaken_session_state_contract::{
-        SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
     };
     use std::{
         collections::VecDeque,
@@ -323,7 +323,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn publication_command() -> awaken_session_state_contract::SessionRepositoryPublicationCommand {
+    fn publication_command() -> awaken_session_contract::SessionRepositoryPublicationCommand {
         serde_json::from_value(serde_json::json!({
             "session_id": "session",
             "effect_id": "publication-effect",
@@ -502,7 +502,7 @@ pub(crate) mod tests {
         async fn record_terminal_cleanup_preparation(
             &self,
             _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-            preparation: awaken_session_state_contract::SessionCleanupPreparation,
+            preparation: awaken_session_contract::SessionCleanupPreparation,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events
                 .lock()
@@ -558,7 +558,7 @@ pub(crate) mod tests {
             &self,
             _session_id: &awaken_session_types::SessionId,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-            _receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+            _receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push(format!(
                 "record-publication-receipt:{}:{}",
@@ -571,7 +571,7 @@ pub(crate) mod tests {
             &self,
             _session_id: &awaken_session_types::SessionId,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-            _rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+            _rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push(format!(
                 "record-publication-rejection:{}:{}",
@@ -588,7 +588,7 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl SessionRuntime for RecordingRuntime {
+    impl SessionRuns for RecordingRuntime {
         fn model(&self) -> String {
             "test-model".into()
         }
@@ -622,21 +622,21 @@ pub(crate) mod tests {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(Outcomes for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingRuntime);
 
@@ -815,10 +815,10 @@ pub(crate) mod tests {
 
         async fn execute_terminal_repository_publication_for_lease(
             &self,
-            _command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            _command: awaken_session_contract::SessionRepositoryPublicationCommand,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<
-            awaken_session_state_contract::SessionRepositoryPublicationEffect,
+            awaken_session_contract::SessionRepositoryPublicationEffect,
             awaken_session_types::RunError,
         > {
             self.events.lock().unwrap().push(format!(
@@ -840,12 +840,12 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingRuntime {
+    impl awaken_session_execution_contract::TerminalCleanup for RecordingRuntime {
         async fn prepare_terminal_cleanup_for_effect(
             &self,
             effect: SessionTerminalCleanupEffect,
             authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-        ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+        ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
             authorization
                 .verify_for(&effect)
                 .map_err(|error| RunError::internal(error.to_string()))?;
@@ -863,7 +863,7 @@ pub(crate) mod tests {
             let provider_prepared_effect_fence = effect
                 .sandbox_effect_fence()
                 .map_err(|error| RunError::internal(error.to_string()))?;
-            awaken_session_state_contract::SessionCleanupPreparation::try_new(
+            awaken_session_contract::SessionCleanupPreparation::try_new(
                 &effect,
                 provider_prepared_effect_fence,
                 Vec::new(),
@@ -950,7 +950,7 @@ pub(crate) mod tests {
         let root_effect = SessionTerminalCleanupEffect::new(root, lease.clone());
         let disposal_work = work(
             SessionTerminalCleanupAction::Dispose {
-                command: awaken_session_state_contract::SessionCleanupDisposalCommand {
+                command: awaken_session_contract::SessionCleanupDisposalCommand {
                     session_id: "session".into(),
                     effect_id: root_effect.command.effect_id.clone(),
                     preparation_fingerprint: "root-preparation".into(),
@@ -1168,7 +1168,7 @@ pub(crate) mod tests {
         let mut current_lease = assigned_lease.clone();
         current_lease.expires_at_unix_ms = 20_000;
         let command = publication_command();
-        let receipt = awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
+        let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
             &command,
             awaken_provisioning_contract::RepositoryPublicationReceipt {
                 repository_id: "repository".into(),
@@ -1177,7 +1177,7 @@ pub(crate) mod tests {
                 commit: "0123456789abcdef0123456789abcdef01234567".into(),
             },
         );
-        let rejection = awaken_session_state_contract::SessionRepositoryPublicationRejection::new(
+        let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
             &command,
             awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
         )

@@ -1,5 +1,5 @@
 // @formal surface exclude=composition_wiring
-// @formal owner crates/contract/awaken-session-event-contract/src/lifecycle.rs
+// @formal owner crates/contract/awaken-session-contract/src/event/lifecycle.rs
 // @formal owner crates/server/awaken-session-application/src/lifecycle_outbox_relay.rs
 // @formal reason: Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path:
 // @formal reason: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing
@@ -104,8 +104,8 @@ mod tests {
     use awaken_protocol_managed::{ManagedState, StateError, router};
     use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
     use awaken_session_application_contract::LifecycleFactDelivery;
+    use awaken_session_contract::{ManagedLifecycleFact, SessionExecutionState};
     use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
-    use awaken_session_state_contract::{ManagedLifecycleFact, SessionExecutionState};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;

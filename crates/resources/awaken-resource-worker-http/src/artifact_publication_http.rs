@@ -8,8 +8,8 @@ use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
+use awaken_session_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_state_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -1259,7 +1259,7 @@ mod tests {
         // => reject before the Session/File authorities are called.
         let request = ArtifactRecoveryRequest {
             terminal_effect: SessionTerminalCleanupEffect::new(
-                awaken_session_state_contract::SessionCleanupCommand::new(
+                awaken_session_contract::SessionCleanupCommand::new(
                     &awaken_session_types::SessionId::from("session"),
                     "session",
                     "cleanup",

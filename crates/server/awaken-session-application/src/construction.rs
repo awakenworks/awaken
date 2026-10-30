@@ -12,8 +12,8 @@ use awaken_resource_contract::{
     FileCatalog, ResourcePurgeScheduler, ResourceReferenceIndex, ResourceRegistry,
 };
 use awaken_session_application_contract::ExecutableProjectionRefresh;
-use awaken_session_budget_contract::ManagedListPriceProvider;
 use awaken_session_configuration_contract::SessionModelPublicationResolver;
+use awaken_session_contract::ManagedListPriceProvider;
 use awaken_tool_contract::ToolConfigurationCompiler;
 use std::sync::Arc;
 
@@ -256,7 +256,7 @@ impl SessionApplicationBuilder {
 /// Store and Clock, the one CAS kernel and lifecycle signal, the process
 /// incarnation and the Event-batch cutover validation it publishes.
 pub(crate) struct SessionKernel {
-    pub(crate) store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    pub(crate) store: Arc<dyn crate::SessionStore>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) mutations: Arc<crate::SessionMutations>,
     pub(crate) lifecycle: Arc<crate::SessionLifecycle>,

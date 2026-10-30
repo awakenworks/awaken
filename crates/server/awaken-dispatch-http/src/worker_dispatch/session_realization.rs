@@ -482,7 +482,7 @@ pub(super) async fn authorize_session_environment_effect(
             .map_err(RealizationHttpError::from)?;
         if matches!(
             authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
+            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) {
             return Err(RealizationHttpError::from(
                 awaken_session_types::RunError::classified(

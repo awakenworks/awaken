@@ -2,8 +2,8 @@
 use super::ObservedCommitPort;
 use crate::SessionMutationError;
 use crate::{SessionMutations, SessionRootReads};
-use awaken_session_repository_contract::SessionRepositoryReads;
-use awaken_session_state_contract::{
+use awaken_session_contract::SessionRepositoryReads;
+use awaken_session_contract::{
     IdempotencyRecord, PersistedSession, SessionMutation, SessionMutationPayload,
     SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError,
 };
@@ -24,8 +24,8 @@ impl SessionRepositoryReads for OwnerFailure {
     }
     async fn scan(
         &self,
-        _: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        _: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, SessionRepositoryError> {
         panic!("failed ownership must not scan Sessions")
     }
     async fn deleted_event_admissions(
@@ -33,7 +33,7 @@ impl SessionRepositoryReads for OwnerFailure {
         _: &str,
         _: &SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         panic!("failed ownership must not read admissions")
@@ -287,7 +287,7 @@ fn mutation_run_errors_preserve_cause_and_permanence() {
 struct UnreachedInbox;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::LiveInboxRuntime for UnreachedInbox {
+impl awaken_session_execution_contract::LiveInboxAccess for UnreachedInbox {
     async fn live_inbox_snapshot(
         &self,
         _: &str,

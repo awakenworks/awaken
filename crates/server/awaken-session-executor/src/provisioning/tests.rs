@@ -8,7 +8,7 @@ use awaken_sandbox_container::{
 };
 use awaken_sandbox_local::LocalProvider;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_execution_contract::TerminalCleanupRuntime as _;
+use awaken_session_execution_contract::TerminalCleanup as _;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 
 /// The logical path a staged resource realizes under, recovered from a projected
@@ -154,14 +154,14 @@ fn terminal_cleanup_test_lease() -> session_resource::SessionRealizationLease {
 
 fn terminal_cleanup_projection(
     workspace_id: &str,
-    environment: awaken_session_state_contract::SessionEnvironmentState,
+    environment: awaken_session_contract::SessionEnvironmentState,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     frozen_projection_with_model_override(workspace_id, environment, None)
 }
 
 fn frozen_projection_with_model_override(
     workspace_id: &str,
-    environment: awaken_session_state_contract::SessionEnvironmentState,
+    environment: awaken_session_contract::SessionEnvironmentState,
     model_override: Option<awaken_session_configuration_contract::SessionModelOverride>,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let holder = awaken_agent_contract::credential::PlaintextHolder::new(
@@ -266,7 +266,7 @@ fn install_terminal_artifact_environment(
 ) {
     let binding = serde_json::to_string(&environment.lifecycle().handle())
         .expect("terminal artifact Environment binding");
-    let state = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    let state = awaken_session_contract::SessionEnvironmentState::Resident {
         binding,
         effect_id: None,
         generation: None,
@@ -301,8 +301,8 @@ async fn root_terminal_cleanup_effect(
     session_id: &str,
     lease: session_resource::SessionRealizationLease,
 ) -> (
-    awaken_session_state_contract::PersistedSession,
-    awaken_session_state_contract::SessionTerminalCleanupEffect,
+    awaken_session_contract::PersistedSession,
+    awaken_session_contract::SessionTerminalCleanupEffect,
 ) {
     let environment = host
         .run_assembly
@@ -324,7 +324,7 @@ async fn root_terminal_cleanup_effect(
         .expect("terminal test requires a root Workspace projection");
     let projection = terminal_cleanup_projection(
         &workspace_id,
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
+        awaken_session_contract::SessionEnvironmentState::Resident {
             binding,
             effect_id: None,
             generation: None,
@@ -334,12 +334,10 @@ async fn root_terminal_cleanup_effect(
     // Terminal Resident is a successor of the initially unmaterialized root.
     let mut projection = projection;
     projection.revision.0 += 1;
-    let mut session = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+    let mut session = awaken_session_contract::PersistedSession::frozen_with_budget(
         session_id,
         projection.baseline.clone(),
-        awaken_session_state_contract::SessionResourceState::from_active(
-            projection.resources.clone(),
-        ),
+        awaken_session_contract::SessionResourceState::from_active(projection.resources.clone()),
         Default::default(),
         None,
         Default::default(),
@@ -348,7 +346,7 @@ async fn root_terminal_cleanup_effect(
     );
     session.environment = projection.environment.clone();
     session.realization = Some(lease.clone());
-    session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    session.execution = awaken_session_contract::SessionExecutionState::Terminated;
     assert!(session.ensure_terminal_cleanup_fence());
     session
         .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)
@@ -378,13 +376,13 @@ async fn root_terminal_cleanup_effect(
         )
         .await
         .unwrap();
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(command, lease);
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease);
     (session, effect)
 }
 
 fn root_terminal_preparation_authorization(
-    session: &awaken_session_state_contract::PersistedSession,
-    effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    session: &awaken_session_contract::PersistedSession,
+    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     workspace_id: &str,
 ) -> awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization {
     let inherited_provider_disposal = session
@@ -488,7 +486,7 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     }];
     let mut environment = frozen_projection_with_model_override(
         "workspace",
-        awaken_session_state_contract::SessionEnvironmentState::default(),
+        awaken_session_contract::SessionEnvironmentState::default(),
         None,
     )
     .baseline
@@ -573,7 +571,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     .unwrap();
     let mut environment = frozen_projection_with_model_override(
         "workspace",
-        awaken_session_state_contract::SessionEnvironmentState::default(),
+        awaken_session_contract::SessionEnvironmentState::default(),
         None,
     )
     .baseline
@@ -908,7 +906,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(
         tempfile::tempdir().unwrap().path(),
     )
-    .into_session_provider();
+    .into_provider_roles();
     let bare = host.realization_executor.sandbox_spec("bare");
     assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
 
@@ -956,7 +954,7 @@ async fn trusted_host_repository_projection_preserves_the_exact_tier() {
         for repository in [false, true] {
             let mut environment = frozen_projection_with_model_override(
                 "workspace",
-                awaken_session_state_contract::SessionEnvironmentState::default(),
+                awaken_session_contract::SessionEnvironmentState::default(),
                 None,
             )
             .baseline
@@ -1032,7 +1030,7 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
 
     let root = tempfile::tempdir().unwrap();
     let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let spec = host.realization_executor.sandbox_spec("projected-acp");
     assert_eq!(
         spec.isolation,
@@ -1103,7 +1101,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
             "model-override-acp",
             frozen_projection_with_model_override(
                 "test",
-                awaken_session_state_contract::SessionEnvironmentState::default(),
+                awaken_session_contract::SessionEnvironmentState::default(),
                 Some(model_override),
             ),
             None,
@@ -1126,7 +1124,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
 
     let root = tempfile::tempdir().unwrap();
     let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let spec = host.realization_executor.sandbox_spec("model-override-acp");
     assert_eq!(
         spec.isolation,

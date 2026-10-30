@@ -228,7 +228,7 @@ impl ResourceStaging {
     pub fn sandbox_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         let resources = self.thread_resources_snapshot(thread)?;
         self.sandbox_spec_for_resources_and_provider(thread, &resources, provider)
@@ -241,7 +241,7 @@ impl ResourceStaging {
     pub fn sandbox_substrate_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         let (create_time_mounts, has_repositories) = self
             .sessions
@@ -269,7 +269,7 @@ impl ResourceStaging {
             thread,
             create_time_mounts,
             has_repositories,
-            provider.realizer().capabilities().network_isolation,
+            provider.readiness().capabilities().network_isolation,
         )
     }
 
@@ -277,13 +277,13 @@ impl ResourceStaging {
         &self,
         thread: &str,
         resources: &StagedResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         self.sandbox_spec_for_mount_layout_with_network(
             thread,
             resources.mounts.clone(),
             !resources.repositories.is_empty(),
-            provider.realizer().capabilities().network_isolation,
+            provider.readiness().capabilities().network_isolation,
         )
     }
 
@@ -295,7 +295,7 @@ impl ResourceStaging {
         &self,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         let environment = self.sessions.frozen(thread)?.environment_projection.clone();
         let mounts = create_time_resource_mounts(resources, environment.as_ref());
@@ -304,7 +304,7 @@ impl ResourceStaging {
             thread,
             mounts,
             has_repositories,
-            provider.realizer().capabilities().network_isolation,
+            provider.readiness().capabilities().network_isolation,
         )
     }
 

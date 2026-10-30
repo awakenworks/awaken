@@ -1,13 +1,13 @@
 use super::*;
 use crate::tests::authority::unattempted_profiled_release::unattempted_with_placement;
-use awaken_session_state_contract::{ManagedLifecycleFact, SessionEnvironmentState};
+use awaken_session_contract::{ManagedLifecycleFact, SessionEnvironmentState};
 
 fn fact(id: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
-        id: awaken_session_event_contract::session_terminated_fact_id(id),
+        id: awaken_session_contract::session_terminated_fact_id(id),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
-        event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
+        event_type: awaken_session_contract::SESSION_TERMINATED.into(),
         timestamp: 1,
         runtime_interval: None,
     }
@@ -67,7 +67,7 @@ async fn seed_expired_cleanup_affinity(
                 &SessionId::from(id),
                 "2026-10-10T00:00:00Z",
                 fact(id),
-                awaken_session_state_contract::SessionArchiveAdmission::ProfiledRelease,
+                awaken_session_contract::SessionArchiveAdmission::ProfiledRelease,
             )
             .await;
     } else {
@@ -79,7 +79,7 @@ async fn seed_expired_cleanup_affinity(
     let mut root = repository.get(&SessionId::from(id)).await.unwrap();
     assert!(matches!(
         root.disposition,
-        awaken_session_state_contract::SessionDisposition::Archived { .. }
+        awaken_session_contract::SessionDisposition::Archived { .. }
     ));
     // Controlled inputs reproduce the old Worker's first cleanup-only claim
     // after the real archive CAS. Its empty Runtime tree observation freezes
@@ -109,13 +109,13 @@ async fn seed_expired_cleanup_affinity(
         };
     }
     let revision = root.revision;
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(root);
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(root);
     repository
         .commit(
             "workspace",
-            awaken_session_state_contract::SessionMutation {
+            awaken_session_contract::SessionMutation {
                 expected_revision: revision,
-                idempotency: awaken_session_state_contract::IdempotencyRecord {
+                idempotency: awaken_session_contract::IdempotencyRecord {
                     key: format!("test:initial-cleanup-affinity:{id}"),
                     payload_hash: payload.stable_hash(),
                 },

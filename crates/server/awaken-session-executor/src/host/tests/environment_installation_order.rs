@@ -12,8 +12,7 @@ use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffect;
 use awaken_session_environment_contract::{
     EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentRealizationKind,
-    EnvironmentRealizer, EnvironmentTerminalRealization, SessionEnvironment,
-    SessionEnvironmentProvider,
+    EnvironmentRealizer, EnvironmentTerminalRealization, SandboxProviderRoles, SessionEnvironment,
 };
 
 use super::OkModel;
@@ -22,7 +21,7 @@ use super::OkModel;
 /// each installed shared service and each capacity request that reaches it.
 struct RecordingInstallation {
     name: &'static str,
-    inner: SessionEnvironmentProvider,
+    inner: SandboxProviderRoles,
     clock: Arc<dyn awaken_time::WallClock>,
     mounters: Mutex<Vec<Arc<dyn pc::MemoryMounter>>>,
     brokers: Mutex<Vec<Arc<dyn pc::SecretBroker>>>,
@@ -45,8 +44,8 @@ impl RecordingInstallation {
         })
     }
 
-    fn provider(self: &Arc<Self>) -> SessionEnvironmentProvider {
-        SessionEnvironmentProvider::new(self.clone())
+    fn provider(self: &Arc<Self>) -> SandboxProviderRoles {
+        SandboxProviderRoles::new(self.clone())
     }
 
     fn installs(&self) -> (usize, usize) {
@@ -60,15 +59,15 @@ impl RecordingInstallation {
 #[async_trait]
 impl pc::SandboxReadiness for RecordingInstallation {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        self.inner.realizer().capabilities()
+        self.inner.readiness().capabilities()
     }
 
     fn checkpoint_formats(&self) -> Vec<String> {
-        self.inner.realizer().checkpoint_formats()
+        self.inner.readiness().checkpoint_formats()
     }
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.inner.realizer().probe_ready().await
+        self.inner.readiness().probe_ready().await
     }
 }
 
@@ -307,7 +306,7 @@ fn last_is<T: ?Sized>(list: &Mutex<Vec<Arc<T>>>, expected: &Arc<T>) -> bool {
 /// Oracle 0 and 1 over one selected provider: it is the expected adapter, and
 /// it carries the controlled broker, mounter and clock.
 fn installation_oracle(
-    selected: &SessionEnvironmentProvider,
+    selected: &SandboxProviderRoles,
     expected: &Arc<RecordingInstallation>,
     controlled: &Controlled,
 ) -> Result<(), String> {

@@ -11,11 +11,11 @@ use awaken_session_configuration_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
     SessionMcpAuthoringContext, SessionNetworkPolicy,
 };
-use awaken_session_repository_contract::{SessionRepository, SessionRepositoryReads};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     IdempotencyRecord, PersistedSession, SessionExecutionState, SessionMutation,
     SessionMutationPayload,
 };
+use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]

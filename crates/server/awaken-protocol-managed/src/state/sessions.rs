@@ -28,14 +28,12 @@ impl ManagedState {
     /// Map the one neutral public status law onto the Managed wire vocabulary.
     pub(super) fn wire_session_status(persisted: &PersistedSession) -> SessionStatus {
         match persisted.public_status() {
-            awaken_session_state_contract::SessionPublicStatus::Idle => SessionStatus::Idle,
-            awaken_session_state_contract::SessionPublicStatus::Running => SessionStatus::Running,
-            awaken_session_state_contract::SessionPublicStatus::Rescheduling => {
+            awaken_session_contract::SessionPublicStatus::Idle => SessionStatus::Idle,
+            awaken_session_contract::SessionPublicStatus::Running => SessionStatus::Running,
+            awaken_session_contract::SessionPublicStatus::Rescheduling => {
                 SessionStatus::Rescheduling
             }
-            awaken_session_state_contract::SessionPublicStatus::Terminated => {
-                SessionStatus::Terminated
-            }
+            awaken_session_contract::SessionPublicStatus::Terminated => SessionStatus::Terminated,
         }
     }
 
@@ -108,7 +106,7 @@ impl ManagedState {
             .mutations()
             .commit_session_snapshot_with_outcome(
                 owner_scope,
-                awaken_session_state_contract::SessionAggregate::try_from(session)
+                awaken_session_contract::SessionAggregate::try_from(session)
                     .expect("valid test snapshot"),
                 operation,
                 lifecycle_facts,
@@ -212,7 +210,7 @@ impl ManagedState {
         req: SessionCreateParams,
         owner_scope: &str,
         explicit_id: Option<String>,
-        idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
+        idempotency: Option<awaken_session_contract::IdempotencyRecord>,
     ) -> Result<Session, StateError> {
         self.create_session_with_identity_from(
             req,
@@ -235,7 +233,7 @@ impl ManagedState {
         mut req: SessionCreateParams,
         owner_scope: &str,
         explicit_id: Option<String>,
-        idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
+        idempotency: Option<awaken_session_contract::IdempotencyRecord>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
         context_seed: Option<awaken_session_configuration_contract::SessionContextSeed>,
     ) -> Result<Session, StateError> {
@@ -343,7 +341,7 @@ impl ManagedState {
         })?;
         let agent_id = baseline.agent_id.clone();
         let configuration =
-            awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&persisted)
+            awaken_session_contract::SessionUpdateHistory::agent_configuration(&persisted)
                 .ok_or_else(|| {
                     StateError::Run(RunError::internal(
                         "fresh Session has no accepted Agent configuration",
@@ -690,7 +688,7 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
     fn initial_event_plan(
         &self,
         session_id: &str,
-    ) -> Result<Option<awaken_session_event_contract::SessionInitialEventPlan>, RunError> {
+    ) -> Result<Option<awaken_session_contract::SessionInitialEventPlan>, RunError> {
         crate::types::initial_event::compile_session_initial_event_plan(
             session_id,
             self.initial_events,

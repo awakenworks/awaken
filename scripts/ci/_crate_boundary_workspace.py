@@ -562,6 +562,7 @@ def production_module_files(
     project: Callable[[str], str] = production_rust,
     include_test_targets: bool = False,
     unresolved_includes: list[str] | None = None,
+    module_views: list[tuple[Path, Path, tuple[str, ...], Path, str, int]] | None = None,
 ) -> set[Path]:
     """Structural module reachability from Cargo library/binary roots.
 
@@ -578,25 +579,36 @@ def production_module_files(
     Callers may collect reachable non-literal/missing includes as unknown compiler
     inputs. The walker does not turn uncertainty into a usage verdict: a known
     positive reference still proves use; missing references cannot prove non-use.
+    Optional module views come from this SAME traversal, with inline children
+    removed from their parent view and literal includes kept in the same namespace.
+    Consumers can resolve import origins without a second module scanner.
     """
     reachable: set[Path] = set()
-    visited: set[tuple[Path, Path]] = set()
+    visited: set[tuple[Path, Path, tuple[str, ...], Path]] = set()
+    active: set[tuple[Path, Path, Path]] = set()
 
-    def visit(path: Path, module_dir: Path | None = None) -> None:
+    def visit(path: Path, module_dir: Path | None = None, module: tuple[str, ...] = (),
+              root_path: Path | None = None) -> None:
         path = path.resolve()
         if not path.is_file():
             return
         if module_dir is None:
             module_dir = path.parent if path.name in {"lib.rs", "main.rs", "mod.rs"} else path.with_suffix("")
-        key = (path, module_dir)
-        if key in visited:
+        root_path = path if root_path is None else root_path
+        key = (path, module_dir, module, root_path)
+        active_key = (path, module_dir, root_path)
+        if key in visited or active_key in active:
             return
         visited.add(key)
+        active.add(active_key)
         reachable.add(path)
         source = project(path.read_text(encoding="utf-8"))
-        scan(source, path, module_dir, path.parent)
+        scan(source, path, module_dir, path.parent, module, root_path, 0)
+        active.remove(active_key)
 
-    def scan(source: str, path: Path, module_dir: Path, path_dir: Path) -> None:
+    def scan(source: str, path: Path, module_dir: Path, path_dir: Path,
+             module: tuple[str, ...], root_path: Path, line_offset: int) -> None:
+        owned = list(source) if module_views is not None else None
         syntax = rust_syntax(source)
         declaration = re.compile(
             r"(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?"
@@ -615,7 +627,7 @@ def production_module_files(
                     included = path.parent / argument[1:-1]
                     if unresolved_includes is not None and not included.is_file():
                         unresolved_includes.append(f"{path}: unresolved include {argument}")
-                    visit(included, module_dir)
+                    visit(included, module_dir, module, root_path)
                 elif unresolved_includes is not None:
                     unresolved_includes.append(f"{path}: unresolved include {argument}")
                 cursor = end
@@ -627,13 +639,19 @@ def production_module_files(
                 end = _balanced_end(syntax, cursor - 1, "{", "}")
                 if end is not None:
                     child_dir = path_dir / explicit.group(1) if explicit else module_dir / name
-                    scan(source[cursor:end - 1], path, child_dir, child_dir)
+                    scan(source[cursor:end - 1], path, child_dir, child_dir, (*module, name),
+                         root_path, line_offset + source[:cursor].count("\n"))
+                    if owned is not None:
+                        owned[cursor:end - 1] = _blank_preserving_lines(source[cursor:end - 1])
                     cursor = end
             elif explicit:
-                visit(path_dir / explicit.group(1))
+                visit(path_dir / explicit.group(1), module=(*module, name), root_path=root_path)
             else:
                 for child in (module_dir / (name + ".rs"), module_dir / name / "mod.rs"):
-                    visit(child)
+                    visit(child, module=(*module, name), root_path=root_path)
+
+        if module_views is not None:
+            module_views.append((manifest_path.resolve(), root_path, module, path, "".join(owned), line_offset))
 
     for manifest_path in manifests:
         manifest = load_manifest(manifest_path)

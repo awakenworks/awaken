@@ -149,7 +149,7 @@ impl
 
 impl
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_state_contract::SessionTerminalMemoryIntent,
+        awaken_session_contract::SessionTerminalMemoryIntent,
     > for RecordingTerminalMemoryReferenceEncoder
 {
     fn encode(
@@ -158,7 +158,7 @@ impl
         memory_store_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
         access: awaken_resource_contract::ResourceAccess,
-        _fence: &awaken_session_state_contract::SessionTerminalMemoryIntent,
+        _fence: &awaken_session_contract::SessionTerminalMemoryIntent,
     ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
         if workspace_id != "terminal-workspace"
             || memory_store_id != "terminal-memory-store"
@@ -906,7 +906,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         .install_session_environment_owner_projection(
             thread,
             "terminal-workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Resident {
+            &awaken_session_contract::SessionEnvironmentState::Resident {
                 binding: source_binding.clone(),
                 effect_id: None,
                 generation: None,
@@ -924,14 +924,14 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
                 );
         })
         .expect("installed Sessions");
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
         u64::MAX,
         "environment-a",
         "image-a",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "terminal-workspace",
         &awaken_session_types::SessionId::from(thread),
         "dispose-source",
@@ -940,7 +940,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         Some(lease.clone()),
         None,
     );
-    let preparation: awaken_session_state_contract::SourceReleasePreparationEffect =
+    let preparation: awaken_session_contract::SourceReleasePreparationEffect =
         serde_json::from_value(serde_json::json!({
             "operation": operation,
             "lease": lease,
@@ -1152,7 +1152,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         std::iter::empty(),
         None,
     );
-    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         asserted_session
             .terminal_cleanup
             .command_for(
@@ -1163,7 +1163,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         expired_lease.clone(),
     );
     let disposal = terminal_disposal_effect(
-        awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             effect.sandbox_effect_fence().unwrap(),
             Vec::new(),
@@ -1442,14 +1442,14 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         terminal_fixture_container_handle(thread, &host.realization_executor.sandbox_spec(thread))
             .with_memory_materializations(vec![terminal_memory_evidence()])
             .expect("install exact writable Memory evidence");
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
         u64::MAX,
         "terminal-refresh-environment",
         "terminal-refresh-image",
     );
-    let checkpoint_operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let checkpoint_operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "terminal-workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -1460,13 +1460,13 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     );
     // A changed aggregate Environment is a new root-CAS snapshot.
     projection.revision.0 += 1;
-    projection.environment = awaken_session_state_contract::SessionEnvironmentState::Suspending {
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Suspending {
         operation: checkpoint_operation,
         source_effect_id: Box::new("terminal-source-effect".into()),
         source_binding: serde_json::to_string(&handle)
             .expect("encode the exact terminal source binding"),
         generation,
-        suspend_phase: awaken_session_state_contract::SuspendPhase::Uploading,
+        suspend_phase: awaken_session_contract::SuspendPhase::Uploading,
         checkpoint: None,
         source_release_preparation: None,
     };
@@ -1571,7 +1571,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
 
 fn terminal_recovery_receipt(
     thread: &str,
-    effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     file_id: &str,
 ) -> awaken_resource_contract::ArtifactPublicationReceipt {
     let content = b"already durable";
@@ -1643,7 +1643,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         &managed,
         thread,
         lease.clone(),
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
+        awaken_session_contract::SessionEnvironmentState::Resident {
             binding,
             effect_id: None,
             generation: None,
@@ -2040,7 +2040,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
         // A changed aggregate Environment is a new root-CAS snapshot.
         projection.revision.0 += 1;
-        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding,
             effect_id: None,
             generation: None,
@@ -2081,7 +2081,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             retained = Some(environment);
             if unmaterialized {
                 projection.environment =
-                    awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+                    awaken_session_contract::SessionEnvironmentState::Unmaterialized;
             }
         }
         host.run_assembly
@@ -2400,7 +2400,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         let binding = serde_json::to_string(&handle).expect("HM1 encode terminal binding");
         // A changed aggregate Environment is a new root-CAS snapshot.
         projection.revision.0 += 1;
-        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
             effect_id: None,
             generation: None,
@@ -2438,7 +2438,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .unwrap();
             if unmaterialized {
                 projection.environment =
-                    awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+                    awaken_session_contract::SessionEnvironmentState::Unmaterialized;
             }
         }
         host.run_assembly

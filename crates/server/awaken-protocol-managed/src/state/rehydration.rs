@@ -29,7 +29,7 @@ impl ManagedState {
         &self,
         session_id: &str,
         workspace_id: &str,
-        idempotency: &awaken_session_state_contract::IdempotencyRecord,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, StateError> {
         self.roles
             .creation
@@ -212,10 +212,10 @@ mod tests {
         // root without rehydration. No metadata key participates in any rule.
         // Decision rules R1=!C1+!C2=>E1, R2=C1+(!C2|!C3|!C4)=>E2,
         // R3=C1+C2+C3+C4+live=>E3, R4=same+failed=>E3.
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let id = "profiled-receipt-live";
-        let receipt = awaken_session_state_contract::IdempotencyRecord {
+        let receipt = awaken_session_contract::IdempotencyRecord {
             key: format!("profiled:create:{id}"),
             payload_hash: "request-a".into(),
         };
@@ -246,7 +246,7 @@ mod tests {
                 .replay_accepted_session_with_receipt(
                     "profiled-receipt-absent",
                     "workspace-a",
-                    &awaken_session_state_contract::IdempotencyRecord {
+                    &awaken_session_contract::IdempotencyRecord {
                         key: "profiled:create:profiled-receipt-absent".into(),
                         payload_hash: "request-a".into(),
                     },
@@ -260,7 +260,7 @@ mod tests {
             (
                 "R2-no-receipt",
                 "workspace-a",
-                awaken_session_state_contract::IdempotencyRecord {
+                awaken_session_contract::IdempotencyRecord {
                     key: format!("profiled:create:{id}:other"),
                     payload_hash: "request-a".into(),
                 },
@@ -268,7 +268,7 @@ mod tests {
             (
                 "R2-hash",
                 "workspace-a",
-                awaken_session_state_contract::IdempotencyRecord {
+                awaken_session_contract::IdempotencyRecord {
                     payload_hash: "request-b".into(),
                     ..receipt.clone()
                 },
@@ -301,7 +301,7 @@ mod tests {
         );
 
         let failed_id = "profiled-receipt-failed";
-        let failed_receipt = awaken_session_state_contract::IdempotencyRecord {
+        let failed_receipt = awaken_session_contract::IdempotencyRecord {
             key: format!("profiled:create:{failed_id}"),
             payload_hash: "request-failed".into(),
         };
@@ -352,7 +352,7 @@ mod tests {
         // Constraints/invariants: frozen Runtime placement, not cache warmth or
         // lease liveness, owns physical custody; rehydration may rebuild only the
         // read/projection state and cannot adopt or stage Worker-owned effects.
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let mut cases = Vec::new();
         for (owner_name, placement) in [(
@@ -527,10 +527,10 @@ mod tests {
         // | H2 | FrozenControl | finalized | E1 |
         // | H3 | either | Deleted (hidden) | E2 |
         // | H4 | either | absent | E2 |
-        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_application::SessionStore> =
             Arc::new(ephemeral_session_repo().await);
         let mut hidden = sample_persisted("hydrate-hidden");
-        hidden.disposition = awaken_session_state_contract::SessionDisposition::Deleted;
+        hidden.disposition = awaken_session_contract::SessionDisposition::Deleted;
         for session in [
             sample_persisted("hydrate-interactive"),
             sample_persisted("hydrate-frozen"),
@@ -540,7 +540,7 @@ mod tests {
             repo.create(
                 "workspace-a",
                 session,
-                awaken_session_state_contract::IdempotencyRecord {
+                awaken_session_contract::IdempotencyRecord {
                     key: format!("hydrate:{}", id.as_str()),
                     payload_hash: "fixture".into(),
                 },

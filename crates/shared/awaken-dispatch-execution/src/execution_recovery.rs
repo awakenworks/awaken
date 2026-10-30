@@ -6,12 +6,12 @@ use awaken_dispatch_contract::dispatch::PhysicalAttempt;
 use awaken_dispatch_contract::{
     AttemptClosureRecord, AttemptPhysicalFact, DispatchCursor, DispatchOperation,
 };
+use awaken_session_contract::PersistedSession;
 use awaken_session_execution_contract::{
     SessionExecutionClosureReference, SessionExecutionOperationInventory,
     SessionExecutionRecoveryGap as Gap, SessionExecutionRecoveryObservation as Observation,
     SessionExecutionToolOperation,
 };
-use awaken_session_state_contract::PersistedSession;
 use std::collections::{BTreeMap, BTreeSet};
 
 const PAGE_SIZE: usize = 256;
@@ -131,15 +131,15 @@ fn original_preparation(
     session: &PersistedSession,
 ) -> Option<awaken_session_execution_contract::SessionRecoveryPreparationReference> {
     match session.terminal_cleanup_work_action() {
-        Ok(Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose {
-            command,
-        })) => Some(
-            awaken_session_execution_contract::SessionRecoveryPreparationReference {
-                session_id: command.session_id.to_string(),
-                effect_id: command.effect_id,
-                preparation_fingerprint: command.preparation_fingerprint,
-            },
-        ),
+        Ok(Some(awaken_session_contract::SessionTerminalCleanupAction::Dispose { command })) => {
+            Some(
+                awaken_session_execution_contract::SessionRecoveryPreparationReference {
+                    session_id: command.session_id.to_string(),
+                    effect_id: command.effect_id,
+                    preparation_fingerprint: command.preparation_fingerprint,
+                },
+            )
+        }
         _ => None,
     }
 }
@@ -299,7 +299,7 @@ pub async fn read_execution_recovery<S, R>(
 ) -> Observation
 where
     S: awaken_dispatch_contract::DispatchAttemptRecordReads + ?Sized,
-    R: awaken_session_execution_contract::ThreadReadRuntime + ?Sized,
+    R: awaken_session_execution_contract::ThreadReads + ?Sized,
 {
     let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
         Ok(scope) => scope,
@@ -625,7 +625,7 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::ThreadReadRuntime for RecoveryHistory {
+    impl awaken_session_execution_contract::ThreadReads for RecoveryHistory {
         async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
             Ok(false)
         }
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn recovery_preparation_requires_the_original_complete_aggregate_receipts() {
         use awaken_session_configuration_contract::resource::SessionRealizationLease;
-        use awaken_session_state_contract::{
+        use awaken_session_contract::{
             SessionCleanupPreparation, SessionCleanupRepositoryPreparation,
             SessionTerminalCleanupEffect,
         };
@@ -817,7 +817,7 @@ mod tests {
         // while cleanup remains pending. A changed/invalid receipt must not
         // be replaced by a boolean success label.
         let mut session = recovery_session("preparation-root");
-        session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+        session.execution = awaken_session_contract::SessionExecutionState::Terminated;
         session.ensure_terminal_cleanup_fence();
         assert!(original_preparation(&session).is_none(), "R1 fenced only");
         session.freeze_terminal_cleanup_targets([], 0, 7).unwrap();
@@ -853,9 +853,7 @@ mod tests {
             .record_terminal_cleanup_preparation("workspace", &lease, prepared, Some(repository))
             .unwrap();
         let expected = match session.terminal_cleanup_work_action().unwrap().unwrap() {
-            awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => {
-                command
-            }
+            awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => command,
             _ => panic!("R2 exact complete preparation must authorize only disposal"),
         };
         let observed = original_preparation(&session).unwrap();
@@ -1188,8 +1186,7 @@ mod tests {
             let child_run = RunId(format!("{}-child-run", id.as_str()));
             let mut session = recovery_session(id.as_str());
             if rule != 2 {
-                session.execution =
-                    awaken_session_state_contract::SessionExecutionState::Terminated;
+                session.execution = awaken_session_contract::SessionExecutionState::Terminated;
                 session.ensure_terminal_cleanup_fence();
                 if rule != 3 {
                     session

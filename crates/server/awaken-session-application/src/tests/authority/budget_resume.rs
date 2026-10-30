@@ -22,7 +22,7 @@ use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
 use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_session_application_contract::SessionBudgetResumeTicket;
-use awaken_session_budget_contract::SessionBudgetState;
+use awaken_session_contract::SessionBudgetState;
 use awaken_session_execution_contract::{
     AdmitSessionRun, SessionAgentCoordination as _, SessionRunActivityAdmission,
     SessionRunActivityAdmissionMode,
@@ -63,7 +63,7 @@ fn reached_session(id: &str) -> PersistedSession {
         max_list_cost_minor: 1,
         consumed_numerator: consumed_numerator(),
         usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "t13-prices-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,

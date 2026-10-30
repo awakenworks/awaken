@@ -3,7 +3,7 @@ use super::*;
 
 #[tokio::test]
 async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mismatch() {
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("test repository"),

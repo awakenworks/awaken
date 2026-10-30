@@ -2,9 +2,9 @@
 
 SESSION_RUNTIME = "crates/contract/awaken-session-execution-contract/src/session.rs"
 SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-execution-contract/src/session/roles.rs"
-SESSION_CLEANUP = "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs"
+SESSION_CLEANUP = "crates/contract/awaken-session-contract/src/state/terminal_cleanup.rs"
 SESSION_REPOSITORY_PUBLICATION = (
-    "crates/contract/awaken-session-state-contract/src/"
+    "crates/contract/awaken-session-contract/src/state/"
     "terminal_cleanup/repository_publication.rs"
 )
 SESSION_CLEANUP_DRIVER = (
@@ -14,25 +14,25 @@ SESSION_CLEANUP_RECOVERY = (
     "crates/server/awaken-session-realization-driver/src/terminal_cleanup_recovery.rs"
 )
 SESSION_CLEANUP_EFFECTS = (
-    "crates/contract/awaken-session-state-contract/src/terminal_cleanup/effects.rs"
+    "crates/contract/awaken-session-contract/src/state/terminal_cleanup/effects.rs"
 )
 SESSION_CLEANUP_PROGRESS = (
-    "crates/contract/awaken-session-state-contract/src/terminal_cleanup/progress.rs"
+    "crates/contract/awaken-session-contract/src/state/terminal_cleanup/progress.rs"
 )
 SESSION_REPOSITORY_RECOVERY = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/recovery.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/recovery.rs"
 )
 SESSION_REPOSITORY_PORT = (
-    "crates/contract/awaken-session-repository-contract/src/repository_port.rs"
+    "crates/contract/awaken-session-contract/src/repository/repository_port.rs"
 )
 SESSION_REPOSITORY_MUTATION = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/mutation.rs"
 )
 SESSION_REPOSITORY_PUBLICATION_AGGREGATE = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/repository_publication.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/repository_publication.rs"
 )
 SESSION_DELETE_DISPOSITION = (
-    "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs"
+    "crates/contract/awaken-session-contract/src/state/session_repo/disposition.rs"
 )
 SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
 SESSION_REALIZATION = "crates/contract/awaken-session-realization-contract/src/session_realization.rs"

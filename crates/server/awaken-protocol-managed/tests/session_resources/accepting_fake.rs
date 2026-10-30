@@ -2,9 +2,9 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SessionInit;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
+    SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use awaken_session_types::{RunError, SessionId};
 use std::sync::Arc;
@@ -28,7 +28,7 @@ pub(super) struct AcceptingFake {
     pub(super) fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub(super) published: std::sync::Arc<
-        std::sync::Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationCommand>>,
+        std::sync::Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
     >,
     pub(super) reserved_runs: std::sync::Arc<
         std::sync::Mutex<
@@ -49,7 +49,7 @@ pub(super) struct AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for AcceptingFake {
+impl SessionRuns for AcceptingFake {
     async fn run(
         &self,
         _a: &str,
@@ -81,11 +81,11 @@ impl SessionRuntime for AcceptingFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for AcceptingFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
@@ -170,7 +170,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
+impl awaken_session_execution_contract::ChildRunCoordination for AcceptingFake {
     // Fixture rule P1: Resource tests script ordinary reservation and activation failures.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -178,7 +178,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -428,7 +428,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for AcceptingFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -575,13 +575,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
-    {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
@@ -635,9 +634,8 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, awaken_session_types::RunError>
-    {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -651,13 +649,11 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_state_contract::SourceReleasePreparedReceipt,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -670,8 +666,8 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
@@ -683,8 +679,8 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
     /// Restore a distinct environment from the exact durable checkpoint.
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, awaken_session_types::RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -697,7 +693,7 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
@@ -732,28 +728,28 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         // Cause/effect fixture rule: C1 application has already verified the
         // exact aggregate lease before entering this Runtime port; C2 the
         // command names one Repository. E1 this accepting fake records one
         // receipt on the same lease-fenced edge as production. The trait has no
         // command-only fallback that could hide a missing ownership proof.
         self.record_terminal_repository_publication(command)
-            .map(awaken_session_state_contract::SessionRepositoryPublicationEffect::Published)
+            .map(awaken_session_contract::SessionRepositoryPublicationEffect::Published)
     }
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
+impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -870,12 +866,12 @@ impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake {
+impl awaken_session_execution_contract::TerminalCleanup for AcceptingFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
             &authorization,
@@ -889,7 +885,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -903,7 +899,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -936,7 +932,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
+impl awaken_session_execution_contract::Outcomes for AcceptingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -1021,8 +1017,8 @@ impl awaken_session_execution_contract::CapabilityRuntime for AcceptingFake {
 impl AcceptingFake {
     fn record_terminal_repository_publication(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-    ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationReceipt, RunError> {
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
         let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
             repository_id,
             config,
@@ -1041,7 +1037,7 @@ impl AcceptingFake {
         };
         self.published.lock().unwrap().push(command.clone());
         Ok(
-            awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
+            awaken_session_contract::SessionRepositoryPublicationReceipt::new(
                 &command,
                 effect_receipt,
             ),

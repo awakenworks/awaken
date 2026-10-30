@@ -10,17 +10,17 @@
 //! This module alone owns the subsequent insert, finalization, realization,
 //! activation, lifecycle-fact commit, and WorkQueue projection ordering.
 
-use awaken_session_budget_contract::SessionBudgetState;
 use awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet;
 use awaken_session_configuration_contract::{
     CompiledSessionCreation, SessionCreationIntent, SessionToolConfiguration,
 };
-use awaken_session_realization_contract::SessionRealizationControlDisposition;
-use awaken_session_realization_contract::SessionRealizationDriveError;
-use awaken_session_state_contract::{
+use awaken_session_contract::SessionBudgetState;
+use awaken_session_contract::{
     IdempotencyRecord, PersistedSession, SessionAggregate, SessionExecutionState,
     SessionMutationPayload,
 };
+use awaken_session_realization_contract::SessionRealizationControlDisposition;
+use awaken_session_realization_contract::SessionRealizationDriveError;
 use awaken_session_types::RunError;
 
 use std::sync::Arc;
@@ -60,7 +60,7 @@ impl CompleteSessionRoot {
         budget: SessionBudgetState,
         compiled: CompiledSessionCreation,
         (initial_events, initial_agent_configuration): (
-            Option<awaken_session_event_contract::SessionInitialEventPlan>,
+            Option<awaken_session_contract::SessionInitialEventPlan>,
             Option<Box<awaken_session_configuration_contract::SessionAgentConfiguration>>,
         ),
     ) -> Result<Self, SessionCreationError> {
@@ -70,7 +70,7 @@ impl CompleteSessionRoot {
             .credential_realization
             .mcp_holder
             .clone();
-        let mut resources = awaken_session_state_contract::SessionResourceState::default();
+        let mut resources = awaken_session_contract::SessionResourceState::default();
         resources
             .prepare(
                 &awaken_session_types::SessionId::from(session_id.as_str()),
@@ -113,9 +113,9 @@ impl CompleteSessionRoot {
             || !session
                 .run_activities()
                 .is_some_and(|(records, unrecorded)| records.is_empty() && !unrecorded)
-            || !session.environment_materialization().is_some_and(
-                awaken_session_state_contract::SessionEnvironmentMaterialization::is_empty,
-            )
+            || !session
+                .environment_materialization()
+                .is_some_and(awaken_session_contract::SessionEnvironmentMaterialization::is_empty)
             || !root_has_consumed_creation_intent(&session)
             || session.execution != SessionExecutionState::Preparing
             || !session.needs_initial_realization_recovery()
@@ -149,9 +149,9 @@ pub(crate) struct DurableSessionRoot(PersistedSession);
 impl DurableSessionRoot {
     pub(super) fn from_applied(session: PersistedSession) -> Result<Self, SessionCreationError> {
         if session.revision != awaken_session_types::SessionRevision(1)
-            || !session.environment_materialization().is_some_and(
-                awaken_session_state_contract::SessionEnvironmentMaterialization::is_empty,
-            )
+            || !session
+                .environment_materialization()
+                .is_some_and(awaken_session_contract::SessionEnvironmentMaterialization::is_empty)
             || session.created_at_unix_ms.is_none()
             || session.updated_at_unix_ms.is_none()
             || session.execution != SessionExecutionState::Preparing
@@ -369,21 +369,21 @@ mod create_effect_gate_verification {
         );
 
         let conflict = match kani::any::<u8>() % 3 {
-            0 => awaken_session_state_contract::SessionRepositoryConflict::AlreadyExists,
-            1 => awaken_session_state_contract::SessionRepositoryConflict::Tombstoned,
-            _ => awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch,
+            0 => awaken_session_contract::SessionRepositoryConflict::AlreadyExists,
+            1 => awaken_session_contract::SessionRepositoryConflict::Tombstoned,
+            _ => awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch,
         };
         let error = SessionCreationError::repository(
-            awaken_session_state_contract::SessionRepositoryError::Conflict(conflict.clone()),
+            awaken_session_contract::SessionRepositoryError::Conflict(conflict.clone()),
         );
         assert!(match conflict {
-            awaken_session_state_contract::SessionRepositoryConflict::AlreadyExists => {
+            awaken_session_contract::SessionRepositoryConflict::AlreadyExists => {
                 matches!(error, SessionCreationError::Conflict)
             }
-            awaken_session_state_contract::SessionRepositoryConflict::Tombstoned => {
+            awaken_session_contract::SessionRepositoryConflict::Tombstoned => {
                 matches!(error, SessionCreationError::Tombstoned)
             }
-            awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch => {
+            awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch => {
                 matches!(error, SessionCreationError::IdempotencyMismatch)
             }
         });
@@ -455,7 +455,7 @@ pub struct CreateSessionCommand {
     pub idempotency: Option<IdempotencyRecord>,
     /// Optional complete create-time Event plan. It is compiled by the protocol
     /// boundary before this command and installed in the original Session root.
-    pub initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
+    pub initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
     /// Pre-insert presentation seed; it grants no execution/configuration authority.
     /// CompleteSessionRoot supplies canonical compiled tools/MCP before recording
     /// the immutable first value. This transient seed is never itself history.
@@ -480,10 +480,10 @@ pub enum SessionCreationError {
 }
 
 impl SessionCreationError {
-    pub(crate) fn repository(error: awaken_session_state_contract::SessionRepositoryError) -> Self {
+    pub(crate) fn repository(error: awaken_session_contract::SessionRepositoryError) -> Self {
         match error {
-            awaken_session_state_contract::SessionRepositoryError::Conflict(
-                awaken_session_state_contract::SessionRepositoryConflict::Tombstoned,
+            awaken_session_contract::SessionRepositoryError::Conflict(
+                awaken_session_contract::SessionRepositoryConflict::Tombstoned,
             ) => Self::Tombstoned,
             error => Self::mutation(error.into()),
         }
@@ -570,10 +570,10 @@ pub struct SessionCreationCommands {
     >,
     model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
-    managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
+    managed_list_prices: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     execution_placement: crate::SessionExecutionPlacement,
     default_model: String,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
 
@@ -597,7 +597,7 @@ pub(crate) struct SessionCreationCollaborators {
     pub(crate) model_publication_resolver:
         Option<Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>>,
     pub(crate) managed_list_prices:
-        Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
+        Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub(crate) execution_placement: crate::SessionExecutionPlacement,
     pub(crate) runtime: crate::SessionExecutor,
 }
@@ -961,7 +961,7 @@ impl crate::SessionCreation for SessionCreationCommands {
         &self,
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
-        idempotency: &awaken_session_state_contract::IdempotencyRecord,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.mutations
             .replay_session_create(owner_scope, session_id, idempotency)
@@ -972,7 +972,7 @@ impl crate::SessionCreation for SessionCreationCommands {
         &self,
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
-        idempotency: &awaken_session_state_contract::IdempotencyRecord,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.mutations
             .replay_accepted_session_create(owner_scope, session_id, idempotency)

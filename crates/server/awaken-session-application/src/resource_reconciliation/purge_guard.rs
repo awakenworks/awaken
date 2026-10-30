@@ -16,8 +16,8 @@ use awaken_resource_contract::{
     ResourceReferenceKind, ResourceTarget,
 };
 use awaken_session_configuration_contract::resource::ResolvedInputSource;
-use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::SessionResourceReferences;
+use awaken_session_contract::SessionRepository;
+use awaken_session_contract::SessionResourceReferences;
 
 pub(crate) async fn resource_targets(
     files: &dyn FileCatalog,

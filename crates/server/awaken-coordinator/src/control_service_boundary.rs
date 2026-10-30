@@ -15,7 +15,7 @@ use awaken_agent_config::{AuditedConfigWrite, ManagementAuditEntry, ManagementAu
 use awaken_config_service::{ManagementAuditPlane, ManagementAuditRepository};
 use awaken_credential_contract::CredentialSourceId;
 
-use awaken_session_state_contract::ManagedLifecycleFact;
+use awaken_session_contract::ManagedLifecycleFact;
 use awaken_tenancy::ScopeId;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};

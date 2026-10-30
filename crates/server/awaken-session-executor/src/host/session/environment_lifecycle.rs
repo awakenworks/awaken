@@ -48,7 +48,7 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         workspace_id: &str,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
+        state: &awaken_session_contract::SessionEnvironmentState,
     ) -> Result<(), SessionExecutionError> {
         self.installed_sessions
             .install(thread)
@@ -81,9 +81,9 @@ impl crate::RunAssembly {
         let realizations = self.realization_executor.sessions().clone();
         let binding = serde_json::to_string(&environment.lifecycle().handle())
             .expect("test Environment handle serializes");
-        let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
+        let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
             binding.clone(),
             None,
         );

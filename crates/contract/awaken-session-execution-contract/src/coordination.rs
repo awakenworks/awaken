@@ -171,7 +171,7 @@ pub enum CoordinatedRunIntent {
     FollowUp,
 }
 
-pub use awaken_session_event_contract::SessionAgentRunBoundary;
+pub use awaken_session_contract::SessionAgentRunBoundary;
 
 /// Classify only committed states that form an Agent-message activity boundary.
 #[must_use]
@@ -239,11 +239,11 @@ pub fn coordinated_thread_is_interruptible(
 /// Child Threads named by the Interrupt inputs of one Event batch, each once.
 #[must_use]
 pub fn interrupt_child_targets(
-    inputs: &[awaken_session_event_contract::SessionEventInput],
+    inputs: &[awaken_session_contract::SessionEventInput],
 ) -> Vec<&ThreadId> {
     let mut children = Vec::new();
     for input in inputs {
-        let awaken_session_event_contract::SessionEventInput::Interrupt(interrupt) = input else {
+        let awaken_session_contract::SessionEventInput::Interrupt(interrupt) = input else {
             continue;
         };
         for target in interrupt.requested_target.iter().chain(&interrupt.targets) {
@@ -307,12 +307,12 @@ pub fn validate_interrupt_children(
 /// reads nothing.
 pub async fn admit_event_batch_topology(
     coordination: &dyn crate::SessionCoordinationReads,
-    threads: &dyn crate::ThreadReadRuntime,
+    threads: &dyn crate::ThreadReads,
     session_id: &SessionId,
-    inputs: &[awaken_session_event_contract::SessionEventInput],
+    inputs: &[awaken_session_contract::SessionEventInput],
 ) -> Result<(), crate::RunError> {
     for input in inputs {
-        if let awaken_session_event_contract::SessionEventInput::ToolReply(reply) = input {
+        if let awaken_session_contract::SessionEventInput::ToolReply(reply) = input {
             let thread = reply.target.thread_id(session_id);
             let snapshot = threads
                 .session_thread_run_recovery_snapshot(session_id, &thread.0, &reply.expected_run_id)
@@ -343,7 +343,7 @@ pub async fn admit_event_batch_topology(
 /// keeps an internal caller from retaining forged coordinates. The Thread
 /// version stays with the delivery fence.
 pub fn validate_tool_reply_coordinates(
-    reply: &awaken_session_event_contract::SessionEventToolReply,
+    reply: &awaken_session_contract::SessionEventToolReply,
     snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
 ) -> Result<(), crate::RunError> {
     let refused = || {
@@ -785,7 +785,7 @@ fn session_agent_boundary_requires_a_visible_committed_target() {
     );
 }
 
-pub use awaken_session_event_contract::{
+pub use awaken_session_contract::{
     SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyActivity,
     SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
 };

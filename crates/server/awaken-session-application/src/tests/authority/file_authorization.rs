@@ -3,8 +3,8 @@ use crate::tests::{
     FaultingSessionRepository, NoopRuntime, application_with_persistence, create, file_resources,
     persisted,
 };
+use awaken_session_contract::{LifecycleOutbox as _, SessionRepositoryReads as _};
 use awaken_session_realization_contract::SessionFileReadAuthorization as _;
-use awaken_session_repository_contract::{LifecycleOutbox as _, SessionRepositoryReads as _};
 use awaken_session_types::SessionId;
 use std::sync::Arc;
 
@@ -96,7 +96,7 @@ async fn file_read_observation_refuses_root_failures_without_app_or_mutation() {
     let mut unowned = matched.clone();
     unowned.realization = None;
     let mut terminal = matched.clone();
-    terminal.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    terminal.execution = awaken_session_contract::SessionExecutionState::Terminated;
     let mut preparing = matched.clone();
     preparing.baseline = awaken_session_configuration_contract::SessionBaselineState::Preparing(
         crate::tests::creation::creation_command(id.as_str()).intent,

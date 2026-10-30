@@ -447,9 +447,7 @@ async fn required_tool_compiler_postgres_preserves_the_frozen_configuration() {
     compiler_precedes_effects(repository).await;
 }
 
-async fn compiler_precedes_effects(
-    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
-) {
+async fn compiler_precedes_effects(repository: Arc<dyn crate::SessionStore>) {
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
     };

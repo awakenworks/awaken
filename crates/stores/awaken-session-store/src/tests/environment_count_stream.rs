@@ -69,9 +69,9 @@ async fn global_environment_count_stream_rejects_late_errors_without_reading_a_s
         assert_eq!(
             error.recovery_action(),
             if fault == "transport" {
-                awaken_session_state_contract::SessionRepositoryRecoveryAction::Retry
+                awaken_session_contract::SessionRepositoryRecoveryAction::Retry
             } else {
-                awaken_session_state_contract::SessionRepositoryRecoveryAction::Quarantine
+                awaken_session_contract::SessionRepositoryRecoveryAction::Quarantine
             },
             "{rule}/E3"
         );

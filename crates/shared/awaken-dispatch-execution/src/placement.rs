@@ -361,7 +361,7 @@ pub struct PreparationPlacement;
 impl awaken_session_realization_contract::SessionPreparationPlacement for PreparationPlacement {
     fn requirements(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<
         PlacementRequirements,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -372,7 +372,7 @@ impl awaken_session_realization_contract::SessionPreparationPlacement for Prepar
 
 /// Run-free preparation requirements from the existing frozen aggregate.
 pub fn session_preparation_requirements(
-    session: &awaken_session_state_contract::PersistedSession,
+    session: &awaken_session_contract::PersistedSession,
 ) -> Result<
     PlacementRequirements,
     awaken_session_realization_contract::SessionRealizationControlFailure,

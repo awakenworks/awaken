@@ -16,7 +16,7 @@ use crate::execution_authority::ExecutionAuthority;
 use crate::realization_error::RealizationError;
 use crate::session_environment::{
     AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode, PreparedBoundEnvironment,
-    SessionEnvironmentProvider,
+    SandboxProviderRoles,
 };
 use crate::staged_resources::{
     RepositoryActivation, RepositoryPublicationActivationError, ResourceBindingCheck,
@@ -24,7 +24,7 @@ use crate::staged_resources::{
 };
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_state_contract::SessionEnvironmentEffectIntent;
+use awaken_session_contract::SessionEnvironmentEffectIntent;
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ pub trait EnvironmentPeer: Send + Sync {
         &self,
         peers: Peers<'_>,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError>;
     async fn session_environment(
@@ -89,13 +89,13 @@ pub trait EnvironmentPeer: Send + Sync {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<&SessionEnvironmentProvider, RealizationError>;
+    ) -> Result<&SandboxProviderRoles, RealizationError>;
     async fn evict_session_for_rebuild(&self, thread: &str) -> Result<(), RealizationError>;
     fn session_environment_provider_for_thread(
         &self,
         thread: &str,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError>;
+    ) -> Result<&crate::session_environment::SandboxProviderRoles, RealizationError>;
 }
 
 /// What Environment holding and terminal effects read of Resource staging.
@@ -108,18 +108,18 @@ pub trait StagingPeer: Send + Sync {
     fn sandbox_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError>;
     fn sandbox_spec_for_resolved_resources_and_provider(
         &self,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError>;
     fn sandbox_substrate_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError>;
     fn thread_resource_manifest(
         &self,
@@ -138,7 +138,7 @@ pub trait StagingPeer: Send + Sync {
     async fn stage_terminal_repository_publication_input(
         &self,
         workspace: &str,
-        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError>;
     #[allow(clippy::too_many_arguments)]
@@ -151,7 +151,7 @@ pub trait StagingPeer: Send + Sync {
         realizer: &dyn pc::RepositoryRealizer,
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError>;

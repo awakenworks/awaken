@@ -5,12 +5,12 @@
 //! that read as unsupported; a fixture that only records activations instead
 //! answers what its Runtime holds: no committed Run, so the cursor is 0.
 
-/// Implement `ThreadReadRuntime` for a fixture Runtime that has committed no
+/// Implement `ThreadReads` for a fixture Runtime that has committed no
 /// Thread: every read answers "nothing committed", archival is unsupported.
 macro_rules! no_committed_threads {
     ($ty:ty) => {
         #[async_trait::async_trait]
-        impl awaken_session_execution_contract::ThreadReadRuntime for $ty {
+        impl awaken_session_execution_contract::ThreadReads for $ty {
             async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
                 Ok(false)
             }

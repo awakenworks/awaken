@@ -85,7 +85,7 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     // reloads the root and uses the existing reference/effect authority.
     let mut stable = persisted("resource-interest", true, "idle");
     stable.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(file_resources("stable"));
+        awaken_session_contract::SessionResourceState::from_active(file_resources("stable"));
     assert!(!stable.needs_resource_reconciliation(), "R1 precondition");
     assert!(stable.resources.has_references(), "R1 precondition");
     assert!(
@@ -117,9 +117,8 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
         "R3"
     );
     let mut terminal = persisted("resource-terminal", true, "activation_failed");
-    terminal.resources = awaken_session_state_contract::SessionResourceState::from_active(
-        file_resources("terminal"),
-    );
+    terminal.resources =
+        awaken_session_contract::SessionResourceState::from_active(file_resources("terminal"));
     let terminal_interests = SessionRecoveryInterests::from_session(&terminal, true, 0);
     assert!(terminal_interests.resources, "R4 cleanup remains scheduled");
     assert!(
@@ -666,13 +665,13 @@ fn continuation_hint_is_the_aggregates_advance_projection() {
         "H2b"
     );
     let mut running = due.clone();
-    running.execution = awaken_session_state_contract::SessionExecutionState::Running;
+    running.execution = awaken_session_contract::SessionExecutionState::Running;
     assert!(
         !SessionRecoveryInterests::from_session(&running, false, 2_000).environment_continuation,
         "H2c"
     );
     let mut terminal = due;
-    terminal.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    terminal.execution = awaken_session_contract::SessionExecutionState::Terminated;
     assert!(
         !SessionRecoveryInterests::from_session(&terminal, false, 2_000).environment_continuation,
         "H2d"
@@ -693,7 +692,7 @@ fn continuation_diagnostic_signals_each_current_refusal_once() {
     // D1=C1+!C2 => one signal; D2=C1+C2 => none; D3=C3 => one new signal;
     // D4=C4 => forget it; D5=C5 => signal again. The map is disposable and
     // replaced by the full EOF view, bounded by its currently rejected roots.
-    use awaken_session_state_contract::SessionEnvironmentRejection as X;
+    use awaken_session_contract::SessionEnvironmentRejection as X;
     let candidate = |reason| SessionRecoveryCandidates {
         sessions: vec![SessionRecoveryCandidate {
             workspace_id: "test".into(),
@@ -733,7 +732,7 @@ async fn failed_diagnostic_scan_keeps_the_last_complete_view_until_retry_eof() {
     // rejection is forgotten; D8 its later return => one signal. The actual
     // production scan entry performs no effect and never publishes a failed
     // prefix, so retry cannot consume a signal it did not emit.
-    use awaken_session_state_contract::SessionEnvironmentRejection as X;
+    use awaken_session_contract::SessionEnvironmentRejection as X;
     let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -815,7 +814,7 @@ fn continuation_diagnostic_interest_keeps_only_the_aggregates_unrepairable_refus
     // diagnostic map sees them. D9 due valid root => work, no refusal;
     // D10 inconsistent suspend evidence => no effect + InconsistentEvidence;
     // D11 terminal refusal is retry-classified => no intervention signal.
-    use awaken_session_state_contract::{SessionEnvironmentRejection as X, SuspendPhase};
+    use awaken_session_contract::{SessionEnvironmentRejection as X, SuspendPhase};
     let mut session = super::continuation::generated_session("diagnostic-interest");
     let due = SessionRecoveryInterests::from_session(&session, false, 2_000);
     assert!(due.environment_continuation, "D9");
@@ -830,10 +829,8 @@ fn continuation_diagnostic_interest_keeps_only_the_aggregates_unrepairable_refus
             2_000,
         )
         .unwrap();
-    if let awaken_session_state_contract::SessionEnvironmentState::Suspending {
-        suspend_phase,
-        ..
-    } = &mut session.environment
+    if let awaken_session_contract::SessionEnvironmentState::Suspending { suspend_phase, .. } =
+        &mut session.environment
     {
         *suspend_phase = SuspendPhase::ReadyToDispose;
     }
@@ -844,7 +841,7 @@ fn continuation_diagnostic_interest_keeps_only_the_aggregates_unrepairable_refus
         Some(X::InconsistentEvidence),
         "D10"
     );
-    session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    session.execution = awaken_session_contract::SessionExecutionState::Terminated;
     let terminal = SessionRecoveryInterests::from_session(&session, false, 2_000);
     assert!(!terminal.environment_continuation, "D11");
     assert_eq!(terminal.continuation_rejection, None, "D11");

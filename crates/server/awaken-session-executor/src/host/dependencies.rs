@@ -391,9 +391,9 @@ impl SessionExecutorBuilder {
         dir: impl Into<PathBuf>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         relocate: impl Fn(
-            &awaken_session_environment_contract::SessionEnvironmentProvider,
+            &awaken_session_environment_contract::SandboxProviderRoles,
             PathBuf,
-        ) -> awaken_session_environment_contract::SessionEnvironmentProvider,
+        ) -> awaken_session_environment_contract::SandboxProviderRoles,
     ) -> Self {
         let dir = dir.into();
         self.resources.extraction_repository = extraction_repository;

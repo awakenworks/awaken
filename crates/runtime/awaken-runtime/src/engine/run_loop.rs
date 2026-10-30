@@ -1045,8 +1045,8 @@ pub(super) async fn drive(
     // No early end means the loop exhausted its step ceiling.
     let disposition =
         disposition.unwrap_or_else(|| RunDisposition::ended(run_id.clone(), EndCause::MaxSteps));
-    if matches!(disposition.state(), RunState::Ended(_)) {
-        if let Some(batch) = ActiveToolBatch::load(&store)
+    if matches!(disposition.state(), RunState::Ended(_))
+        && let Some(batch) = ActiveToolBatch::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
             .filter(|batch| {
                 batch.run_id() == run_id
@@ -1055,13 +1055,12 @@ pub(super) async fn drive(
                         .iter()
                         .any(|call| matches!(&call.phase, ToolCallPhase::Returned(_)))
             })
-        {
-            // Direct SDK callers may have a commit port without a reader. Carry
-            // the known batch into the existing terminal sealing frame too.
-            ledger
-                .staged_state
-                .push(ActiveToolBatch::write(&Some(batch)));
-        }
+    {
+        // Direct SDK callers may have a commit port without a reader. Carry
+        // the known batch into the existing terminal sealing frame too.
+        ledger
+            .staged_state
+            .push(ActiveToolBatch::write(&Some(batch)));
     }
     Ok(ledger.into_step_result(disposition))
 }

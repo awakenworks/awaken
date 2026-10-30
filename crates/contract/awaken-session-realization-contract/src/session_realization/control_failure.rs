@@ -111,11 +111,11 @@ impl From<SessionRealizationControlFailure> for awaken_session_types::RunError {
 /// The one Control projection of an Environment decision's refusal: a terminal
 /// Session is terminal, a lost lease is stale ownership, movement the Session
 /// may still make is not ready, and every causal refusal is invalid.
-impl From<awaken_session_state_contract::SessionEnvironmentRejection>
+impl From<awaken_session_contract::SessionEnvironmentRejection>
     for SessionRealizationControlFailure
 {
-    fn from(rejection: awaken_session_state_contract::SessionEnvironmentRejection) -> Self {
-        use awaken_session_state_contract::SessionEnvironmentRejection as Rejection;
+    fn from(rejection: awaken_session_contract::SessionEnvironmentRejection) -> Self {
+        use awaken_session_contract::SessionEnvironmentRejection as Rejection;
         match rejection {
             Rejection::Terminal => Self::Terminal,
             Rejection::LeaseNotCurrent => Self::StaleOwnership,
@@ -293,7 +293,7 @@ mod tests {
         // still make (another step, open activities, a live checkpoint, a
         // pending materialization or Memory evidence) => NotReady; R4 a causal
         // refusal => Invalid carrying the rejection.
-        use awaken_session_state_contract::SessionEnvironmentRejection as X;
+        use awaken_session_contract::SessionEnvironmentRejection as X;
         for (rule, rejection, expected) in [
             (
                 "R1",

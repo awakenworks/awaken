@@ -51,7 +51,7 @@ command-fds = "0.3.3"
 
 [dev-dependencies]
 # Only the cfg(test) checkpoint fixture consumes these Session values.
-awaken-session-state-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-resource-application.workspace = true
 awaken-time.workspace = true

@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// historical rows and non-Managed direct Threads remain explicit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LegacyDirectEnvironmentProvenance {
-    Direct(awaken_session_state_contract::SessionEnvironmentReceipt),
+    Direct(awaken_session_contract::SessionEnvironmentReceipt),
     DurableBinding {
         binding: String,
         effect: LegacyEnvironmentEffect,
@@ -29,15 +29,15 @@ pub enum LegacyEnvironmentEffect {
 pub enum BoundSessionEnvironmentIdentity {
     Durable {
         effect_id: String,
-        generation: awaken_session_state_contract::SandboxGeneration,
+        generation: awaken_session_contract::SandboxGeneration,
     },
     LegacyDirect(LegacyDirectEnvironmentProvenance),
 }
 
 impl BoundSessionEnvironmentIdentity {
     pub fn from_committed_receipt(
-        receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
-        committed: awaken_session_state_contract::SessionEnvironmentState,
+        receipt: &awaken_session_contract::SessionEnvironmentReceipt,
+        committed: awaken_session_contract::SessionEnvironmentState,
     ) -> Result<Self, RealizationError> {
         let generation = committed
             .committed_receipt_generation(receipt)
@@ -56,7 +56,7 @@ pub struct UnboundSessionEnvironment {
     /// Exact immutable ordinary effect captured before provider I/O. A terminal
     /// wrapper or historical owner may have no ordinary intent; neither can
     /// reconstruct one from its ownership phase or a later realization lease.
-    pub intent: Option<Box<awaken_session_state_contract::SessionEnvironmentEffectIntent>>,
+    pub intent: Option<Box<awaken_session_contract::SessionEnvironmentEffectIntent>>,
     pub binding: String,
     pub environment: Arc<crate::session_environment::SessionEnvironment>,
 }
@@ -72,8 +72,7 @@ impl UnboundSessionEnvironment {
 
     pub fn ordinary_intent(
         &self,
-    ) -> Result<&awaken_session_state_contract::SessionEnvironmentEffectIntent, RealizationError>
-    {
+    ) -> Result<&awaken_session_contract::SessionEnvironmentEffectIntent, RealizationError> {
         self.intent.as_deref().ok_or_else(|| {
             RealizationError::pending(
                 PendingState::CandidateIntentUnknown,
@@ -158,7 +157,7 @@ pub enum SessionEnvironmentPreparation {
 #[derive(Clone)]
 pub enum SessionEnvironmentRestoration {
     Awaiting {
-        request: awaken_session_state_contract::SandboxRestoreRequest,
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
     },
 }
 
@@ -171,8 +170,8 @@ pub enum SessionEnvironmentRetirementCause {
         effect_id: String,
     },
     CheckpointSource {
-        operation: awaken_session_state_contract::SessionEnvironmentOperation,
-        generation: awaken_session_state_contract::SandboxGeneration,
+        operation: awaken_session_contract::SessionEnvironmentOperation,
+        generation: awaken_session_contract::SandboxGeneration,
     },
 }
 
@@ -402,7 +401,7 @@ pub struct TerminalEnvironmentInstallation<'a> {
     pub thread: &'a str,
     pub binding: Option<&'a str>,
     pub committed_candidate: Option<&'a UnboundSessionEnvironment>,
-    pub provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    pub provider: &'a crate::session_environment::SandboxProviderRoles,
     pub spec: &'a awaken_provisioning_contract::SandboxSpec,
     pub handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
     pub expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,

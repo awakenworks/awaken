@@ -8,7 +8,7 @@ use awaken_managed_session_events::{AggregateStop, FactProvenance, ManagedEventT
 // same as-of-Awaiting synthetic law proves their Run-qualified source. No
 // placeholder source, new snapshot constructor or second occurrence fold.
 async fn plan_aggregate_from_fixture(
-    persisted: &awaken_session_state_contract::PersistedSession,
+    persisted: &awaken_session_contract::PersistedSession,
     lifecycle: &[RunLifecycleEvent],
     pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
     links: &[CoordinatedThreadLink],
@@ -36,7 +36,7 @@ async fn plan_aggregate_from_fixture(
         .collect::<std::collections::HashSet<_>>()
     {
         let snapshot =
-            awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+            awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(
                 &runtime, &session, thread,
             )
             .await
@@ -150,8 +150,9 @@ async fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
     assert!(plan.interval_closes.is_empty(), "R1 no interval pair");
 
     let mut with_interval = persisted;
-    with_interval.closed_runtime_intervals.push(
-        awaken_session_state_contract::SessionRuntimeInterval {
+    with_interval
+        .closed_runtime_intervals
+        .push(awaken_session_contract::SessionRuntimeInterval {
             interval_id: "interval-7".into(),
             activity_epoch: 1,
             started_at_unix_ms: 0,
@@ -159,19 +160,16 @@ async fn aggregate_fallback_and_interval_close_require_one_prefix_plan() {
             opened_revision: awaken_session_types::SessionRevision(1),
             closed_revision: awaken_session_types::SessionRevision(2),
             admitted_after_commit_cursor: Some(2),
-            observations: vec![
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: 1,
-                    thread_id: ThreadId(session_id.into()),
-                    run_id: run.clone(),
-                    lifecycle_cursor: accepted[1].cursor,
-                    source_commit_cursor: 7,
-                },
-            ],
+            observations: vec![awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: 1,
+                thread_id: ThreadId(session_id.into()),
+                run_id: run.clone(),
+                lifecycle_cursor: accepted[1].cursor,
+                source_commit_cursor: 7,
+            }],
             usage: Default::default(),
             max_list_cost_minor: None,
-        },
-    );
+        });
     let interval_plan = plan_aggregate_from_fixture(&with_interval, &accepted, &pending, &[])
         .await
         .unwrap();
@@ -352,7 +350,7 @@ async fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
         awaiting.clone(),
     ];
     let observation = |close, thread_id: &str, run_id: &RunId| {
-        awaken_session_state_contract::SessionRuntimeIntervalObservation {
+        awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: close,
             thread_id: ThreadId(thread_id.into()),
             run_id: run_id.clone(),
@@ -361,7 +359,7 @@ async fn hitl_interval_close_cannot_insert_running_before_an_issued_tool_use() {
         }
     };
     let interval = |id: &str, close, thread_id: &str, run_id: &RunId| {
-        awaken_session_state_contract::SessionRuntimeInterval {
+        awaken_session_contract::SessionRuntimeInterval {
             interval_id: id.into(),
             activity_epoch: close,
             started_at_unix_ms: 0,
@@ -426,7 +424,7 @@ async fn late_hitl_activity_cannot_rewrite_issued_usage_or_old_cursors() {
     // same full history and every old-cursor suffix. Decision rows R2=H5+H6
     // =>E4+E5; R3=R2+H7=>E6. The committed ticket audit, not a live cache,
     // classifies the old ToolUse while Session CAS owns activity settlement.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repository: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     assert_late_hitl_frontier(repository.clone(), repository, false).await;
 }
@@ -442,7 +440,7 @@ async fn legacy_hitl_interval_then_new_activity_preserves_the_public_frontier() 
     // returns every old ID/payload and after-cursor suffix unchanged. Decision
     // rows L1=>E1, L1+L2=>E1+E2, L1+L2+L3=>E1+E2+E3. This is the reachable
     // mixed-version case: old lineage exists before its first public read.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repository: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     assert_late_hitl_frontier(repository.clone(), repository, true).await;
 }
@@ -460,12 +458,12 @@ async fn postgres_two_connection_late_hitl_frontier_preserves_old_cursors() {
     let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
-    let first: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let first: Arc<dyn awaken_session_application::SessionStore> = Arc::new(
         awaken_session_store::PostgresManagedSessionRepository::connect(&url)
             .await
             .expect("configured first PostgreSQL Session repository"),
     );
-    let second: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let second: Arc<dyn awaken_session_application::SessionStore> = Arc::new(
         awaken_session_store::PostgresManagedSessionRepository::connect(&url)
             .await
             .expect("configured second PostgreSQL Session repository"),
@@ -474,8 +472,8 @@ async fn postgres_two_connection_late_hitl_frontier_preserves_old_cursors() {
 }
 
 async fn assert_late_hitl_frontier(
-    first: Arc<dyn awaken_session_repository_contract::SessionStore>,
-    second: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    first: Arc<dyn awaken_session_application::SessionStore>,
+    second: Arc<dyn awaken_session_application::SessionStore>,
     legacy_closed_interval: bool,
 ) {
     let runtime = LifecycleRuntime::default();
@@ -570,8 +568,9 @@ async fn assert_late_hitl_frontier(
             .session(&SessionId::from(id))
             .await
             .unwrap();
-        persisted.closed_runtime_intervals.push(
-            awaken_session_state_contract::SessionRuntimeInterval {
+        persisted
+            .closed_runtime_intervals
+            .push(awaken_session_contract::SessionRuntimeInterval {
                 interval_id: format!("legacy-hitl-{id}"),
                 activity_epoch: 1,
                 started_at_unix_ms: 0,
@@ -579,19 +578,16 @@ async fn assert_late_hitl_frontier(
                 opened_revision: awaken_session_types::SessionRevision(1),
                 closed_revision: awaken_session_types::SessionRevision(2),
                 admitted_after_commit_cursor: None,
-                observations: vec![
-                    awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                        activity_epoch: 1,
-                        thread_id: ThreadId(id.into()),
-                        run_id: run.clone(),
-                        lifecycle_cursor: awaiting.cursor,
-                        source_commit_cursor: 7,
-                    },
-                ],
+                observations: vec![awaken_session_contract::SessionRuntimeIntervalObservation {
+                    activity_epoch: 1,
+                    thread_id: ThreadId(id.into()),
+                    run_id: run.clone(),
+                    lifecycle_cursor: awaiting.cursor,
+                    source_commit_cursor: 7,
+                }],
                 usage: Default::default(),
                 max_list_cost_minor: None,
-            },
-        );
+            });
         warm.commit_session_snapshot(
             awaken_tenancy::DEFAULT_WORKSPACE_ID,
             persisted,
@@ -636,15 +632,13 @@ async fn assert_late_hitl_frontier(
         .settle_activity_observed(
             &SessionId::from(id),
             admitted.activity_epoch,
-            Some(
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: admitted.activity_epoch,
-                    thread_id: ThreadId(id.into()),
-                    run_id: run,
-                    lifecycle_cursor: awaiting.cursor,
-                    source_commit_cursor: 7,
-                },
-            ),
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: admitted.activity_epoch,
+                thread_id: ThreadId(id.into()),
+                run_id: run,
+                lifecycle_cursor: awaiting.cursor,
+                source_commit_cursor: 7,
+            }),
         )
         .await
         .unwrap();

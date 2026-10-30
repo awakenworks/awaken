@@ -7,13 +7,11 @@ use std::collections::{HashMap, HashSet};
 
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_session_application_contract::Pending;
-use awaken_session_event_contract::{
-    SessionAgentRunBoundary, SessionEventBatch, SessionEventCommand,
-};
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     PersistedSession, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
     SessionRuntimeIntervalStart,
 };
+use awaken_session_contract::{SessionAgentRunBoundary, SessionEventBatch, SessionEventCommand};
 
 /// The latest committed observation of an interval: where it closed.
 #[must_use]
@@ -250,7 +248,7 @@ fn lifecycle_opening_order(
 /// `None` for an interval no retained batch owns (a Run admitted without a
 /// user Event).
 #[must_use]
-pub fn interval_admission_fence(
+pub(crate) fn interval_admission_fence(
     opened_revision: awaken_session_types::SessionRevision,
     batches: &[SessionEventBatch],
 ) -> Option<u64> {
@@ -324,7 +322,7 @@ fn interval_owner_openings(
 #[must_use]
 pub fn budget_reach_close_cursor(
     persisted: &PersistedSession,
-    transition: &awaken_session_budget_contract::BudgetReachTransition,
+    transition: &awaken_session_contract::BudgetReachTransition,
 ) -> Option<u64> {
     persisted
         .closed_runtime_intervals
@@ -342,7 +340,7 @@ pub fn budget_reach_close_cursor(
 #[must_use]
 pub fn budget_reach_projection_close_cursor(
     persisted: &PersistedSession,
-    transition: &awaken_session_budget_contract::BudgetReachTransition,
+    transition: &awaken_session_contract::BudgetReachTransition,
     lifecycle_events: &[RunLifecycleEvent],
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
 ) -> Option<u64> {
@@ -411,7 +409,7 @@ mod tests {
         // exercises the production collection selector, not a scalar reimplementation.
         use awaken_agent_contract::agent::run::{Id as RunId, RunState};
         use awaken_agent_contract::agent::thread::Id as ThreadId;
-        use awaken_session_event_contract::{SessionEventInput, SessionEventProjectionAnchor};
+        use awaken_session_contract::{SessionEventInput, SessionEventProjectionAnchor};
         use awaken_session_types::SessionRevision;
         let mut batch = SessionEventBatch::compile(
             &awaken_session_types::SessionId::from("session"),

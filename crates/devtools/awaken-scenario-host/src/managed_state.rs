@@ -80,7 +80,7 @@ pub async fn local_managed_state_with_agent_source_and_list_prices(
     dependencies: SessionExecutorBuilder,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
-    list_prices: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
+    list_prices: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
 ) -> LocalManagedState {
     local_managed_state_over(
         dependencies,
@@ -153,9 +153,7 @@ async fn local_managed_state_over(
     model_publication_resolver: Option<
         Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     >,
-    managed_list_price_provider: Option<
-        Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
-    >,
+    managed_list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
 ) -> LocalManagedState {
     // The Session application runs on the Host's clock, so Session facts and
     // the dispatch they drive share one timeline.
@@ -186,15 +184,15 @@ async fn local_managed_state_over(
         }
         None => None,
     };
-    let session_repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        match durable_session_repo {
-            Some(repo) => repo,
-            None => Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                    .await
-                    .expect("open ephemeral managed Session repository"),
-            ),
-        };
+    let session_repo: Arc<dyn awaken_session_application::SessionStore> = match durable_session_repo
+    {
+        Some(repo) => repo,
+        None => Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .expect("open ephemeral managed Session repository"),
+        ),
+    };
 
     let persistence =
         awaken_session_application::SessionPersistence::new(session_repo, clock.clone());

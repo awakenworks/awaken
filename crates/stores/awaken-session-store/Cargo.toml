@@ -16,11 +16,8 @@ isolates = ["sqlx"]
 [dependencies]
 awaken-session-configuration-contract.workspace = true
 # The repository port and persisted state implemented by both SQL backends.
-awaken-session-repository-contract.workspace = true
-awaken-session-state-contract.workspace = true
-awaken-session-budget-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-session-dream-contract.workspace = true
-awaken-session-event-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-sqlite-pool.workspace = true
@@ -40,6 +37,7 @@ tempfile = "3"
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
+awaken-session-application.workspace = true
 awaken-environment-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-agent-contract.workspace = true

@@ -17,7 +17,7 @@ use awaken_credential_contract::{
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
 };
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     ActivationState, PersistedSession, SessionAggregate, SessionExecutionState,
 };
 use awaken_session_types::RunError;
@@ -71,10 +71,9 @@ const fn repository_rotation_generation_is_current(
     captured: u64,
     current: u64,
     execution: SessionExecutionState,
-    disposition: &awaken_session_state_contract::SessionDisposition,
+    disposition: &awaken_session_contract::SessionDisposition,
 ) -> bool {
-    captured == current
-        && !awaken_session_state_contract::session_is_terminal(execution, disposition)
+    captured == current && !awaken_session_contract::session_is_terminal(execution, disposition)
 }
 
 #[cfg(kani)]
@@ -97,20 +96,20 @@ fn repository_rotation_requires_original_live_resource_generation() {
         _ => SessionExecutionState::Terminated,
     };
     let disposition = match kani::any::<u8>() {
-        0 => awaken_session_state_contract::SessionDisposition::Active,
-        1 => awaken_session_state_contract::SessionDisposition::Archived {
+        0 => awaken_session_contract::SessionDisposition::Active,
+        1 => awaken_session_contract::SessionDisposition::Archived {
             archived_at: String::new(),
             archived_at_unix_ms: None,
         },
-        2 => awaken_session_state_contract::SessionDisposition::Deleting,
-        _ => awaken_session_state_contract::SessionDisposition::Deleted,
+        2 => awaken_session_contract::SessionDisposition::Deleting,
+        _ => awaken_session_contract::SessionDisposition::Deleted,
     };
     let terminal = matches!(
         execution,
         SessionExecutionState::ActivationFailed | SessionExecutionState::Terminated
     ) || !matches!(
         disposition,
-        awaken_session_state_contract::SessionDisposition::Active
+        awaken_session_contract::SessionDisposition::Active
     );
     let admitted =
         repository_rotation_generation_is_current(captured, current, execution, &disposition);
@@ -305,7 +304,7 @@ impl SessionResourceReconciliation {
                     .await
                 {
                     Ok(session) => session,
-                    Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                         return result;
                     }
                     Err(error) => {
@@ -795,7 +794,7 @@ mod placement_regression_tests {
         );
         let id = "terminal-worker-without-local-effects";
         let mut session = crate::tests::persisted(id, true, "terminated");
-        session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        session.resources = awaken_session_contract::SessionResourceState::from_active(
             ResolvedSessionResources::try_new(
                 vec![ResolvedInput {
                     created_at_unix_ms: None,

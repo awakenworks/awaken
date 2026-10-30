@@ -31,14 +31,14 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_application_contract::{ExecutableProjectionAdmission, SessionEventAdmission};
-use awaken_session_budget_contract::SessionUsage;
-use awaken_session_event_contract::{SessionEventBatch, SessionEventInput};
+use awaken_session_contract::SessionUsage;
+use awaken_session_contract::{
+    DeletedSessionEventAdmissions, IdempotencyRecord, PersistedSession, SessionRepositoryError,
+};
+use awaken_session_contract::{SessionEventBatch, SessionEventInput};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, SessionRunActivation,
     SessionThreadLiveSubscription,
-};
-use awaken_session_state_contract::{
-    DeletedSessionEventAdmissions, IdempotencyRecord, PersistedSession, SessionRepositoryError,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
@@ -385,7 +385,7 @@ pub trait SessionResourceCommands: Send + Sync {
 /// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
-    /// Adapt the selected [`awaken_session_execution_contract::CoordinationRuntime::subscribe_session_thread_live`] result unchanged.
+    /// Adapt the selected [`awaken_session_execution_contract::ChildRunCoordination::subscribe_session_thread_live`] result unchanged.
     async fn subscribe_session_thread_live(
         &self,
         session_id: &SessionId,

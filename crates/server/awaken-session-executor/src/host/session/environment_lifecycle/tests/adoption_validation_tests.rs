@@ -11,7 +11,7 @@ async fn adoption_validation_retains_one_exact_wrapper_without_publishing_it() {
     let thread = "adoption-source-selection";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let candidate = UnboundSessionEnvironment {

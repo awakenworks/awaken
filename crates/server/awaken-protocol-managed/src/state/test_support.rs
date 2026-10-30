@@ -16,7 +16,7 @@ pub(crate) use session_repository::ConflictInjectingRepo;
 pub(crate) fn managed_state_from_parts(
     runtime: std::sync::Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
     mcp: Option<std::sync::Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
-    sessions: std::sync::Arc<dyn awaken_session_repository_contract::SessionStore>,
+    sessions: std::sync::Arc<dyn awaken_session_application::SessionStore>,
     environments: std::sync::Arc<
         awaken_environment_application::execution::EnvironmentExecutionApplication,
     >,
@@ -48,8 +48,8 @@ mod session_repository {
 
     use async_trait::async_trait;
     use awaken_protocol_managed_testkit::ReadControl;
-    use awaken_session_repository_contract::SessionRepository;
-    use awaken_session_state_contract::PersistedSession;
+    use awaken_session_contract::PersistedSession;
+    use awaken_session_contract::SessionRepository;
     use awaken_session_store::SqliteManagedSessionRepository;
     use std::sync::{
         Arc,
@@ -77,16 +77,15 @@ mod session_repository {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_repository_contract::SessionRepositoryReads for ConflictInjectingRepo {
+    impl awaken_session_contract::SessionRepositoryReads for ConflictInjectingRepo {
         async fn get(
             &self,
             session_id: &awaken_session_types::SessionId,
-        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
-        {
+        ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
             self.reads.on_read("session").await.map_err(|port| {
-                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
-                    format!("scripted {port} read failure"),
-                )
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(format!(
+                    "scripted {port} read failure"
+                ))
             })?;
             self.inner.get(session_id).await
         }
@@ -94,16 +93,16 @@ mod session_repository {
         async fn owner(
             &self,
             session_id: &awaken_session_types::SessionId,
-        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+        ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
             self.inner.owner(session_id).await
         }
 
         async fn scan(
             &self,
-            query: awaken_session_state_contract::SessionScanQuery<'_>,
+            query: awaken_session_contract::SessionScanQuery<'_>,
         ) -> Result<
-            awaken_session_state_contract::SessionScan,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionScan,
+            awaken_session_contract::SessionRepositoryError,
         > {
             self.inner.scan(query).await
         }
@@ -113,8 +112,8 @@ mod session_repository {
             owner_scope: &str,
             session_id: &awaken_session_types::SessionId,
         ) -> Result<
-            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-            awaken_session_state_contract::SessionRepositoryError,
+            Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+            awaken_session_contract::SessionRepositoryError,
         > {
             self.inner
                 .deleted_event_admissions(owner_scope, session_id)
@@ -128,11 +127,11 @@ mod session_repository {
             &self,
             owner_scope: &str,
             session: PersistedSession,
-            idempotency: awaken_session_state_contract::IdempotencyRecord,
-            facts: Vec<awaken_session_state_contract::ManagedLifecycleFact>,
+            idempotency: awaken_session_contract::IdempotencyRecord,
+            facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
         ) -> Result<
-            awaken_session_state_contract::SessionCreateResult,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionCreateResult,
+            awaken_session_contract::SessionRepositoryError,
         > {
             self.inner
                 .create(owner_scope, session, idempotency, facts)
@@ -143,8 +142,8 @@ mod session_repository {
             &self,
             owner_scope: &str,
             session_id: &awaken_session_types::SessionId,
-            idempotency: &awaken_session_state_contract::IdempotencyRecord,
-        ) -> Result<Option<PersistedSession>, awaken_session_state_contract::SessionRepositoryError>
+            idempotency: &awaken_session_contract::IdempotencyRecord,
+        ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
         {
             self.inner
                 .replay_create(owner_scope, session_id, idempotency)
@@ -154,10 +153,10 @@ mod session_repository {
         async fn commit(
             &self,
             owner_scope: &str,
-            mutation: awaken_session_state_contract::SessionMutation,
+            mutation: awaken_session_contract::SessionMutation,
         ) -> Result<
-            awaken_session_state_contract::SessionMutationResult,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionMutationResult,
+            awaken_session_contract::SessionRepositoryError,
         > {
             if self
                 .conflicts
@@ -166,11 +165,9 @@ mod session_repository {
                 })
                 .is_ok()
             {
-                return Ok(
-                    awaken_session_state_contract::SessionMutationResult::Conflict {
-                        current_revision: mutation.expected_revision,
-                    },
-                );
+                return Ok(awaken_session_contract::SessionMutationResult::Conflict {
+                    current_revision: mutation.expected_revision,
+                });
             }
             self.inner.commit(owner_scope, mutation).await
         }
@@ -180,48 +177,48 @@ mod session_repository {
             session_id: &awaken_session_types::SessionId,
             key: &str,
         ) -> Result<
-            Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-            awaken_session_state_contract::SessionRepositoryError,
+            Option<awaken_session_contract::SessionIdempotencyReceipt>,
+            awaken_session_contract::SessionRepositoryError,
         > {
             self.inner.idempotency_receipt(session_id, key).await
         }
 
         async fn count_environment_phase(
             &self,
-            phase: awaken_session_state_contract::SessionEnvironmentPhase,
-        ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
+            phase: awaken_session_contract::SessionEnvironmentPhase,
+        ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
             self.inner.count_environment_phase(phase).await
         }
     }
 
-    use awaken_session_repository_contract::SessionReconciliation;
+    use awaken_session_contract::SessionReconciliation;
 
     #[async_trait::async_trait]
     impl SessionReconciliation for ConflictInjectingRepo {
         async fn reconciliation_scan(
             &self,
-            after: Option<&awaken_session_state_contract::SessionScanCursor>,
+            after: Option<&awaken_session_contract::SessionScanCursor>,
         ) -> Result<
-            awaken_session_state_contract::SessionScan,
-            awaken_session_state_contract::SessionRepositoryError,
+            awaken_session_contract::SessionScan,
+            awaken_session_contract::SessionRepositoryError,
         > {
             self.inner.reconciliation_scan(after).await
         }
     }
     #[async_trait::async_trait]
-    impl awaken_session_repository_contract::LifecycleOutbox for ConflictInjectingRepo {
+    impl awaken_session_contract::LifecycleOutbox for ConflictInjectingRepo {
         async fn append_lifecycle(
             &self,
-            fact: awaken_session_state_contract::ManagedLifecycleFact,
-        ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
+            fact: awaken_session_contract::ManagedLifecycleFact,
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
             self.inner.append_lifecycle(fact).await
         }
 
         async fn pending_lifecycle(
             &self,
         ) -> Result<
-            Vec<awaken_session_state_contract::ManagedLifecycleFact>,
-            awaken_session_state_contract::SessionRepositoryError,
+            Vec<awaken_session_contract::ManagedLifecycleFact>,
+            awaken_session_contract::SessionRepositoryError,
         > {
             self.inner.pending_lifecycle().await
         }
@@ -229,7 +226,7 @@ mod session_repository {
         async fn complete_lifecycle(
             &self,
             fact_id: &str,
-        ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
             self.inner.complete_lifecycle(fact_id).await
         }
     }

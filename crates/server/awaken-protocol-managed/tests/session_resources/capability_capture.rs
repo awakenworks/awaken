@@ -1,14 +1,14 @@
 //! Managed capability capture keeps its original position among creation awaits.
 use super::*;
 use awaken_protocol_managed_testkit::RehydrateFake;
-use awaken_session_budget_contract::{
+use awaken_session_contract::{
     ManagedListPriceError, ManagedListPriceProvider, ManagedListPriceRequest,
     ManagedListPriceSnapshot,
 };
+use awaken_session_contract::{SessionScanQuery, SessionUpdateHistory};
 use awaken_session_execution_contract::{
     EnvironmentRuntime, SessionExecutionRoles, SessionExecutor,
 };
-use awaken_session_state_contract::{SessionScanQuery, SessionUpdateHistory};
 use awaken_session_types::{RunError, RunErrorKind};
 use std::sync::{
     Mutex,
@@ -191,12 +191,12 @@ impl EnvironmentRuntime for RefusingSkills {
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         mcp: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.original
             .quiesce_session_environment(
                 thread,

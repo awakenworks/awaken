@@ -21,12 +21,12 @@ pub(super) fn fresh_subject(id: &str) -> PersistedSession {
 
 pub(super) async fn claim_subject(
     app: &SessionApplication,
-    repo: &dyn awaken_session_repository_contract::SessionStore,
+    repo: &dyn crate::SessionStore,
     id: &str,
     lease: &crate::session_resource::SessionRealizationLease,
 ) {
     for epoch in 1..=lease.epoch {
-        let mut root = awaken_session_state_contract::SessionAggregate::try_from(
+        let mut root = awaken_session_contract::SessionAggregate::try_from(
             repo.get(&SessionId::from(id)).await.unwrap(),
         )
         .unwrap();
@@ -71,10 +71,10 @@ fn original_lease() -> crate::session_resource::SessionRealizationLease {
 fn intent(
     id: &str,
     lease: &crate::session_resource::SessionRealizationLease,
-) -> awaken_session_state_contract::SessionEnvironmentEffectIntent {
-    awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+) -> awaken_session_contract::SessionEnvironmentEffectIntent {
+    awaken_session_contract::SessionEnvironmentEffectIntent::new(
         id,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         Some(lease.clone()),
     )
     .for_environment("env-7")
@@ -109,7 +109,7 @@ async fn legacy_binding_subject_rejects_new_admission_but_accepts_its_inflight_r
     );
     assert_eq!(repo.get(&before.session_id).await.unwrap(), before);
     sink.persist(
-        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
+        awaken_session_contract::SessionEnvironmentReceipt::from_intent(
             &original,
             "legacy-binding",
         )
@@ -131,11 +131,11 @@ async fn legacy_binding_subject_rejects_new_admission_but_accepts_its_inflight_r
 /// Both cuts use the real Repository sink; no fake authorization stands in for it.
 async fn assert_late_noncreate_is_pending(
     sink: &dyn awaken_session_execution_contract::SessionEnvironmentBindingSink,
-    repo: &dyn awaken_session_repository_contract::SessionRepository,
+    repo: &dyn awaken_session_contract::SessionRepository,
     before: &PersistedSession,
-    original: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+    original: &awaken_session_contract::SessionEnvironmentEffectIntent,
 ) {
-    use awaken_session_state_contract::{
+    use awaken_session_contract::{
         SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
     };
     for kind in [
@@ -253,11 +253,9 @@ async fn first_admission_waits_for_real_cas_and_returns_the_durable_winner_after
     assert_late_noncreate_is_pending(sink.as_ref(), repo.as_ref(), &after, &original).await;
     // L3 the exact first response-loss receipt joins once, replay is inert;
     // every later origin read retains the original full value/expiry.
-    let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
-        &original,
-        "first-binding",
-    )
-    .unwrap();
+    let receipt =
+        awaken_session_contract::SessionEnvironmentReceipt::from_intent(&original, "first-binding")
+            .unwrap();
     faulting.commit_then_conflict_once("bind-environment");
     let completed = sink.persist(receipt.clone()).await.unwrap();
     let origin = repo.get(&after.session_id).await.unwrap();

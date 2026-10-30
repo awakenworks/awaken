@@ -78,7 +78,7 @@ pub enum RepositoryTransportAuthority {
         intent: Box<awaken_session_realization_contract::SessionResourceMaterializationIntent>,
     },
     TerminalPublication {
-        command: Box<awaken_session_state_contract::SessionRepositoryPublicationCommand>,
+        command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
         lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     },
 }
@@ -274,7 +274,7 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
 #[async_trait::async_trait]
 impl
     RepositoryBindingVerifier<(
-        awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        awaken_session_contract::SessionRepositoryPublicationCommand,
         awaken_session_configuration_contract::resource::SessionRealizationLease,
     )> for HttpRepositoryBindingVerifier
 {
@@ -284,7 +284,7 @@ impl
         repository_id: &str,
         config_version: ConfigVersion,
         fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             awaken_session_configuration_contract::resource::SessionRealizationLease,
         )>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
@@ -662,7 +662,7 @@ async fn verify_terminal_repository_binding(
     service: Arc<WorkerRepositoryBindingService>,
     worker: &VerifiedWorkerContext,
     request: RepositoryBindingRequest,
-    command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+    command: awaken_session_contract::SessionRepositoryPublicationCommand,
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> Response {
     let Some(identity) = request.identity.as_ref() else {

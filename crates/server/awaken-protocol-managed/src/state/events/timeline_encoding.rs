@@ -77,8 +77,8 @@ fn child_name(record: &SessionRecord, thread_id: &str) -> Result<String, StateEr
 pub(super) fn encode_fact(
     record: &SessionRecord,
     fact: &DerivedSessionEvent,
-    price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
-    update: Option<(&str, &awaken_session_state_contract::SessionUpdateFact)>,
+    price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
+    update: Option<(&str, &awaken_session_contract::SessionUpdateFact)>,
 ) -> Result<OutboundKind, StateError> {
     let thread_id = fact.key.thread.as_str();
     let primary = thread_id == record.session.id;
@@ -194,7 +194,7 @@ pub(super) fn encode_fact(
         },
         SessionEventKind::ActivationFailed { message } => OutboundKind::SessionError {
             error: SessionError::classify(
-                awaken_session_state_contract::SessionExecutionState::ActivationFailed.as_str(),
+                awaken_session_contract::SessionExecutionState::ActivationFailed.as_str(),
                 message.clone(),
             ),
         },
@@ -295,7 +295,7 @@ impl SessionRecord {
     pub(super) fn publish_fact(
         &mut self,
         fact: &DerivedSessionEvent,
-        price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
+        price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
         let kind = encode_fact(self, fact, price_snapshot, None)?;
         if child_stream_only(fact.key.role)
@@ -313,7 +313,7 @@ impl SessionRecord {
     pub(super) fn publish_fact_once(
         &mut self,
         fact: &DerivedSessionEvent,
-        price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
+        price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
     ) -> Result<bool, StateError> {
         if self.has_event_id(&self.fact_id(&fact.key)) {
             return Ok(false);
@@ -327,7 +327,7 @@ impl SessionRecord {
 fn encode_session_update(
     record: &SessionRecord,
     fact: &DerivedSessionEvent,
-    source: Option<(&str, &awaken_session_state_contract::SessionUpdateFact)>,
+    source: Option<(&str, &awaken_session_contract::SessionUpdateFact)>,
 ) -> Result<OutboundKind, StateError> {
     let (root_id, update) = source.ok_or_else(|| {
         StateError::Run(RunError::internal(
@@ -348,19 +348,17 @@ fn encode_session_update(
     }
     Ok(OutboundKind::SessionUpdated {
         title: update.title().map(|value| match value {
-            awaken_session_state_contract::SessionFieldUpdate::Clear => None,
-            awaken_session_state_contract::SessionFieldUpdate::Replace(value) => {
-                Some(value.clone())
-            }
+            awaken_session_contract::SessionFieldUpdate::Clear => None,
+            awaken_session_contract::SessionFieldUpdate::Replace(value) => Some(value.clone()),
         }),
         metadata: update.metadata().cloned().unwrap_or_default(),
         agent: update
             .agent()
             .map(|value| match value {
-                awaken_session_state_contract::SessionUpdateAgentConfiguration::Recorded(value) => {
+                awaken_session_contract::SessionUpdateAgentConfiguration::Recorded(value) => {
                     crate::state::sessions::session_agent_from_configuration(value)
                 }
-                awaken_session_state_contract::SessionUpdateAgentConfiguration::Unrecorded => {
+                awaken_session_contract::SessionUpdateAgentConfiguration::Unrecorded => {
                     Err(StateError::Run(RunError::unavailable(
                         "Session update Agent configuration was not recorded",
                     )))
@@ -368,8 +366,8 @@ fn encode_session_update(
             })
             .transpose()?,
         budget: update.budget().map(|value| match value {
-            awaken_session_state_contract::SessionFieldUpdate::Clear => None,
-            awaken_session_state_contract::SessionFieldUpdate::Replace(value) => {
+            awaken_session_contract::SessionFieldUpdate::Clear => None,
+            awaken_session_contract::SessionFieldUpdate::Replace(value) => {
                 Some(crate::types::BudgetLimit::from_minor(*value))
             }
         }),

@@ -912,11 +912,11 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let repository_path_fidelity = raw_host
         .env
         .session_provider
-        .realizer()
+        .readiness()
         .capabilities()
         .path_fidelity;
     let host = (crate::host::with_test_resource_validation(raw_host))
@@ -1100,7 +1100,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .expect("P1 commit file")
         .trim()
         .to_string();
-    let intent = awaken_session_state_contract::SessionRepositoryPublicationIntent {
+    let intent = awaken_session_contract::SessionRepositoryPublicationIntent {
         input: resources.inputs()[0].clone(),
         expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
@@ -1120,7 +1120,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .terminal_cleanup
         .command_for(&awaken_session_types::SessionId::from(session_id), child_id)
         .expect("P4 child cleanup command");
-    let child_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let child_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         child_cleanup.clone(),
         lease.clone(),
     );
@@ -1128,7 +1128,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .record_terminal_cleanup_preparation(
             &ordinary_projection.workspace_id,
             &lease,
-            awaken_session_state_contract::SessionCleanupPreparation::try_new(
+            awaken_session_contract::SessionCleanupPreparation::try_new(
                 &child_effect,
                 child_effect.sandbox_effect_fence().unwrap(),
                 Vec::new(),
@@ -1162,13 +1162,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     };
     // A changed aggregate Environment is a new root-CAS snapshot.
     terminal_projection.revision.0 += 1;
-    terminal_projection.environment =
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: retained.binding,
-            effect_id: Some(effect_id),
-            generation: Some(generation),
-            idle_since_unix_ms: None,
-        };
+    terminal_projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: retained.binding,
+        effect_id: Some(effect_id),
+        generation: Some(generation),
+        idle_since_unix_ms: None,
+    };
     terminal_projection.previous_resource_manifest = Some(
         crate::session_resource::SessionResourceManifest::at_revision(
             &workspace_id,
@@ -1176,7 +1175,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             resources.clone(),
         ),
     );
-    awaken_session_execution_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
+    awaken_session_execution_contract::TerminalCleanup::install_terminal_cleanup_assignment(
         &*managed.run_assembly,
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
@@ -1221,7 +1220,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         assert!(
             matches!(
                 outcome,
-                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(_)
+                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(_)
             ),
             "S1 source loss cannot publish a commit"
         );
@@ -1376,7 +1375,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .await
         .expect("P2 replay");
     assert_eq!(first, replay, "P2 canonical first/replay receipt");
-    let awaken_session_state_contract::SessionRepositoryPublicationEffect::Published(first) = first
+    let awaken_session_contract::SessionRepositoryPublicationEffect::Published(first) = first
     else {
         panic!("P1 expected a publication receipt");
     };
@@ -1517,7 +1516,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let replacement_host = (crate::host::with_test_resource_validation(raw_replacement))
         .build()
         .unwrap();

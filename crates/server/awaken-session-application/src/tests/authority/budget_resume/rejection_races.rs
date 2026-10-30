@@ -3,7 +3,7 @@
 //! not model mutable budget + negative receipt + root revision and are not
 //! evidence that these I/O interleavings are correct.
 use super::*;
-use awaken_session_execution_contract::{AdmittedSessionRun, CoordinationRuntime as _};
+use awaken_session_execution_contract::{AdmittedSessionRun, ChildRunCoordination as _};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Poll;
@@ -61,7 +61,7 @@ async fn at_admission_cursor<F: Future>(
     mut pending: Pin<&mut F>,
 ) {
     // Poll the real future through its actual SQLite reads until the existing
-    // one-shot ThreadReadRuntime barrier is consumed. The pending future then
+    // one-shot ThreadReads barrier is consumed. The pending future then
     // owns the old root immediately before open_activity_on_snapshot. This is
     // a causal scheduling cut, not an outcome oracle or an Nth-get hook.
     tokio::time::timeout(
@@ -128,7 +128,7 @@ async fn raced_activity(
 
 fn captured_record(
     capture: &Arc<PausedSessionMutation>,
-) -> awaken_session_state_contract::IdempotencyRecord {
+) -> awaken_session_contract::IdempotencyRecord {
     capture
         .candidate
         .lock()

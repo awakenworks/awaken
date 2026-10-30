@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    EnvironmentRuntime, RealizationEffects, RealizationRuntime, RunError, TerminalCleanupRuntime,
+    EnvironmentRuntime, RealizationEffects, RealizationRuntime, RunError, TerminalCleanup,
 };
 
 /// The frozen-input admission of Worker-placed Sessions, for a process that
@@ -60,7 +60,7 @@ pub struct ColocatedRealizationRoles {
     pub realization: Arc<dyn RealizationRuntime>,
     pub realization_effects: Arc<dyn RealizationEffects>,
     pub environment: Arc<dyn EnvironmentRuntime>,
-    pub terminal_cleanup: Arc<dyn TerminalCleanupRuntime>,
+    pub terminal_cleanup: Arc<dyn TerminalCleanup>,
 }
 
 /// Where this process's Sessions are realized, selected once by the

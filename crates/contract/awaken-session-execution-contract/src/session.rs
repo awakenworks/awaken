@@ -2,7 +2,7 @@
 // @formal entrypoint session_outcome.awaiting_constructor_is_nonterminal_and_nonfailed
 // @formal entrypoint session_outcome.ended_constructor_owns_failure_and_clears_pending_tool
 // @formal evidence session.agent_message_requires_exact_committed_tool_source_and_payload
-//! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
+//! Neutral value types and the [`SessionRuns`] interface the adapter drives:
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
 mod executor;
@@ -17,7 +17,7 @@ mod projection_evidence;
 mod projection_source;
 mod roles;
 
-use awaken_session_budget_contract::SessionUsage;
+use awaken_session_contract::SessionUsage;
 pub use neutral::NeutralRuntime;
 pub use projection_evidence::{
     CommittedEvidenceError, CommittedSessionFacts, ProjectionThreadSnapshots,
@@ -162,7 +162,20 @@ pub trait SessionThreadLiveSubscription: Send {
 /// the kernel; the adapter never constructs a runtime. MCP realization is kept on
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
-pub trait SessionRuntime: Send + Sync {
+/// Naming rule: this consumer role has one contract owner. N1 the canonical
+/// spelling can name the role without constructing or executing anything;
+/// N2 the retired spelling must fail to import, so no compatibility alias
+/// or second role survives. Runtime cause/effect tests remain unchanged.
+///
+/// ```no_run
+/// use awaken_session_execution_contract::SessionRuns;
+/// fn selected_role(_: &dyn SessionRuns) {}
+/// ```
+///
+/// ```compile_fail
+/// use awaken_session_execution_contract::SessionRuntime;
+/// ```
+pub trait SessionRuns: Send + Sync {
     /// Run one user request on `thread` to its first pause or end. `content` is the
     /// user message's full block list (multimodal): text interleaved with any
     /// image blocks, never flattened to a bare string.
@@ -203,37 +216,37 @@ pub trait SessionRuntime: Send + Sync {
 /// cannot be installed as the application executor merely because their base
 /// methods compile. The marker carries no behavior or parallel state.
 pub trait CompleteSessionRuntime:
-    SessionRuntime
+    SessionRuns
     + RealizationRuntime
     + RealizationEffects
-    + CoordinationRuntime
+    + ChildRunCoordination
     + SessionCoordinationReads
-    + BudgetRuntime
-    + StreamingRunRuntime
+    + BudgetAccounting
+    + StreamingRuns
     + EnvironmentRuntime
-    + ThreadReadRuntime
+    + ThreadReads
     + SessionProjectionSource
-    + TerminalCleanupRuntime
-    + OutcomeRuntime
-    + LiveInboxRuntime
+    + TerminalCleanup
+    + Outcomes
+    + LiveInboxAccess
     + CapabilityRuntime
 {
 }
 
 impl<T> CompleteSessionRuntime for T where
-    T: SessionRuntime
+    T: SessionRuns
         + RealizationRuntime
         + RealizationEffects
-        + CoordinationRuntime
+        + ChildRunCoordination
         + SessionCoordinationReads
-        + BudgetRuntime
-        + StreamingRunRuntime
+        + BudgetAccounting
+        + StreamingRuns
         + EnvironmentRuntime
-        + ThreadReadRuntime
+        + ThreadReads
         + SessionProjectionSource
-        + TerminalCleanupRuntime
-        + OutcomeRuntime
-        + LiveInboxRuntime
+        + TerminalCleanup
+        + Outcomes
+        + LiveInboxAccess
         + CapabilityRuntime
         + ?Sized
 {
@@ -348,7 +361,7 @@ mod tests {
         assert_eq!(projected.web_search_requests, 0, "R3/E4");
     }
 
-    /// A minimal double that overrides ONLY [`SessionRuntime::run`] (plus the trait's
+    /// A minimal double that overrides ONLY [`SessionRuns::run`] (plus the trait's
     /// other *required* methods, implemented minimally). Every fail-closed DEFAULT
     /// method (`live_inbox_*`, `owns_thread`, `committed_messages`, `run_streaming`,
     /// …) is left at the trait's default so the tests below exercise those defaults.
@@ -370,7 +383,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl SessionRuntime for MinimalRuntime {
+    impl SessionRuns for MinimalRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -408,26 +421,26 @@ mod tests {
 
     crate::neutral_role!(RealizationEffects for MinimalRuntime);
 
-    crate::neutral_role!(CoordinationRuntime for MinimalRuntime);
+    crate::neutral_role!(ChildRunCoordination for MinimalRuntime);
 
     crate::neutral_role!(SessionCoordinationReads for MinimalRuntime);
 
-    crate::neutral_role!(BudgetRuntime for MinimalRuntime);
+    crate::neutral_role!(BudgetAccounting for MinimalRuntime);
 
-    crate::neutral_role!(StreamingRunRuntime for MinimalRuntime);
+    crate::neutral_role!(StreamingRuns for MinimalRuntime);
 
     crate::neutral_role!(EnvironmentRuntime for MinimalRuntime);
 
-    crate::neutral_role!(ThreadReadRuntime for MinimalRuntime);
+    crate::neutral_role!(ThreadReads for MinimalRuntime);
 
-    crate::neutral_role!(TerminalCleanupRuntime for MinimalRuntime);
+    crate::neutral_role!(TerminalCleanup for MinimalRuntime);
 
-    crate::neutral_role!(LiveInboxRuntime for MinimalRuntime);
+    crate::neutral_role!(LiveInboxAccess for MinimalRuntime);
 
     crate::neutral_role!(CapabilityRuntime for MinimalRuntime);
 
     #[async_trait::async_trait]
-    impl crate::OutcomeRuntime for MinimalRuntime {
+    impl crate::Outcomes for MinimalRuntime {
         // Neutral role behaviour: forwarded to `NeutralRuntime` rather than scripted here.
         async fn prepare_outcome(
             &self,
@@ -469,7 +482,7 @@ mod tests {
     // Item 1: the other fail-closed defaults — ownership false, committed empty.
     /// Cause-effect graph for a Runtime without generation support:
     ///
-    /// C1 exact generation command reaches the default SessionRuntime port
+    /// C1 exact generation command reaches the default SessionRuns port
     ///   -> C2 no concrete generation adapter is installed
     ///   -> E1 reject before any stage/publish/drain effect.
     ///
@@ -490,7 +503,7 @@ mod tests {
         // still there, which is what an ephemeral in-process host needs.
         struct CoreOnlyRuntime;
         #[async_trait]
-        impl SessionRuntime for CoreOnlyRuntime {
+        impl SessionRuns for CoreOnlyRuntime {
             async fn run(
                 &self,
                 agent: &str,
@@ -523,7 +536,7 @@ mod tests {
             }
         }
         let rt = CoreOnlyRuntime;
-        let core: &dyn SessionRuntime = &rt;
+        let core: &dyn SessionRuns = &rt;
         assert_eq!(core.model(), "test-model");
     }
 

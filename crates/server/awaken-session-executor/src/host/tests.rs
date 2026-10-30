@@ -228,7 +228,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
 }
 
 use awaken_sandbox_container::ContainerHandleCodec as _;
-use awaken_session_execution_contract::TerminalCleanupRuntime;
+use awaken_session_execution_contract::TerminalCleanup;
 use awaken_session_types::SessionId;
 mod claimed_dispatch;
 mod managed_root;
@@ -1389,20 +1389,20 @@ struct BindingOrderSink {
     require_realization: bool,
     owned_session_id: Option<String>,
     committed_environment:
-        Option<Arc<Mutex<Option<awaken_session_state_contract::SessionEnvironmentState>>>>,
+        Option<Arc<Mutex<Option<awaken_session_contract::SessionEnvironmentState>>>>,
 }
 
 fn test_committed_environment(
-    receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-) -> awaken_session_state_contract::SessionEnvironmentState {
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    receipt: awaken_session_contract::SessionEnvironmentReceipt,
+) -> awaken_session_contract::SessionEnvironmentState {
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &receipt.session_id,
         1,
         u64::MAX,
         "test-environment",
         "test-image",
     );
-    awaken_session_state_contract::SessionEnvironmentState::Resident {
+    awaken_session_contract::SessionEnvironmentState::Resident {
         binding: receipt.binding,
         effect_id: Some(receipt.effect_id),
         generation: Some(generation),
@@ -1414,9 +1414,9 @@ fn test_committed_environment(
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink for BindingOrderSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
@@ -1426,7 +1426,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
             .is_some_and(|owned| owned != intent.session_id())
         {
             Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned {
                     intent: Box::new(intent.clone()),
                 },
             )
@@ -1437,7 +1437,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
             ))
         } else {
             Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
                     intent: Box::new(intent.clone()),
                 },
             )
@@ -1446,11 +1446,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
@@ -2367,7 +2365,7 @@ pub(super) fn terminal_recovery_effect(
     owner: &str,
 ) -> (
     crate::session_resource::SessionRealizationLease,
-    awaken_session_state_contract::SessionTerminalCleanupEffect,
+    awaken_session_contract::SessionTerminalCleanupEffect,
 ) {
     let lease = crate::session_resource::SessionRealizationLease {
         owner: owner.into(),
@@ -2375,7 +2373,7 @@ pub(super) fn terminal_recovery_effect(
         epoch: 1,
         expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms() + 60_000,
     };
-    let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
     assert!(cleanup.request(&awaken_session_types::SessionId::from(thread)));
     cleanup
         .freeze_targets(&awaken_session_types::SessionId::from(thread), [], 0, 0)
@@ -2383,8 +2381,7 @@ pub(super) fn terminal_recovery_effect(
     let command = cleanup
         .command_for(&awaken_session_types::SessionId::from(thread), thread)
         .unwrap();
-    let effect =
-        awaken_session_state_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
     (lease, effect)
 }
 
@@ -2394,18 +2391,18 @@ pub(super) fn disposing_terminal_environment(
     handle: &pc::SandboxHandle,
     checkpoint_id: &str,
 ) -> (
-    awaken_session_state_contract::SessionEnvironmentState,
-    awaken_session_state_contract::SourceReleasePreparationEffect,
-    awaken_session_state_contract::SourceReleasePreparedReceipt,
+    awaken_session_contract::SessionEnvironmentState,
+    awaken_session_contract::SourceReleasePreparationEffect,
+    awaken_session_contract::SourceReleasePreparedReceipt,
 ) {
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         1,
         u64::MAX,
         "environment-disposing",
         "image-disposing",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "terminal-workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -2414,27 +2411,27 @@ pub(super) fn disposing_terminal_environment(
         Some(lease.clone()),
         None,
     );
-    let preparation: awaken_session_state_contract::SourceReleasePreparationEffect =
+    let preparation: awaken_session_contract::SourceReleasePreparationEffect =
         serde_json::from_value(serde_json::json!({
             "operation": operation.clone(),
             "lease": lease.clone(),
         }))
         .expect("decode the aggregate-owned continuation preparation");
     let source_binding = serde_json::to_string(handle).expect("encode disposing source binding");
-    let receipt = awaken_session_state_contract::SourceReleasePreparedReceipt::try_new(
+    let receipt = awaken_session_contract::SourceReleasePreparedReceipt::try_new(
         preparation.clone(),
         preparation.sandbox_effect_fence().unwrap(),
         &generation,
         &source_binding,
     )
     .unwrap();
-    let state = awaken_session_state_contract::SessionEnvironmentState::Suspending {
+    let state = awaken_session_contract::SessionEnvironmentState::Suspending {
         operation: operation.clone(),
         source_effect_id: Box::new("terminal-source-effect".into()),
         source_binding,
         generation,
-        suspend_phase: awaken_session_state_contract::SuspendPhase::Disposing,
-        checkpoint: Some(awaken_session_state_contract::SandboxCheckpointRef {
+        suspend_phase: awaken_session_contract::SuspendPhase::Disposing,
+        checkpoint: Some(awaken_provisioning_contract::SandboxCheckpointRef {
             id: checkpoint_id.into(),
             format: "awaken-fs-v1".into(),
             digest: "checkpoint-digest".into(),
@@ -2457,17 +2454,15 @@ pub(super) fn fresh_terminal_fixture_before_create(
     session_id: &str,
     projection: &mut awaken_session_realization_contract::FrozenSessionProjection,
     lease: &crate::session_resource::SessionRealizationLease,
-) -> awaken_session_state_contract::PersistedSession {
+) -> awaken_session_contract::PersistedSession {
     assert!(matches!(
         projection.environment,
-        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
-    let mut root = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+    let mut root = awaken_session_contract::PersistedSession::frozen_with_budget(
         session_id,
         projection.baseline.clone(),
-        awaken_session_state_contract::SessionResourceState::from_active(
-            projection.resources.clone(),
-        ),
+        awaken_session_contract::SessionResourceState::from_active(projection.resources.clone()),
         Default::default(),
         None,
         Default::default(),
@@ -2477,13 +2472,13 @@ pub(super) fn fresh_terminal_fixture_before_create(
     // The selected Control input supplies the current lease; admission must
     // validate it and save the first full request before the provider is called.
     root.realization = Some(lease.clone());
-    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
         session_id,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
         Some(lease.clone()),
     )
     .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
-    let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(root).unwrap();
+    let mut aggregate = awaken_session_contract::SessionAggregate::try_from(root).unwrap();
     let (changed, authorized) = aggregate
         .environment()
         .admit_environment_effect(&projection.workspace_id, &intent, 0)
@@ -2505,14 +2500,12 @@ fn terminal_test_session(
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
     lease: crate::session_resource::SessionRealizationLease,
     children: impl IntoIterator<Item = String>,
-    publication: Option<awaken_session_state_contract::SessionRepositoryPublicationIntent>,
-) -> awaken_session_state_contract::PersistedSession {
-    let mut session = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+    publication: Option<awaken_session_contract::SessionRepositoryPublicationIntent>,
+) -> awaken_session_contract::PersistedSession {
+    let mut session = awaken_session_contract::PersistedSession::frozen_with_budget(
         session_id,
         projection.baseline.clone(),
-        awaken_session_state_contract::SessionResourceState::from_active(
-            projection.resources.clone(),
-        ),
+        awaken_session_contract::SessionResourceState::from_active(projection.resources.clone()),
         Default::default(),
         None,
         Default::default(),
@@ -2522,7 +2515,7 @@ fn terminal_test_session(
     session.environment = projection.environment.clone();
     session.realization = Some(lease);
     // Terminal cleanup retires only a terminal Session (`RetireForCleanup`).
-    session.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
+    session.execution = awaken_session_contract::SessionExecutionState::Terminated;
     // Import exactly the selected Control snapshot's existing fact. Known
     // fixtures saved it before I/O; an omitted historical field stays omitted.
     // This is fixture decoding, not a new admission or history-repair command.
@@ -2535,7 +2528,7 @@ fn terminal_test_session(
                 .remove("environment_materialization");
         }
     }
-    let mut session: awaken_session_state_contract::PersistedSession =
+    let mut session: awaken_session_contract::PersistedSession =
         serde_json::from_value(wire).unwrap();
     match publication {
         Some(intent) => {
@@ -2556,7 +2549,7 @@ fn terminal_test_session(
 }
 
 fn terminal_preparation_authorization(
-    effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization {
     let session_id = &effect.command.session_id;
@@ -2583,10 +2576,10 @@ fn terminal_preparation_authorization(
 }
 
 fn terminal_disposal_effect(
-    preparation: awaken_session_state_contract::SessionCleanupPreparation,
+    preparation: awaken_session_contract::SessionCleanupPreparation,
     current_lease: crate::session_resource::SessionRealizationLease,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
-) -> awaken_session_state_contract::SessionTerminalCleanupDisposalEffect {
+) -> awaken_session_contract::SessionTerminalCleanupDisposalEffect {
     let session_id = preparation.effect.command.session_id.clone();
     let thread_id = preparation.effect.command.thread_id.clone();
     let mut session = terminal_test_session(
@@ -2613,13 +2606,12 @@ fn terminal_disposal_effect(
         expected_command, preparation.effect.command,
         "the Host receipt must bind the aggregate-derived command",
     );
-    let repository_preparation =
-        awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
-            &session_id,
-            &projection.workspace_id,
-            &session.resources,
-        )
-        .expect("prepare the aggregate-owned Repository retirement plan");
+    let repository_preparation = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+        &session_id,
+        &projection.workspace_id,
+        &session.resources,
+    )
+    .expect("prepare the aggregate-owned Repository retirement plan");
     session
         .record_terminal_cleanup_preparation(
             &projection.workspace_id,
@@ -2633,10 +2625,10 @@ fn terminal_disposal_effect(
         .expect("project the canonical terminal action")
         .expect("the complete preparation set enters Disposing")
     {
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => command,
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => command,
         action => panic!("expected aggregate disposal action, got {action:?}"),
     };
-    awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(command, current_lease)
+    awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(command, current_lease)
 }
 
 async fn install_terminal_recovery_projection(
@@ -2644,7 +2636,7 @@ async fn install_terminal_recovery_projection(
     managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     lease: crate::session_resource::SessionRealizationLease,
-    environment: awaken_session_state_contract::SessionEnvironmentState,
+    environment: awaken_session_contract::SessionEnvironmentState,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(

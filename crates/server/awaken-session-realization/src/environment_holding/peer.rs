@@ -9,10 +9,10 @@ use crate::environment_owner::{
 use crate::realization_error::RealizationError;
 use crate::session_environment::{
     AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode, PreparedBoundEnvironment,
-    SessionEnvironmentProvider,
+    SandboxProviderRoles,
 };
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_state_contract::SessionEnvironmentEffectIntent;
+use awaken_session_contract::SessionEnvironmentEffectIntent;
 use std::sync::Arc;
 
 use super::EnvironmentHolding;
@@ -75,7 +75,7 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
         &self,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
         EnvironmentHolding::session_environment_adoption_spec(
@@ -121,7 +121,7 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<&SessionEnvironmentProvider, RealizationError> {
+    ) -> Result<&SandboxProviderRoles, RealizationError> {
         EnvironmentHolding::projected_session_environment_provider(self, thread, agent)
     }
 
@@ -133,7 +133,7 @@ impl crate::peers::EnvironmentPeer for EnvironmentHolding {
         &self,
         thread: &str,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+    ) -> Result<&crate::session_environment::SandboxProviderRoles, RealizationError> {
         EnvironmentHolding::session_environment_provider_for_thread(self, thread, provisioning)
     }
 }

@@ -168,7 +168,7 @@ impl ClaimFencedArtifactPublisher {
 
     async fn authorize_terminal_artifact(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
         workspace_id: &str,
         session_id: &str,
         idempotency_scope: Option<&str>,
@@ -196,7 +196,7 @@ impl ClaimFencedArtifactPublisher {
 
     async fn authorize_checkpoint_release_artifact(
         &self,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         workspace_id: &str,
         session_id: &awaken_session_types::SessionId,
         idempotency_scope: Option<&str>,
@@ -379,9 +379,9 @@ mod tests {
 
     struct ExactResourceControl {
         workspace_id: String,
-        asserted_effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        asserted_effect: awaken_session_contract::SessionTerminalCleanupEffect,
         current_lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-        checkpoint: Option<awaken_session_state_contract::SessionEnvironmentOperation>,
+        checkpoint: Option<awaken_session_contract::SessionEnvironmentOperation>,
     }
 
     #[async_trait::async_trait]
@@ -391,7 +391,7 @@ mod tests {
         async fn authorize_checkpoint_release_artifact_effect(
             &self,
             session: &awaken_session_types::SessionId,
-            operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+            operation: &awaken_session_contract::SessionEnvironmentOperation,
         ) -> Result<String, SessionRealizationControlFailure> {
             if *session != self.asserted_effect.command.thread_id
                 || self.checkpoint.as_ref() != Some(operation)
@@ -408,7 +408,7 @@ mod tests {
     {
         async fn authorize_terminal_cleanup_effect(
             &self,
-            effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+            effect: &awaken_session_contract::SessionTerminalCleanupEffect,
         ) -> Result<
             awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
             SessionRealizationControlFailure,
@@ -439,7 +439,7 @@ mod tests {
         async fn record_terminal_cleanup_preparation(
             &self,
             _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-            _preparation: awaken_session_state_contract::SessionCleanupPreparation,
+            _preparation: awaken_session_contract::SessionCleanupPreparation,
         ) -> Result<(), SessionRealizationControlFailure> {
             Err(SessionRealizationControlFailure::Invalid(
                 "Artifact authorization fixture does not admit cleanup receipts".into(),
@@ -469,8 +469,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        let asserted = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-            awaken_session_state_contract::SessionCleanupCommand::new(
+        let asserted = awaken_session_contract::SessionTerminalCleanupEffect::new(
+            awaken_session_contract::SessionCleanupCommand::new(
                 &awaken_session_types::SessionId::from("session"),
                 "session",
                 "cleanup",
@@ -605,7 +605,7 @@ mod tests {
             "T2/E2"
         );
 
-        let foreign = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        let foreign = awaken_session_contract::SessionTerminalCleanupEffect::new(
             asserted.command.clone(),
             awaken_session_configuration_contract::resource::SessionRealizationLease {
                 epoch: asserted.lease.epoch + 1,
@@ -866,14 +866,14 @@ mod tests {
                     artifact_now_ms() + 60_000
                 },
             };
-            let generation = awaken_session_state_contract::SandboxGeneration::new(
+            let generation = awaken_session_contract::SandboxGeneration::new(
                 &awaken_session_types::SessionId::from("session"),
                 0,
                 u64::MAX,
                 "environment",
                 "base",
             );
-            let mut operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+            let mut operation = awaken_session_contract::SessionEnvironmentOperation::new(
                 "workspace",
                 &awaken_session_types::SessionId::from("session"),
                 "suspend",
@@ -901,15 +901,14 @@ mod tests {
             if cause != "unavailable" {
                 let control = Arc::new(ExactResourceControl {
                     workspace_id: "workspace".into(),
-                    asserted_effect:
-                        awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-                            awaken_session_state_contract::SessionCleanupCommand::new(
-                                &awaken_session_types::SessionId::from("session"),
-                                "session",
-                                "cleanup",
-                            ),
-                            lease.clone(),
+                    asserted_effect: awaken_session_contract::SessionTerminalCleanupEffect::new(
+                        awaken_session_contract::SessionCleanupCommand::new(
+                            &awaken_session_types::SessionId::from("session"),
+                            "session",
+                            "cleanup",
                         ),
+                        lease.clone(),
+                    ),
                     current_lease: lease,
                     checkpoint: Some(operation.clone()),
                 });
@@ -1000,15 +999,14 @@ mod tests {
                     };
                 Arc::new(ExactResourceControl {
                     workspace_id: "workspace".into(),
-                    asserted_effect:
-                        awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-                            awaken_session_state_contract::SessionCleanupCommand::new(
-                                &awaken_session_types::SessionId::from("session"),
-                                "session",
-                                "cleanup",
-                            ),
-                            lease.clone(),
+                    asserted_effect: awaken_session_contract::SessionTerminalCleanupEffect::new(
+                        awaken_session_contract::SessionCleanupCommand::new(
+                            &awaken_session_types::SessionId::from("session"),
+                            "session",
+                            "cleanup",
                         ),
+                        lease.clone(),
+                    ),
                     current_lease: lease,
                     checkpoint: None,
                 })

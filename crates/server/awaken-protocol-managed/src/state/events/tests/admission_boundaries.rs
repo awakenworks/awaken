@@ -19,10 +19,7 @@ fn interrupt(thread: Option<&str>) -> SendEventsRequest {
     }))
 }
 
-async fn root(
-    state: &ManagedState,
-    session_id: &str,
-) -> awaken_session_state_contract::PersistedSession {
+async fn root(state: &ManagedState, session_id: &str) -> awaken_session_contract::PersistedSession {
     state
         .roles
         .roots
@@ -65,7 +62,7 @@ async fn coordinated_root() -> (CoordinatedRuntimeFake, Arc<ManagedState>, Strin
 
 async fn coordinated_session() -> (CoordinatedRuntimeFake, Arc<ManagedState>, String) {
     let (runtime, state, session_id) = Box::pin(coordinated_root()).await;
-    <CoordinatedRuntimeFake as SessionRuntime>::run(
+    <CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session_id,
@@ -123,7 +120,7 @@ async fn ghost_and_archived_child_interrupt_targets_have_zero_effect() {
         "T3"
     );
 
-    <CoordinatedRuntimeFake as awaken_session_execution_contract::CoordinationRuntime>::archive_session_thread(
+    <CoordinatedRuntimeFake as awaken_session_execution_contract::ChildRunCoordination>::archive_session_thread(
         &runtime,
         &SessionId::from(&session_id),
         child_id,
@@ -261,14 +258,14 @@ async fn ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100
     }
 }
 
-fn budget_paused_root(session_id: &str) -> awaken_session_state_contract::PersistedSession {
+fn budget_paused_root(session_id: &str) -> awaken_session_contract::PersistedSession {
     let mut persisted = crate::state::tests::sample_persisted(session_id);
-    persisted.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    persisted.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
-        consumed_numerator: awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+        consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "budget-snapshot".into(),
             version: 1,
             effective_at_unix_ms: 0,
@@ -292,7 +289,7 @@ async fn budget_paused_interrupt_only_batch_is_a_legal_no_op() {
     let session_id = "session-budget-paused-interrupt";
     let persisted = budget_paused_root(session_id);
     assert!(
-        awaken_session_state_contract::session_is_budget_paused(&persisted),
+        awaken_session_contract::session_is_budget_paused(&persisted),
         "N1 precondition: the root is budget paused"
     );
     let repository = Arc::new(ephemeral_session_repo().await);
@@ -359,7 +356,7 @@ async fn admission_error_precedence_follows_the_entry_table() {
     let session_id = "session-archived-precedence";
     let accepted = user_messages(1);
     let mut persisted = crate::state::tests::sample_persisted(session_id);
-    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+    let mut batch = awaken_session_contract::SessionEventBatch::compile(
         &SessionId::from(session_id),
         "kept-batch",
         vec![SessionEventInput::UserMessage {
@@ -374,11 +371,9 @@ async fn admission_error_precedence_follows_the_entry_table() {
         &None::<String>,
     )));
     batch
-        .anchor_admission_projection(
-            awaken_session_event_contract::SessionEventProjectionAnchor {
-                source_commit_cursor: 0,
-            },
-        )
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
         .unwrap();
     batch.events[0].processed = true;
     let receipt = SendEventsResponse {

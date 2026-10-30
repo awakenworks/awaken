@@ -65,7 +65,7 @@ async fn local_projection_failure_keeps_its_provider_hint_and_failure_budget_cla
         );
         assert_eq!(
             root.execution,
-            awaken_session_state_contract::SessionExecutionState::Preparing,
+            awaken_session_contract::SessionExecutionState::Preparing,
             "{rule}"
         );
         assert!(

@@ -46,7 +46,7 @@ fn externally_placed(id: &str, state: &str, run_free: bool) -> PersistedSession 
     if run_free {
         // W1: set the legal request through its existing assignment owner;
         // completed Idle history still keeps the flag without gaining demand.
-        let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(session)
+        let mut aggregate = awaken_session_contract::SessionAggregate::try_from(session)
             .expect("valid external preparation fixture");
         aggregate
             .assignment()
@@ -123,7 +123,7 @@ fn idle_mcp_preparation_uses_current_root_facts_without_a_second_request_flag() 
                 root.activity_epoch = 1;
                 root.active_activity_epochs.insert(1);
             }
-            "R7" => root.disposition = awaken_session_state_contract::SessionDisposition::Deleting,
+            "R7" => root.disposition = awaken_session_contract::SessionDisposition::Deleting,
             "R8" => {
                 root.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Active;
                 root.mcp.attachments[0].publication_acknowledged = true;

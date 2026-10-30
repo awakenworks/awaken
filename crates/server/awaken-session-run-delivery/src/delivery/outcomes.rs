@@ -224,7 +224,7 @@ impl WorkerPlacedSessions {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for WorkerPlacedSessions {
+impl awaken_session_execution_contract::Outcomes for WorkerPlacedSessions {
     async fn prepare_outcome(
         &self,
         thread: &str,
@@ -245,7 +245,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for WorkerPlacedSessions 
         max_iterations: u32,
         admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
-        let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
+        let outcome_id = awaken_session_contract::session_outcome_convenience_id(
             thread,
             description,
             rubric,

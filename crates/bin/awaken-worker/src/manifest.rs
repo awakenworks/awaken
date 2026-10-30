@@ -429,7 +429,7 @@ pub(crate) fn ensure_registered_local_provider(
     };
     if deps
         .installed_session_environment_provider()
-        .realizer()
+        .readiness()
         .capabilities()
         != manifest.sandbox
     {

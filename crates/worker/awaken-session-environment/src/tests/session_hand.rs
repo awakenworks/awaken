@@ -74,8 +74,9 @@ async fn terminal_close_interrupts_an_active_hand_and_never_claims_resident_quie
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_time::system_clock(),
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let hand = environment.agent_tools().tool_executor();
@@ -157,9 +158,13 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_time::system_clock(),
     )
-    .into_session_provider();
+    .into_provider_roles();
 
-    let original = environments.create(&spec()).await.unwrap();
+    let original = environments
+        .realizer()
+        .create_unattached(&spec())
+        .await
+        .unwrap();
     let handle = original.lifecycle().handle();
     assert_eq!(
         original
@@ -183,7 +188,11 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
 
     original.lifecycle().stop_bound_processes().await.unwrap();
-    let adopted = environments.adopt(&spec(), &handle).await.unwrap();
+    let adopted = environments
+        .adoption()
+        .adopt_unattached(&spec(), &handle)
+        .await
+        .unwrap();
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
     assert_eq!(provider.renews.load(Ordering::SeqCst), 1);
@@ -234,8 +243,9 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         stable.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let hand = environment.agent_tools().tool_executor();
@@ -292,8 +302,9 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         recover.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let hand = environment.agent_tools().tool_executor();
@@ -332,8 +343,9 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         failed_replacement.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let error = environment
@@ -379,8 +391,9 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         bounded.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let error = environment
@@ -414,8 +427,9 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         indeterminate.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let error = environment
@@ -472,8 +486,9 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
         factory,
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let hand = environment.agent_tools().tool_executor();
@@ -575,8 +590,9 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let hand = environment.agent_tools().tool_executor();
@@ -639,8 +655,9 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
         )
-        .into_session_provider()
-        .create(&spec())
+        .into_provider_roles()
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap(),
     );
@@ -700,8 +717,9 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     environment
@@ -744,8 +762,9 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_time::system_clock(),
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     environment
@@ -799,8 +818,9 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
         )
-        .into_session_provider()
-        .create(&spec())
+        .into_provider_roles()
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap(),
     );
@@ -854,8 +874,9 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     let hand = environment.agent_tools().tool_executor();
@@ -902,8 +923,9 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     tokio::task::yield_now().await;
@@ -939,8 +961,9 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     failed
@@ -994,8 +1017,9 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
-    .into_session_provider()
-    .create(&spec())
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&spec())
     .await
     .unwrap();
     tokio::task::yield_now().await;
@@ -1041,12 +1065,13 @@ async fn adopting_a_container_renews_its_ownership_before_use() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let spec = spec();
     let effective_spec = environments.realizer().effective_spec(&spec).unwrap();
     let handle = current_fake_container_handle(&effective_spec);
     let adopted = environments
-        .adopt(&spec, &handle)
+        .adoption()
+        .adopt_unattached(&spec, &handle)
         .await
         .expect("adopt environment");
     assert_eq!(
@@ -1312,8 +1337,9 @@ async fn terminal_recovery_observation_failures_and_timeouts_retain_the_same_bin
             awaken_session_environment_contract::ContainerHandResidency::Resident,
             awaken_time::system_clock(),
         )
-        .into_session_provider()
-        .create(&spec())
+        .into_provider_roles()
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap();
         let request = ToolCall {

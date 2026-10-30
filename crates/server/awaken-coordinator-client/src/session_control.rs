@@ -30,9 +30,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
         self.control
@@ -42,11 +42,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<
-        awaken_session_state_contract::SessionEnvironmentState,
-        awaken_session_types::RunError,
-    > {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
+    {
         self.control
             .persist_session_environment_receipt(&self.identity, &receipt)
             .await
@@ -257,7 +255,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 {
     async fn authorize_terminal_cleanup_effect(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
         awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -270,7 +268,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
     async fn record_terminal_cleanup_preparation(
         &self,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        preparation: awaken_session_state_contract::SessionCleanupPreparation,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.control
             .record_terminal_cleanup_preparation(&self.identity, lease, preparation)
@@ -284,7 +282,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 {
     async fn authorize_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.control
             .authorize_terminal_cleanup_disposal(&self.identity, effect)
@@ -294,7 +292,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
     async fn record_terminal_cleanup_disposal(
         &self,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.control
             .record_terminal_cleanup_disposal(&self.identity, lease, receipt)
@@ -323,7 +321,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.control
             .record_terminal_repository_publication_receipt(
@@ -339,7 +337,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.control
             .record_terminal_repository_publication_rejection(

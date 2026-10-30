@@ -218,7 +218,7 @@ pub fn router(state: Arc<ManagedState>) -> Router {
 /// the same 404, because an ownership comparison against a compiled-in tenant is
 /// not an ownership check. The single-tenant surface is stamped by the
 /// composition root, never by this guard.
-pub async fn session_scope_guard(
+pub(crate) async fn session_scope_guard(
     State(state): State<Arc<ManagedState>>,
     request: Request,
     next: axum::middleware::Next,
@@ -689,16 +689,16 @@ async fn update_session(
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = parse_if_match(&headers, "Session")?.map(awaken_session_types::SessionRevision);
     let title = title.map(|value| match value {
-        Some(value) => awaken_session_state_contract::SessionFieldUpdate::Replace(value),
-        None => awaken_session_state_contract::SessionFieldUpdate::Clear,
+        Some(value) => awaken_session_contract::SessionFieldUpdate::Replace(value),
+        None => awaken_session_contract::SessionFieldUpdate::Clear,
     });
     let metadata = metadata.map(|value| match value {
         Some(value) => awaken_session_application::SessionMetadataUpdate::Patch(value),
         None => awaken_session_application::SessionMetadataUpdate::Clear,
     });
     let budget = budget.map(|value| match value {
-        Some(value) => awaken_session_state_contract::SessionFieldUpdate::Replace(value),
-        None => awaken_session_state_contract::SessionFieldUpdate::Clear,
+        Some(value) => awaken_session_contract::SessionFieldUpdate::Replace(value),
+        None => awaken_session_contract::SessionFieldUpdate::Clear,
     });
     let (session, response_revision) = state
         .update_session(

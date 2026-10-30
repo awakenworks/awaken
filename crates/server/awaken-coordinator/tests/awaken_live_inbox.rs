@@ -5,7 +5,7 @@
 
 use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
+    SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use awaken_session_types::SessionId;
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use awaken_protocol_awaken::live_inbox_router;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_execution_contract::{
-    LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeDrive, SessionRuntime,
+    LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeDrive, SessionRuns,
 };
 use awaken_session_types::RunError;
 use awaken_tenancy::WorkspaceScope;
@@ -114,7 +114,7 @@ fn unsupported_runtime_operation() -> RunError {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for QueueFake {
+impl SessionRuns for QueueFake {
     async fn run(
         &self,
         _agent: &str,
@@ -151,13 +151,13 @@ impl SessionRuntime for QueueFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for QueueFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for QueueFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for QueueFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for QueueFake);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for QueueFake);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for QueueFake);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for QueueFake);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for QueueFake);
 
@@ -244,7 +244,7 @@ impl awaken_session_execution_contract::RealizationRuntime for QueueFake {
 awaken_session_execution_contract::neutral_role!(RealizationEffects for QueueFake);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for QueueFake {
+impl awaken_session_execution_contract::ChildRunCoordination for QueueFake {
     // Fixture rule P1: live-inbox tests expose completed ordinary User reservations only.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -252,7 +252,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for QueueFake {
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -470,7 +470,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for QueueFake {
 impl awaken_session_execution_contract::SessionCoordinationReads for QueueFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -575,7 +575,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for QueueFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for QueueFake {
+impl awaken_session_execution_contract::ThreadReads for QueueFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -714,7 +714,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for QueueFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for QueueFake {
+impl awaken_session_execution_contract::Outcomes for QueueFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -764,7 +764,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for QueueFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::LiveInboxRuntime for QueueFake {
+impl awaken_session_execution_contract::LiveInboxAccess for QueueFake {
     async fn live_inbox_snapshot(
         &self,
         _thread: &str,
@@ -875,7 +875,7 @@ async fn app_with_session_application(
 ) -> (Router, Arc<awaken_session_application::SessionApplication>) {
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
-    impl SessionRuntime for Shared {
+    impl SessionRuns for Shared {
         async fn run(
             &self,
             a: &str,
@@ -906,13 +906,13 @@ async fn app_with_session_application(
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for Shared);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for Shared);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for Shared);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for Shared);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for Shared);
 
-    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for Shared);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanup for Shared);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for Shared);
 
@@ -988,7 +988,7 @@ async fn app_with_session_application(
     awaken_session_execution_contract::neutral_role!(RealizationEffects for Shared);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::CoordinationRuntime for Shared {
+    impl awaken_session_execution_contract::ChildRunCoordination for Shared {
         // Fixture rule P1: the shared live-inbox wrapper retains its inner fixture refusal.
         // A prepared command refuses before activity admission or fixture mutation.
         async fn run_prepared_session_run(
@@ -997,7 +997,7 @@ async fn app_with_session_application(
             activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
         ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError>
         {
-            awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
                 self.0.as_ref(),
                 command,
                 activity,
@@ -1206,7 +1206,7 @@ async fn app_with_session_application(
     impl awaken_session_execution_contract::SessionCoordinationReads for Shared {
         async fn source_dispatch_observation(
             &self,
-            _session: &awaken_session_state_contract::PersistedSession,
+            _session: &awaken_session_contract::PersistedSession,
         ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
             Default::default()
         }
@@ -1308,7 +1308,7 @@ async fn app_with_session_application(
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::ThreadReadRuntime for Shared {
+    impl awaken_session_execution_contract::ThreadReads for Shared {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// True when durable truth already exists for `thread`. Session-id minting
@@ -1420,7 +1420,7 @@ async fn app_with_session_application(
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::OutcomeRuntime for Shared {
+    impl awaken_session_execution_contract::Outcomes for Shared {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -1470,7 +1470,7 @@ async fn app_with_session_application(
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::LiveInboxRuntime for Shared {
+    impl awaken_session_execution_contract::LiveInboxAccess for Shared {
         async fn live_inbox_snapshot(&self, t: &str) -> Result<LiveInboxSnapshot, LiveInboxError> {
             self.0.live_inbox_snapshot(t).await
         }

@@ -46,17 +46,16 @@ pub fn complete_session_projection_init(
 /// adapter prevents each router/state fixture from recreating the retired
 /// one-stage cleanup path or silently ignoring the effect echoed by Control.
 pub fn complete_terminal_cleanup_preparation(
-    effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-) -> Result<awaken_session_state_contract::SessionCleanupPreparation, awaken_session_types::RunError>
-{
+) -> Result<awaken_session_contract::SessionCleanupPreparation, awaken_session_types::RunError> {
     authorization
         .verify_for(effect)
         .map_err(|error| awaken_session_types::RunError::internal(error.to_string()))?;
     let provider_prepared_effect_fence = effect
         .sandbox_effect_fence()
         .map_err(|error| awaken_session_types::RunError::internal(error.to_string()))?;
-    awaken_session_state_contract::SessionCleanupPreparation::try_new(
+    awaken_session_contract::SessionCleanupPreparation::try_new(
         effect,
         provider_prepared_effect_fence,
         Vec::new(),
@@ -69,7 +68,7 @@ pub fn complete_terminal_cleanup_preparation(
 /// owner; this helper owns no cleanup state or compatibility behavior.
 #[must_use]
 pub fn complete_terminal_cleanup_disposal(
-    effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-) -> awaken_session_state_contract::SessionCleanupDisposalReceipt {
-    awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command)
+    effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+) -> awaken_session_contract::SessionCleanupDisposalReceipt {
+    awaken_session_contract::SessionCleanupDisposalReceipt::new(&effect.command)
 }

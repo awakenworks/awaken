@@ -1053,7 +1053,7 @@ pub fn check_pending(
 impl awaken_session_execution_contract::SessionCoordinationReads for CoordinatedThreads {
     async fn source_dispatch_observation(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         let Ok(source) = self.owner() else {
             return Default::default();
@@ -1063,7 +1063,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
 
     async fn execution_recovery_observation(
         &self,
-        session: &awaken_session_state_contract::PersistedSession,
+        session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionExecutionRecoveryObservation {
         let Ok(source) = self.owner() else {
             return awaken_session_execution_contract::SessionExecutionRecoveryObservation::NotProven {

@@ -4,22 +4,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 526,
+        "line": 525,
         "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 542
+        "line": 541
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 558
+        "line": 557
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 577
+        "line": 576
       }
     ],
     "execution_witnesses": [
@@ -53,22 +53,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 455,
+        "line": 448,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 458
+        "line": 451
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 460
+        "line": 453
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 464
+        "line": 457
       }
     ],
     "execution_witnesses": [
@@ -114,18 +114,18 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 475,
+        "line": 468,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 485
+        "line": 478
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 489
+        "line": 482
       }
     ],
     "execution_witnesses": [
@@ -171,7 +171,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 533,
+        "line": 526,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
@@ -203,15 +203,15 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 541
+        "line": 534
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 542
+        "line": 535
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 543
+        "line": 536
       }
     ]
   },
@@ -220,7 +220,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 496,
+        "line": 489,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
@@ -252,11 +252,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 517
+        "line": 510
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 521
+        "line": 514
       }
     ]
   },

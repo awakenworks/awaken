@@ -37,8 +37,9 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
         awaken_session_environment_contract::ContainerHandResidency::AttachedExec,
         clock,
     )
-    .into_session_provider()
-    .create(&docker_spec)
+    .into_provider_roles()
+    .realizer()
+    .create_unattached(&docker_spec)
     .await
     .unwrap();
     let remote = "/workspace/remote.git";
@@ -254,7 +255,7 @@ async fn container_restore_is_refused_at_selection_when_the_provider_has_no_rest
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let store = CountingCheckpointStore::default();
     let request = pc::SandboxRestoreRequest {
         workspace_id: "workspace".into(),

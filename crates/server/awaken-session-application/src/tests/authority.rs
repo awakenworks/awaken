@@ -13,8 +13,8 @@ use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_credential_contract::CredentialMaterialInput;
-use awaken_session_repository_contract::LifecycleOutbox as _;
-use awaken_session_state_contract::ManagedLifecycleFact;
+use awaken_session_contract::LifecycleOutbox as _;
+use awaken_session_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
 mod coordinated_resources;
 mod creation_inputs;
@@ -93,25 +93,21 @@ fn coordinated_session(id: &str) -> PersistedSession {
 
 pub(super) fn session_with_unsettled_event(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
-    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+    let mut batch = awaken_session_contract::SessionEventBatch::compile(
         &awaken_session_types::SessionId::from(id),
         format!("batch:{id}"),
-        vec![
-            awaken_session_event_contract::SessionEventInput::UserMessage {
-                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "accepted before terminal",
-                )],
-            },
-        ],
+        vec![awaken_session_contract::SessionEventInput::UserMessage {
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "accepted before terminal",
+            )],
+        }],
     )
     .expect("valid retained Event batch");
     batch.admitted_revision = awaken_session_types::SessionRevision(1);
     batch
-        .anchor_admission_projection(
-            awaken_session_event_contract::SessionEventProjectionAnchor {
-                source_commit_cursor: 0,
-            },
-        )
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
         .unwrap();
     session.event_batches.push(batch);
     session
@@ -119,7 +115,7 @@ pub(super) fn session_with_unsettled_event(id: &str) -> PersistedSession {
 
 async fn anchor_unsettled_event(
     app: &SessionApplication,
-    repository: &dyn awaken_session_repository_contract::SessionStore,
+    repository: &dyn crate::SessionStore,
     session_id: &str,
 ) {
     let mut session = repository
@@ -134,7 +130,7 @@ async fn anchor_unsettled_event(
         session.event_batches[0]
             .mark_processed(
                 &operation_id,
-                awaken_session_event_contract::SessionEventProjectionAnchor {
+                awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: 17,
                 },
                 1_700_000_000_000
@@ -145,7 +141,7 @@ async fn anchor_unsettled_event(
         .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(session)
+            awaken_session_contract::SessionAggregate::try_from(session)
                 .expect("valid test snapshot"),
             &format!("test-anchor-event:{session_id}"),
             Vec::new(),
@@ -308,7 +304,7 @@ fn session_with_repository_retirement(
     resources: crate::session_resource::ResolvedSessionResources,
 ) -> PersistedSession {
     let mut session = persisted(session_id, self_hosted, "idle");
-    session.resources = awaken_session_state_contract::SessionResourceState::from_active(resources);
+    session.resources = awaken_session_contract::SessionResourceState::from_active(resources);
     session
         .resources
         .prepare(
@@ -370,13 +366,12 @@ async fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn awaken_credential_contract::CredentialMaterialIngress>,
 ) -> SessionApplication {
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        authority_repository("Session repository").await;
+    let sessions: Arc<dyn crate::SessionStore> = authority_repository("Session repository").await;
     repository_retirement_application(sessions, registry, ingress)
 }
 
 fn repository_retirement_application(
-    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    sessions: Arc<dyn crate::SessionStore>,
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn awaken_credential_contract::CredentialMaterialIngress>,
 ) -> SessionApplication {
@@ -401,8 +396,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // replay receipt; the Session application creates no side store or cache.
     let registry = super::creation::ephemeral_resource_registry().await;
     let repository_id = managed_repository_id("repo-replay");
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        authority_repository("Session repository").await;
+    let sessions: Arc<dyn crate::SessionStore> = authority_repository("Session repository").await;
 
     let mut original = application(
         sessions.clone(),
@@ -869,8 +863,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     // | A2 | absent | n/a | forged | yes | E3 + E4, no Vault effect |
     let registry = super::creation::ephemeral_resource_registry().await;
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        authority_repository("Session repository").await;
+    let sessions: Arc<dyn crate::SessionStore> = authority_repository("Session repository").await;
 
     let markerless_id = "retirement-markerless";
     let markerless_credential = awaken_credential_contract::CredentialRef {
@@ -974,7 +967,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     register_retirement_repository(registry.as_ref(), session_id, true, true).await;
 
     {
-        let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let sessions: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .await
                 .expect("open Session authority"),
@@ -1041,7 +1034,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         );
     }
 
-    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let sessions: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .await
             .expect("reopen Session authority"),
@@ -1147,8 +1140,8 @@ async fn root_mutation_cause_effect_decision_table() {
         .expect("fixture");
     let mut candidate = original.clone();
     candidate.title = Some("applied".into());
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(candidate.clone());
-    let record = awaken_session_state_contract::IdempotencyRecord {
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(candidate.clone());
+    let record = awaken_session_contract::IdempotencyRecord {
         key: "mutation:one".into(),
         payload_hash: payload.stable_hash(),
     };
@@ -1173,7 +1166,7 @@ async fn root_mutation_cause_effect_decision_table() {
         .mutations
         .commit_session_snapshot_with_record(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+            awaken_session_contract::SessionAggregate::try_from(candidate.clone())
                 .expect("valid test snapshot"),
             record.clone(),
             Vec::new(),
@@ -1201,7 +1194,7 @@ async fn root_mutation_cause_effect_decision_table() {
         .into_session();
     assert!(later.revision > applied.revision);
     let facts_before = repo.pending_lifecycle().await.expect("M5 outbox before");
-    let replay_fact = awaken_session_state_contract::ManagedLifecycleFact {
+    let replay_fact = awaken_session_contract::ManagedLifecycleFact {
         id: "must-not-append-on-replay".into(),
         object_id: "mutation".into(),
         workspace_id: Some("workspace".into()),
@@ -1213,7 +1206,7 @@ async fn root_mutation_cause_effect_decision_table() {
         .mutations
         .commit_session_snapshot_with_record(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+            awaken_session_contract::SessionAggregate::try_from(candidate.clone())
                 .expect("valid test snapshot"),
             record.clone(),
             vec![replay_fact.clone()],
@@ -1248,7 +1241,7 @@ async fn root_mutation_cause_effect_decision_table() {
             .mutations
             .commit_session_snapshot_with_record(
                 "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+                awaken_session_contract::SessionAggregate::try_from(candidate.clone())
                     .expect("valid test snapshot"),
                 record.clone(),
                 vec![replay_fact],
@@ -1276,7 +1269,7 @@ async fn root_mutation_cause_effect_decision_table() {
         .mutations
         .commit_session_snapshot_with_outcome(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+            awaken_session_contract::SessionAggregate::try_from(candidate.clone())
                 .expect("valid test snapshot"),
             "stale",
             Vec::new(),
@@ -1288,9 +1281,9 @@ async fn root_mutation_cause_effect_decision_table() {
         .mutations
         .commit_session_snapshot_with_record(
             "workspace",
-            awaken_session_state_contract::SessionAggregate::try_from(candidate)
+            awaken_session_contract::SessionAggregate::try_from(candidate)
                 .expect("valid test snapshot"),
-            awaken_session_state_contract::IdempotencyRecord {
+            awaken_session_contract::IdempotencyRecord {
                 key: record.key,
                 payload_hash: "another-payload".into(),
             },
@@ -1334,8 +1327,8 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     original.execution = SessionExecutionState::Preparing;
     original.created_at_unix_ms = None;
     original.updated_at_unix_ms = None;
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(original.clone());
-    let record = awaken_session_state_contract::IdempotencyRecord {
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(original.clone());
+    let record = awaken_session_contract::IdempotencyRecord {
         key: "create-root:one".into(),
         payload_hash: payload.stable_hash(),
     };
@@ -1403,7 +1396,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
             .create_session_root(
                 "workspace",
                 CompleteSessionRoot::from_fresh(candidate).unwrap(),
-                awaken_session_state_contract::IdempotencyRecord {
+                awaken_session_contract::IdempotencyRecord {
                     key,
                     payload_hash: payload_hash.into(),
                 },
@@ -1467,13 +1460,13 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     // winner and the archived replay uses that same frozen intent.
     let repo = authority_repository("profiled Repository publication repository").await;
     let mut session = persisted("profiled-publication", false, "idle");
-    session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "profiled-publication-source".into(),
         effect_id: None,
         generation: None,
         idle_since_unix_ms: None,
     };
-    session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+    session.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), session).await;
@@ -1492,7 +1485,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let fact = awaken_session_state_contract::ManagedLifecycleFact {
+    let fact = awaken_session_contract::ManagedLifecycleFact {
         id: "profiled-publication:terminated".into(),
         object_id: "profiled-publication".into(),
         workspace_id: Some("workspace".into()),
@@ -1544,7 +1537,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
             .await
             .unwrap()
             .execution,
-        awaken_session_state_contract::SessionExecutionState::Idle,
+        awaken_session_contract::SessionExecutionState::Idle,
         "R1-R2/E1"
     );
 
@@ -1643,14 +1636,13 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     // Permanent publication rejection is durable before ordinary root cleanup;
     // exact profiled replay returns the same rejection without a second Git call.
     let mut rejected_session = persisted("profiled-rejected", false, "idle");
-    rejected_session.environment =
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "profiled-rejected-source".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
-    rejected_session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+    rejected_session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "profiled-rejected-source".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    rejected_session.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), rejected_session).await;
@@ -1724,7 +1716,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     closed_source
         .environment
         .set_resident("profiled-source-closed-source");
-    closed_source.resources = awaken_session_state_contract::SessionResourceState::from_active(
+    closed_source.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), closed_source).await;
@@ -1808,17 +1800,15 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     runtime.reject_publication.store(false, Ordering::SeqCst);
     runtime.fail_publication_once.store(true, Ordering::SeqCst);
     let mut unavailable_session = persisted("profiled-unavailable", false, "idle");
-    unavailable_session.environment =
-        awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "profiled-unavailable-source".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
-    unavailable_session.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(repository_resources(
-            "source", "repo-1",
-        ));
+    unavailable_session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "profiled-unavailable-source".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    unavailable_session.resources = awaken_session_contract::SessionResourceState::from_active(
+        repository_resources("source", "repo-1"),
+    );
     create(repo.as_ref(), unavailable_session).await;
     let mut unavailable = command;
     unavailable.session_id = "profiled-unavailable".into();
@@ -1934,7 +1924,7 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
             );
             assert!(matches!(
                 completed.disposition,
-                awaken_session_state_contract::SessionDisposition::Archived { .. }
+                awaken_session_contract::SessionDisposition::Archived { .. }
             ));
             assert!(
                 app.activities
@@ -2022,7 +2012,7 @@ fn terminal_only_release_waits_for_cleanup_and_recovers_committed_failure() {
         let pending = repo.get(&SessionId::from(id)).await.unwrap();
         assert!(matches!(
             pending.disposition,
-            awaken_session_state_contract::SessionDisposition::Archived { .. }
+            awaken_session_contract::SessionDisposition::Archived { .. }
         ));
         assert_eq!(pending.execution, SessionExecutionState::ActivationFailed);
         assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
@@ -2088,7 +2078,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // the only transition authority; replays cannot create another terminal fact.
     // Decision rule: execute L1-L9 and require every accepted, blocked, raced,
     // forced, and delete effect in the table above.
-    let durable_repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let durable_repo: Arc<dyn crate::SessionStore> =
         authority_repository("session repository").await;
     let repo = Arc::new(FaultingSessionRepository::new(durable_repo));
     create(repo.as_ref(), persisted("archive-race", false, "idle")).await;
@@ -2124,7 +2114,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     .await;
     let environments = Arc::new(RecordingEnvironmentSource::default());
     let app = application(repo.clone(), environments.clone());
-    let fact = |id: &str, event_type: &str| awaken_session_state_contract::ManagedLifecycleFact {
+    let fact = |id: &str, event_type: &str| awaken_session_contract::ManagedLifecycleFact {
         id: format!("{id}:{event_type}"),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
@@ -2303,7 +2293,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         .expect_err("L7 tombstone");
     assert!(matches!(
         tombstone,
-        awaken_session_state_contract::SessionRepositoryError::NotFound
+        awaken_session_contract::SessionRepositoryError::NotFound
     ));
     assert!(
         environments
@@ -2379,8 +2369,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     // `processed=false` intentionally covers both a merely queued command and
     // crash-after-effect/before-root-CAS: the effect owner may make replay a
     // no-op, but terminal admission cannot infer that fact or drop provenance.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
-        authority_repository("Session repository").await;
+    let repository: Arc<dyn crate::SessionStore> = authority_repository("Session repository").await;
     for session_id in [
         "batch-before-archive",
         "batch-before-force",
@@ -2396,7 +2385,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let fact = |session_id: &str| awaken_session_state_contract::ManagedLifecycleFact {
+    let fact = |session_id: &str| awaken_session_contract::ManagedLifecycleFact {
         id: format!("{session_id}:terminated"),
         object_id: session_id.into(),
         workspace_id: Some("workspace".into()),
@@ -2485,12 +2474,12 @@ async fn deletion_fixture(
     initial: &str,
     session_id: &str,
 ) -> (
-    Arc<dyn awaken_session_repository_contract::SessionStore>,
+    Arc<dyn crate::SessionStore>,
     Arc<FaultingSessionRepository>,
     Arc<RecordingCleanupRuntime>,
     Arc<SessionApplication>,
 ) {
-    let durable: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let durable: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -2865,7 +2854,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     assert!(
                         matches!(
                             actual_result,
-                            awaken_session_state_contract::SessionMutationResult::Conflict { .. }
+                            awaken_session_contract::SessionMutationResult::Conflict { .. }
                         ),
                         "R2 real stale-root CAS conflict"
                     );
@@ -2873,18 +2862,14 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     assert!(
                         matches!(
                             actual_result,
-                            awaken_session_state_contract::SessionMutationResult::Replayed { .. }
+                            awaken_session_contract::SessionMutationResult::Replayed { .. }
                         ),
                         "R1/R3/R4 actual SQLite receipt replay"
                     );
                 }
                 let sqlite_result = match actual_result {
-                    awaken_session_state_contract::SessionMutationResult::Conflict { .. } => {
-                        "conflict"
-                    }
-                    awaken_session_state_contract::SessionMutationResult::Replayed { .. } => {
-                        "replayed"
-                    }
+                    awaken_session_contract::SessionMutationResult::Conflict { .. } => "conflict",
+                    awaken_session_contract::SessionMutationResult::Replayed { .. } => "replayed",
                     _ => unreachable!("race must actually reach a losing CAS branch"),
                 };
                 let race = serde_json::json!({
@@ -4043,13 +4028,12 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
     let repo = authority_repository("required-action budget repository").await;
     for session_id in ["reached-valid-reply", "reached-invalid-reply"] {
         let mut session = persisted(session_id, false, "idle");
-        session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+        session.budget = awaken_session_contract::SessionBudgetState::Active {
             max_list_cost_minor: 1,
-            consumed_numerator:
-                awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-                    * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+            consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+                * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
             usage_cursor: Default::default(),
-            snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+            snapshot: awaken_session_contract::ManagedListPriceSnapshot {
                 snapshot_id: "required-action-price-v1".into(),
                 version: 1,
                 effective_at_unix_ms: 1,
@@ -4166,12 +4150,12 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     // | G2 | reached | spawn child | rejects | E2+E3 |
     let repo = authority_repository("budget choke repository").await;
     let mut session = coordinated_session("budget-admission-choke");
-    session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    session.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
-        consumed_numerator: awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+        consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "budget-choke-price-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
@@ -4591,7 +4575,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
     runtime.set_generic_recovery_available(false);
     assert!(
-        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+        awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(
             runtime.as_ref(),
             &SessionId::from(session_id),
             &thread_id.0,
@@ -4756,7 +4740,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     let repo = authority_repository("Advisor usage repository").await;
     create(repo.as_ref(), persisted("advisor-usage", false, "idle")).await;
     let runtime = Arc::new(
-        RecordingBoundaryBudgetRuntime::new(awaken_session_budget_contract::SessionUsage {
+        RecordingBoundaryBudgetRuntime::new(awaken_session_contract::SessionUsage {
             input_tokens: 3,
             output_tokens: 7,
             cache_read_tokens: 2,
@@ -4766,7 +4750,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             active_seconds: 888,
             by_model: std::collections::BTreeMap::from([(
                 "shared-model".into(),
-                awaken_session_budget_contract::SessionModelUsage {
+                awaken_session_contract::SessionModelUsage {
                     input_tokens: 3,
                     output_tokens: 7,
                     cache_read_tokens: 2,
@@ -4780,7 +4764,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             },
         ),
     );
-    runtime.set_root_usage(awaken_session_budget_contract::SessionUsage {
+    runtime.set_root_usage(awaken_session_contract::SessionUsage {
         input_tokens: 10,
         output_tokens: 14,
         cache_read_tokens: 4,
@@ -4790,7 +4774,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         active_seconds: 999,
         by_model: std::collections::BTreeMap::from([(
             "shared-model".into(),
-            awaken_session_budget_contract::SessionModelUsage {
+            awaken_session_contract::SessionModelUsage {
                 input_tokens: 10,
                 output_tokens: 14,
                 cache_read_tokens: 4,
@@ -4834,7 +4818,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         .session_usage("advisor-usage", None)
         .await
         .expect("A1 Session usage");
-    let expected_one = awaken_session_budget_contract::SessionUsage {
+    let expected_one = awaken_session_contract::SessionUsage {
         input_tokens: 13,
         output_tokens: 21,
         cache_read_tokens: 6,
@@ -4844,7 +4828,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         active_seconds: 0,
         by_model: std::collections::BTreeMap::from([(
             "shared-model".into(),
-            awaken_session_budget_contract::SessionModelUsage {
+            awaken_session_contract::SessionModelUsage {
                 input_tokens: 13,
                 output_tokens: 21,
                 cache_read_tokens: 6,
@@ -5087,14 +5071,14 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     // | G3 | child | below | no | E1 |
     // | G4 | child | reaches | no/yes | E2+E3 |
     let repo = authority_repository("request gate repository").await;
-    let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
+    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
         snapshot_id: "request-gate-prices-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
         arithmetic_version: 1,
         model_rates: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_budget_contract::ManagedTokenListRates {
+            awaken_session_contract::ManagedTokenListRates {
                 input_micros_per_million: 1_000_000,
                 ..Default::default()
             },
@@ -5104,8 +5088,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     };
     for id in ["request-gate-root", "request-gate-child"] {
         let mut session = persisted(id, false, "idle");
-        session.budget =
-            awaken_session_budget_contract::SessionBudgetState::active(1, snapshot.clone());
+        session.budget = awaken_session_contract::SessionBudgetState::active(1, snapshot.clone());
         create(repo.as_ref(), session).await;
     }
     let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(Default::default()));
@@ -5114,11 +5097,11 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let reached_usage = awaken_session_budget_contract::SessionUsage {
+    let reached_usage = awaken_session_contract::SessionUsage {
         input_tokens: 10_000,
         by_model: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_budget_contract::SessionModelUsage {
+            awaken_session_contract::SessionModelUsage {
                 input_tokens: 10_000,
                 ..Default::default()
             },
@@ -5243,14 +5226,14 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     // | B2 | Ended | reaches | first | E1 + E3 |
     // | B3 | Ended | already reached | replay | E4 + same E3 delivery |
     let repo = authority_repository("boundary budget repository").await;
-    let price_snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
+    let price_snapshot = awaken_session_contract::ManagedListPriceSnapshot {
         snapshot_id: "boundary-price-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
         arithmetic_version: 1,
         model_rates: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_budget_contract::ManagedTokenListRates {
+            awaken_session_contract::ManagedTokenListRates {
                 input_micros_per_million: 1_000_000,
                 ..Default::default()
             },
@@ -5261,15 +5244,15 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     for id in ["boundary-budget-awaiting", "boundary-budget-ended"] {
         let mut session = coordinated_session(id);
         session.budget =
-            awaken_session_budget_contract::SessionBudgetState::active(1, price_snapshot.clone());
+            awaken_session_contract::SessionBudgetState::active(1, price_snapshot.clone());
         create(repo.as_ref(), session).await;
     }
     let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(
-        awaken_session_budget_contract::SessionUsage {
+        awaken_session_contract::SessionUsage {
             input_tokens: 10_000,
             by_model: std::collections::BTreeMap::from([(
                 "model".into(),
-                awaken_session_budget_contract::SessionModelUsage {
+                awaken_session_contract::SessionModelUsage {
                     input_tokens: 10_000,
                     ..Default::default()
                 },
@@ -5442,16 +5425,16 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     // | C1 | 2 | reaches cap | concurrent | E1+E2+E3+E4 |
     let repo = authority_repository("concurrent budget repository").await;
     let mut session = coordinated_session("concurrent-child-budget");
-    session.budget = awaken_session_budget_contract::SessionBudgetState::active(
+    session.budget = awaken_session_contract::SessionBudgetState::active(
         1,
-        awaken_session_budget_contract::ManagedListPriceSnapshot {
+        awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "concurrent-price-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
             arithmetic_version: 1,
             model_rates: std::collections::BTreeMap::from([(
                 "model".into(),
-                awaken_session_budget_contract::ManagedTokenListRates {
+                awaken_session_contract::ManagedTokenListRates {
                     input_micros_per_million: 1_000_000,
                     ..Default::default()
                 },
@@ -5462,11 +5445,11 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     );
     create(repo.as_ref(), session).await;
     let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(
-        awaken_session_budget_contract::SessionUsage {
+        awaken_session_contract::SessionUsage {
             input_tokens: 5_000,
             by_model: std::collections::BTreeMap::from([(
                 "model".into(),
-                awaken_session_budget_contract::SessionModelUsage {
+                awaken_session_contract::SessionModelUsage {
                     input_tokens: 5_000,
                     ..Default::default()
                 },
@@ -5845,7 +5828,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     // active+present+!C3=>E3; B4 active+absent=>E4; B5 removed+present=>E5.
     let repo = authority_repository("session repository").await;
     let mut active = persisted("budget-active", false, "idle");
-    let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
+    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
         snapshot_id: "prices-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
@@ -5854,19 +5837,18 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         runtime_rates: Default::default(),
         fingerprint: "prices-v1-fingerprint".into(),
     };
-    active.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    active.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 10,
         consumed_numerator: 2
-            * awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+            * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
         snapshot,
-        reach_transitions: vec![awaken_session_budget_contract::BudgetReachTransition {
+        reach_transitions: vec![awaken_session_contract::BudgetReachTransition {
             generation: 1,
             max_list_cost_minor: 1,
-            consumed_numerator:
-                awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-                    * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+            consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+                * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
             usage_cursor: Default::default(),
             price_snapshot_id: "prices-v1".into(),
         }],
@@ -5932,7 +5914,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     assert!(
         matches!(
             removed.session.budget,
-            awaken_session_budget_contract::SessionBudgetState::Removed { .. }
+            awaken_session_contract::SessionBudgetState::Removed { .. }
         ),
         "B4/E4"
     );
@@ -5979,10 +5961,10 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
     use awaken_session_application_contract::{
         SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
     };
-    use awaken_session_budget_contract::SessionBudgetState;
+    use awaken_session_contract::SessionBudgetState;
 
     let repo = authority_repository("budget resume repository").await;
-    let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
+    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
         snapshot_id: "resume-prices-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
@@ -6205,10 +6187,10 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         session_id: &str,
         binding: &str,
         realization: Option<&crate::session_resource::SessionRealizationLease>,
-    ) -> awaken_session_state_contract::SessionEnvironmentReceipt {
-        awaken_session_state_contract::SessionEnvironmentReceipt::new(
+    ) -> awaken_session_contract::SessionEnvironmentReceipt {
+        awaken_session_contract::SessionEnvironmentReceipt::new(
             session_id,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
             binding,
             realization.cloned(),
         )
@@ -6255,7 +6237,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     let first_intent = first.effect_intent().expect("B1 intent");
     assert_eq!(
         sink.authorize(&first_intent).await.expect("B1 authorize"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
             intent: Box::new(first_intent.clone())
         },
         "B1"
@@ -6287,7 +6269,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     clock.set(300);
     assert_eq!(
         sink.authorize(&first_intent).await.expect("B2 authorize"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding: "sandbox-a".into(),
             intent: Box::new(first_intent.clone()),
         },
@@ -6366,14 +6348,14 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     let mut expired_session = repo.get(&id).await.expect("B6 fixture");
     expired_session.realization = Some(expired.clone());
     let expected_revision = expired_session.revision;
-    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(expired_session);
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(expired_session);
     let payload_hash = payload.stable_hash();
     assert!(matches!(
         repo.commit(
             "workspace",
-            awaken_session_state_contract::SessionMutation {
+            awaken_session_contract::SessionMutation {
                 expected_revision,
-                idempotency: awaken_session_state_contract::IdempotencyRecord {
+                idempotency: awaken_session_contract::IdempotencyRecord {
                     key: "binding-fence:expire".into(),
                     payload_hash,
                 },
@@ -6383,7 +6365,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         )
         .await
         .expect("B7 fixture mutation"),
-        awaken_session_state_contract::SessionMutationResult::Applied { .. }
+        awaken_session_contract::SessionMutationResult::Applied { .. }
     ));
     let expired_error = sink
         .persist(receipt("binding-first-fresh", "sandbox-a", Some(&expired)))
@@ -6474,7 +6456,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .unwrap();
     assert_eq!(
         sink.authorize(&direct).await.unwrap(),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned {
             intent: Box::new(direct.clone())
         },
         "B18 direct missing root retains only its request value"
@@ -6602,7 +6584,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         let active_resources = file_resources("resource-2");
         let desired_resources = file_resources("resource-3");
         if pending_resources {
-            session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+            session.resources = awaken_session_contract::SessionResourceState::from_active(
                 file_resources("resource-1"),
             );
             session

@@ -695,7 +695,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
                     "unused",
                 )
-                .into_session_provider();
+                .into_provider_roles();
                 let spec = host
                     .realization_executor
                     .staging()
@@ -704,18 +704,25 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 let handle =
                     crate::host::tests::terminal_fixture_container_handle("session", &spec);
                 let binding = serde_json::to_string(&handle).unwrap();
-                let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
                     "session",
-                    awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+                    awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
                     Some(lease()),
                 )
                 .from_binding(&binding);
                 let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
                 let effect = AuthorizedSessionEnvironmentEffect {
-                    provider_authority: Some(Arc::new(host.realization_executor.authority().provider_effect_authority("session", &initial).unwrap())),
+                    provider_authority: Some(Arc::new(
+                        host.realization_executor
+                            .authority()
+                            .provider_effect_authority("session", &initial)
+                            .unwrap(),
+                    )),
                     provider_fence: Some(initial),
                     authorization:
-                        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
+                        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                            intent: Box::new(intent),
+                        },
                 };
                 let lifecycle = host
                     .realization_executor
@@ -832,7 +839,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "unused",
         )
-        .into_session_provider();
+        .into_provider_roles();
         let mut spec = awaken_session_environment::test_support::spec();
         spec.scope = "session".into();
         let directory = tempfile::tempdir().unwrap();
@@ -987,9 +994,9 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
             }
             let host = (host).build().expect("validated Host dependencies");
             install(&host, lease());
-            let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
                 "session",
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 Some(lease()),
             )
             .for_environment("immutable-config");
@@ -1001,7 +1008,9 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 .unwrap();
             let effect = AuthorizedSessionEnvironmentEffect {
                 authorization:
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
+                    awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                        intent: Box::new(intent),
+                    },
                 provider_fence: Some(initial),
                 provider_authority: Some(Arc::new(authority)),
             };

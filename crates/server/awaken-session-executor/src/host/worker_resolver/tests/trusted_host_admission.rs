@@ -13,7 +13,7 @@ async fn trusted_host_admission_rejection_preserves_permanent_class_without_effe
     let host = adoption_host().await;
     let provider = awaken_session_environment::SandboxEnvironmentProvider::
         trusted_host_workdir_with_agent_stderr(root.path(), false)
-        .into_session_provider();
+        .into_provider_roles();
     let mut spec =
         awaken_session_configuration_contract::environment_projection::default_session_sandbox_spec(
             "trusted-admission-class",

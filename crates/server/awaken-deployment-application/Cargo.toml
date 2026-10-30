@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 awaken-session-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-awaken-session-repository-contract.workspace = true
+awaken-session-contract.workspace = true
 
 [lints]
 workspace = true

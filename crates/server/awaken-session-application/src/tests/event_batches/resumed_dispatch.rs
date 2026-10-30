@@ -20,7 +20,7 @@ async fn completed_admission_and_activation_share_only_the_post_dispatch_settlem
     let mut settled_frames = Vec::new();
     for admission_completed in [true, false] {
         let id = "shared-completed-observation";
-        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .unwrap(),
@@ -150,7 +150,7 @@ async fn completed_admission_and_activation_share_only_the_post_dispatch_settlem
         );
         assert_eq!(
             settled.execution,
-            awaken_session_state_contract::SessionExecutionState::Idle,
+            awaken_session_contract::SessionExecutionState::Idle,
             "D1-D2/E3 Idle only after Dispatch"
         );
         settled_frames.push((
@@ -192,7 +192,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
     // strictly after each durable activity admission. A pre/equal User Event
     // boundary is a separate fail-closed rule in interval_admission.rs.
     for legacy in [false, true] {
-        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .unwrap(),
@@ -232,7 +232,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
         let first = repository.get(&SessionId::from(id)).await.unwrap();
         assert_eq!(
             first.execution,
-            awaken_session_state_contract::SessionExecutionState::Idle
+            awaken_session_contract::SessionExecutionState::Idle
         );
         let published = |root: &PersistedSession| {
             root.event_batches[0]
@@ -255,15 +255,15 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
             }
             let old: PersistedSession = serde_json::from_value(wire).unwrap();
             let expected_revision = old.revision;
-            let payload = awaken_session_state_contract::SessionMutationPayload::Replace(old);
+            let payload = awaken_session_contract::SessionMutationPayload::Replace(old);
             let payload_hash = payload.stable_hash();
             assert!(matches!(
                 repository
                     .commit(
                         "workspace",
-                        awaken_session_state_contract::SessionMutation {
+                        awaken_session_contract::SessionMutation {
                             expected_revision,
-                            idempotency: awaken_session_state_contract::IdempotencyRecord {
+                            idempotency: awaken_session_contract::IdempotencyRecord {
                                 key: "legacy:processed-user-without-dispatch-receipt".into(),
                                 payload_hash,
                             },
@@ -273,7 +273,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
                     )
                     .await
                     .unwrap(),
-                awaken_session_state_contract::SessionMutationResult::Applied { .. }
+                awaken_session_contract::SessionMutationResult::Applied { .. }
             ));
             let decoded = repository.get(&SessionId::from(id)).await.unwrap();
             assert!(
@@ -313,7 +313,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
                 .expect("R6 admitted activity has a durable Runtime source fence");
             let source = admitted_after.max(prior_source) + 1;
             prior_source = source;
-            let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+            let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
                 activity_epoch: epoch,
                 thread_id: ThreadId(id.into()),
                 run_id: run.clone(),
@@ -334,7 +334,7 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
                 .unwrap();
             assert_eq!(
                 root.execution,
-                awaken_session_state_contract::SessionExecutionState::Idle,
+                awaken_session_contract::SessionExecutionState::Idle,
                 "R1"
             );
             assert!(
@@ -398,7 +398,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
     // Constraint/Invariant: reservation and operation receipt reuse one Run and
     // root activity authority. Decision rule: execute crash rule C1 followed by
     // cold recovery C2 and require E1-E3.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("reservation-repair repository"),

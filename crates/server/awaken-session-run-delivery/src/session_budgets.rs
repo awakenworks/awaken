@@ -7,7 +7,7 @@
 //! It reads committed Thread usage, lists the BudgetReached tickets a Session
 //! holds, and resumes a budget-paused Run by staging its resume on the Run's
 //! dispatch row; a foreground root Run that has none is dispatched to a Worker
-//! as a Run. It serves the Session application's `BudgetRuntime` role.
+//! as a Run. It serves the Session application's `BudgetAccounting` role.
 
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ use awaken_session_types::RunError;
 use crate::{CommittedReads, CoordinatedThreads, recovery_ticket};
 
 /// Budget accounting for one process. Consumer: the Session application's
-/// `BudgetRuntime` role.
+/// `BudgetAccounting` role.
 pub struct SessionBudgets {
     threads: Arc<CoordinatedThreads>,
     thread_reads: Arc<CommittedReads>,
@@ -223,7 +223,7 @@ impl SessionBudgets {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for SessionBudgets {
+impl awaken_session_execution_contract::BudgetAccounting for SessionBudgets {
     async fn resume_budget_reached(
         &self,
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
@@ -241,7 +241,7 @@ impl awaken_session_execution_contract::BudgetRuntime for SessionBudgets {
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.thread_reads
             .session_thread_usage(
                 thread,
@@ -254,7 +254,7 @@ impl awaken_session_execution_contract::BudgetRuntime for SessionBudgets {
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         self.thread_reads
             .session_thread_usage(
                 session_id.as_str(),

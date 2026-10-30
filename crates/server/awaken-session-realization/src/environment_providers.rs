@@ -65,7 +65,7 @@ pub struct EnvironmentProviders {
     pub auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
-    pub session_provider: crate::session_environment::SessionEnvironmentProvider,
+    pub session_provider: crate::session_environment::SandboxProviderRoles,
     /// Never-used capacity from the same startup selection as `session_provider`.
     /// The pool owns it; active Session environments have already left capacity.
     pub session_capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
@@ -79,8 +79,7 @@ pub struct EnvironmentProviders {
     pub cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer,
     /// Trusted-host environment selected only for BackendOwned provisioning.
     /// It is a policy branch over the same Session owner, not a second executor.
-    pub backend_owned_session_provider:
-        Option<crate::session_environment::SessionEnvironmentProvider>,
+    pub backend_owned_session_provider: Option<crate::session_environment::SandboxProviderRoles>,
     /// The process startup installed the authoritative Session provider. ACP
     /// ACP execution must reuse it instead of constructing a deployment-derived peer.
     pub session_provider_explicit: bool,
@@ -108,7 +107,7 @@ impl EnvironmentProviders {
     /// Session provider the composition passes in, until startup installs one.
     pub fn new(
         #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))] sandbox_root: PathBuf,
-        session_provider: crate::session_environment::SessionEnvironmentProvider,
+        session_provider: crate::session_environment::SandboxProviderRoles,
         session_capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
         trusted_host: TrustedHostPolicy,

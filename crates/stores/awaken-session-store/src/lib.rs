@@ -23,15 +23,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_session_repository_contract::{
+#[cfg(test)]
+use awaken_session_contract::SessionExecutionState;
+use awaken_session_contract::{
     LifecycleOutbox, SessionReconciliation, SessionRepository, SessionRepositoryReads,
 };
-#[cfg(test)]
-use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_types::SessionRevision;
 use futures_util::TryStreamExt;
 use {
-    awaken_session_state_contract::{
+    awaken_session_contract::{
         IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
         SessionCreateResult, SessionEnvironmentPhase, SessionIdempotencyReceipt, SessionMutation,
         SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,

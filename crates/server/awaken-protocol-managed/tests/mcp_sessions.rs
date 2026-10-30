@@ -4,7 +4,7 @@
 //! frozen generation-1 state and realization claims are durable before Runtime
 //! I/O; a failed realization fails the create with the mapped error envelope.
 
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 mod support;
 
@@ -20,8 +20,8 @@ use awaken_protocol_managed::tools::AgentTool;
 use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_application_contract::{LifecycleFactNotifier, StepOutcome};
 use awaken_session_configuration_contract::SessionInit;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
-use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_session_types::RunError;
 use axum::Router;
@@ -39,7 +39,7 @@ struct PreparingFake {
     captured: Arc<Mutex<Vec<SessionInit>>>,
     staged: Arc<Mutex<Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
-    repo: Option<Arc<dyn awaken_session_repository_contract::SessionStore>>,
+    repo: Option<Arc<dyn awaken_session_application::SessionStore>>,
     fail_with: Option<fn() -> RunError>,
 }
 
@@ -89,7 +89,7 @@ async fn lifecycle_test_state() -> (
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for PreparingFake {
+impl SessionRuns for PreparingFake {
     async fn run(
         &self,
         _a: &str,
@@ -120,17 +120,17 @@ impl SessionRuntime for PreparingFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for PreparingFake);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for PreparingFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for PreparingFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for PreparingFake);
 
@@ -179,7 +179,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
             if let Some(repo) = &self.repo {
                 match repo.get(&SessionId::from(thread)).await {
                     Ok(session) => self.observed_durable.lock().unwrap().push(session),
-                    Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {}
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
                     Err(error) => return Err((RunError::internal(error.to_string())).into()),
                 }
             }
@@ -330,10 +330,10 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
     /// back would erase the terminal ownership proof.
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_state_contract::SessionRepositoryPublicationEffect,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -343,14 +343,14 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for PreparingFake {
+impl awaken_session_execution_contract::ThreadReads for PreparingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -446,12 +446,12 @@ impl awaken_session_execution_contract::ThreadReadRuntime for PreparingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake {
+impl awaken_session_execution_contract::TerminalCleanup for PreparingFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
             &authorization,
@@ -465,7 +465,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake
     /// aggregate-wide physical disposal is complete.
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_preparation(effect)
@@ -479,7 +479,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)
@@ -512,7 +512,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for PreparingFake {
+impl awaken_session_execution_contract::Outcomes for PreparingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -603,7 +603,7 @@ struct Harness {
     captured: Arc<Mutex<Vec<SessionInit>>>,
     staged: Arc<Mutex<Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn awaken_session_application::SessionStore>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -632,11 +632,11 @@ struct HotRuntimeState {
 
 struct HotRuntime {
     state: Arc<Mutex<HotRuntimeState>>,
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn awaken_session_application::SessionStore>,
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for HotRuntime {
+impl SessionRuns for HotRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -667,17 +667,17 @@ impl SessionRuntime for HotRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for HotRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for HotRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for HotRuntime);
 
@@ -794,13 +794,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for HotRuntime {
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
-    {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
@@ -835,7 +834,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for HotRuntime {
 awaken_session_execution_contract::neutral_role!(RealizationEffects for HotRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for HotRuntime {
+impl awaken_session_execution_contract::ThreadReads for HotRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -941,7 +940,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for HotRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for HotRuntime {
+impl awaken_session_execution_contract::Outcomes for HotRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -1055,17 +1054,17 @@ struct HotHarness {
     app: Router,
     managed: Arc<ManagedState>,
     state: Arc<Mutex<HotRuntimeState>>,
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn awaken_session_application::SessionStore>,
 }
 
 async fn hot_harness() -> HotHarness {
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         support::session_repository("open hot Session repository").await;
     hot_harness_with_repo(repo).await
 }
 
 async fn hot_harness_with_repo(
-    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repo: Arc<dyn awaken_session_application::SessionStore>,
 ) -> HotHarness {
     let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
     let managed = Arc::new({
@@ -1101,7 +1100,7 @@ async fn harness(fail_with: Option<fn() -> RunError>) -> Harness {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn awaken_session_application::SessionStore> =
         support::session_repository("open Session repository").await;
     let state = {
         let session_fixture_runtime = std::sync::Arc::new(PreparingFake {
@@ -3302,7 +3301,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
 
     struct HauntedRuntime;
     #[async_trait::async_trait]
-    impl SessionRuntime for HauntedRuntime {
+    impl SessionRuns for HauntedRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -3333,19 +3332,19 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanup for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for HauntedRuntime);
 
@@ -3427,7 +3426,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     awaken_session_execution_contract::neutral_role!(RealizationEffects for HauntedRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::ThreadReadRuntime for HauntedRuntime {
+    impl awaken_session_execution_contract::ThreadReads for HauntedRuntime {
         async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
             // A previous process persisted threads sesn_0 and sesn_1.
             Ok(thread == "sesn_0" || thread == "sesn_1")
@@ -3528,7 +3527,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::OutcomeRuntime for HauntedRuntime {
+    impl awaken_session_execution_contract::Outcomes for HauntedRuntime {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.

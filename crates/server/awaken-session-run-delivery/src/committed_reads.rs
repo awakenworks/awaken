@@ -82,7 +82,7 @@ pub trait AdvisorModelSource: Send + Sync {
 }
 
 /// Committed Thread readback over one commit source. Consumers: the Session
-/// application's `ThreadReadRuntime` role, the Worker recovery source, the
+/// application's `ThreadReads` role, the Worker recovery source, the
 /// claimed-commit owner, and every component that observes committed truth.
 pub struct CommittedReads {
     source: Arc<dyn SessionCommitSource>,

@@ -25,8 +25,8 @@
 //! | A8 | empty batch | terminal | terminal refusal (terminal before compile) |
 //! | A9 | exact replay of an accepted key | idle | same receipt, no new fact |
 use super::*;
-use awaken_session_event_contract::SessionEventBatchError;
-use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_contract::LifecycleOutbox as _;
+use awaken_session_contract::SessionEventBatchError;
 
 fn user(text: &str) -> SessionEventInput {
     SessionEventInput::UserMessage {

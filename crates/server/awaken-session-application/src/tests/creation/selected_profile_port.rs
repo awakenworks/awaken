@@ -82,7 +82,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
     // below only prove selector preconditions; the App call owns error ordering.
     // This query writes no Session, prepares no Runtime and dispatches no Work;
     // original create/budget B1-B11 cases separately own admission/CAS behavior.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -204,7 +204,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
         "P1-P3"
     );
     let scan = repository
-        .scan(awaken_session_state_contract::SessionScanQuery::Workspace {
+        .scan(awaken_session_contract::SessionScanQuery::Workspace {
             workspace_id: "workspace",
         })
         .await
@@ -233,7 +233,7 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
     // it resolves high-level Session inputs; its enqueue/wake/retire callbacks
     // are fail-fast for any unexpected Work selection. This is the injected
     // Work oracle, not a count from an unused RecordingEnvironmentSource.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),

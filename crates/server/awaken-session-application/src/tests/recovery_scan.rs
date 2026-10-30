@@ -55,11 +55,9 @@ async fn recovery_scan_reduces_pages_before_eof_and_discards_failed_prefixes() {
                     let reduced = scan_reduced.clone();
                     async move {
                         if rule == "P4" && count != 0 {
-                            return Err(
-                                awaken_session_state_contract::SessionRepositoryError::Corrupt(
-                                    "injected read-only reduction failure".into(),
-                                ),
-                            );
+                            return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
+                                "injected read-only reduction failure".into(),
+                            ));
                         }
                         let count = count + page.sessions.len();
                         reduced.store(count, Ordering::SeqCst);

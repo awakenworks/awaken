@@ -126,8 +126,7 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
         "R2 no admission before CAS"
     );
     let candidate = pause.candidate.lock().unwrap().clone().unwrap();
-    let awaken_session_state_contract::SessionMutationPayload::Replace(detached) =
-        &candidate.payload
+    let awaken_session_contract::SessionMutationPayload::Replace(detached) = &candidate.payload
     else {
         panic!("activity uses existing Root replacement")
     };
@@ -364,7 +363,7 @@ async fn late_boundary_settles_activity_without_claiming_a_pre_admission_commit(
         );
         create(repo.as_ref(), session.into_snapshot()).await;
         let app = application(repo, Arc::new(RecordingEnvironmentSource::default()));
-        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+        let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: epoch,
             thread_id: ThreadId(id.clone()),
             run_id: RunId(format!("run-{source}")),
@@ -442,7 +441,7 @@ async fn user_event_boundary_before_admission_refuses_without_settlement() {
         );
         let before = repo.get(&SessionId::from(id.as_str())).await.unwrap();
         let run = RunId(format!("run-{source}"));
-        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+        let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: epoch,
             thread_id: ThreadId(id.clone()),
             run_id: run.clone(),
@@ -496,7 +495,7 @@ async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_va
         .expect("A1 activity");
     let first_epoch = first.activity_epoch;
     let observation =
-        |source_commit_cursor| awaken_session_state_contract::SessionRuntimeIntervalObservation {
+        |source_commit_cursor| awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: first_epoch,
             thread_id: ThreadId(session_id.into()),
             run_id: RunId("shared-run".into()),
@@ -580,7 +579,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+    let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
         activity_epoch: epoch,
         thread_id: ThreadId(session_id.into()),
         run_id: RunId("cancelled-before-realization-run".into()),
@@ -815,7 +814,7 @@ async fn run_activity_fence_decision_table() {
             .force_terminate_session(
                 "activity-oldest-first",
                 "2026-08-11T00:00:00Z",
-                awaken_session_state_contract::ManagedLifecycleFact {
+                awaken_session_contract::ManagedLifecycleFact {
                     id: "activity-terminal".into(),
                     object_id: "activity-oldest-first".into(),
                     workspace_id: Some("workspace".into()),
@@ -932,7 +931,7 @@ async fn run_activity_fence_decision_table() {
             .mutations
             .commit_session_snapshot_with_outcome(
                 "workspace",
-                awaken_session_state_contract::SessionAggregate::try_from(failed)
+                awaken_session_contract::SessionAggregate::try_from(failed)
                     .expect("valid test snapshot"),
                 "activity-test-realization-failed",
                 Vec::new(),

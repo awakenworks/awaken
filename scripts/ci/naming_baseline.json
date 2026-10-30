@@ -67,26 +67,26 @@
     "awaken-protocol-managed-testkit::CoordinatedRuntimeFake": 1,
     "awaken-protocol-managed-testkit::RestoredRuntime": 1,
     "awaken-sandbox-container::RuntimeRestoreTarget": 1,
-    "awaken-session-budget-contract::ManagedRuntimeListRates": 1,
     "awaken-session-configuration-contract::SessionRuntimeDispatchError": 1,
     "awaken-session-configuration-contract::SessionRuntimeProjection": 1,
-    "awaken-session-event-contract::SessionRuntimeInterval": 1,
-    "awaken-session-event-contract::SessionRuntimeIntervalObservation": 1,
-    "awaken-session-event-contract::SessionRuntimeIntervalStart": 1,
-    "awaken-session-execution-contract::BudgetRuntime": 1,
+    "awaken-session-contract::ManagedRuntimeListRates": 1,
+    "awaken-session-contract::SessionRuntimeInterval": 1,
+    "awaken-session-contract::SessionRuntimeIntervalObservation": 1,
+    "awaken-session-contract::SessionRuntimeIntervalStart": 1,
     "awaken-session-execution-contract::CapabilityRuntime": 1,
     "awaken-session-execution-contract::CompleteSessionRuntime": 1,
-    "awaken-session-execution-contract::CoordinationRuntime": 1,
     "awaken-session-execution-contract::EnvironmentRuntime": 1,
-    "awaken-session-execution-contract::LiveInboxRuntime": 1,
     "awaken-session-execution-contract::NeutralRuntime": 1,
-    "awaken-session-execution-contract::OutcomeRuntime": 1,
     "awaken-session-execution-contract::RealizationRuntime": 1,
-    "awaken-session-execution-contract::SessionRuntime": 1,
-    "awaken-session-execution-contract::StreamingRunRuntime": 1,
-    "awaken-session-execution-contract::TerminalCleanupRuntime": 1,
-    "awaken-session-execution-contract::ThreadReadRuntime": 1,
     "awaken-session-executor::MemoryRuntime": 1,
     "awaken-session-types::SessionRuntimePlacement": 1
+  },
+  "growth_reasons": {
+    "runtime-word": {
+      "awaken-session-contract::ManagedRuntimeListRates": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Exact existing measurement identity transfer only: four unchanged public type names move from original Event/Budget owners to canonical Session Core, each count remains one. SessionRuntimeInterval/Start/Observation observe SDK committed Run lifecycle/active intervals; ManagedRuntimeListRates covers non-token SDK execution active/web usage, not a Platform Runtime facade. No new name or naming allowance.\", \"remove_when\": \"canonical ownership-specific vocabulary can improve without altering public value compatibility\"}",
+      "awaken-session-contract::SessionRuntimeInterval": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Exact existing measurement identity transfer only: four unchanged public type names move from original Event/Budget owners to canonical Session Core, each count remains one. SessionRuntimeInterval/Start/Observation observe SDK committed Run lifecycle/active intervals; ManagedRuntimeListRates covers non-token SDK execution active/web usage, not a Platform Runtime facade. No new name or naming allowance.\", \"remove_when\": \"canonical ownership-specific vocabulary can improve without altering public value compatibility\"}",
+      "awaken-session-contract::SessionRuntimeIntervalObservation": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Exact existing measurement identity transfer only: four unchanged public type names move from original Event/Budget owners to canonical Session Core, each count remains one. SessionRuntimeInterval/Start/Observation observe SDK committed Run lifecycle/active intervals; ManagedRuntimeListRates covers non-token SDK execution active/web usage, not a Platform Runtime facade. No new name or naming allowance.\", \"remove_when\": \"canonical ownership-specific vocabulary can improve without altering public value compatibility\"}",
+      "awaken-session-contract::SessionRuntimeIntervalStart": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Exact existing measurement identity transfer only: four unchanged public type names move from original Event/Budget owners to canonical Session Core, each count remains one. SessionRuntimeInterval/Start/Observation observe SDK committed Run lifecycle/active intervals; ManagedRuntimeListRates covers non-token SDK execution active/web usage, not a Platform Runtime facade. No new name or naming allowance.\", \"remove_when\": \"canonical ownership-specific vocabulary can improve without altering public value compatibility\"}"
+    }
   }
 }

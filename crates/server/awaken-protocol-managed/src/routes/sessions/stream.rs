@@ -21,7 +21,7 @@ fn is_terminal(frame: &StreamFrame, scope: SseTerminalScope) -> bool {
             if matches!(
                 e.type_str(),
                 "session.status_idle"
-                    | awaken_session_event_contract::SESSION_TERMINATED
+                    | awaken_session_contract::SESSION_TERMINATED
                     | "session.deleted"
             )
                 || (scope == SseTerminalScope::ChildThread
@@ -43,9 +43,9 @@ pub(super) fn replay_is_terminal_after(
     scope: SseTerminalScope,
 ) -> bool {
     match event_type {
-        "session.status_idle"
-        | awaken_session_event_contract::SESSION_TERMINATED
-        | "session.deleted" => true,
+        "session.status_idle" | awaken_session_contract::SESSION_TERMINATED | "session.deleted" => {
+            true
+        }
         "session.thread_status_idle" | "session.thread_status_terminated"
             if scope == SseTerminalScope::ChildThread =>
         {

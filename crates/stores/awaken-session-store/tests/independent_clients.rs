@@ -16,8 +16,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_session_repository_contract::SessionStore;
-use awaken_session_state_contract::{SessionMutationResult, SessionRepositoryError};
+use awaken_session_application::SessionStore;
+use awaken_session_contract::{SessionMutationResult, SessionRepositoryError};
 use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 use awaken_store_conformance::session_store::{
     IndependentRace, assert_independent_race, prepare_independent_race,
@@ -50,7 +50,7 @@ async fn hold_sqlite_write_lock(
 
 fn commit_task(
     client: Arc<dyn SessionStore>,
-    mutation: awaken_session_state_contract::SessionMutation,
+    mutation: awaken_session_contract::SessionMutation,
     gate: Option<Arc<tokio::sync::Mutex<()>>>,
 ) -> tokio::task::JoinHandle<Outcome> {
     tokio::spawn(async move {
@@ -177,7 +177,7 @@ async fn volatile_session_store_has_no_independent_clients() {
         .await
         .expect("second volatile store");
     let race = prepare_independent_race(&first, "sesn_t05_volatile").await;
-    use awaken_session_repository_contract::SessionRepositoryReads as _;
+    use awaken_session_contract::SessionRepositoryReads as _;
     assert_eq!(
         other.get(&race.session_id).await,
         Err(SessionRepositoryError::NotFound),
@@ -190,8 +190,7 @@ async fn volatile_session_store_has_no_independent_clients() {
         let barrier = &barrier;
         async move {
             barrier.wait().await;
-            awaken_session_repository_contract::SessionRepository::commit(first, "ws_a", mutation)
-                .await
+            awaken_session_contract::SessionRepository::commit(first, "ws_a", mutation).await
         }
     };
     let (left, right) = tokio::join!(submit(0), submit(1));

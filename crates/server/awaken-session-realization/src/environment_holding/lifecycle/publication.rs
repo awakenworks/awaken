@@ -23,8 +23,8 @@ use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, EnvironmentBindingPersistenceError,
     LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
 };
-use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SessionEnvironmentProvider};
-use awaken_session_state_contract::{
+use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SandboxProviderRoles};
+use awaken_session_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentEffectKind,
 };
@@ -35,13 +35,13 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
+        intent: Option<&awaken_session_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.begin_session_environment_candidate(
             peers,
             thread,
             environment,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
             intent,
         )
     }
@@ -51,8 +51,8 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
-        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
+        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+        intent: Option<&awaken_session_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         if intent.is_some_and(|intent| intent.session_id().as_str() != thread) {
             return Err(RealizationError::invariant(
@@ -80,14 +80,14 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
+        intent: Option<&awaken_session_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, RealizationError> {
         self.begin_session_environment_candidate(
             peers,
             thread,
             environment,
             intent.map_or(
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 |intent| intent.kind().clone(),
             ),
             intent,
@@ -156,7 +156,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<&SessionEnvironmentProvider, RealizationError> {
+    ) -> Result<&SandboxProviderRoles, RealizationError> {
         let provisioning = self
             .publication
             .projected_session_model_provisioning(thread, agent)?;

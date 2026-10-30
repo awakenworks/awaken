@@ -7,7 +7,7 @@ use crate::{
     DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, ProjectionError,
     SessionEventKind,
 };
-use awaken_session_state_contract::{
+use awaken_session_contract::{
     PersistedSession, SessionUpdateAgentConfiguration, SessionUpdateFact,
 };
 
@@ -16,10 +16,9 @@ use awaken_session_state_contract::{
 pub fn derive_session_update_events(
     session: &PersistedSession,
 ) -> Result<Vec<(DerivedSessionEvent, &SessionUpdateFact)>, ProjectionError> {
-    awaken_session_state_contract::SessionUpdateHistory::validate_for(session)
+    awaken_session_contract::SessionUpdateHistory::validate_for(session)
         .map_err(|error| ProjectionError::corrupt(error.to_string()))?;
-    let Some(history) = awaken_session_state_contract::SessionUpdateHistory::for_session(session)
-    else {
+    let Some(history) = awaken_session_contract::SessionUpdateHistory::for_session(session) else {
         return Ok(Vec::new());
     };
     let mut events = Vec::with_capacity(history.facts().len());

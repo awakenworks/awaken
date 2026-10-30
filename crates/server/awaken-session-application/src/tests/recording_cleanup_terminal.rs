@@ -2,12 +2,12 @@
 use super::*;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingCleanupRuntime {
+impl awaken_session_execution_contract::TerminalCleanup for RecordingCleanupRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         authorization
             .verify_for(&effect)
             .map_err(|error| RunError::internal(error.to_string()))?;
@@ -44,7 +44,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
         let provider_prepared_effect_fence = effect
             .sandbox_effect_fence()
             .map_err(|error| RunError::internal(error.to_string()))?;
-        awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             provider_prepared_effect_fence,
             Vec::new(),
@@ -54,7 +54,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
 
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         self.acknowledged_effects
             .lock()
@@ -69,7 +69,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
     /// effect is permitted at this edge.
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_terminal_cleanup_disposal(effect)

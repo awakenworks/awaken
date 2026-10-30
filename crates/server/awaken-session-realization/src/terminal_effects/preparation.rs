@@ -20,7 +20,7 @@ use crate::session_environment::{
     TerminalSourceObservation,
 };
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_state_contract::{SessionEnvironmentState, SuspendPhase};
+use awaken_session_contract::{SessionEnvironmentState, SuspendPhase};
 use std::sync::Arc;
 
 impl crate::terminal_effects::TerminalEffects {
@@ -93,7 +93,7 @@ impl crate::terminal_effects::TerminalEffects {
     /// successor lease into the sole provider-neutral destructive authority.
     pub fn disposal_authorization(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, RealizationError> {
         let current = self.authorize_lease(&effect.command.session_id, &effect.lease)?;
         // The same installed Session proof already authorized preparation and disposal.
@@ -115,7 +115,7 @@ impl crate::terminal_effects::TerminalEffects {
     /// their own effect boundaries.
     pub fn effect_fence(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RealizationError> {
         self.authorize_lease(&effect.command.session_id, &effect.lease)?
             .sandbox_effect_fence(effect.operation_id())
@@ -128,7 +128,7 @@ impl crate::terminal_effects::TerminalEffects {
     /// caller to reinterpret it as an explicit empty current set.
     pub(super) fn memory_plan(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
         prepared: &PreparedBoundEnvironment,
     ) -> Result<TerminalMemoryPlan, RealizationError> {
         let transition = self
@@ -146,7 +146,7 @@ impl crate::terminal_effects::TerminalEffects {
             .memory_materializations()
             .map_err(RealizationError::from)?;
         let (intents, acknowledged_materializations) =
-            awaken_session_state_contract::terminal_memory_reconciliation_intents_from_materializations(
+            awaken_session_contract::terminal_memory_reconciliation_intents_from_materializations(
                 transition.previous().resources.inputs(),
                 materializations,
                 effect,
@@ -266,7 +266,7 @@ impl crate::terminal_effects::TerminalEffects {
                 .environment_materialization
                 .as_deref()
                 .is_some_and(
-                    awaken_session_state_contract::SessionEnvironmentMaterialization::has_admitted,
+                    awaken_session_contract::SessionEnvironmentMaterialization::has_admitted,
                 ),
         )
         .map_err(RealizationError::Run)?;
@@ -430,7 +430,7 @@ impl crate::terminal_effects::TerminalEffects {
     pub(super) async fn reconcile_terminal_memory(
         &self,
         peers: crate::peers::Peers<'_>,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
         environment: &crate::session_environment::SessionEnvironment,
         effect_mode: TerminalEffectMode,
         plan: &TerminalMemoryPlan,
@@ -457,7 +457,7 @@ impl crate::terminal_effects::TerminalEffects {
                 self.effect_fence(effect)?;
                 let operation_reference = if peers.staging.fetches_resources_upstream() {
                     awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                        awaken_session_state_contract::SessionTerminalMemoryIntent,
+                        awaken_session_contract::SessionTerminalMemoryIntent,
                     >::encode(
                         peers
                             .staging
@@ -514,9 +514,9 @@ impl crate::terminal_effects::TerminalEffects {
     pub async fn cleanup_terminal_checkpoint(
         &self,
         peers: crate::peers::Peers<'_>,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
-        pending_checkpoint: Option<&awaken_session_state_contract::SandboxCheckpointRequest>,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        state: &awaken_session_contract::SessionEnvironmentState,
+        pending_checkpoint: Option<&awaken_session_contract::SandboxCheckpointRequest>,
         environment: Option<&crate::session_environment::SessionEnvironment>,
     ) -> Result<(), RealizationError> {
         let environments = peers.environments;

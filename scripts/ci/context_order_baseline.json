@@ -22,9 +22,10 @@
     "awaken-session-realization-contract -> awaken-provisioning-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
     "awaken-session-realization-contract -> awaken-worker-contract": "removed when the realization contract takes the claim as a type parameter (as the coordination port does) and PlacementRequirements moves down",
     "awaken-session-execution-contract -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",
-    "awaken-session-state-contract -> awaken-provisioning-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
-    "awaken-session-state-contract -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",
     "awaken-session-store -> awaken-deployment-contract": "deployment records leave session-store for the deployment context",
-    "awaken-coordinator-client -> awaken-dispatch-execution": "slice A / S3: dispatch hands work through a port Execution implements"
+    "awaken-coordinator-client -> awaken-dispatch-execution": "slice A / S3: dispatch hands work through a port Execution implements",
+    "awaken-session-contract -> awaken-provisioning-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
+    "awaken-session-contract -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",
+    "awaken-session-execution-contract -> awaken-provisioning-contract": "Direct defining-owner route replaces pre-existing Session State/Core reexports for SandboxRestoreRequest and SandboxCheckpointRef; same physical types and behavior. Existing W7 removal condition: the Session names environments through identity and reference values a small environment contract provides."
   }
 }

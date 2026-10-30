@@ -14,42 +14,39 @@ fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it
     // B5=B1+C5+!C4=>E4; B6=B1+C5+C4=>E3. Interval index and `last()`
     // are deliberately not causal evidence because reach generations and
     // Running intervals are not one-to-one.
-    let usage = |tokens| awaken_session_budget_contract::ManagedBudgetUsageCursor {
+    let usage = |tokens| awaken_session_contract::ManagedBudgetUsageCursor {
         by_model: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_budget_contract::ManagedModelUsageCursor {
+            awaken_session_contract::ManagedModelUsageCursor {
                 input_tokens: tokens,
                 ..Default::default()
             },
         )]),
         ..Default::default()
     };
-    let interval =
-        |id: &str, tokens, close| awaken_session_state_contract::SessionRuntimeInterval {
-            interval_id: id.into(),
+    let interval = |id: &str, tokens, close| awaken_session_contract::SessionRuntimeInterval {
+        interval_id: id.into(),
+        activity_epoch: close,
+        started_at_unix_ms: 0,
+        ended_at_unix_ms: close,
+        opened_revision: awaken_session_types::SessionRevision(close),
+        closed_revision: awaken_session_types::SessionRevision(close + 1),
+        admitted_after_commit_cursor: None,
+        observations: vec![awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: close,
-            started_at_unix_ms: 0,
-            ended_at_unix_ms: close,
-            opened_revision: awaken_session_types::SessionRevision(close),
-            closed_revision: awaken_session_types::SessionRevision(close + 1),
-            admitted_after_commit_cursor: None,
-            observations: vec![
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: close,
-                    thread_id: ThreadId("budget-root".into()),
-                    run_id: RunId(format!("budget-run-{close}")),
-                    lifecycle_cursor: lifecycle_cursor(close),
-                    source_commit_cursor: close,
-                },
-            ],
-            usage: usage(tokens),
-            max_list_cost_minor: Some(1),
-        };
-    let transition = awaken_session_budget_contract::BudgetReachTransition {
+            thread_id: ThreadId("budget-root".into()),
+            run_id: RunId(format!("budget-run-{close}")),
+            lifecycle_cursor: lifecycle_cursor(close),
+            source_commit_cursor: close,
+        }],
+        usage: usage(tokens),
+        max_list_cost_minor: Some(1),
+    };
+    let transition = awaken_session_contract::BudgetReachTransition {
         generation: 1,
         max_list_cost_minor: 1,
-        consumed_numerator: awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
+        consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: usage(5),
         price_snapshot_id: "budget-snapshot".into(),
     };
@@ -119,11 +116,11 @@ fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it
     // B7: the domain publishes exactly the exposed reaches, each counted at
     // its crossing cursor and priced by the transition's own numerator; B8:
     // a reach the prefix withholds publishes nothing.
-    persisted.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+    persisted.budget = awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
         consumed_numerator: transition.consumed_numerator,
         usage_cursor: usage(8),
-        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "budget-snapshot".into(),
             version: 1,
             effective_at_unix_ms: 0,
@@ -194,10 +191,10 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
     // E3 warm/cold full payloads and every C2 cursor suffix are equal. Decision table:
     // B1=C1=>E1; B2=C1+C2+C3=>E2; B3=B2+C4=>E3. An open or absent matching
     // interval is not replaced by transition index or latest-cursor fallback.
-    let usage = |tokens| awaken_session_budget_contract::ManagedBudgetUsageCursor {
+    let usage = |tokens| awaken_session_contract::ManagedBudgetUsageCursor {
         by_model: std::collections::BTreeMap::from([(
             "test-model".into(),
-            awaken_session_budget_contract::ManagedModelUsageCursor {
+            awaken_session_contract::ManagedModelUsageCursor {
                 input_tokens: tokens,
                 ..Default::default()
             },
@@ -205,7 +202,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         ..Default::default()
     };
     let interval = |id: &str, tokens, open, close, thread_id: &str| {
-        awaken_session_state_contract::SessionRuntimeInterval {
+        awaken_session_contract::SessionRuntimeInterval {
             interval_id: id.into(),
             activity_epoch: close,
             started_at_unix_ms: 0,
@@ -213,15 +210,13 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
             opened_revision: awaken_session_types::SessionRevision(open),
             closed_revision: awaken_session_types::SessionRevision(close),
             admitted_after_commit_cursor: None,
-            observations: vec![
-                awaken_session_state_contract::SessionRuntimeIntervalObservation {
-                    activity_epoch: close,
-                    thread_id: ThreadId(thread_id.into()),
-                    run_id: RunId(format!("budget-prefix-run-{close}")),
-                    lifecycle_cursor: lifecycle_cursor(close),
-                    source_commit_cursor: close,
-                },
-            ],
+            observations: vec![awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: close,
+                thread_id: ThreadId(thread_id.into()),
+                run_id: RunId(format!("budget-prefix-run-{close}")),
+                lifecycle_cursor: lifecycle_cursor(close),
+                source_commit_cursor: close,
+            }],
             usage: usage(tokens),
             max_list_cost_minor: Some(1),
         }
@@ -281,7 +276,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         .await
         .unwrap();
     persisted.closed_runtime_intervals = vec![interval("below", 3, 9, 10, &session.id)];
-    let awaken_session_budget_contract::SessionBudgetState::Active {
+    let awaken_session_contract::SessionBudgetState::Active {
         max_list_cost_minor,
         consumed_numerator,
         usage_cursor,
@@ -292,8 +287,8 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
     };
     *usage_cursor = usage(5);
     *consumed_numerator = u128::from(*max_list_cost_minor)
-        * awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-        * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR;
+        * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+        * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR;
     persisted
         .budget
         .record_reach_transition()

@@ -42,7 +42,7 @@ impl crate::Outcomes {
     ) -> Result<HostOutcomeDrive, SessionExecutionError> {
         self.prepare_outcome(
             thread,
-            &awaken_session_event_contract::session_outcome_convenience_id(
+            &awaken_session_contract::session_outcome_convenience_id(
                 thread,
                 description,
                 rubric,

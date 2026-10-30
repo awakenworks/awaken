@@ -31,7 +31,7 @@ pub(crate) struct OutcomeReconciliation {
 pub struct SessionOutcomeReconciliation {
     mutations: Arc<crate::SessionMutations>,
     realizations: Arc<crate::SessionRealizations>,
-    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+    outcomes: Arc<dyn awaken_session_execution_contract::Outcomes>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
 }
 
@@ -89,7 +89,7 @@ impl SessionOutcomeReconciliation {
         for candidate in &candidates.sessions {
             let session = match self.mutations.repository().get(&candidate.session_id).await {
                 Ok(session) => session,
-                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {
                     report
                         .failures

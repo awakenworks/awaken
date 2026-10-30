@@ -19,7 +19,7 @@ async fn transition_refusals_keep_the_original_fault_and_code() {
         .expect("test executor");
     let mut missing = frozen_projection();
     missing.previous_resource_manifest = None;
-    missing.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    missing.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: "original-opaque-binding".into(),
         effect_id: None,
         generation: None,

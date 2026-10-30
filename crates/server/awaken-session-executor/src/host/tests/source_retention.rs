@@ -30,7 +30,7 @@ async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provid
         let handle =
             terminal_fixture_container_handle(id, &host.realization_executor.sandbox_spec(id));
         let mut projection = remote_terminal_cleanup_projection();
-        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: serde_json::to_string(&handle).unwrap(),
             effect_id: None,
             generation: None,
@@ -195,7 +195,7 @@ async fn source_retention_fixture(
         Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         "unused-hand",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let spec = host.realization_executor.sandbox_spec(RETENTION_SESSION);
     let handle = terminal_fixture_container_handle(RETENTION_SESSION, &spec);
     assert_eq!(handle.sandbox_id, RETENTION_SESSION);
@@ -222,7 +222,7 @@ async fn source_retention_fixture(
             .unwrap(),
     );
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
+    let generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(RETENTION_SESSION),
         1,
         u64::MAX,
@@ -239,7 +239,7 @@ async fn source_retention_fixture(
         environment,
     };
     let mut projection = remote_terminal_cleanup_projection();
-    projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding,
         effect_id: Some("retention-fixture-create".into()),
         generation: Some(generation),
@@ -336,7 +336,7 @@ async fn worker_retirement_matches_only_the_original_projected_source_at_entry()
         "suspending-binding",
         "suspending-generation",
     ] {
-        use awaken_session_state_contract::SessionEnvironmentState as State;
+        use awaken_session_contract::SessionEnvironmentState as State;
         let mut fixture = source_retention_fixture(retained_original(), None, None).await;
         if case.starts_with("suspending") {
             let lease = crate::session_resource::SessionRealizationLease {
@@ -371,7 +371,7 @@ async fn worker_retirement_matches_only_the_original_projected_source_at_entry()
                 let State::Resident { generation, .. } = &mut fixture.projection.environment else {
                     unreachable!()
                 };
-                *generation = Some(awaken_session_state_contract::SandboxGeneration::new(
+                *generation = Some(awaken_session_contract::SandboxGeneration::new(
                     &awaken_session_types::SessionId::from(RETENTION_SESSION),
                     2,
                     u64::MAX,
@@ -408,9 +408,9 @@ async fn worker_retirement_matches_only_the_original_projected_source_at_entry()
                     .then(|| "legacy-source".into());
                 let provenance = if case == "legacy-direct" {
                     LegacyDirectEnvironmentProvenance::Direct(
-                        awaken_session_state_contract::SessionEnvironmentReceipt::new(
+                        awaken_session_contract::SessionEnvironmentReceipt::new(
                             RETENTION_SESSION,
-                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                            awaken_session_contract::SessionEnvironmentEffectKind::Create,
                             fixture.owner.binding.clone(),
                             None,
                         ),
@@ -470,7 +470,7 @@ async fn worker_retirement_matches_only_the_original_projected_source_at_entry()
                 else {
                     unreachable!()
                 };
-                *generation = awaken_session_state_contract::SandboxGeneration::new(
+                *generation = awaken_session_contract::SandboxGeneration::new(
                     &awaken_session_types::SessionId::from(RETENTION_SESSION),
                     2,
                     u64::MAX,
@@ -679,7 +679,7 @@ async fn worker_retirement_rechecks_original_owner_and_activity_after_provider_r
                 let mut replacement = fixture.owner.clone();
                 replacement.identity = BoundSessionEnvironmentIdentity::Durable {
                     effect_id: "replacement-effect".into(),
-                    generation: awaken_session_state_contract::SandboxGeneration::new(
+                    generation: awaken_session_contract::SandboxGeneration::new(
                         &awaken_session_types::SessionId::from(RETENTION_SESSION),
                         2,
                         u64::MAX,
@@ -853,7 +853,7 @@ async fn worker_retirement_refuses_unprepared_memory_in_current_or_retained_reso
         } else {
             projection.resources = Default::default();
         }
-        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: serde_json::to_string(&pc::SandboxHandle::new(
                 "retention-fixture",
                 "live-memory",

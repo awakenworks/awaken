@@ -34,7 +34,7 @@ pub(super) struct SessionRepositoryPublicationCompleteReq {
     identity: WorkerIdentity,
     session_id: String,
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+    receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
 }
 
 #[derive(Deserialize)]
@@ -43,7 +43,7 @@ pub(super) struct SessionRepositoryPublicationRejectReq {
     identity: WorkerIdentity,
     session_id: String,
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-    rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+    rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
 }
 
 pub(super) async fn session_repository_publication_poll(

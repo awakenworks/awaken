@@ -7,7 +7,7 @@
 //! projections for lookup and constraints; they are never an alternate source
 //! from which a partially specified aggregate can be reconstructed.
 
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_contract::PersistedSession;
 use awaken_session_types::SessionRevision;
 
 /// v2 carries the complete `McpGeneration` witness: an object of
@@ -46,9 +46,9 @@ fn invalid(message: impl Into<String>) -> serde_json::Error {
 }
 
 fn verify_aggregate(session: &PersistedSession) -> Result<(), serde_json::Error> {
-    awaken_session_state_contract::SessionUpdateHistory::validate_for(session)
+    awaken_session_contract::SessionUpdateHistory::validate_for(session)
         .map_err(|error| invalid(error.to_string()))?;
-    awaken_session_state_contract::SessionEnvironmentMaterialization::validate_for(session)
+    awaken_session_contract::SessionEnvironmentMaterialization::validate_for(session)
         .map_err(|error| invalid(error.to_string()))?;
     for batch in &session.event_batches {
         batch
@@ -160,14 +160,14 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
             .remove("archived_at")
             .and_then(|value| value.as_str().map(str::to_owned));
         let disposition = match status.as_str() {
-            "deleted" => awaken_session_state_contract::SessionDisposition::Deleted,
+            "deleted" => awaken_session_contract::SessionDisposition::Deleted,
             "terminated" if archived_at.is_some() => {
-                awaken_session_state_contract::SessionDisposition::Archived {
+                awaken_session_contract::SessionDisposition::Archived {
                     archived_at: archived_at.expect("checked above"),
                     archived_at_unix_ms: None,
                 }
             }
-            _ => awaken_session_state_contract::SessionDisposition::Active,
+            _ => awaken_session_contract::SessionDisposition::Active,
         };
         if status == "deleted" {
             object.insert("status".into(), serde_json::json!("terminated"));
@@ -192,9 +192,7 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
             }
         };
         let environment =
-            awaken_session_state_contract::SessionEnvironmentState::from_legacy_binding(
-                legacy_binding,
-            );
+            awaken_session_contract::SessionEnvironmentState::from_legacy_binding(legacy_binding);
         object.insert(
             "environment".into(),
             serde_json::to_value(environment).expect("Session environment state serializes"),
@@ -237,15 +235,15 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
         .entry("runtime_active_millis")
         .or_insert_with(|| serde_json::json!(0));
     object.entry("budget").or_insert_with(|| {
-        serde_json::to_value(awaken_session_budget_contract::SessionBudgetState::default())
+        serde_json::to_value(awaken_session_contract::SessionBudgetState::default())
             .expect("default Session budget serializes")
     });
     object.entry("realization_progress").or_insert_with(|| {
-        serde_json::to_value(awaken_session_state_contract::SessionRealizationProgress::default())
+        serde_json::to_value(awaken_session_contract::SessionRealizationProgress::default())
             .expect("default Session realization progress serializes")
     });
     object.entry("terminal_cleanup").or_insert_with(|| {
-        serde_json::to_value(awaken_session_state_contract::SessionCleanupOperation::default())
+        serde_json::to_value(awaken_session_contract::SessionCleanupOperation::default())
             .expect("default Session cleanup serializes")
     });
     serde_json::from_value(value)
@@ -367,8 +365,8 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
 mod tests {
 
     use awaken_resource_contract::{BindingId, FileId, InputResourceId, ResourceAccess};
-    use awaken_session_repository_contract::SessionRepositoryReads as _;
-    use awaken_session_state_contract::{ActivationState, SessionResourceActivation};
+    use awaken_session_contract::SessionRepositoryReads as _;
+    use awaken_session_contract::{ActivationState, SessionResourceActivation};
     use awaken_session_types::SessionRevision;
 
     use crate::SqliteManagedSessionRepository;
@@ -626,11 +624,11 @@ mod tests {
     }
 
     fn completed_publication(
-        mut session: awaken_session_state_contract::PersistedSession,
+        mut session: awaken_session_contract::PersistedSession,
         rejected: bool,
-    ) -> awaken_session_state_contract::PersistedSession {
+    ) -> awaken_session_contract::PersistedSession {
         let session_id = session.session_id.clone();
-        let intent: awaken_session_state_contract::SessionRepositoryPublicationIntent =
+        let intent: awaken_session_contract::SessionRepositoryPublicationIntent =
             serde_json::from_value(serde_json::json!({
                 "input": {
                     "binding_id": "source",
@@ -653,7 +651,7 @@ mod tests {
                 }
             }))
             .unwrap();
-        session.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        session.resources = awaken_session_contract::SessionResourceState::from_active(
             awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
                 vec![intent.input.clone()],
                 Vec::new(),
@@ -678,17 +676,16 @@ mod tests {
             .unwrap()
             .unwrap();
         if rejected {
-            let rejection =
-                awaken_session_state_contract::SessionRepositoryPublicationRejection::new(
-                    &command,
-                    awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
-                )
-                .unwrap();
+            let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
+                &command,
+                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+            )
+            .unwrap();
             session
                 .record_repository_publication_rejection(rejection)
                 .unwrap();
         } else {
-            let receipt = awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(
+            let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
                 &command,
                 awaken_provisioning_contract::RepositoryPublicationReceipt {
                     repository_id: "repo-1".into(),
@@ -702,26 +699,23 @@ mod tests {
                 .record_repository_publication_receipt(&session_id, receipt)
                 .unwrap();
         }
-        let Some(awaken_session_state_contract::SessionTerminalCleanupAction::Prepare {
-            mut commands,
-        }) = session.terminal_cleanup_work_action().unwrap()
+        let Some(awaken_session_contract::SessionTerminalCleanupAction::Prepare { mut commands }) =
+            session.terminal_cleanup_work_action().unwrap()
         else {
             panic!("publication outcome exposes root preparation");
         };
         assert_eq!(commands.len(), 1, "fixture has only the root target");
         let command = commands.pop().unwrap();
-        let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
-            command,
-            lease.clone(),
-        );
-        let preparation = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+        let effect =
+            awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+        let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
             &effect,
             effect.sandbox_effect_fence().unwrap(),
             Vec::new(),
         )
         .unwrap();
         let repository_preparation =
-            awaken_session_state_contract::SessionCleanupRepositoryPreparation::new(
+            awaken_session_contract::SessionCleanupRepositoryPreparation::new(
                 &session_id,
                 "default",
                 &session.resources,
@@ -735,12 +729,12 @@ mod tests {
                 Some(repository_preparation),
             )
             .unwrap();
-        let Some(awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command }) =
+        let Some(awaken_session_contract::SessionTerminalCleanupAction::Dispose { command }) =
             session.terminal_cleanup_work_action().unwrap()
         else {
             panic!("durable root preparation exposes physical disposal");
         };
-        let receipt = awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&command);
+        let receipt = awaken_session_contract::SessionCleanupDisposalReceipt::new(&command);
         session
             .record_terminal_cleanup_disposal("default", &lease, receipt, "codec fixture released")
             .unwrap();
@@ -840,12 +834,12 @@ mod tests {
                     let decoded = decoded.unwrap();
                     assert_eq!(serde_json::to_value(&decoded).unwrap(), wire["aggregate"]);
                     assert_eq!(
-                        awaken_session_state_contract::SessionUpdateHistory::for_session(&decoded)
+                        awaken_session_contract::SessionUpdateHistory::for_session(&decoded)
                             .is_some(),
                         history_present
                     );
                     assert_eq!(
-                        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(
+                        awaken_session_contract::SessionUpdateHistory::agent_configuration(
                             &decoded
                         )
                         .is_some(),
@@ -855,7 +849,7 @@ mod tests {
                     assert!(
                         matches!(
                             &decoded,
-                            Err(awaken_session_state_contract::SessionRepositoryError::Corrupt(_))
+                            Err(awaken_session_contract::SessionRepositoryError::Corrupt(_))
                         ),
                         "I2-I4 history={history_present} fault={fault}: {decoded:?}"
                     );
@@ -930,7 +924,7 @@ mod tests {
         // AND decode. C3 former accepted rows without the new flag remain
         // accepted (covered by the contract's legacy decision table).
         let mut session = sample("codec-admission");
-        let closed = awaken_session_event_contract::SessionEventBatch::closed_admission(
+        let closed = awaken_session_contract::SessionEventBatch::closed_admission(
             "closed".into(),
             awaken_session_types::SessionRevision(1),
             "key".into(),
@@ -946,16 +940,14 @@ mod tests {
             })
             .is_ok()
         );
-        let accepted = awaken_session_event_contract::SessionEventBatch::compile(
+        let accepted = awaken_session_contract::SessionEventBatch::compile(
             &awaken_session_types::SessionId::from("codec-admission"),
             "accepted",
-            vec![
-                awaken_session_event_contract::SessionEventInput::UserMessage {
-                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                        "must not run",
-                    )],
-                },
-            ],
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "must not run",
+                )],
+            }],
         )
         .unwrap();
         session.event_batches[0].events = accepted.events;
@@ -982,25 +974,21 @@ mod tests {
         // F2=null+encode=>E2; F3=missing+decode=>E2. There is no read-time
         // coordinate synthesis or compatibility projection.
         let mut session = sample("codec-admission-fence");
-        let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+        let mut batch = awaken_session_contract::SessionEventBatch::compile(
             &session.session_id,
             "accepted",
-            vec![
-                awaken_session_event_contract::SessionEventInput::UserMessage {
-                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                        "ordered",
-                    )],
-                },
-            ],
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "ordered",
+                )],
+            }],
         )
         .unwrap();
         batch.admitted_revision = awaken_session_types::SessionRevision(1);
         batch
-            .anchor_admission_projection(
-                awaken_session_event_contract::SessionEventProjectionAnchor {
-                    source_commit_cursor: 0,
-                },
-            )
+            .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            })
             .unwrap();
         session.event_batches.push(batch);
         let encoded = super::encode(&session).expect("F1 encode");
@@ -1118,7 +1106,7 @@ mod tests {
         // explicit fresh survives; malformed facts fail encode and the actual
         // indexed row decoder (the private JSON shape parser is not admission);
         // historical lease expiry/current-owner changes are not corruption.
-        use awaken_session_state_contract::{
+        use awaken_session_contract::{
             SessionAggregate, SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
         };
         let old = sample("materialization-codec");
@@ -1129,7 +1117,7 @@ mod tests {
                 .environment_materialization()
                 .is_none()
         );
-        let mut fresh = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        let mut fresh = awaken_session_contract::PersistedSession::frozen_with_budget(
             old.session_id.clone(),
             old.frozen_baseline().unwrap().clone(),
             old.resources.clone(),
@@ -1195,7 +1183,7 @@ mod tests {
         ] {
             let mut invalid = serde_json::to_value(&historic).unwrap();
             invalid["environment_materialization"]["pending"] = serde_json::to_value(bad).unwrap();
-            let dto: awaken_session_state_contract::PersistedSession =
+            let dto: awaken_session_contract::PersistedSession =
                 serde_json::from_value(invalid.clone()).unwrap();
             assert!(super::encode(&dto).is_err(), "C3 encode uses same law");
             for wire in [
@@ -1249,7 +1237,7 @@ mod tests {
         let migrated = super::decode_aggregate(&legacy.to_string()).expect("P1");
         assert!(matches!(
             migrated.disposition,
-            awaken_session_state_contract::SessionDisposition::Active
+            awaken_session_contract::SessionDisposition::Active
         ));
         assert_eq!(migrated.environment.binding(), Some("legacy-binding"));
         assert_eq!(migrated.activity_epoch, 41);
@@ -1258,13 +1246,13 @@ mod tests {
         assert_eq!(migrated.runtime_active_millis, 0);
         assert!(matches!(
             migrated.budget,
-            awaken_session_budget_contract::SessionBudgetState::Absent
+            awaken_session_contract::SessionBudgetState::Absent
         ));
         assert!(migrated.terminal_cleanup.is_not_requested());
 
         let mut duplicate = legacy;
         duplicate["environment"] =
-            serde_json::to_value(awaken_session_state_contract::SessionEnvironmentState::default())
+            serde_json::to_value(awaken_session_contract::SessionEnvironmentState::default())
                 .unwrap();
         assert!(
             super::decode_aggregate(&duplicate.to_string()).is_err(),

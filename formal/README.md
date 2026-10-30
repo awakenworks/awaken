@@ -48,7 +48,7 @@ The named harnesses in the strict gate invoke production pure functions directly
     requires the matching receipt.
 - `awaken-session-application-contract`: only a claimed nonterminal Run can revive
   stopped Work after acquisition finds no lease; realization renewal remains inert.
-- `awaken-session-state-contract`: cleanup follows only
+- `awaken-session-contract`: cleanup follows only
   `NotRequested -> Fenced -> Requested -> Completed`, requiring every identity and
   canonical artifact-completion axis; adapter booleans are not independent proof evidence.
   - a first Delete request always hides, terminalizes when needed, and requests

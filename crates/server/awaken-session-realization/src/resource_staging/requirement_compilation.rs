@@ -244,7 +244,7 @@ impl ResourceStaging {
     pub async fn stage_terminal_repository_publication_input(
         &self,
         workspace: &str,
-        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         command

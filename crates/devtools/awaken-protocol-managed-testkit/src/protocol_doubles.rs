@@ -1,9 +1,9 @@
 //! The coordinated Session Runtime fake the Managed adapter's protocol tests
 //! drive.
 
-use awaken_session_execution_contract::SessionRuntime;
+use awaken_session_execution_contract::SessionRuns;
 use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
+    SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 
 use crate::committed_audit::lifecycle_audit_records;
@@ -364,7 +364,7 @@ impl CoordinatedRuntimeFake {
         &self,
         text: &str,
         admission: awaken_session_execution_contract::SessionRunActivityAdmission,
-    ) -> awaken_session_state_contract::SessionRuntimeIntervalObservation {
+    ) -> awaken_session_contract::SessionRuntimeIntervalObservation {
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         use awaken_agent_contract::agent::run::{EndCause, RunState};
         let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
@@ -377,7 +377,7 @@ impl CoordinatedRuntimeFake {
             panic!("deferred child requires the committed activity receipt");
         };
         let source_commit_cursor = base + 5;
-        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+        let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
             activity_epoch: session_activity_epoch,
             thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
             run_id: run_id.clone(),
@@ -415,7 +415,7 @@ impl CoordinatedRuntimeFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::SessionRuns for CoordinatedRuntimeFake {
     async fn run(
         &self,
         _agent: &str,
@@ -612,9 +612,9 @@ impl awaken_session_execution_contract::SessionRuntime for CoordinatedRuntimeFak
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for CoordinatedRuntimeFake);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for CoordinatedRuntimeFake);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for CoordinatedRuntimeFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for CoordinatedRuntimeFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for CoordinatedRuntimeFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::RealizationRuntime for CoordinatedRuntimeFake {
@@ -689,7 +689,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CoordinatedRuntim
 awaken_session_execution_contract::neutral_role!(RealizationEffects for CoordinatedRuntimeFake);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::ChildRunCoordination for CoordinatedRuntimeFake {
     // Fixture rule P1: scripted User and child Runs use ordinary reservation and activation.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -697,7 +697,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRunti
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -800,7 +800,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRunti
         // Keep this integration fake's reused legacy Run body behind the same
         // heap boundary so the test does not require a non-default Tokio stack.
         let outcome = Box::pin(
-            <Self as awaken_session_execution_contract::SessionRuntime>::run(
+            <Self as awaken_session_execution_contract::SessionRuns>::run(
                 self,
                 &command.agent_id,
                 command.session_id.as_str(),
@@ -1093,7 +1093,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRunti
 impl awaken_session_execution_contract::SessionCoordinationReads for CoordinatedRuntimeFake {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -1204,7 +1204,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::BudgetAccounting for CoordinatedRuntimeFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resume an exact `BudgetReached` ticket without injecting transcript
@@ -1242,7 +1242,7 @@ impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         Ok(
             awaken_session_application_contract::session_usage_from_thread_usage(
                 Self::committed_usage(thread),
@@ -1254,7 +1254,7 @@ impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake
         &self,
         _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
         Ok(
             awaken_session_application_contract::session_usage_from_thread_usage(
                 Self::committed_usage(thread_id),
@@ -1264,7 +1264,7 @@ impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::StreamingRuns for CoordinatedRuntimeFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -1374,7 +1374,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for CoordinatedRunti
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::ThreadReads for CoordinatedRuntimeFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -1575,7 +1575,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for CoordinatedRuntime
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::Outcomes for CoordinatedRuntimeFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

@@ -335,7 +335,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     let thread = "closed-revoked-durable-rebuild";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let source_generation = generation(thread).id().to_owned();
@@ -427,7 +427,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
     // no rebuild predecessor. Physical absence is not lifecycle authority.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     for terminal in [false, true] {
         let thread = if terminal {
             "closed-terminal"
@@ -455,7 +455,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
         } else {
             let generation = generation(thread);
             SessionEnvironmentRetirementCause::CheckpointSource {
-                operation: awaken_session_state_contract::SessionEnvironmentOperation::new(
+                operation: awaken_session_contract::SessionEnvironmentOperation::new(
                     "workspace",
                     &awaken_session_types::SessionId::from(thread),
                     "suspend",
@@ -507,11 +507,12 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // Decision rules R17/R19: C1+C2+C3=>E1; exact replacement=>E2.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let first = environment(&provider, "aba-retirement").await;
     let second = Arc::new(
         provider
-            .adopt(
+            .adoption()
+            .adopt_unattached(
                 &crate::sandbox_layout::agent_run_sandbox_spec("aba-retirement"),
                 &first.lifecycle().handle(),
             )
@@ -579,7 +580,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     let thread = "checkpoint-owner-fence";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let host = (crate::SessionExecutorBuilder::ephemeral(
@@ -596,7 +597,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
             r.environment_mut().owner = resident(thread, environment.clone());
         });
     let prepared_generation = generation(thread);
-    let prepared_operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let prepared_operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -615,14 +616,14 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
             &environment,
         )
         .expect("C1 exact Preparation owner");
-    let asserted_generation = awaken_session_state_contract::SandboxGeneration::new(
+    let asserted_generation = awaken_session_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         2,
         u64::MAX,
         "other-environment",
         "other-image",
     );
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -681,7 +682,7 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
     // branch because their source effect is non-empty.
     let thread = "legacy-suspending-projection";
     let generation = generation(thread);
-    let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         &awaken_session_types::SessionId::from(thread),
         "suspend",
@@ -701,12 +702,12 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
         .install_session_environment_owner_projection(
             thread,
             "workspace",
-            &awaken_session_state_contract::SessionEnvironmentState::Suspending {
+            &awaken_session_contract::SessionEnvironmentState::Suspending {
                 operation,
                 source_effect_id: Box::new(String::new()),
                 source_binding: "legacy-binding".into(),
                 generation,
-                suspend_phase: awaken_session_state_contract::SuspendPhase::ReadyToDispose,
+                suspend_phase: awaken_session_contract::SuspendPhase::ReadyToDispose,
                 checkpoint: None,
                 source_release_preparation: None,
             },

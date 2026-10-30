@@ -148,12 +148,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.quiesce_environment_continuation(
             thread,
             operation,
@@ -183,12 +183,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
+impl awaken_session_execution_contract::TerminalCleanup for RunAssembly {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-    ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         self.realization_executor
             .effects()
             .prepare_terminal_cleanup_effect(
@@ -227,7 +227,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
 
     async fn acknowledge_terminal_cleanup_preparation(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) {
         self.realization_executor
             .effects()
@@ -237,7 +237,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
 
     async fn acknowledge_terminal_cleanup_disposal(
         &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) {
         self.realization_executor
             .effects()

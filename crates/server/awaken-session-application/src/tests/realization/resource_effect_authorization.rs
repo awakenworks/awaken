@@ -56,7 +56,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         vec![skill.clone()],
     )
     .expect("pending Memory, File, and Skill targets");
-    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+    let repo: Arc<dyn crate::SessionStore> =
         sqlite_session_repository("resource Memory authority repository").await;
     for (session_id, terminal, active) in [
         ("resource-memory-current", false, false),
@@ -350,66 +350,65 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         Vec::new(),
     )
     .expect("terminal authority Memory evidence");
-    let terminal_session = |session_id: &str,
-                            realization: Option<
-        crate::session_resource::SessionRealizationLease,
-    >| {
-        let mut session = registry_race_terminal_session(session_id, realization);
-        session.resources = awaken_session_state_contract::SessionResourceState::from_active(
-            crate::session_resource::ResolvedSessionResources::try_new(
-                vec![memory_input.clone()],
-                Vec::new(),
-            )
-            .expect("terminal authority Memory input"),
-        );
-        let realization_fingerprint =
-            awaken_provisioning_contract::SandboxRealizationFingerprint::from_spec(
-                &awaken_provisioning_contract::SandboxSpec {
-                    process_tree_supervision: false,
-                    scope: session_id.into(),
-                    isolation: awaken_provisioning_contract::IsolationClass::Workdir,
-                    environment: None,
-                    command: Vec::new(),
-                    deny_tool_egress: false,
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    packages: Default::default(),
-                    network: awaken_provisioning_contract::NetworkPolicy::Unrestricted,
-                    outputs_path: "/mnt/session/outputs".into(),
-                    requests: Default::default(),
-                    limits: Default::default(),
-                    filesystem_continuity: Default::default(),
-                    control_services: Default::default(),
-                    lease_ttl_secs: None,
-                },
+    let terminal_session =
+        |session_id: &str,
+         realization: Option<crate::session_resource::SessionRealizationLease>| {
+            let mut session = registry_race_terminal_session(session_id, realization);
+            session.resources = awaken_session_contract::SessionResourceState::from_active(
+                crate::session_resource::ResolvedSessionResources::try_new(
+                    vec![memory_input.clone()],
+                    Vec::new(),
+                )
+                .expect("terminal authority Memory input"),
             );
-        let handle = awaken_provisioning_contract::test_support::fixture_current_handle(
-            session_id,
-            &awaken_provisioning_contract::test_support::FixtureHandleLocator {
-                outputs_path: "/mnt/session/outputs".into(),
-                physical_incarnation: format!("{session_id}:physical"),
-            },
-            &realization_fingerprint,
-            &asserted
-                .sandbox_effect_fence("create-terminal-authority-memory")
-                .expect("terminal authority Memory creation fence"),
-            &[
-                awaken_provisioning_contract::memory_materialization_mount_path(
-                    &memory_input.mount_path,
-                ),
-            ],
-        )
-        .with_memory_materializations(vec![materialization.clone()])
-        .expect("terminal authority durable Memory evidence");
-        session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: serde_json::to_string(&handle)
-                .expect("terminal authority Environment binding"),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
+            let realization_fingerprint =
+                awaken_provisioning_contract::SandboxRealizationFingerprint::from_spec(
+                    &awaken_provisioning_contract::SandboxSpec {
+                        process_tree_supervision: false,
+                        scope: session_id.into(),
+                        isolation: awaken_provisioning_contract::IsolationClass::Workdir,
+                        environment: None,
+                        command: Vec::new(),
+                        deny_tool_egress: false,
+                        mounts: Vec::new(),
+                        env: Vec::new(),
+                        packages: Default::default(),
+                        network: awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+                        outputs_path: "/mnt/session/outputs".into(),
+                        requests: Default::default(),
+                        limits: Default::default(),
+                        filesystem_continuity: Default::default(),
+                        control_services: Default::default(),
+                        lease_ttl_secs: None,
+                    },
+                );
+            let handle = awaken_provisioning_contract::test_support::fixture_current_handle(
+                session_id,
+                &awaken_provisioning_contract::test_support::FixtureHandleLocator {
+                    outputs_path: "/mnt/session/outputs".into(),
+                    physical_incarnation: format!("{session_id}:physical"),
+                },
+                &realization_fingerprint,
+                &asserted
+                    .sandbox_effect_fence("create-terminal-authority-memory")
+                    .expect("terminal authority Memory creation fence"),
+                &[
+                    awaken_provisioning_contract::memory_materialization_mount_path(
+                        &memory_input.mount_path,
+                    ),
+                ],
+            )
+            .with_memory_materializations(vec![materialization.clone()])
+            .expect("terminal authority durable Memory evidence");
+            session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+                binding: serde_json::to_string(&handle)
+                    .expect("terminal authority Environment binding"),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            };
+            session
         };
-        session
-    };
     let repo = sqlite_session_repository("terminal effect authority Session repository").await;
     create(
         repo.as_ref(),
@@ -430,7 +429,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         |session_id: &str,
          work: awaken_session_realization_contract::SessionTerminalCleanupWork,
          lease: crate::session_resource::SessionRealizationLease| {
-            awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+            awaken_session_contract::SessionTerminalCleanupEffect::new(
                 terminal_prepare_commands(work)
                     .into_iter()
                     .next()
@@ -450,7 +449,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         .authorize_terminal_cleanup_effect(&renewed_effect)
         .await
         .expect("A1/E1 old assertion uses current renewal");
-    let renewed_memory = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let renewed_memory = awaken_session_contract::terminal_memory_reconciliation_intent(
         &memory_input,
         &materialization,
         &renewed_effect,
@@ -461,7 +460,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         .authorize_terminal_memory_intent(&renewed_memory)
         .await
         .expect("A1/E1 old Memory assertion uses current renewal");
-    let renewed_preparation = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+    let renewed_preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
         &renewed_effect,
         renewed_effect
             .sandbox_effect_fence()
@@ -482,8 +481,8 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         .expect("A1 pending disposal")
         .action
     {
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => {
-            awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => {
+            awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
                 command,
                 asserted.clone(),
             )
@@ -518,12 +517,12 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         .terminal_cleanup_work_action()
         .unwrap()
         .unwrap();
-    let awaken_session_state_contract::SessionTerminalCleanupAction::Prepare { commands } =
+    let awaken_session_contract::SessionTerminalCleanupAction::Prepare { commands } =
         expired_action
     else {
         panic!("A2 retained preparation command");
     };
-    let expired_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let expired_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         commands.into_iter().next().unwrap(),
         asserted.clone(),
     );
@@ -536,7 +535,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         ),
         "A2/E2"
     );
-    let expired_memory = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let expired_memory = awaken_session_contract::terminal_memory_reconciliation_intent(
         &memory_input,
         &materialization,
         &expired_effect,
@@ -552,7 +551,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         ),
         "A2/E2 terminal Memory"
     );
-    let expired_preparation = awaken_session_state_contract::SessionCleanupPreparation::try_new(
+    let expired_preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
         &expired_effect,
         expired_effect
             .sandbox_effect_fence()
@@ -580,8 +579,8 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         .unwrap()
         .unwrap()
     {
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { command } => {
-            awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => {
+            awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
                 command,
                 asserted.clone(),
             )
@@ -598,7 +597,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         "A2/E2 terminal disposal returns no Workspace/provider authority"
     );
 
-    let foreign_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+    let foreign_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
         renewed_effect.command.clone(),
         crate::session_resource::SessionRealizationLease {
             epoch: asserted.epoch + 1,
@@ -614,7 +613,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         ),
         "A3/E3"
     );
-    let foreign_memory = awaken_session_state_contract::terminal_memory_reconciliation_intent(
+    let foreign_memory = awaken_session_contract::terminal_memory_reconciliation_intent(
         &memory_input,
         &materialization,
         &foreign_effect,
@@ -630,7 +629,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         ),
         "A3/E3 terminal Memory"
     );
-    let foreign_disposal = awaken_session_state_contract::SessionTerminalCleanupDisposalEffect::new(
+    let foreign_disposal = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
         renewed_disposal.command,
         foreign_effect.lease,
     );

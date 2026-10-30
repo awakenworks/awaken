@@ -38,18 +38,18 @@ struct CallerScopedOwnerRepository {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::SessionRepositoryReads for CallerScopedOwnerRepository {
+impl awaken_session_contract::SessionRepositoryReads for CallerScopedOwnerRepository {
     async fn get(
         &self,
         session_id: &SessionId,
-    ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError> {
+    ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
         self.inner.get(session_id).await
     }
 
     async fn owner(
         &self,
         session_id: &SessionId,
-    ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
+    ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
         self.inner
             .owner(session_id)
             .await
@@ -58,11 +58,9 @@ impl awaken_session_repository_contract::SessionRepositoryReads for CallerScoped
 
     async fn scan(
         &self,
-        query: awaken_session_state_contract::SessionScanQuery<'_>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
+        query: awaken_session_contract::SessionScanQuery<'_>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
         self.inner.scan(query).await
     }
 
@@ -71,8 +69,8 @@ impl awaken_session_repository_contract::SessionRepositoryReads for CallerScoped
         owner_scope: &str,
         session_id: &SessionId,
     ) -> Result<
-        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner
             .deleted_event_admissions(owner_scope, session_id)
@@ -86,11 +84,11 @@ impl SessionRepository for CallerScopedOwnerRepository {
         &self,
         owner_scope: &str,
         session: PersistedSession,
-        idempotency: awaken_session_state_contract::IdempotencyRecord,
-        lifecycle_facts: Vec<awaken_session_state_contract::ManagedLifecycleFact>,
+        idempotency: awaken_session_contract::IdempotencyRecord,
+        lifecycle_facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
     ) -> Result<
-        awaken_session_state_contract::SessionCreateResult,
-        awaken_session_state_contract::SessionRepositoryError,
+        awaken_session_contract::SessionCreateResult,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
@@ -101,9 +99,8 @@ impl SessionRepository for CallerScopedOwnerRepository {
         &self,
         owner_scope: &str,
         session_id: &SessionId,
-        idempotency: &awaken_session_state_contract::IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, awaken_session_state_contract::SessionRepositoryError>
-    {
+        idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
         self.inner
             .replay_create(owner_scope, session_id, idempotency)
             .await
@@ -112,10 +109,10 @@ impl SessionRepository for CallerScopedOwnerRepository {
     async fn commit(
         &self,
         owner_scope: &str,
-        mutation: awaken_session_state_contract::SessionMutation,
+        mutation: awaken_session_contract::SessionMutation,
     ) -> Result<
-        awaken_session_state_contract::SessionMutationResult,
-        awaken_session_state_contract::SessionRepositoryError,
+        awaken_session_contract::SessionMutationResult,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner.commit(owner_scope, mutation).await
     }
@@ -125,48 +122,46 @@ impl SessionRepository for CallerScopedOwnerRepository {
         session_id: &SessionId,
         key: &str,
     ) -> Result<
-        Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Option<awaken_session_contract::SessionIdempotencyReceipt>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner.idempotency_receipt(session_id, key).await
     }
 
     async fn count_environment_phase(
         &self,
-        phase: awaken_session_state_contract::SessionEnvironmentPhase,
-    ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
+        phase: awaken_session_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
         self.inner.count_environment_phase(phase).await
     }
 }
 
-use awaken_session_repository_contract::SessionReconciliation;
+use awaken_session_contract::SessionReconciliation;
 
 #[async_trait::async_trait]
 impl SessionReconciliation for CallerScopedOwnerRepository {
     async fn reconciliation_scan(
         &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<
-        awaken_session_state_contract::SessionScan,
-        awaken_session_state_contract::SessionRepositoryError,
-    > {
+        after: Option<&awaken_session_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
+    {
         self.inner.reconciliation_scan(after).await
     }
 }
 #[async_trait::async_trait]
-impl awaken_session_repository_contract::LifecycleOutbox for CallerScopedOwnerRepository {
+impl awaken_session_contract::LifecycleOutbox for CallerScopedOwnerRepository {
     async fn append_lifecycle(
         &self,
-        fact: awaken_session_state_contract::ManagedLifecycleFact,
-    ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
+        fact: awaken_session_contract::ManagedLifecycleFact,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
         self.inner.append_lifecycle(fact).await
     }
 
     async fn pending_lifecycle(
         &self,
     ) -> Result<
-        Vec<awaken_session_state_contract::ManagedLifecycleFact>,
-        awaken_session_state_contract::SessionRepositoryError,
+        Vec<awaken_session_contract::ManagedLifecycleFact>,
+        awaken_session_contract::SessionRepositoryError,
     > {
         self.inner.pending_lifecycle().await
     }
@@ -174,7 +169,7 @@ impl awaken_session_repository_contract::LifecycleOutbox for CallerScopedOwnerRe
     async fn complete_lifecycle(
         &self,
         fact_id: &str,
-    ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
         self.inner.complete_lifecycle(fact_id).await
     }
 }
@@ -248,7 +243,7 @@ async fn ownership_fixture_with(
     let durable = authority_repository("T06 Session store").await;
     create(durable.as_ref(), persisted(OWNED, false, "idle")).await;
     let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
-    let store: Arc<dyn awaken_session_repository_contract::SessionStore> = if http_only_mutant {
+    let store: Arc<dyn crate::SessionStore> = if http_only_mutant {
         Arc::new(CallerScopedOwnerRepository {
             inner: faulting.clone(),
             caller: INTRUDER.into(),
@@ -348,15 +343,13 @@ async fn invoke(row: &str, app: &SessionApplication, session: &str) -> String {
                 app.event_batches
                     .append_owned_session_event_batch(
                         &access,
-                        vec![
-                            awaken_session_event_contract::SessionEventInput::UserMessage {
-                                content: vec![
-                                    awaken_agent_contract::agent::content::ContentBlock::text(
-                                        "written by a foreign tenant",
-                                    ),
-                                ],
-                            },
-                        ],
+                        vec![awaken_session_contract::SessionEventInput::UserMessage {
+                            content: vec![
+                                awaken_agent_contract::agent::content::ContentBlock::text(
+                                    "written by a foreign tenant",
+                                ),
+                            ],
+                        }],
                         None,
                         None,
                         Some(("t06-append".into(), "t06-append-fingerprint".into())),
@@ -553,13 +546,11 @@ async fn owner_scoped_event_append_refuses_a_foreign_owner_like_missing() {
         .event_batches
         .append_owned_session_event_batch(
             &access,
-            vec![
-                awaken_session_event_contract::SessionEventInput::UserMessage {
-                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                        "written by the owner",
-                    )],
-                },
-            ],
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "written by the owner",
+                )],
+            }],
             None,
             None,
             Some(("t06-owner-key".into(), "t06-owner-fingerprint".into())),

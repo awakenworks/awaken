@@ -29,7 +29,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     fn sandbox_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         ResourceStaging::sandbox_spec_for_provider(self, thread, provider)
     }
@@ -38,7 +38,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
         &self,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         ResourceStaging::sandbox_spec_for_resolved_resources_and_provider(
             self, thread, resources, provider,
@@ -48,7 +48,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     fn sandbox_substrate_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         ResourceStaging::sandbox_substrate_spec_for_provider(self, thread, provider)
     }
@@ -88,7 +88,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     async fn stage_terminal_repository_publication_input(
         &self,
         workspace: &str,
-        command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         ResourceStaging::stage_terminal_repository_publication_input(
@@ -107,7 +107,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
         realizer: &dyn pc::RepositoryRealizer,
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
-            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRepositoryPublicationCommand,
             session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {

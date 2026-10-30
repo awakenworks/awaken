@@ -4,7 +4,7 @@ use crate::hosted_model_publication::PublicationModelSupply;
 use crate::local_process_stores::{in_memory_process_stores, in_memory_split_coordinator};
 use crate::process_startup::ProcessStartup;
 use crate::process_stores::ProcessStores;
-use awaken_session_repository_contract::SessionStore;
+use awaken_session_application::SessionStore;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -647,7 +647,7 @@ fn registered_process_adopts_initial_credentials_without_losing_reserved_activit
             );
             assert_eq!(
                 after.execution,
-                awaken_session_state_contract::SessionExecutionState::Preparing
+                awaken_session_contract::SessionExecutionState::Preparing
             );
             assert_eq!(desired[0].attempts, 0, "no initial MCP effect admitted");
             assert!(desired[0].realization.is_none());

@@ -27,7 +27,7 @@ async fn prepared_worker_revision_and_ack_reuse_root_receipts_and_complete_activ
     // Rules A1a..c=>E1+E3, A2a..c=>E2+E3. The borrowed neutral
     // admission role is used directly; only Execution adapts it to the SDK.
     // This bounded adapter test does not certify real execution; delivery/backend/Controller tests own those cuts.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -134,14 +134,14 @@ async fn prepared_worker_revision_and_ack_reuse_root_receipts_and_complete_activ
 #[tokio::test]
 async fn prepared_budget_preflight_defers_before_reservation_and_same_id_survives_a_raise() {
     use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
-    use awaken_session_budget_contract::{ManagedListPriceSnapshot, SessionBudgetState};
+    use awaken_session_contract::{ManagedListPriceSnapshot, SessionBudgetState};
     use awaken_session_execution_contract::PreparedSessionRunAdmission as _;
     // Causes B1 no prior receipt + already reached policy; B2 a canonical cap
     // raise; B3 exact same complete activation. Effects E1 B1 creates no
     // reservation/negative/activity and is typed Deferred; E2 B2+B3 admits that
     // same stable Run exactly once. The existing rejection_races tests own
     // durable negative/positive/CAS-outage ordering inside the shared CAS loop.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
@@ -305,7 +305,7 @@ struct ActivationOnlySessionRunRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for ActivationOnlySessionRunRuntime {
+impl awaken_session_execution_contract::SessionRuns for ActivationOnlySessionRunRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -339,17 +339,17 @@ impl awaken_session_execution_contract::SessionRuntime for ActivationOnlySession
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for ActivationOnlySessionRunRuntime);
 
 no_committed_threads!(ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(OutcomeRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(Outcomes for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for ActivationOnlySessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for ActivationOnlySessionRunRuntime);
 
@@ -438,7 +438,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ActivationOnlySes
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for ActivationOnlySessionRunRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for ActivationOnlySessionRunRuntime {
     async fn run_prepared_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
@@ -661,7 +661,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads
 {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -807,13 +807,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ActivationOnlySes
     async fn quiesce_session_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        generation: &awaken_session_contract::SandboxGeneration,
         expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
-    ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
-    {
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .quiesce_session_environment(
                 thread,
@@ -868,9 +867,8 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_state_contract::SandboxCheckpointRequest,
-    ) -> Result<awaken_session_state_contract::CheckpointReceipt, awaken_session_types::RunError>
-    {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -884,13 +882,11 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_state_contract::SourceReleasePreparationEffect,
-        generation: &awaken_session_state_contract::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_state_contract::SourceReleasePreparedReceipt,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -903,8 +899,8 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_state_contract::SourceReleaseDisposal,
-    ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
@@ -913,11 +909,11 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_state_contract::SandboxRestoreRequest,
-    ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         self.events.lock().unwrap().push("restore");
         self.restores.fetch_add(1, Ordering::SeqCst);
-        Ok(awaken_session_state_contract::RestoreReceipt {
+        Ok(awaken_session_contract::RestoreReceipt {
             effect_id: request.effect_id,
             generation_id: request.generation_id,
             checkpoint_id: request.checkpoint.id,
@@ -932,7 +928,7 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_state_contract::SandboxCheckpointRef,
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
@@ -996,7 +992,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
     // | R1   | present        | existing    | cold             | E1-E4  |
     // | R2   | absent         | fresh       | cold             | existing fresh-admission tests |
     // | R3   | present        | existing    | warm             | idempotent E1-E3 |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("session repository"),
@@ -1093,7 +1089,7 @@ async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_ac
     // | R3   | workspace     | wrong          | foreign       | replay    | E3     |
     // | R4   | workspace     | wrong          | absent        | replay    | E3     |
     // | R5   | workspace     | wrong          | foreign       | resume    | E3     |
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("session repository"),
@@ -1229,7 +1225,7 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     // than Session state or a special notification payload. Failure rule B2:
     // C3 or C4 false => no executable delivery. Constraint K1: neither Host
     // enqueue nor a second background lifecycle is available to this port.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("session repository"),
@@ -1323,7 +1319,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     // Hibernated projection's revision predates the Resident CAS, so fresh
     // activity must use the original continuation's returned revision. The
     // operation-receipt table owns stale fresh/replayed projection partitions.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("session repository"),
@@ -1381,7 +1377,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
     assert!(
         matches!(
             resident.environment,
-            awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+            awaken_session_contract::SessionEnvironmentState::Resident { .. }
         ),
         "H1/E3",
     );
@@ -1469,7 +1465,7 @@ impl awaken_session_application_contract::RunApplication for ProtocolProjectionR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for BlockingSessionRunRuntime {
+impl awaken_session_execution_contract::SessionRuns for BlockingSessionRunRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -1503,19 +1499,19 @@ impl awaken_session_execution_contract::SessionRuntime for BlockingSessionRunRun
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for BlockingSessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for BlockingSessionRunRuntime);
 
 no_committed_threads!(BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(OutcomeRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(Outcomes for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for BlockingSessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for BlockingSessionRunRuntime);
 
@@ -1590,7 +1586,7 @@ impl awaken_session_execution_contract::RealizationRuntime for BlockingSessionRu
 awaken_session_execution_contract::neutral_role!(RealizationEffects for BlockingSessionRunRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionRunRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for BlockingSessionRunRuntime {
     // Fixture rule P1: the gate blocks ordinary foreground observation only.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -1598,7 +1594,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionR
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -1814,7 +1810,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionR
 impl awaken_session_execution_contract::SessionCoordinationReads for BlockingSessionRunRuntime {
     async fn source_dispatch_observation(
         &self,
-        _session: &awaken_session_state_contract::PersistedSession,
+        _session: &awaken_session_contract::PersistedSession,
     ) -> awaken_session_execution_contract::SessionSourceDispatchObservation {
         Default::default()
     }
@@ -1923,12 +1919,12 @@ impl awaken_session_execution_contract::SessionCoordinationReads for BlockingSes
 async fn background_activation_uses_the_session_runtime_without_a_second_queue_port() {
     // Cause/effect graph: C1 admission returns a delivery, recovery-claimed, or
     // completed; C2 the caller wants asynchronous observation. Effects: E1 an
-    // exact delivery crosses the SessionRuntime activation port once; E2 closed
+    // exact delivery crosses the SessionRuns activation port once; E2 closed
     // recovery/terminal outcomes are projected without touching Runtime.
     // Constraint: SessionApplication exposes no dispatch repository or raw row.
     // Decision table: R1=C1.delivery+C2=>E1; R2=C1.recovery=>E2.RecoveryClaimed;
     // R3=C1.completed=>E2.Completed.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("session repository"),
@@ -2193,7 +2189,7 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     // sole activity owner. Decision table: P1=C1+C2=>E1; P2=C1+C3=>E2;
     // P3=C4=>E3. The
     // adjacent decorator test covers admission and Runtime failures.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .expect("session repository"),
@@ -2316,7 +2312,7 @@ async fn unreadable_admission_scope_refuses_the_run_before_any_reservation() {
         ("U2", None, false, true),
         ("U3", Some("named"), false, false),
     ] {
-        let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        let repository: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .await
                 .expect("session repository"),

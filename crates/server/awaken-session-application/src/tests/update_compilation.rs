@@ -10,8 +10,8 @@ use crate::{
 };
 use awaken_agent_contract::{McpTarget, ToolPolicyOverride, ToolsetPolicy, ToolsetSource};
 use awaken_session_configuration_contract::SessionToolConfiguration;
-use awaken_session_repository_contract::{SessionRepository as _, SessionRepositoryReads as _};
-use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_contract::{PersistedSession, SessionExecutionState};
+use awaken_session_contract::{SessionRepository as _, SessionRepositoryReads as _};
 use awaken_session_types::{SessionId, SessionRuntimePlacement};
 use awaken_time::system_clock;
 use awaken_tool_contract::{
@@ -93,7 +93,7 @@ fn frozen(mut root: PersistedSession, managed: bool) -> PersistedSession {
 }
 
 fn application_with_compiler(
-    repository: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    repository: Arc<dyn crate::SessionStore>,
     runtime: Arc<realization::RecordingResourceRuntime>,
     compiler: Arc<Compiler>,
 ) -> SessionApplication {
@@ -183,7 +183,7 @@ fn credential_root(id: &str) -> PersistedSession {
         Some(holder),
     )
     .unwrap();
-    assert!(awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(&root));
+    assert!(awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(&root));
     root
 }
 
@@ -258,7 +258,7 @@ async fn preparing_credential_revocation_preserves_tools_and_reserved_activity()
             app.activities.begin_activity(&id).await.unwrap();
         }
         let before = repository.get(&id).await.unwrap();
-        assert!(awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(&before));
+        assert!(awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(&before));
         let updated = app
             .update_commands
             .update_session(&id, revoke("revoke"))
@@ -402,9 +402,7 @@ async fn admission_precedence_still_rejects_stale_nonidle_and_mixed_commands_wit
                 .remove("environment_materialization");
             let legacy: PersistedSession = serde_json::from_value(wire).unwrap();
             assert!(legacy.environment_materialization().is_none());
-            assert!(
-                !awaken_session_state_contract::session_can_adopt_mcp_credential_lifecycle(&legacy)
-            );
+            assert!(!awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(&legacy));
             legacy
         } else {
             frozen(persisted(id.as_str(), false, phase), true)

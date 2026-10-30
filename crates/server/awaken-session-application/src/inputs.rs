@@ -1,5 +1,5 @@
 // @formal surface exclude=application_adapter
-// @formal owner crates/contract/awaken-session-repository-contract/src/repository_port.rs
+// @formal owner crates/contract/awaken-session-contract/src/repository/repository_port.rs
 // @formal owner crates/contract/awaken-session-execution-contract/src/session/live_inbox.rs
 // @formal owner crates/server/awaken-session-application/src/session_input.rs
 // @formal reason: The existing application owner check precedes every operation on the selected Inbox.
@@ -15,8 +15,8 @@ use awaken_session_execution_contract::{
 use crate::SessionInputRequest;
 use crate::mutation::session_owner;
 use crate::session_input::{normalize_session_input_mounts, plan_session_input_attachments};
-use awaken_session_execution_contract::LiveInboxRuntime;
-use awaken_session_repository_contract::SessionRepositoryReads;
+use awaken_session_contract::SessionRepositoryReads;
+use awaken_session_execution_contract::LiveInboxAccess;
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ mod lowering;
 /// ```
 pub struct SessionInputs {
     repository: Arc<dyn SessionRepositoryReads>,
-    inbox: Arc<dyn LiveInboxRuntime>,
+    inbox: Arc<dyn LiveInboxAccess>,
     inventory: Option<Arc<dyn awaken_resource_contract::ResourceInventory>>,
 }
 
@@ -73,7 +73,7 @@ impl PreparedSessionInputs {
 impl SessionInputs {
     pub(crate) fn new(
         repository: Arc<dyn SessionRepositoryReads>,
-        inbox: Arc<dyn LiveInboxRuntime>,
+        inbox: Arc<dyn LiveInboxAccess>,
         inventory: Option<Arc<dyn awaken_resource_contract::ResourceInventory>>,
     ) -> Self {
         Self {

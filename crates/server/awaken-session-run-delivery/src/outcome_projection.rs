@@ -8,7 +8,7 @@
 //! transitions stay in `awaken-ext-goal`.
 
 use awaken_ext_goal::controller::{CommittedOutcome, Error as ControllerError, Report};
-use awaken_session_event_contract::OUTCOME_BUSY_CODE;
+use awaken_session_contract::OUTCOME_BUSY_CODE;
 use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeFailure, OutcomeIteration, OutcomeReport,
 };

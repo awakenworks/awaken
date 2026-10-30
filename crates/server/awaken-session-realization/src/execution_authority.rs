@@ -357,10 +357,9 @@ impl ExecutionAuthority {
     pub fn new_environment_effect_intent(
         &self,
         thread: &str,
-        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
+        kind: awaken_session_contract::SessionEnvironmentEffectKind,
         source_binding: Option<&str>,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentEffectIntent, RealizationError>
-    {
+    ) -> Result<awaken_session_contract::SessionEnvironmentEffectIntent, RealizationError> {
         let (realization, environment_fingerprint) = self
             .sessions
             .modify_session(thread, |installed| {
@@ -375,12 +374,8 @@ impl ExecutionAuthority {
             })?
             .unwrap_or_default();
         Ok(
-            awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-                thread,
-                kind,
-                realization,
-            )
-            .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint),
+            awaken_session_contract::SessionEnvironmentEffectIntent::new(thread, kind, realization)
+                .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint),
         )
     }
 
@@ -390,7 +385,7 @@ impl ExecutionAuthority {
         &self,
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, RealizationError> {
+    ) -> Result<awaken_session_contract::SessionEnvironmentReceipt, RealizationError> {
         match (&effect.provider_fence, &effect.provider_authority) {
             (Some(initial), Some(authority)) => {
                 awaken_provisioning_contract::with_current_sandbox_effect(
@@ -407,7 +402,7 @@ impl ExecutionAuthority {
                 ));
             }
         }
-        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
+        awaken_session_contract::SessionEnvironmentReceipt::from_intent(
             effect.authorization.intent(),
             binding,
         )

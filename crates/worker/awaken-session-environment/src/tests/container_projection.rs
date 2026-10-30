@@ -39,8 +39,8 @@ async fn session_realizer_uses_the_selected_filesystem_providers_readiness_facts
             ),
             SandboxEnvironmentProvider::Container { .. } => unreachable!(),
         };
-        let selected = adapter.into_session_provider();
-        let readiness: &dyn pc::SandboxReadiness = selected.realizer().as_ref();
+        let selected = adapter.into_provider_roles();
+        let readiness: &dyn pc::SandboxReadiness = selected.readiness().as_ref();
         assert_eq!(readiness.capabilities(), capabilities, "{row}");
         assert_eq!(readiness.checkpoint_formats(), formats, "{row}");
         if row == "R1" {
@@ -79,8 +79,8 @@ async fn session_realizer_probes_the_same_container_provider_without_caching_rea
         Arc::new(UnusedHandExecutorFactory),
         "unused-readiness-hand",
     )
-    .into_session_provider();
-    let readiness: &dyn pc::SandboxReadiness = provider.realizer().as_ref();
+    .into_provider_roles();
+    let readiness: &dyn pc::SandboxReadiness = provider.readiness().as_ref();
     assert_eq!(readiness.capabilities(), physical.capabilities());
     for (index, expected) in [
         Ok(()),
@@ -128,7 +128,7 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let spec = provider.realizer().effective_spec(&spec()).unwrap();
     let source = pc::SandboxHandle::new("container", "source");
     let rebuilt = provider
@@ -174,7 +174,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let spec = provider.realizer().effective_spec(&spec()).unwrap();
     let created = provider
         .realizer()
@@ -249,7 +249,7 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let spec = provider.realizer().effective_spec(&spec()).unwrap();
     let handle = current_fake_container_handle(&spec);
     let fence = pc::SandboxEffectFence::new("observe", "owner", "boot", 1, u64::MAX).unwrap();

@@ -16,8 +16,12 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         let base = tempfile::tempdir().unwrap();
         let provider =
             SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
-                .into_session_provider();
-        let environment = provider.create(&spec()).await.unwrap();
+                .into_provider_roles();
+        let environment = provider
+            .realizer()
+            .create_unattached(&spec())
+            .await
+            .unwrap();
         environment
             .agent_process()
             .materialize_inline("/workspace/项目 repo/src/.keep", b"")
@@ -192,8 +196,9 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
             Arc::new(FakeHandExecutorFactory),
             "/usr/local/bin/awaken-sandbox",
         )
-        .into_session_provider()
-        .create(&spec())
+        .into_provider_roles()
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap(),
     );
@@ -242,8 +247,9 @@ async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
             Arc::new(FakeHandExecutorFactory),
             "/usr/local/bin/awaken-sandbox",
         )
-        .into_session_provider()
-        .create(&spec())
+        .into_provider_roles()
+        .realizer()
+        .create_unattached(&spec())
         .await
         .unwrap(),
     );
@@ -285,7 +291,7 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
     // | Rule | prepared image | packages | final provider SandboxSpec |
     // | I1 | none | non-empty | no image; exact packages retained |
     // | I2 | ready digest | non-empty | Image(digest); packages empty |
-    // This test crosses the final `SessionEnvironmentProvider::create`
+    // This test crosses the final `SandboxProviderRoles::create`
     // boundary, so it verifies the actual container adapter input rather
     // than only an intermediate projection helper.
     fn snapshot(
@@ -319,17 +325,25 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let unprepared =
         awaken_session_configuration_contract::environment_projection::environment_capacity_projection(&snapshot(None), true).spec;
-    let environment = environments.create(&unprepared).await.unwrap();
+    let environment = environments
+        .realizer()
+        .create_unattached(&unprepared)
+        .await
+        .unwrap();
     environment.lifecycle().dispose().await.unwrap();
 
     let digest = "registry.example/awaken@sha256:0123456789abcdef";
     let prepared =
         awaken_session_configuration_contract::environment_projection::environment_capacity_projection(&snapshot(Some(digest.into())), true)
             .spec;
-    let environment = environments.create(&prepared).await.unwrap();
+    let environment = environments
+        .realizer()
+        .create_unattached(&prepared)
+        .await
+        .unwrap();
     environment.lifecycle().dispose().await.unwrap();
 
     let specs = provider.specs.lock().unwrap();
