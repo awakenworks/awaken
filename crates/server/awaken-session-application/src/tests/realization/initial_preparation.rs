@@ -497,6 +497,127 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
 }
 
 #[tokio::test]
+async fn preparation_claim_does_not_starve_unvisited_candidates_after_a_retryable_head() {
+    // Causes: C1 the first assigned root stays incomplete/retryable; C2 a
+    // short final page or a full page has other compatible candidates; C3 the
+    // same Worker polls again. Effects: E1 the next unvisited root is claimed,
+    // E2 the unfinished head remains available on wrap, E3 no model Run.
+    // R1 C1+C2(short)+C3 -> E1, not the same poison head; R2 C2(full) -> E1,
+    // not the next PAGE's head; R3 end-of-index -> one empty poll then E2.
+    // R4 two concurrent polls by this incarnation -> distinct first/second
+    // roots under the same cursor lock and each root's ordinary CAS.
+    // All rules use the real SQLite candidate index and root-CAS admission.
+    // An assignment is deliberately not completed, matching a physical
+    // preparation that cannot resolve an old credential after rotation.
+    for (count, concurrent) in [(2, false), (300, false), (2, true)] {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        for index in 0..count {
+            create(
+                repo.as_ref(),
+                externally_placed(&format!("candidate-{index:03}"), "preparing", true),
+            )
+            .await;
+        }
+        let page = repo.preparation_candidates(None).await.unwrap();
+        assert_eq!(
+            page.next_cursor.is_some(),
+            count > 2,
+            "R1/R2 page precondition"
+        );
+        let application = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            reassign_existing_lease: false,
+        };
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        observations.replace(vec![terminal_cleanup_worker(
+            &target,
+            terminal_cleanup_manifest(),
+        )]);
+        application
+            .execution_admission()
+            .set_worker_observation_source(observations)
+            .unwrap();
+        application
+            .execution_admission()
+            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
+            .unwrap();
+        if concurrent {
+            let (left, right) = tokio::join!(
+                application
+                    .realizations
+                    .claim_next_session_preparation(target.clone()),
+                application
+                    .realizations
+                    .claim_next_session_preparation(target.clone()),
+            );
+            let ids: std::collections::BTreeSet<_> = [left, right]
+                .into_iter()
+                .map(|result| {
+                    result
+                        .unwrap()
+                        .expect("R4 assigned root")
+                        .session_id
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(
+                ids,
+                ["candidate-000".to_owned(), "candidate-001".to_owned()].into(),
+                "R4"
+            );
+        } else {
+            for index in 0..count.min(3) {
+                let assignment = application
+                    .realizations
+                    .claim_next_session_preparation(target.clone())
+                    .await
+                    .unwrap()
+                    .expect("R1/R2 another eligible root");
+                assert_eq!(
+                    assignment.session_id.as_str(),
+                    format!("candidate-{index:03}"),
+                    "R1/R2"
+                );
+            }
+        }
+        let head = repo.get(&SessionId::from("candidate-000")).await.unwrap();
+        assert!(
+            head.is_run_free_preparation_candidate(),
+            "C1 remains retryable"
+        );
+        assert!(!head.has_active_activities(), "E3 no model activity");
+        if count == 2 {
+            assert!(
+                application
+                    .realizations
+                    .claim_next_session_preparation(target.clone())
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "R3 bounded end poll"
+            );
+            let wrapped = application
+                .realizations
+                .claim_next_session_preparation(target)
+                .await
+                .unwrap()
+                .expect("R3 retry retained head");
+            assert_eq!(wrapped.session_id.as_str(), "candidate-000", "R3");
+        }
+    }
+}
+
+#[tokio::test]
 async fn run_free_request_is_one_idempotent_session_root_transition() {
     // Causes: C1 external non-self-hosted placement, C2 initial realization
     // still pending, C3 request already retained, C4 local/self-hosted scope,
@@ -806,8 +927,8 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
 async fn preparation_rechecks_worker_capability_after_root_assignment() {
     // R8 adds C7, a Registry capability withdrawal between the first
     // eligibility read and the root CAS readback. E3 is no directive delivered
-    // to a physical Worker; the assigned lease remains root-owned and expires
-    // through its ordinary fence. R8=C1..C6 true + C7 withdrawn => E3.
+    // to a physical Worker; the never-issued lease remains root evidence but is
+    // explicitly closed, since no effect can run under it. R8=C1..C6 + C7 => E3.
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -852,8 +973,220 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
     );
     let root = repo.get(&SessionId::from("race")).await.unwrap();
     assert_eq!(root.execution, SessionExecutionState::Preparing, "R8/E3");
-    assert!(
-        root.realization.is_some(),
-        "R8 ordinary lease remains durable"
+    assert_eq!(
+        root.realization
+            .as_ref()
+            .map(|lease| lease.expires_at_unix_ms),
+        Some(0),
+        "R8 the unissued lease stays as evidence but is explicitly closed"
     );
+}
+
+#[tokio::test]
+async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
+    // Regression for an Idle Run-free MCP update whose Active, unacknowledged
+    // generation failed with an expired credential and was re-claimed 7,684
+    // times, keeping its Worker leased. Causes: C1 failure class (terminal /
+    // retryable / not-ready); C2 consecutive failures against a budget of 2.
+    // Effects: E1 the generation stays Active and the root stays a candidate;
+    // E2 the generation is Failed, the lease is explicitly closed (expiry 0)
+    // and no Worker can claim the root again.
+    // | Rule | C1         | C2               | effect |
+    // | B1   | terminal   | first failure    | E2     |
+    // | B2   | retryable  | below budget     | E1     |
+    // | B3   | retryable  | budget reached   | E2     |
+    // | B4   | not-ready  | any (4 rounds)   | E1 and nothing counted |
+    for (rule, retryable, not_ready, rounds, fails) in [
+        ("B1", false, false, 1, true),
+        ("B2+B3", true, false, 2, true),
+        ("B4", true, true, 4, false),
+    ] {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let id = SessionId::from("idle-unpublished");
+        let mut root = idle_mcp_update(id.as_str(), false, false);
+        root.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Active;
+        root.mcp.attachments[0].publication_acknowledged = false;
+        create(repo.as_ref(), root).await;
+        let application = application_with_configuration(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration {
+                realization_retry_budget: 2,
+                ..Default::default()
+            },
+        );
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            reassign_existing_lease: false,
+        };
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        observations.replace(vec![terminal_cleanup_worker(
+            &target,
+            terminal_cleanup_manifest(),
+        )]);
+        application
+            .execution_admission()
+            .set_worker_observation_source(observations)
+            .unwrap();
+        application
+            .execution_admission()
+            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
+            .unwrap();
+        // The per-incarnation cursor advances past an examined root and wraps
+        // on a later poll, so one claim may take up to two polls.
+        let claim = |target: awaken_session_realization_contract::SessionRealizationTarget| {
+            let application = &application;
+            async move {
+                for _ in 0..3 {
+                    if let Some(assignment) = application
+                        .realizations
+                        .claim_next_session_preparation(target.clone())
+                        .await
+                        .unwrap()
+                    {
+                        return Some(assignment);
+                    }
+                }
+                None
+            }
+        };
+        for round in 1..=rounds {
+            let assignment = claim(target.clone())
+                .await
+                .unwrap_or_else(|| panic!("{rule} round {round} claims the root"));
+            application
+                .realizations
+                .fail_session_realization(
+                    awaken_session_realization_contract::FailSessionRealization {
+                        session_id: id.clone(),
+                        lease: assignment.directive.authority.lease,
+                        prepared_resource_revision: None,
+                        retryable,
+                        not_ready,
+                        source_run_id: None,
+                        reason: "sealed credential envelope is expired".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            let after = repo.get(&id).await.unwrap();
+            let last = round == rounds;
+            let expect_failed = fails && last;
+            assert_eq!(
+                after.mcp.attachments[0].state,
+                if expect_failed {
+                    crate::session_mcp::McpAttachmentState::Failed
+                } else {
+                    crate::session_mcp::McpAttachmentState::Active
+                },
+                "{rule} round {round}"
+            );
+            assert_eq!(
+                after.is_run_free_preparation_candidate(),
+                !expect_failed,
+                "{rule} round {round} demand"
+            );
+            assert_eq!(
+                after.realization.as_ref().unwrap().expires_at_unix_ms,
+                0,
+                "{rule} round {round} lease explicitly closed"
+            );
+            assert_eq!(
+                after.execution,
+                SessionExecutionState::Idle,
+                "{rule} stays Idle"
+            );
+            assert_eq!(
+                after.realization_progress().uncounted_failures(),
+                if not_ready {
+                    0
+                } else {
+                    u32::try_from(round).unwrap()
+                },
+                "{rule} round {round} counted"
+            );
+        }
+        let after = repo.get(&id).await.unwrap();
+        assert_eq!(claim(target).await.is_some(), !fails, "{rule} re-claim");
+        if fails {
+            assert_eq!(
+                repo.get(&id).await.unwrap(),
+                after,
+                "{rule} exhausted root is not touched again"
+            );
+            assert_eq!(
+                after.mcp.attachments[0].last_error.as_deref(),
+                Some("sealed credential envelope is expired"),
+                "{rule}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn preparation_closes_its_unissued_lease_when_the_worker_starts_draining() {
+    // R8b: the Worker turns Draining between the first eligibility read and
+    // the post-CAS re-check. No directive leaves the claim, so no effect can
+    // run; the minted lease is explicitly closed (expiry 0) rather than left
+    // live on a retiring Worker, where an only time-expired lease would keep
+    // its retirement refused. The lease identity stays as root evidence.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    create(
+        repo.as_ref(),
+        externally_placed("drain-race", "preparing", true),
+    )
+    .await;
+    let application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let target = awaken_session_realization_contract::SessionRealizationTarget {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let eligible = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
+    let mut draining = eligible.clone();
+    draining.snapshot.state = awaken_worker_contract::WorkerState::Draining;
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    observations.script([
+        WorkerObservationStep::Workers(vec![eligible]),
+        WorkerObservationStep::Workers(vec![draining]),
+    ]);
+    application
+        .execution_admission()
+        .set_worker_observation_source(observations)
+        .unwrap();
+    application
+        .execution_admission()
+        .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
+        .unwrap();
+    assert!(
+        application
+            .realizations
+            .claim_next_session_preparation(target)
+            .await
+            .unwrap()
+            .is_none(),
+        "R8b no directive"
+    );
+    let root = repo.get(&SessionId::from("drain-race")).await.unwrap();
+    let lease = root
+        .realization
+        .as_ref()
+        .expect("R8b lease evidence retained");
+    assert_eq!(lease.owner, "worker", "R8b exact attempted owner");
+    assert_eq!(lease.expires_at_unix_ms, 0, "R8b explicitly closed");
+    assert_eq!(root.execution, SessionExecutionState::Preparing, "R8b");
 }

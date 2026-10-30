@@ -98,6 +98,14 @@ impl SessionMcpOperations<'_> {
             .fail_realization(generation, realization_id, error)
     }
 
+    /// Apply the canonical SessionMcpAttachmentSet::fail_unpublished_generations law.
+    pub fn fail_unpublished_generations(
+        &mut self,
+        error: impl Into<String>,
+    ) -> Result<usize, McpAttachmentError> {
+        self.aggregate.state.mcp.fail_unpublished_generations(error)
+    }
+
     /// Apply the canonical SessionMcpAttachmentSet::begin_drain law.
     pub fn begin_drain(&mut self, generation: &McpGeneration) -> Result<(), McpAttachmentError> {
         self.aggregate.state.mcp.begin_drain(generation)

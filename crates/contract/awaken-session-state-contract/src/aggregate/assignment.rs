@@ -82,6 +82,7 @@ impl SessionAssignmentOperations<'_> {
             state.realization_progress.last_error = None;
             state.realization_progress.failed_at_unix_ms = None;
             state.realization_progress.failure_source_run_id = None;
+            state.realization_progress.uncounted_failures = 0;
         }
         state.realization = Some(lease);
         Ok(())
@@ -144,6 +145,37 @@ impl SessionAssignmentOperations<'_> {
         progress.last_error = Some(reason);
         progress.failed_at_unix_ms = Some(now);
         progress.failure_source_run_id = source_run_id.map(Box::new);
+    }
+
+    /// Count one failed effect of an assignment that counted no initial
+    /// attempt, so Run-free preparation and Running/Rescheduling recovery
+    /// are bounded by the same realization budget as initial realization.
+    ///
+    /// | execution                 | not-ready | effect                 |
+    /// |---------------------------|-----------|------------------------|
+    /// | Preparing / Activating    | any       | unchanged (claim counted) |
+    /// | any other                 | true      | unchanged (deferral)   |
+    /// | any other                 | false     | count + 1              |
+    ///
+    /// Returns the resulting count; overflow is refused, never wrapped.
+    pub fn note_uncounted_failure(
+        &mut self,
+        not_ready: bool,
+    ) -> Result<u32, SessionAggregateCommandError> {
+        let state = &mut self.aggregate.state;
+        let counted = matches!(
+            state.execution,
+            SessionExecutionState::Preparing | SessionExecutionState::Activating
+        );
+        let progress = &mut state.realization_progress;
+        if counted || not_ready {
+            return Ok(progress.uncounted_failures);
+        }
+        progress.uncounted_failures = progress
+            .uncounted_failures
+            .checked_add(1)
+            .ok_or(SessionAggregateCommandError::AttemptCounterExhausted)?;
+        Ok(progress.uncounted_failures)
     }
 
     /// Refund exactly one counted capacity refusal, without allowing underflow.

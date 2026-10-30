@@ -61,6 +61,49 @@ pub(crate) struct DomainState {
     pub(crate) authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
     pub(crate) relay_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
+    /// The last refusal explanation logged per exact Worker incarnation, so a
+    /// Worker polling its own retirement logs only when the reasons change.
+    pub(crate) retirement_explanations: RetirementExplanations,
+}
+
+/// Process-local memory of logged retirement refusals. It is diagnostics only:
+/// it never participates in the retirement decision.
+#[derive(Clone, Default)]
+pub(crate) struct RetirementExplanations(
+    Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<
+                String,
+                Vec<awaken_session_application::WorkerRetirementBlocker>,
+            >,
+        >,
+    >,
+);
+
+impl RetirementExplanations {
+    /// Record `blockers` for `worker`; true when they differ from the last record.
+    fn changed(
+        &self,
+        worker: &str,
+        blockers: &[awaken_session_application::WorkerRetirementBlocker],
+    ) -> bool {
+        let mut last = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last
+            .get(worker)
+            .is_some_and(|previous| previous == blockers)
+        {
+            return false;
+        }
+        if blockers.is_empty() {
+            last.remove(worker);
+        } else {
+            last.insert(worker.to_owned(), blockers.to_vec());
+        }
+        true
+    }
 }
 
 /// A read-only composition of the original Registry, Dispatch, and WorkQueue
@@ -522,8 +565,49 @@ async fn handle_domain(
             WorkerRetirementBasis::Empty => true,
             WorkerRetirementBasis::RetainedSources => sessions.sources_retained,
         });
+        if observation.retirement_basis() == WorkerRetirementBasis::RetainedSources {
+            explain_retirement(&state, &identity, &observation).await;
+        }
     }
     (StatusCode::OK, Json(observation)).into_response()
+}
+
+/// Log which Sessions refuse a retainable Worker's retirement and why. Only a
+/// change is logged at info; the read is the decision's own complete read and
+/// a failure to explain never changes the response.
+async fn explain_retirement(
+    state: &DomainState,
+    identity: &awaken_worker_contract::WorkerIdentity,
+    observation: &WorkerDomainObservation,
+) {
+    let worker = format!("{}:{}", identity.worker_id, identity.lease_owner());
+    match state
+        .worker_occupancy
+        .explain_worker_retirement(identity, &observation.registered.source_retention)
+        .await
+    {
+        Ok(blockers) => {
+            if !state.retirement_explanations.changed(&worker, &blockers) {
+                return;
+            }
+            if blockers.is_empty() {
+                tracing::info!(%worker, "Worker retirement is no longer refused by any Session");
+            } else {
+                let sessions = blockers
+                    .iter()
+                    .map(|blocker| format!("{}={:?}", blocker.session_id, blocker.reason))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tracing::info!(
+                    %worker,
+                    refused_by = blockers.len(),
+                    %sessions,
+                    "Worker retirement refused by Sessions"
+                );
+            }
+        }
+        Err(error) => tracing::debug!(%worker, %error, "Worker retirement explanation unavailable"),
+    }
 }
 
 pub fn router(

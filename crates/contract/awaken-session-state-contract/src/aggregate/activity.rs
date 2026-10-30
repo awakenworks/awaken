@@ -142,6 +142,9 @@ impl SessionActivityOperations<'_> {
             next.transition_execution(SessionExecutionState::Idle)?;
         }
         *state = next;
+        // Readiness proves the selected owner converged: earlier uncounted
+        // failures no longer describe a repeating fault.
+        state.realization_progress.uncounted_failures = 0;
         Ok(initial_ready)
     }
 

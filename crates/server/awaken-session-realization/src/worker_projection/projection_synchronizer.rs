@@ -101,6 +101,22 @@ where
         })
     }
 
+    async fn holds_newer_projection(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+        revision: awaken_session_types::SessionRevision,
+    ) -> bool {
+        self.execution
+            .sessions()
+            .read_realization(session_id.as_str(), |r| {
+                r.holds_newer_projection_under(lease, revision)
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    }
+
     async fn synchronize_session_projection(
         &self,
         session_id: &awaken_session_types::SessionId,
