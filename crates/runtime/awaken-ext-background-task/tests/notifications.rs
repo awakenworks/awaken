@@ -10,8 +10,8 @@ use awaken_runtime_contract::plugin::{
 use awaken_tool_contract::tool::{ToolCall, ToolConcurrency, ToolRecoveryPolicy};
 use serde_json::{Value, json};
 
-fn ended() -> BackgroundTask {
-    let mut task = BackgroundTask::requested(
+fn requested() -> BackgroundTask {
+    BackgroundTask::requested(
         BackgroundTaskId::new("phone-task").unwrap(),
         BackgroundTaskOrigin {
             thread_id: awaken_agent_contract::agent::thread::Id("thread".into()),
@@ -25,7 +25,11 @@ fn ended() -> BackgroundTask {
                 arguments: json!({"private_invocation":"must-not-project"}),
             },
         },
-    );
+    )
+}
+
+fn ended() -> BackgroundTask {
+    let mut task = requested();
     let fence = task
         .start(
             "private-worker",
@@ -265,6 +269,9 @@ async fn terminal_rules_preserve_execution_outcome_and_tool_error_semantics() {
     // task execution. N15 Requested is nonterminal -> no message or receipt.
     // These are projection partitions; transition legality belongs to the
     // model's transition tests. Text rendering must preserve the public data.
+    // N15's independent snapshot must come from requested() at revision zero;
+    // rewinding an Ended task would keep revision two and be malformed. The
+    // existing corrupt-namespace negative keeps that decode-before-effects law.
     for (end, expected) in [
         (
             BackgroundTaskEnd::Completed {
@@ -314,9 +321,14 @@ async fn terminal_rules_preserve_execution_outcome_and_tool_error_semantics() {
         {
             assert_eq!(body["lifecycle"]["is_error"], *is_error);
         }
-        task.lifecycle = BackgroundTaskLifecycle::Requested;
-        state.apply(&task_state_cell(&task.id).write(&task).unwrap());
-        let pending = project(config, &state).await;
+        let pending_task = requested();
+        let mut pending_state = Store::new();
+        pending_state.apply(
+            &task_state_cell(&pending_task.id)
+                .write(&pending_task)
+                .unwrap(),
+        );
+        let pending = project(config, &pending_state).await;
         assert!(pending.messages.is_empty(), "N15");
         assert!(pending.state.is_empty(), "N15");
     }

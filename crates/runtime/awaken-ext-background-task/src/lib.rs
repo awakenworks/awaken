@@ -13,7 +13,8 @@ mod tools;
 pub use model::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskScope, BackgroundWait,
-    TaskAttempt, TaskClaim, TaskExecutionPolicy, TaskTenure,
+    TaskAttempt, TaskClaim, TaskExecutionPolicy, TaskHeartbeatCheckpointError,
+    TaskHeartbeatCheckpointOutcome, TaskTenure,
 };
 pub use notification::{
     TaskNotificationEvent, TaskNotificationFormat, TaskNotificationRule, TaskNotifications,
