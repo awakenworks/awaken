@@ -14,9 +14,9 @@ use awaken_resource_contract::{
     InsertOutcome, LiveResourceBindingVerifier, MemoryStoreAggregate, MemoryStoreConfigVersion,
     MemoryStoreDefinition, PublishMemoryStoreConfig, PublishRepositoryConfig, RegisterMemoryStore,
     RegisterRepository, RegistryRepositoryError, ReplaceOutcome, RepositoryAggregate,
-    RepositoryConfigVersion, RepositoryDefinition, ResourceAdministration, ResourceInventory,
-    ResourceRegistryError, ResourceRegistryRepository, ResourceState, Stored,
-    UpdateMemoryStoreProfile,
+    RepositoryConfigVersion, RepositoryDefinition, RepositoryRegistration,
+    RepositoryRegistrationMode, ResourceAdministration, ResourceInventory, ResourceRegistryError,
+    ResourceRegistryRepository, ResourceState, Stored, UpdateMemoryStoreProfile,
 };
 
 pub struct RegistryApplication {
@@ -87,6 +87,45 @@ impl RegistryApplication {
                 Err(ResourceRegistryError::ConcurrentModification(id.into()))
             }
         }
+    }
+
+    async fn insert_repository_registration(
+        &self,
+        candidate: RepositoryAggregate,
+        replay: Option<RepositoryRegistrationMode>,
+    ) -> Result<RepositoryRegistration, ResourceRegistryError> {
+        let outcome = self
+            .repository
+            .insert_repository(&candidate)
+            .await
+            .map_err(registry_error)?;
+        let (definition, preparation) = match outcome {
+            InsertOutcome::Inserted => {
+                let proof =
+                    candidate.preparation(awaken_resource_contract::AggregateRevision::INITIAL);
+                (candidate.into_definition(), proof)
+            }
+            InsertOutcome::AlreadyRegistered => {
+                let id = candidate.definition().id.as_str();
+                let mode =
+                    replay.ok_or_else(|| ResourceRegistryError::AlreadyRegistered(id.into()))?;
+                let stored = self
+                    .repository(id)
+                    .await?
+                    .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?;
+                if !stored.aggregate.is_creation_replay_of(&candidate) {
+                    return Err(ResourceRegistryError::AlreadyRegistered(id.into()));
+                }
+                stored.aggregate.validate_registration_replay(mode)?;
+                let proof = stored.aggregate.preparation(stored.revision);
+                (stored.aggregate.into_definition(), proof)
+            }
+        };
+        Ok(RepositoryRegistration {
+            definition,
+            outcome,
+            preparation,
+        })
     }
 }
 
@@ -305,48 +344,24 @@ impl ResourceAdministration for RegistryApplication {
         &self,
         command: RegisterRepository,
     ) -> Result<(), ResourceRegistryError> {
-        let aggregate = RepositoryAggregate::register(command.definition, command.initial_config)?;
-        match self
-            .repository
-            .insert_repository(&aggregate)
+        let candidate = RepositoryAggregate::register(command.definition, command.initial_config)?;
+        self.insert_repository_registration(candidate, None)
             .await
-            .map_err(registry_error)?
-        {
-            InsertOutcome::Inserted => Ok(()),
-            InsertOutcome::AlreadyRegistered => Err(ResourceRegistryError::AlreadyRegistered(
-                aggregate.definition().id.to_string(),
-            )),
-        }
+            .map(|_| ())
     }
 
     async fn register_repository_idempotent(
         &self,
         command: RegisterRepository,
-    ) -> Result<RepositoryDefinition, ResourceRegistryError> {
-        let candidate =
-            RepositoryAggregate::register_idempotent(command.definition, command.initial_config)?;
-        match self
-            .repository
-            .insert_repository(&candidate)
+        mode: RepositoryRegistrationMode,
+    ) -> Result<RepositoryRegistration, ResourceRegistryError> {
+        let candidate = RepositoryAggregate::register_idempotent(
+            command.definition,
+            command.initial_config,
+            mode,
+        )?;
+        self.insert_repository_registration(candidate, Some(mode))
             .await
-            .map_err(registry_error)?
-        {
-            InsertOutcome::Inserted => Ok(candidate.into_definition()),
-            InsertOutcome::AlreadyRegistered => {
-                let id = candidate.definition().id.as_str();
-                let stored = self
-                    .repository(id)
-                    .await?
-                    .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?;
-                if !stored.aggregate.is_creation_replay_of(&candidate) {
-                    return Err(ResourceRegistryError::AlreadyRegistered(id.into()));
-                }
-                stored
-                    .aggregate
-                    .resolve_for_execution(&candidate.definition().workspace_id)?;
-                Ok(stored.aggregate.into_definition())
-            }
-        }
     }
 
     async fn publish_repository_config(
@@ -374,6 +389,39 @@ impl ResourceAdministration for RegistryApplication {
         let Some(mut stored) = self.repository(&id).await? else {
             return Err(ResourceRegistryError::NotFound(id));
         };
+        if let Some(proof) = command.preparation.as_ref() {
+            if !stored.aggregate.complete_preparation(
+                &command.workspace_id,
+                stored.revision,
+                proof,
+                command.state,
+                self.clock.now().as_unix_nanos_u64(),
+            )? {
+                return Ok(());
+            }
+            return match self.replace_repository(&id, stored).await {
+                Err(ResourceRegistryError::ConcurrentModification(_)) => {
+                    let Some(mut current) = self.repository(&id).await? else {
+                        return Err(ResourceRegistryError::NotFound(id));
+                    };
+                    // A parallel exact completion may have won the CAS. Only
+                    // that receipt can acknowledge this request; an intervening
+                    // administrative mutation never grants another activation.
+                    if !current.aggregate.complete_preparation(
+                        &command.workspace_id,
+                        current.revision,
+                        proof,
+                        command.state,
+                        self.clock.now().as_unix_nanos_u64(),
+                    )? {
+                        Ok(())
+                    } else {
+                        Err(ResourceRegistryError::ConcurrentModification(id))
+                    }
+                }
+                result => result,
+            };
+        }
         stored.aggregate.change_state(
             &command.workspace_id,
             command.state,

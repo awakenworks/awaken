@@ -336,61 +336,34 @@ impl SessionRepositoryParticipants {
         .map_err(&map_registry_error)?;
         self.record_creation_intent(&owner, &definition.workspace_id, repository_id.as_str())
             .await?;
-        let (registered_state, registry_provenance) = match catalog
-            .register_repository(awaken_resource_contract::RegisterRepository {
-                definition: definition.clone(),
-                initial_config: initial_config.clone(),
-            })
+        let registered = catalog
+            .register_repository_idempotent(
+                awaken_resource_contract::RegisterRepository {
+                    definition: definition.clone(),
+                    initial_config,
+                },
+                awaken_resource_contract::RepositoryRegistrationMode::Preparation,
+            )
             .await
+            .map_err(&map_registry_error)?;
+        let registered_state = registered.definition.state;
+        let preparation = if registered_state == awaken_resource_contract::ResourceState::Suspended
         {
-            Ok(()) => (initial_state, SessionParticipantProvenance::Applied),
-            Err(awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(_)) => {
-                let stored_definition = catalog
-                    .find_repository(&definition.workspace_id, definition.id.as_str())
-                    .await
-                    .map_err(&map_registry_error)?;
-                let stored_config = catalog
-                    .find_repository_config(
-                        &definition.workspace_id,
-                        definition.id.as_str(),
-                        awaken_resource_contract::ConfigVersion::INITIAL,
-                    )
-                    .await
-                    .map_err(&map_registry_error)?;
-                let Some(stored_definition) = stored_definition else {
-                    return Err(RunError::bad_request(
-                        "repository resource could not be configured: registered Repository is unavailable in this Workspace",
-                    ));
-                };
-                let lifecycle_is_exact = if material_ingress.is_some() {
-                    matches!(
-                        stored_definition.state,
-                        awaken_resource_contract::ResourceState::Suspended
-                            | awaken_resource_contract::ResourceState::Active
-                    )
-                } else {
-                    stored_definition.state == awaken_resource_contract::ResourceState::Active
-                };
-                // State and timestamps are lifecycle progress owned by this
-                // Registry saga, not request identity. Normalize only those
-                // fields, then retain whole-definition equality for replay.
-                let mut stored_registration = stored_definition.clone();
-                stored_registration.state = definition.state;
-                stored_registration.timestamps = definition.timestamps;
-                if !lifecycle_is_exact
-                    || stored_registration != definition
-                    || stored_config.as_ref() != Some(&initial_config)
-                {
-                    return Err(RunError::bad_request(
-                        "repository resource could not be configured: existing Repository does not exactly match the requested definition and initial config",
-                    ));
-                }
-                (
-                    stored_definition.state,
-                    SessionParticipantProvenance::Replayed,
+            Some(registered.preparation.ok_or_else(|| {
+                RunError::internal(
+                    "Registry returned a staged Repository without its preparation proof",
                 )
+            })?)
+        } else {
+            None
+        };
+        let registry_provenance = match registered.outcome {
+            awaken_resource_contract::InsertOutcome::Inserted => {
+                SessionParticipantProvenance::Applied
             }
-            Err(error) => return Err(map_registry_error(error)),
+            awaken_resource_contract::InsertOutcome::AlreadyRegistered => {
+                SessionParticipantProvenance::Replayed
+            }
         };
         let Some((ingress, source_id, credential_target, material)) = material_ingress else {
             return Ok(ConfiguredSessionRepository {
@@ -461,6 +434,7 @@ impl SessionRepositoryParticipants {
                 workspace_id: definition.workspace_id.clone(),
                 id: repository_id.clone(),
                 state: awaken_resource_contract::ResourceState::Active,
+                preparation,
             })
             .await
         {
@@ -849,6 +823,7 @@ impl SessionRepositoryParticipants {
                 workspace_id: owner_scope.into(),
                 id: repository_id.into(),
                 state: awaken_resource_contract::ResourceState::Deleted,
+                preparation: None,
             })
             .await
             .is_ok()

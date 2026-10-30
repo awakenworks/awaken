@@ -794,3 +794,27 @@ typed deployment field `resource_database_url`
 (`crates/bin/awaken-process-startup/src/config/file_schema.rs:69`, validated in `deployment.rs:150`).
 Neither environment variable is read in `crates/`. The one-bundle selection rule is
 unchanged.
+
+## Amendment 2026-10-30: one Repository registration replay authority
+
+The Resource Registry owns exact registration replay and its Applied/Replayed
+outcome. Session participants consume that result instead of reconstructing
+creation from AlreadyRegistered plus inventory reads. Ordinary registration
+still requires an active resource. A staged registration may continue its
+unchanged initial preparation, including its original suspended state; an
+administrative lifecycle command or configuration publication closes that
+preparation permission. A retry cannot revive a suspended, archived or deleted
+resource after such a command. The preparation marker is private aggregate
+state, never editable metadata. Registry and Session callers use the same
+registration implementation and canonical request fingerprint.
+
+Automatic activation consumes the exact Registry revision returned at staged
+registration. Its existing aggregate CAS rejects an intervening administrative
+command. Exact concurrent completion replays the recorded completion instead
+of issuing another state transition; a later administrative command invalidates
+that completion permission as well.
+
+This registration outcome classifies the current call only. It does not claim
+durable pre-root responsibility or solve response-loss attribution. Those
+obligations require the separate Session preparation/participant receipt work;
+the complete-root creation invariant and the original cleanup authority remain.

@@ -37,6 +37,30 @@ fn fixture() -> Fixture {
     }
 }
 
+fn repository_registration_request(fixture: &Fixture) -> RegisterRepository {
+    RegisterRepository {
+        definition: RepositoryDefinition {
+            id: fixture.repository_id.as_str().into(),
+            workspace_id: fixture.workspace.clone(),
+            name: "Workshop repository".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            state: ResourceState::Active,
+            current_config_version: ConfigVersion::INITIAL,
+            timestamps: Default::default(),
+        },
+        initial_config: RepositoryConfigVersion {
+            repository_id: fixture.repository_id.as_str().into(),
+            version: ConfigVersion::INITIAL,
+            remote_url: "https://github.com/example/workshop.git".into(),
+            credential_binding: Some("github-source".into()),
+            initial_branch: Some("main".into()),
+            initial_commit: None,
+            clone_policy: ClonePolicy::default(),
+        },
+    }
+}
+
 async fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
     // Cause/effect decision table shared by every backend:
     // R1 absent + aligned V1 -> registered; duplicate -> AlreadyRegistered.
@@ -278,6 +302,7 @@ async fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             workspace_id: fixture.workspace.clone(),
             id: retired_id.as_str().into(),
             state: ResourceState::Suspended,
+            preparation: None,
         })
         .await
         .expect("R7 suspended");
@@ -302,6 +327,7 @@ async fn exercise_registry(registry: &dyn ResourceRegistry, fixture: &Fixture) {
             workspace_id: fixture.workspace.clone(),
             id: retired_id.as_str().into(),
             state: ResourceState::Deleted,
+            preparation: None,
         })
         .await
         .expect("R7 deleted");
@@ -519,27 +545,7 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
     let memory_events = std::sync::Arc::new(RegistryMemoryEvents::default());
     let root = tempfile::tempdir().unwrap();
     let fixture = fixture();
-    let request = RegisterRepository {
-        definition: RepositoryDefinition {
-            id: fixture.repository_id.as_str().into(),
-            workspace_id: fixture.workspace.clone(),
-            name: "Workshop repository".into(),
-            description: String::new(),
-            metadata: Default::default(),
-            state: ResourceState::Active,
-            current_config_version: ConfigVersion::INITIAL,
-            timestamps: Default::default(),
-        },
-        initial_config: RepositoryConfigVersion {
-            repository_id: fixture.repository_id.as_str().into(),
-            version: ConfigVersion::INITIAL,
-            remote_url: "https://github.com/example/workshop.git".into(),
-            credential_binding: Some("github-source".into()),
-            initial_branch: Some("main".into()),
-            initial_commit: None,
-            clone_policy: ClonePolicy::default(),
-        },
-    };
+    let request = repository_registration_request(&fixture);
     {
         let application = open_embedded(
             root.path(),
@@ -558,15 +564,26 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
                 tokio::spawn(async move {
                     barrier.wait().await;
                     registry
-                        .register_repository_idempotent(request)
+                        .register_repository_idempotent(
+                            request,
+                            awaken_resource_contract::RepositoryRegistrationMode::Execution,
+                        )
                         .await
                         .unwrap()
                 })
             })
             .collect();
+        let mut applied = 0;
         for worker in workers {
-            assert_eq!(worker.await.unwrap().id, request.definition.id);
+            let result = worker.await.unwrap();
+            assert_eq!(result.definition.id, request.definition.id);
+            applied +=
+                usize::from(result.outcome == awaken_resource_contract::InsertOutcome::Inserted);
         }
+        assert_eq!(
+            applied, 1,
+            "R1 exactly one registered effect, seven exact replays"
+        );
         assert_eq!(
             registry
                 .list_repositories(&fixture.workspace)
@@ -580,7 +597,12 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
         legacy.initial_config.repository_id = legacy.definition.id.clone();
         registry.register_repository(legacy.clone()).await.unwrap();
         assert!(matches!(
-            registry.register_repository_idempotent(legacy).await,
+            registry
+                .register_repository_idempotent(
+                    legacy,
+                    awaken_resource_contract::RepositoryRegistrationMode::Execution
+                )
+                .await,
             Err(ResourceRegistryError::AlreadyRegistered(_))
         ));
         let mut config = request.initial_config.clone();
@@ -606,10 +628,13 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(1234);
     let replay = registry
-        .register_repository_idempotent(retry)
+        .register_repository_idempotent(
+            retry,
+            awaken_resource_contract::RepositoryRegistrationMode::Execution,
+        )
         .await
         .unwrap();
-    assert_eq!(replay.current_config_version, ConfigVersion(2));
+    assert_eq!(replay.definition.current_config_version, ConfigVersion(2));
     assert_eq!(
         registry
             .find_repository_config(&fixture.workspace, &fixture.repository_id, ConfigVersion(2))
@@ -623,7 +648,12 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
     let mut changed = request.clone();
     changed.definition.workspace_id = "foreign".into();
     assert!(matches!(
-        registry.register_repository_idempotent(changed).await,
+        registry
+            .register_repository_idempotent(
+                changed,
+                awaken_resource_contract::RepositoryRegistrationMode::Execution
+            )
+            .await,
         Err(ResourceRegistryError::AlreadyRegistered(_))
     ));
     for state in [
@@ -636,12 +666,16 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
                 workspace_id: fixture.workspace.clone(),
                 id: request.definition.id.clone(),
                 state,
+                preparation: None,
             })
             .await
             .unwrap();
         assert!(matches!(
             registry
-                .register_repository_idempotent(request.clone())
+                .register_repository_idempotent(
+                    request.clone(),
+                    awaken_resource_contract::RepositoryRegistrationMode::Execution
+                )
                 .await,
             Err(ResourceRegistryError::NotActive { .. })
         ));
@@ -679,6 +713,120 @@ async fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
         &fixture,
     )
     .await;
+}
+
+#[tokio::test]
+async fn staged_repository_replay_cannot_resume_an_administratively_suspended_resource() {
+    // C1 initial staged suspension; C2 exact/changed request; C3 lifecycle or
+    // configuration changed; C4 process rebuilt. Effects: S1 exact untouched
+    // preparation replays; S2 changed intent/ordinary lane rejects; S3 an
+    // administrative transition closes preparation permanently even when its
+    // visible state equals the original suspension; S4 no version overwrite.
+    // No Session adapter compares a second registration snapshot.
+    use awaken_resource_contract::{InsertOutcome, RepositoryRegistrationMode as Mode};
+    let root = tempfile::tempdir().unwrap();
+    let fixture = fixture();
+    let mut request = repository_registration_request(&fixture);
+    request.definition.state = ResourceState::Suspended;
+    let events = std::sync::Arc::new(RegistryMemoryEvents::default());
+    {
+        let app = open_embedded(root.path(), awaken_time::system_clock(), events.clone())
+            .await
+            .unwrap();
+        let registry = app.authorities().resource_registry();
+        let first = registry
+            .register_repository_idempotent(request.clone(), Mode::Preparation)
+            .await
+            .unwrap();
+        assert_eq!(first.outcome, InsertOutcome::Inserted, "S1");
+    }
+    let app = open_embedded(root.path(), awaken_time::system_clock(), events)
+        .await
+        .unwrap();
+    let registry = app.authorities().resource_registry();
+    let replay = registry
+        .register_repository_idempotent(request.clone(), Mode::Preparation)
+        .await
+        .unwrap();
+    assert_eq!(
+        replay.outcome,
+        InsertOutcome::AlreadyRegistered,
+        "S1/S4 durable replay"
+    );
+    let mut altered = request.clone();
+    altered.initial_config.remote_url.push_str("/different");
+    assert!(
+        registry
+            .register_repository_idempotent(altered, Mode::Preparation)
+            .await
+            .is_err(),
+        "S2"
+    );
+    assert!(
+        registry
+            .register_repository_idempotent(request.clone(), Mode::Execution)
+            .await
+            .is_err(),
+        "S2 execution does not grant preparation continuation"
+    );
+    // Same observable state is a distinct lifecycle command, not an unchanged
+    // preparation. A marker inferred from state/timestamps would pass wrongly.
+    registry
+        .change_repository_state(ChangeRepositoryState {
+            workspace_id: fixture.workspace.clone(),
+            id: request.definition.id.clone(),
+            state: ResourceState::Suspended,
+            preparation: None,
+        })
+        .await
+        .unwrap();
+    // S5 administrative suspension can also win while the original caller
+    // awaits Vault. The caller's old observation may not activate afterward.
+    assert!(
+        matches!(
+            registry
+                .change_repository_state(ChangeRepositoryState {
+                    workspace_id: fixture.workspace.clone(),
+                    id: request.definition.id.clone(),
+                    state: ResourceState::Active,
+                    preparation: replay.preparation,
+                })
+                .await,
+            Err(ResourceRegistryError::ConcurrentModification(_))
+        ),
+        "S5 stale preparation activation"
+    );
+    assert!(
+        matches!(
+            registry
+                .register_repository_idempotent(request.clone(), Mode::Preparation)
+                .await,
+            Err(ResourceRegistryError::NotActive { .. })
+        ),
+        "S3"
+    );
+    assert_eq!(
+        registry
+            .find_repository(&fixture.workspace, &fixture.repository_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Suspended,
+        "S3 retry never reactivates"
+    );
+    assert_eq!(
+        registry
+            .find_repository_config(
+                &fixture.workspace,
+                &fixture.repository_id,
+                ConfigVersion::INITIAL
+            )
+            .await
+            .unwrap(),
+        Some(request.initial_config),
+        "S4"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

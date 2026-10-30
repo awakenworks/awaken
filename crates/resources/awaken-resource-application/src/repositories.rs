@@ -160,29 +160,34 @@ impl RepositoryApplicationService for RepositoryApplication {
         );
         let definition = self
             .registry
-            .register_repository_idempotent(RegisterRepository {
-                definition: RepositoryDefinition {
-                    id: id.clone().into(),
-                    workspace_id: command.workspace_id,
-                    name: command.name,
-                    description: command.description,
-                    metadata: Default::default(),
-                    state: ResourceState::Active,
-                    current_config_version: ConfigVersion::INITIAL,
-                    timestamps: ResourceTimestamps::created(self.clock.now().as_unix_nanos_u64()),
+            .register_repository_idempotent(
+                RegisterRepository {
+                    definition: RepositoryDefinition {
+                        id: id.clone().into(),
+                        workspace_id: command.workspace_id,
+                        name: command.name,
+                        description: command.description,
+                        metadata: Default::default(),
+                        state: ResourceState::Active,
+                        current_config_version: ConfigVersion::INITIAL,
+                        timestamps: ResourceTimestamps::created(
+                            self.clock.now().as_unix_nanos_u64(),
+                        ),
+                    },
+                    initial_config: RepositoryConfigVersion {
+                        repository_id: id.into(),
+                        version: ConfigVersion::INITIAL,
+                        remote_url: command.remote_url,
+                        credential_binding: command.credential_binding,
+                        initial_branch: command.initial_branch,
+                        initial_commit: command.initial_commit,
+                        clone_policy: command.clone_policy,
+                    },
                 },
-                initial_config: RepositoryConfigVersion {
-                    repository_id: id.into(),
-                    version: ConfigVersion::INITIAL,
-                    remote_url: command.remote_url,
-                    credential_binding: command.credential_binding,
-                    initial_branch: command.initial_branch,
-                    initial_commit: command.initial_commit,
-                    clone_policy: command.clone_policy,
-                },
-            })
+                awaken_resource_contract::RepositoryRegistrationMode::Execution,
+            )
             .await?;
-        self.details(definition).await
+        self.details(definition.definition).await
     }
 
     async fn list(
