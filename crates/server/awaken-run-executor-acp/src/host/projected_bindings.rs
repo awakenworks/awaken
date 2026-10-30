@@ -3,7 +3,6 @@
 //! this adapter owns only bounded reads and execution-time liveness evidence.
 
 use super::*;
-use serde::{Deserialize, Deserializer, Serialize};
 use tokio::io::AsyncReadExt;
 
 const MAX_BINDING_BYTES: u64 = 1024 * 1024;
@@ -51,51 +50,15 @@ fn projected_binding_use_rechecks_the_exact_projection_after_probe() {
     );
 }
 
-/// Secret-free metadata, not a credential value or a login-file location.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AcpLocalCredentialBinding {
-    #[serde(deserialize_with = "deserialize_reference")]
-    pub credential: CredentialRef,
-    pub cli_id: String,
-    pub enabled: bool,
-}
-
-fn deserialize_reference<'de, D: Deserializer<'de>>(d: D) -> Result<CredentialRef, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct StrictReference {
-        id: String,
-        revision: u64,
-    }
-    let value = StrictReference::deserialize(d)?;
-    Ok(CredentialRef {
-        id: value.id,
-        revision: value.revision,
+pub(super) fn to_local_binding(
+    projection: &AcpLocalCredentialBinding,
+) -> Result<LocalBinding, String> {
+    projection.validate(&crate::known_acp_publication_capabilities())?;
+    Ok(LocalBinding {
+        credential: projection.credential.clone(),
+        cli: acp_cli(&projection.cli_id).expect("validated catalog id"),
+        enabled: projection.enabled,
     })
-}
-
-impl AcpLocalCredentialBinding {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.credential.id.trim().is_empty() || self.credential.revision == 0 {
-            return Err(
-                "WorkerLocal credential requires a nonblank id and positive revision".into(),
-            );
-        }
-        if acp_cli(&self.cli_id).is_none() {
-            return Err("WorkerLocal binding names an unknown ACP CLI".into());
-        }
-        Ok(())
-    }
-
-    pub(super) fn to_local_binding(&self) -> Result<LocalBinding, String> {
-        self.validate()?;
-        Ok(LocalBinding {
-            credential: self.credential.clone(),
-            cli: acp_cli(&self.cli_id).expect("validated catalog id"),
-            enabled: self.enabled,
-        })
-    }
 }
 
 /// A complete external projection, atomically replaced by its trusted publisher.
@@ -164,7 +127,7 @@ impl ProjectedAcpCredentials {
         let mut ids = BTreeSet::new();
         for binding in &bindings {
             binding
-                .validate()
+                .validate(&crate::known_acp_publication_capabilities())
                 .map_err(|_| CredentialMaterialError::Invalid)?;
             if !self.selected_cli_ids.contains(&binding.cli_id)
                 || !ids.insert(&binding.credential.id)
@@ -181,7 +144,7 @@ impl ProjectedAcpCredentials {
             Ok(Ok(bindings)) => {
                 let next = bindings
                     .iter()
-                    .map(|binding| Ok((binding.credential.id.clone(), binding.to_local_binding()?)))
+                    .map(|binding| Ok((binding.credential.id.clone(), to_local_binding(binding)?)))
                     .collect::<Result<BTreeMap<_, _>, String>>()
                     .map_err(|_| CredentialMaterialError::Invalid)?;
                 *self

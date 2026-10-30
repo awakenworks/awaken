@@ -18,21 +18,25 @@
 //! is always the authority. The durable backing is an injected [`SessionBlobStore`];
 //! a shared (content-addressed) one makes recovery cross-machine.
 //!
-//! This is the *reference* implementation of the crate's [`SessionHomeProvider`]
-//! port. It depends only on the port + the [`ConfigHome`] path convention (both in
-//! this crate) and std — never on the heavy host service layer — so a host reuses it
-//! for cross-machine recovery without linking the management plane.
+//! The execution role's `DirSessionHome` adapts this same blob owner to its
+//! `SessionHomeProvider` port and `ConfigHome` path convention, without a heavy
+//! host service layer. Blob custody remains available without execution; no
+//! second byte store or recovery codec is selected by that compilation boundary.
 
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "execution")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_data_governance_contract::{ContentEraser, ErasureError};
 use awaken_runtime_contract::DataSubjectId;
 
+use crate::SessionHomeKey;
+#[cfg(feature = "execution")]
 use crate::config_home::ConfigHome;
-use crate::{SessionHomeKey, SessionHomePlan, SessionHomeProvider};
+#[cfg(feature = "execution")]
+use crate::{SessionHomePlan, SessionHomeProvider};
 
 /// Durable storage for a thread's portable session subtree, keyed by (thread,
 /// adapter). Dependency-inverted so a host swaps a local directory for a shared,
@@ -198,11 +202,13 @@ impl ContentEraser for FsSessionBlobStore {
 /// harvesting its declared session subtree under the thread's stable config home.
 /// The provider is constructed knowing the config-home base and its blob store; the
 /// tenant / data-subject scope is applied by the host when it wires them.
+#[cfg(feature = "execution")]
 pub struct DirSessionHome {
     store_dir: Option<PathBuf>,
     blobs: Arc<dyn SessionBlobStore>,
 }
 
+#[cfg(feature = "execution")]
 impl DirSessionHome {
     #[must_use]
     pub fn new(store_dir: Option<PathBuf>, blobs: Arc<dyn SessionBlobStore>) -> Self {
@@ -217,6 +223,7 @@ impl DirSessionHome {
 }
 
 #[async_trait]
+#[cfg(feature = "execution")]
 impl SessionHomeProvider for DirSessionHome {
     async fn restore(&self, key: &SessionHomeKey, plan: &SessionHomePlan) {
         // Best-effort: a failure just means the CLI starts fresh and the neutral
@@ -262,6 +269,7 @@ fn copy_tree(src: &Path, dest: &Path, excludes: &[String]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "execution")]
     fn plan() -> SessionHomePlan {
         SessionHomePlan {
             config_home_env: "CLAUDE_CONFIG_DIR".to_string(),
@@ -272,6 +280,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "execution")]
     async fn recovers_a_session_across_config_homes_and_leaves_credentials_behind() {
         // Causes: the fixtures below establish `recovers a session across config homes and leaves
         // credentials behind` with the concrete inputs, state, dependencies, and failure triggers
@@ -330,6 +339,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "execution")]
     async fn restore_of_an_unknown_session_is_a_no_op() {
         let store = tempfile::tempdir().unwrap();
         let blob_root = tempfile::tempdir().unwrap();
@@ -356,6 +366,10 @@ mod tests {
     /// Unknown-subject no-op is covered by `restore_of_an_unknown_session_is_a_no_op`.
     #[tokio::test]
     async fn subject_scopes_are_isolated_and_independently_erasable() {
+        // B4: this SAME custody implementation also compiles and executes in a
+        // metadata/blob-only build. The original subject/key/erasure/retry/late
+        // write decision table and every assertion below remain unchanged.
+
         let root = tempfile::tempdir().unwrap();
         let alice_source = tempfile::tempdir().unwrap();
         let bob_source = tempfile::tempdir().unwrap();
@@ -406,6 +420,7 @@ mod tests {
         );
     }
 }
+#[cfg(feature = "execution")]
 #[tokio::test]
 async fn declared_opencode_database_moves_without_credential_or_local_config_files() {
     // Causes: H1 catalog-declared data subtree; H2 nested credential name;

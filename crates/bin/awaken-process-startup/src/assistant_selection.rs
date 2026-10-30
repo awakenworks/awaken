@@ -8,7 +8,7 @@
 //! This policy consumes existing catalog, credential, and local ACP observations.
 //! It never authors another default, credential, or provider record.
 
-use awaken_acp_application::AcpHostObservation;
+use awaken_acp_contract::AcpHostObservation;
 use awaken_agent_config::ModelSelection;
 use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
 use awaken_model_catalog::{OfferingStatus, ProviderCatalog};
@@ -71,7 +71,7 @@ pub(crate) fn select(
                     && observation.credential_state
                         == Some(awaken_credential_contract::CredentialObservationState::Available)
                     && observation.capability_state
-                        == Some(awaken_acp_application::AcpCapabilityState::Verified)
+                        == Some(awaken_acp_contract::AcpCapabilityObservationState::Verified)
             }) && credentials.iter().filter(active).any(|source| {
                 source.kind == CredentialKind::WorkerLocal
                     && source
@@ -137,13 +137,13 @@ mod tests {
         AcpHostObservation {
             cli_id: cli_id.into(),
             display_name: cli_id.into(),
-            detection: awaken_acp_application::AcpDetectionState::Detected,
+            detection: awaken_acp_contract::AcpDetectionState::Detected,
             version: Some("1".into()),
             credential_state: Some(
                 awaken_credential_contract::CredentialObservationState::Available,
             ),
             reason_code: None,
-            capability_state: Some(awaken_acp_application::AcpCapabilityState::Verified),
+            capability_state: Some(awaken_acp_contract::AcpCapabilityObservationState::Verified),
             capability_fingerprint: Some("fixture".into()),
             capability_reason_code: None,
         }

@@ -12,19 +12,14 @@ layer = "infrastructure"
 authority = "acp"
 
 [dependencies]
-awaken-agent-contract.workspace = true
-awaken-time.workspace = true
-awaken-run-executor-acp.workspace = true
+awaken-acp-contract.workspace = true
+awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-credential-vault.workspace = true
 
 [dev-dependencies]
-awaken-credential-contract.workspace = true
-async-trait.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-tempfile = "3"
-awaken-acp-contract.workspace = true
 
 [lints]
 workspace = true

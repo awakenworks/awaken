@@ -27,7 +27,7 @@ awaken-sandbox-control.workspace = true
 # The Workdir and Namespace tiers.
 awaken-sandbox-local = { workspace = true }
 # Hand process reaping and Hand lifecycle metrics.
-awaken-run-executor-acp = { workspace = true }
+awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
 awaken-observability = { workspace = true }
 # The canonical built-in tool descriptors a Hand serves.
 awaken-ext-builtin-tools = { workspace = true }

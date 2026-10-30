@@ -15,13 +15,6 @@ use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract::{ProcessHandle, Signal};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpCapabilityState {
-    Verified,
-    Unavailable,
-    ProbeFailed,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveAcpCapabilityProfile {
     pub cli_id: String,

@@ -34,7 +34,7 @@ pub(super) async fn control_component_for_process(
     injected_brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     managed_runtime_available: bool,
-    local_acp_observations: &[awaken_acp_application::AcpHostObservation],
+    local_acp_observations: &[awaken_acp_contract::AcpHostObservation],
     runtimes: Arc<dyn awaken_control::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
     environment_author: Arc<dyn awaken_environment_contract::EnvironmentAuthor>,

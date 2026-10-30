@@ -49,6 +49,7 @@ awaken-worker = { workspace = true }
 awaken-worker-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-acp-application = { workspace = true }
+awaken-acp-contract.workspace = true
 awaken-control = { workspace = true }
 awaken-coordinator = { workspace = true }
 awaken-credential-contract.workspace = true
@@ -56,7 +57,7 @@ awaken-credential-materializer = { workspace = true, features = ["authority", "b
 awaken-credential-vault.workspace = true
 awaken-deployment-config.workspace = true
 awaken-protocol-acp = { workspace = true, features = ["real-acp"] }
-awaken-run-executor-acp = { workspace = true }
+awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
 awaken-tool-contract.workspace = true
 awaken-tool-relay.workspace = true
 # The Session execution a local claim pool co-locates: the deployment's
@@ -84,7 +85,6 @@ container-k8s = ["awaken-process-startup/container-k8s", "awaken-execution-compo
 
 [dev-dependencies]
 
-awaken-acp-contract = { workspace = true }
 awaken-installation-workspace.workspace = true
 awaken-process-startup = { workspace = true, features = ["test-support"] }
 # The off-Linux Memory copy fallback row reads a real Resources Memory store.

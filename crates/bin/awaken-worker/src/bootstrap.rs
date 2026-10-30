@@ -876,10 +876,10 @@ mod tests {
         async fn discover(
             &self,
             cli: &awaken_run_executor_acp::AcpCli,
-        ) -> awaken_run_executor_acp::host::AcpHostObservation {
+        ) -> awaken_acp_contract::AcpHostObservation {
             let mut observation =
                 awaken_run_executor_acp::host::AcpDiscovery::discover(&HostFixture, cli).await;
-            observation.detection = awaken_run_executor_acp::host::AcpDetectionState::Missing;
+            observation.detection = awaken_acp_contract::AcpDetectionState::Missing;
             observation.credential_state = None;
             observation
         }
@@ -889,8 +889,8 @@ mod tests {
         async fn discover(
             &self,
             cli: &awaken_run_executor_acp::AcpCli,
-        ) -> awaken_run_executor_acp::host::AcpHostObservation {
-            use awaken_run_executor_acp::host::*;
+        ) -> awaken_acp_contract::AcpHostObservation {
+            use awaken_acp_contract::{AcpDetectionState, AcpHostObservation};
             AcpHostObservation {
                 cli_id: cli.id.into(),
                 display_name: cli.id.into(),
@@ -959,8 +959,8 @@ mod tests {
         // W5 all selected CLIs missing => startup fails, never a fabricated route.
         // W6 Windows Namespace is unsupported => startup rejects explicitly;
         // Local still executes the full wiring/projection table on every OS.
+        use awaken_acp_contract::AcpLocalCredentialBinding;
         use awaken_agent_contract::credential::CredentialRef;
-        use awaken_run_executor_acp::host::AcpLocalCredentialBinding;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("worker.toml");
         let signer = directory.path().join("signer.json");

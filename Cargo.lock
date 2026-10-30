@@ -283,15 +283,10 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "awaken-acp-application"
 version = "1.0.0"
 dependencies = [
- "async-trait",
  "awaken-acp-contract",
- "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-credential-vault",
- "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "awaken-time",
- "tempfile",
  "tokio",
 ]
 
@@ -2053,7 +2048,6 @@ name = "awaken-process-startup"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "awaken-acp-application",
  "awaken-acp-contract",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
@@ -2981,7 +2975,6 @@ name = "awaken-scenario-host"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "awaken-acp-application",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
  "awaken-agent-config",
