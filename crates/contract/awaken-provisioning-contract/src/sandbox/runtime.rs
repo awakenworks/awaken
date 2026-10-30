@@ -649,6 +649,36 @@ pub trait SandboxReadiness: Send + Sync {
     async fn probe_ready(&self) -> Result<(), SandboxError>;
 }
 
+/// Process-startup installation of the shared services of one physical provider.
+/// This is the same installation role consumed by Session adaptation; it does
+/// not require the provider's associated live Sandbox type.
+///
+/// Installation type decision table: SI1 a caller has only this role, with no
+/// `Environment` type; installing either service compiles. This compile-only
+/// case grants no realization or readiness authority and executes no effect.
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use awaken_provisioning_contract::{MemoryMounter, SandboxInstallation, SecretBroker};
+/// fn install_on_one_owner(
+///     provider: &dyn SandboxInstallation,
+///     mounter: Arc<dyn MemoryMounter>,
+///     broker: Arc<dyn SecretBroker>,
+/// ) {
+///     provider.install_memory_mounter(mounter);
+///     provider.install_secret_broker(broker);
+/// }
+/// ```
+pub trait SandboxInstallation: Send + Sync {
+    /// Install the governed MemoryStore mount adapter after composition; every
+    /// Sandbox realized afterwards mounts Memory through it.
+    fn install_memory_mounter(&self, mounter: Arc<dyn MemoryMounter>);
+
+    /// Install the credential-file broker after composition; every Sandbox
+    /// realized afterwards resolves and writes back Secrets through it.
+    fn install_secret_broker(&self, broker: Arc<dyn SecretBroker>);
+}
+
 /// The one provider abstraction: realizes a [`SandboxSpec`] into a live
 /// Sandbox, reopens and observes the durable handles it minted, reconstructs
 /// a terminal Sandbox for fenced disposal, and owns any restore targets.
@@ -660,17 +690,9 @@ pub trait SandboxReadiness: Send + Sync {
 /// opaque to callers: [`Self::adoption_layout`] and
 /// [`Self::validate_closed_observation`] are the only readers.
 #[async_trait]
-pub trait SandboxProvider: SandboxReadiness {
+pub trait SandboxProvider: SandboxReadiness + SandboxInstallation {
     /// The live Sandbox this provider realizes.
     type Environment: ?Sized + Sandbox + 'static;
-
-    /// Install the Memory mount adapter after composition; every Sandbox
-    /// realized afterwards mounts Memory through it.
-    fn install_memory_mounter(&self, mounter: Arc<dyn MemoryMounter>);
-
-    /// Install the Secret broker after composition; every Sandbox realized
-    /// afterwards resolves and writes back Secrets through it.
-    fn install_secret_broker(&self, broker: Arc<dyn SecretBroker>);
 
     /// Prepare only immutable images from canonical mount-less specs. No
     /// Session filesystem is allocated and success acknowledges demand, not

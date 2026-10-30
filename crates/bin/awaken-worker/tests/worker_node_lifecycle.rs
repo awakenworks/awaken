@@ -279,18 +279,6 @@ impl awaken_provisioning_contract::SandboxReadiness for ExternalSessionProvider 
 impl awaken_provisioning_contract::SandboxProvider for ExternalSessionProvider {
     type Environment = dyn awaken_provisioning_contract::SessionSandbox;
 
-    fn install_memory_mounter(
-        &self,
-        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-    }
-
-    fn install_secret_broker(
-        &self,
-        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
-    ) {
-    }
-
     async fn prewarm_images(
         &self,
         _specs: &[awaken_provisioning_contract::SandboxSpec],
@@ -416,6 +404,20 @@ impl awaken_provisioning_contract::SandboxProvider for ExternalSessionProvider {
         std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
         awaken_provisioning_contract::SandboxRestoration::Unsupported
+    }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for ExternalSessionProvider {
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
     }
 }
 

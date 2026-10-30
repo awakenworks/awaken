@@ -298,7 +298,7 @@ pub async fn select_local_session_environment(
                  the execution composition, which this process did not run"
             ));
         };
-        host = host.with_session_environment_provider(provider.into_session_provider());
+        host = host.with_session_environment_provider(provider.into_session_provider(), None);
     }
     Ok(host)
 }
@@ -630,6 +630,7 @@ mod startup_tests {
                         host = host.with_session_environment_provider(
                             SandboxEnvironmentProvider::workdir(base.path().join("primary"))
                                 .into_session_provider(),
+                            None,
                         );
                     }
                     let capabilities = host

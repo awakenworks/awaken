@@ -203,14 +203,6 @@ impl awaken_provisioning_contract::SandboxProvider for SecureExternalProvider {
         awaken_sandbox_container::container_adoption_layout(handle)
     }
 
-    fn install_memory_mounter(
-        &self,
-        _mounter: Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-    }
-
-    fn install_secret_broker(&self, _broker: Arc<dyn awaken_provisioning_contract::SecretBroker>) {}
-
     async fn prewarm_images(
         &self,
         _specs: &[awaken_provisioning_contract::SandboxSpec],
@@ -296,6 +288,16 @@ impl awaken_provisioning_contract::SandboxProvider for SecureExternalProvider {
     > {
         awaken_provisioning_contract::SandboxRestoration::Unsupported
     }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for SecureExternalProvider {
+    fn install_memory_mounter(
+        &self,
+        _mounter: Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(&self, _broker: Arc<dyn awaken_provisioning_contract::SecretBroker>) {}
 }
 
 struct UnusedHandFactory;

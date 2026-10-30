@@ -689,22 +689,22 @@
     "source_locations": [
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 251,
+        "line": 253,
         "file_sha256": "4ec7aa0a6e32d157e346678ed12c72c636b5b7da985a3bf0248e77c696ebaa45"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 256
+        "line": 258
       },
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 257
+        "line": 259
       },
       {
         "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
-        "line": 264
+        "line": 266
       }
     ],
     "execution_witnesses": [

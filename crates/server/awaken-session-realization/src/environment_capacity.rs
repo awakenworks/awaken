@@ -1,6 +1,7 @@
 //! Warm Environment capacity owned by the existing [`EnvironmentProviders`]: CacheVolume and image
 //! preparation, the default and per-Environment warm Session shapes, and their
-//! disposal. Every operation enters through the installed Session provider.
+//! disposal. Physical capacity uses the pool selected with the Session provider;
+//! image preparation remains a supply operation on that provider's realizer.
 
 use crate::environment_providers::EnvironmentProviders;
 use awaken_session_configuration_contract::environment_projection;
@@ -45,7 +46,7 @@ impl EnvironmentProviders {
                 .map(|environment| self.capacity_projection(environment).spec),
         );
         self.session_provider
-            .capacity()
+            .realizer()
             .prewarm_images(&specs)
             .await
     }
@@ -59,13 +60,13 @@ impl EnvironmentProviders {
         if !self.runs_local_dispatch_pool || self.warm_pool.limits().is_none() || target == 0 {
             return Ok(0);
         }
-        self.session_provider
-            .capacity()
-            .prewarm(
-                &environment_projection::default_session_sandbox_spec("environment-warmup"),
-                target,
-            )
-            .await
+        let Some(capacity) = &self.session_capacity else {
+            return Ok(0);
+        };
+        let spec = self.session_provider.realizer().effective_spec(
+            &environment_projection::default_session_sandbox_spec("environment-warmup"),
+        )?;
+        capacity.prewarm_to(&spec, target).await
     }
 
     #[must_use]
@@ -79,12 +80,13 @@ impl EnvironmentProviders {
     }
 
     pub async fn discard_default_environment_capacity(&self) {
-        self.session_provider
-            .capacity()
-            .discard_capacity(&environment_projection::default_session_sandbox_spec(
-                "environment-warmup",
-            ))
-            .await;
+        if let Some(capacity) = &self.session_capacity
+            && let Ok(spec) = self.session_provider.realizer().effective_spec(
+                &environment_projection::default_session_sandbox_spec("environment-warmup"),
+            )
+        {
+            capacity.discard_shape(&spec).await;
+        }
     }
 
     /// Reconcile one current executable Environment into the exact mount-less
@@ -102,11 +104,15 @@ impl EnvironmentProviders {
         {
             return Ok(0);
         }
+        let Some(capacity) = &self.session_capacity else {
+            return Ok(0);
+        };
         let projection = self.capacity_projection(environment);
-        self.session_provider
-            .capacity()
-            .prewarm(&projection.spec, target)
-            .await
+        let spec = self
+            .session_provider
+            .realizer()
+            .effective_spec(&projection.spec)?;
+        capacity.prewarm_to(&spec, target).await
     }
 
     /// Per-shape target and the global ready-capacity budget across both the
@@ -127,9 +133,15 @@ impl EnvironmentProviders {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> usize {
         let projection = self.capacity_projection(environment);
-        self.session_provider
-            .capacity()
-            .ready_capacity(&projection.spec)
+        if let Some(capacity) = &self.session_capacity
+            && let Ok(spec) = self
+                .session_provider
+                .realizer()
+                .effective_spec(&projection.spec)
+        {
+            return capacity.ready_capacity(&spec);
+        }
+        0
     }
 
     /// Exact identity published in Worker receipts for the same canonical spec
@@ -149,15 +161,21 @@ impl EnvironmentProviders {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) {
         let projection = self.capacity_projection(environment);
-        self.session_provider
-            .capacity()
-            .discard_capacity(&projection.spec)
-            .await;
+        if let Some(capacity) = &self.session_capacity
+            && let Ok(spec) = self
+                .session_provider
+                .realizer()
+                .effective_spec(&projection.spec)
+        {
+            capacity.discard_shape(&spec).await;
+        }
     }
 
     /// Dispose never-used warm capacity after claim admission and in-flight work
     /// have drained. Active Session environments remain owned by their installed Sessions.
     pub async fn shutdown_environment_capacity(&self) {
-        self.session_provider.capacity().shutdown_capacity().await;
+        if let Some(capacity) = &self.session_capacity {
+            capacity.shutdown_capacity().await;
+        }
     }
 }

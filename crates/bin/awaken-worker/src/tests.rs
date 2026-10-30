@@ -154,18 +154,6 @@ impl awaken_provisioning_contract::SandboxReadiness for CheckpointContainerProvi
 impl awaken_provisioning_contract::SandboxProvider for CheckpointContainerProvider {
     type Environment = dyn awaken_provisioning_contract::SessionSandbox;
 
-    fn install_memory_mounter(
-        &self,
-        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-    }
-
-    fn install_secret_broker(
-        &self,
-        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
-    ) {
-    }
-
     async fn prewarm_images(
         &self,
         _specs: &[awaken_provisioning_contract::SandboxSpec],
@@ -290,6 +278,20 @@ impl awaken_provisioning_contract::SandboxProvider for CheckpointContainerProvid
     }
 }
 
+impl awaken_provisioning_contract::SandboxInstallation for CheckpointContainerProvider {
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
+    }
+}
+
 #[async_trait::async_trait]
 impl
     awaken_provisioning_contract::RestoreTargetProvider<
@@ -366,18 +368,6 @@ impl awaken_provisioning_contract::SandboxReadiness for UnusedContainerProvider 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxProvider for UnusedContainerProvider {
     type Environment = dyn awaken_provisioning_contract::SessionSandbox;
-
-    fn install_memory_mounter(
-        &self,
-        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-    }
-
-    fn install_secret_broker(
-        &self,
-        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
-    ) {
-    }
 
     async fn prewarm_images(
         &self,
@@ -504,6 +494,20 @@ impl awaken_provisioning_contract::SandboxProvider for UnusedContainerProvider {
         std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
         awaken_provisioning_contract::SandboxRestoration::Unsupported
+    }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for UnusedContainerProvider {
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
     }
 }
 
