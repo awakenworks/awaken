@@ -49,6 +49,10 @@ pub(crate) struct EffectCountingRuntime {
     /// modelling the second input of a replacement failing its preparation
     /// after the first one was prepared.
     pub(crate) fail_apply_binding: Mutex<Option<String>>,
+    /// Publish this marker file and never return from a forward application,
+    /// so an owned child process can be killed while its Resource projection
+    /// is in flight.
+    pub(crate) hang_apply_marker: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl EffectCountingRuntime {
@@ -447,6 +451,11 @@ impl awaken_session_execution_contract::RealizationEffects for EffectCountingRun
             .lock()
             .unwrap()
             .push((previous, desired, bindings.clone()));
+        let hang = self.hang_apply_marker.lock().unwrap().clone();
+        if let Some(marker) = hang {
+            std::fs::write(marker, desired.to_string()).unwrap();
+            std::future::pending::<()>().await;
+        }
         if let Some(failing) = self.fail_apply_binding.lock().unwrap().clone()
             && bindings.contains(&failing)
         {
