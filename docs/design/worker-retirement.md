@@ -5,6 +5,49 @@ It delegates the existing role catalog to the
 [remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
 it adds no service, queue, durable cleanup state or permission authority.
 
+## Amendment 2026-10-29: retain live Sessions that never admitted Environment creation
+
+An idle, on-tool-use Session can complete model/MCP work without creating a
+Sandbox. Requiring a Resident binding for every live root strands that Session
+and prevents the complete Worker source report from naming other retained
+sources. Absence of a binding alone remains unknown.
+
+Reuse unchanged the exact draining Registry incarnation, closed claim admission,
+physical/Work checks, root CAS, write-ahead materialization facts, and independent
+Worker exit/Create closure. Modify only the Session state's existing no-Create
+query and the complete occupancy read; add no service, state, receipt or recovery
+path. Terminal callers keep their terminal fence explicitly.
+
+The Session owner may omit a live root from provider subjects only when it has
+a frozen Idle baseline, complete Events, the exact incarnation's explicitly
+closed assignment (expiry zero), present-empty materialization history, no
+active/pending/retiring Resource references or pending Resource transition, and
+no active activity or running interval. A nonzero expired lease is not explicit
+closure. Missing history and admitted Create remain unqualified. Occupancy
+stays true, and all Session/Run facts remain unchanged.
+
+The sequence is the existing drain -> complete root scan -> classify this
+positive no-Create case or obtain every original provider report -> Native
+retirement decision -> independent exact exit/Create closure -> ordinary
+successor CAS. A new Create must first commit its intent under a current lease;
+that makes the no-Create premise false. New preparation claims require a Ready
+Worker before and after their root CAS, so a draining incarnation cannot obtain
+a replacement assignment. The existing Worker-domain owner still requires
+closed Registry admission and empty physical/Work domains. The terminal source
+Dispatch read requires terminality and a frozen cleanup scope; it is not a
+prerequisite for this live no-source classification, just as it is not used by
+the existing live Resident-retention branch. This read grants no execution,
+adoption or cleanup.
+
+Regression comments own the decision table, including historical unknown,
+admitted Create, active/expired assignments, retained Resource generations,
+irrelevant terminal-source reads, and a mixed retained-source set. A real Host,
+CoordinatedThreads and SQLite Session composition must retain an Idle no-Create
+root while the actual terminal-source port returns NotTerminal; a scripted
+Settled reply for a live root cannot qualify this contract. These executable
+checks do not substitute for physical provider witnesses or deployed product
+acceptance.
+
 ## Amendment 2026-10-24: retention is Worker-reported data
 
 Supersedes the 2026-10-22 amendment "install observation in the

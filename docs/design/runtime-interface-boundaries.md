@@ -212,8 +212,28 @@ is implemented. Production services still start before request traffic.
 Run delivery and coordinated Threads hold this value without a `ProcessDispatch`;
 budgets reuse their original Thread publication without another injected publisher.
 A retained publisher therefore cannot keep a pool or terminal scanner alive. The
-SDK still owns dispatch for actual resident execution/lifecycle operations; the
-remaining application bindings are still open.
+SDK owns dispatch for actual resident execution/lifecycle operations. Its
+application capabilities are selected as one immutable value before execution
+services are constructed. `SessionApplications::Local` supplies coordination and
+background Run submission together; `Standalone` selects ordinary local Thread
+execution; `ClaimedWorker` requires upstream authority and both realization and
+coordination control capabilities. The checked constructor rejects a missing
+capability or incompatible topology before publishing either local role.
+
+Host stores weak observations of the complete selection. The returned
+`SessionExecutionLifecycle` owns the strong local capabilities outside Host and
+the lazy resolver. Clones retain that ownership through drain; dropping the final
+owner releases both roles. An expired local selection remains local and refuses
+work without selecting another authority. The composition root retains the
+lifecycle, including when the supplied Arcs had no other owners.
+
+`ProcessDispatch::configure_before_services_start` publishes capabilities within
+the same synchronization boundary that pool and terminal-scanner constructors
+hold through service publication. In-flight construction refuses a late binding
+without waiting for its resolver. Failed or unwound initialization releases the
+boundary and remains retryable. Dispatch owns this mechanism; the Session
+constructor owns topology and required-role policy. Drain continues to fence
+admission independently of a resolver that is still being constructed.
 
 The preparation compiler retains no process service: its one adapter implementation
 moves from `ProcessDispatch` to the pure `PreparationPlacement` component in the
@@ -1005,3 +1025,130 @@ Before changing runtime interfaces, name:
 6. the first vertical slice.
 
 If any answer is "several things", split the proposal before implementing it.
+
+
+## Atomic Disposable Session Cache Entries
+
+The durable Session root owns tenancy and state. Managed HTTP projects its cached
+owner scope, Session model and cache revision into one `SessionRecord`. Owner
+scope is required at construction and read through the record; a separate owner
+map cannot outlive, precede or lag the cached content.
+
+Creation, cold recovery and committed-event projection publish the same complete
+entry. Scoped collection reads filter and project under the Session-cache lock.
+Warm owner reads observe that entry, while a cache miss resolves ownership through
+the canonical root. Eviction removes the disposable owner with its content; an
+ownership-only durable lookup does not create a partial cache entry.
+
+A racing cold candidate preserves an entry another reader already published.
+Existing source and cache revision fences continue to protect warm publication;
+frame equality includes owner scope. The HTTP Session DTO keeps its original
+shape. Tests cover each recovery purpose, a warm reader while the first hydrator
+has published but not returned, stale-candidate refusal, read failure and recovery,
+eviction and rehydration, and unchanged wire projection with distinct ownership.
+
+
+## Worker Identity Feature Admission
+
+The Worker composition admits its own compiled identity integration before
+reading a projected Pod identity or publishing a validated process configuration.
+Cargo may enable a transport dependency's Kubernetes parser through another
+consumer; that does not enable the Worker's `container-k8s` integration. Projection
+parsing remains transport-owned. The upstream factory independently rechecks the
+compatibility DTO, so later public-field mutation cannot select an unavailable
+authentication mode or a signing fallback.
+
+The Rust gate executes the real dependency-only feature graph with named test
+floors. Default and full Worker feature profiles retain their existing negative
+and positive paths; tests also cover missing projections and DTO mutation.
+
+## Authored Tool Updates
+
+A Session update compiles only an explicitly supplied `tools` value. Omission
+preserves the previously frozen settings; explicit empty settings clear them.
+The original phase and revision fences precede this decision. Credential-only
+adoption in an unattempted Profile also requires known empty materialization
+history, including when logical activity is already reserved. Legacy absence
+remains unknown. The compiler remains a required construction capability.
+
+The durable command receipt is checked before compilation and again after the
+root read. Exact replay retains the original command revision while reconciling
+from current durable truth. An authored override is compiled once per tested CAS
+attempt; this makes no command-wide once-only claim across CAS retries.
+
+The [update compilation tests](../../crates/server/awaken-session-application/src/tests/update_compilation.rs)
+exercise the real application with SQLite and an observed, rejecting or
+normalizing compiler. Their `tests::update_compilation::` entries are:
+
+| Test suffix | Acceptance rule |
+| --- | --- |
+| `title_and_metadata_preserve_frozen_tools_without_compilation` | Commit requested fields, preserve frozen tools, zero compiler or tool projection calls |
+| `preparing_credential_revocation_preserves_tools_and_reserved_activity` | Commit actual credential revocation with and without reserved activity, preserve tools and physical preparation facts |
+| `explicit_tool_update_normalizes_before_one_commit_and_projects_committed_value` | Replace or explicitly clear tools under exact If-Match; persist and project the same result |
+| `rejected_explicit_compilation_preserves_root_receipt_and_effects` | Preserve classified diagnostic, complete root and absent command receipt; zero projection |
+| `admission_precedence_still_rejects_stale_nonidle_and_mixed_commands_without_compilation` | Preserve version, phase, mixed-authoring and unknown-history refusals without compilation |
+| `exact_replay_after_reopen_and_later_write_never_recompiles_original_payload` | Reopen file SQLite after an independent root write; preserve title, credential and tool command receipts without recompilation |
+| `receipt_committed_after_initial_miss_precedes_compilation_of_delayed_update` | Gate the first root read after a receipt miss; a concurrent exact commit and later root win before the delayed compiler |
+
+The separate PostgreSQL construction test checks real backend rejection and
+frozen configuration persistence. It does not qualify every SQLite reopen/race
+clause on PostgreSQL. These bindings add no whole-group acceptance claim to the
+historical 42-requirement catalog and do not alter the Managed HTTP DTOs.
+
+## Windows Process Ownership
+
+The SDK Bash tool and the Worker local-process adapter use
+[`awaken-process-win32`](../../crates/shared/awaken-process-win32/src/lib.rs)
+for one native mechanism. Its separate crate isolates Win32 unsafe calls while
+the SDK remains independently publishable and ordinary consumers keep
+`unsafe_code=forbid`. It adds no application port or protocol DTO.
+
+`OwnedProcessTree` privately owns the leader and original supervision Job.
+`ProcessTreeControl` clones control of that same Job without taking the child
+from an active waiter. The pinned registry `process-wrap` dependency still
+suspends, assigns its nested Job, and resumes; the supervision Job is assigned
+first, while the child is suspended. This costs one additional kernel Job per
+launch and avoids a Git-only dependency or custom thread-resumption code.
+
+The crate declares `api_snapshot_target = "x86_64-pc-windows-msvc"`. The API gate
+passes that literal target to the pinned rustdoc on every host, so a host with
+no Windows exports cannot replace the reviewed Windows surface with an empty
+snapshot. Install the matching standard library with
+`rustup target add --toolchain nightly-2026-07-14 x86_64-pc-windows-msvc`.
+This task executes the comparison locally on Windows; cross-host rendering
+remains outside its execution evidence.
+
+The first termination retains current member wait handles after checking their
+membership in the original Job. Completion requires those objects to signal,
+fresh Job accounting to report zero, and no new lifetime admission during the
+snapshot/termination interval. A changed or uninspectable member, native query
+failure or poisoned observation remains unconfirmed. There is no fallback to
+leader-only status or a foreign PID signal. Cancellation preserves the original
+observation. Owner Drop requests termination even if control clones survive.
+
+This distinguishes an asynchronous termination request from an exit wait;
+see Microsoft's [process termination contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+and [nested Job accounting](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs).
+Bash retains its Session and invalidates it before awaiting disposal. A cancelled
+or failed disposal cannot admit a replacement shell before retrying cleanup.
+
+Native Windows tests cover control during wait, cancellation and retry, natural
+leader exit with a retained live descendant, owner Drop with a surviving clone,
+Session disposal cancellation, Worker cancellation/owner death, and ACP reaping.
+The ACP leader-only mutant is refuted by the same real descendant connection.
+The existing portability gate requires the named cases; private helper functions
+are launched by their parents rather than counted as independent passing tests.
+These Windows observations do not qualify Linux/FUSE, remote stop semantics or
+T10-C03 actionable recovery. Historical acceptance receipts retain their source.
+
+## A2A Recovery Refusal
+
+A durable Prepared A2A operation without an Accepted task keeps its unknown
+remote outcome. Its execute, resume and cancel paths share a Conflict diagnostic,
+`a2a_operation_recovery_unconfirmed`, with the original execution cause and
+operation, context and message identities for peer reconciliation. The Run stays
+blocked until that outcome is reconciled; the classification grants no replay
+authority. The refusal precedes transport resolution and leaves committed state
+unchanged. Existing Accepted-task recovery continues to reconnect its pinned task.
+Valid-state execute/cancel tests observe these boundaries with a scripted peer;
+physical restart and provider recovery keep their separate qualification scope.

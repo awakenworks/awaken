@@ -1150,3 +1150,17 @@ unrecognized fault retains the generic fallback. The separate
 ExecutionUnknown projection and its terminal status remain reserved for the
 existing indeterminate execution path. No adapter-owned retry or additional
 persistent error store is introduced.
+
+## Amendment 2026-10-29: recover predecessors before resolution backoff
+
+Failed Session resolution can return a claimed Run before physical admission is
+reached. A backoff-bearing relinquishment therefore observes the same expired
+predecessor through `stop_expired_predecessor` while its exact successor claim
+is current, then returns that mutation claim through the existing defer/retry
+operation. This is a recovery opportunity, not another execution-admission gate:
+ordinary relinquishment and durable remote-operation handoff keep their paths.
+The observation is bounded by the existing request budget. An observation error
+is reported after returning the mutation claim; Unknown retains the original
+physical slot. Neither result authorizes execution, fabricates provider evidence,
+or introduces a recovery queue. Authentication and malformed retry rejection
+precede provider I/O, which holds no database or Thread lock.
