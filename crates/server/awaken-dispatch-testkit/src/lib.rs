@@ -164,78 +164,6 @@ pub mod worker_http {
         (Arc::new(CurrentWorkerDirectory(registered)), identity)
     }
 
-    #[cfg(test)]
-    mod codec_manifest_tests {
-        use super::*;
-
-        #[tokio::test]
-        async fn shared_manifest_matches_intrinsic_codecs_and_both_ready_consumers() {
-            // Cause/effect table: C1 current prepared Native row vs unmarked
-            // legacy row; C2 immutable offered manifest complete/None/each
-            // omitted capability. R1 current+complete => common admission;
-            // R2 legacy|None|any omission => refusal. Compare the advertised
-            // SET/values to the actual production intrinsic marker compiler,
-            // not a second expected token list. R3 both existing Ready fixture
-            // constructors retain this SAME complete value and fingerprint.
-            let manifest = current_dispatch_codec_manifest();
-            let legacy = awaken_dispatch_contract::RunDispatch::new(activation("codec-manifest"));
-            let current = legacy
-                .clone()
-                .with_prepared_session_command_identity()
-                .with_worker_codec_requirements();
-            assert_eq!(
-                manifest.capabilities, current.placement.required_capabilities,
-                "R1 actual intrinsic compiler"
-            );
-            assert!(
-                current
-                    .validate_worker_wire_codec_requirements(Some(&manifest))
-                    .is_ok(),
-                "R1"
-            );
-            assert!(
-                legacy
-                    .validate_worker_wire_codec_requirements(Some(&manifest))
-                    .is_err(),
-                "R2 unmarked row"
-            );
-            assert!(
-                current
-                    .validate_worker_wire_codec_requirements(None)
-                    .is_err(),
-                "R2 absent offered manifest"
-            );
-            for capability in &manifest.capabilities {
-                let mut omitted = manifest.clone();
-                omitted.capabilities.remove(capability);
-                assert!(
-                    current
-                        .validate_worker_wire_codec_requirements(Some(&omitted))
-                        .is_err(),
-                    "R2 missing {capability}"
-                );
-            }
-            let conformance = crate::ready_dispatch_worker("codec-manifest", "conformance");
-            assert_eq!(
-                conformance.manifest, manifest,
-                "R3 existing conformance consumer"
-            );
-            let (directory, identity) = ready_worker("codec-manifest-http").await;
-            let workers = directory.list().await.unwrap();
-            assert_eq!(workers.len(), 1);
-            assert_eq!(workers[0].snapshot.identity, identity);
-            assert_eq!(
-                workers[0].snapshot.manifest, manifest,
-                "R3 existing HTTP consumer"
-            );
-            assert_eq!(
-                workers[0].snapshot.capability_fingerprint,
-                manifest.fingerprint().unwrap(),
-                "R3 same registered manifest fingerprint"
-            );
-        }
-    }
-
     struct CurrentWorkerDirectory(RegisteredWorker);
 
     #[async_trait::async_trait]
@@ -337,6 +265,78 @@ pub mod worker_http {
             Err(RegistryError::Persistence(
                 "process-exit persistence is outside this read-oriented fixture".into(),
             ))
+        }
+    }
+
+    #[cfg(test)]
+    mod codec_manifest_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn shared_manifest_matches_intrinsic_codecs_and_both_ready_consumers() {
+            // Cause/effect table: C1 current prepared Native row vs unmarked
+            // legacy row; C2 immutable offered manifest complete/None/each
+            // omitted capability. R1 current+complete => common admission;
+            // R2 legacy|None|any omission => refusal. Compare the advertised
+            // SET/values to the actual production intrinsic marker compiler,
+            // not a second expected token list. R3 both existing Ready fixture
+            // constructors retain this SAME complete value and fingerprint.
+            let manifest = current_dispatch_codec_manifest();
+            let legacy = awaken_dispatch_contract::RunDispatch::new(activation("codec-manifest"));
+            let current = legacy
+                .clone()
+                .with_prepared_session_command_identity()
+                .with_worker_codec_requirements();
+            assert_eq!(
+                manifest.capabilities, current.placement.required_capabilities,
+                "R1 actual intrinsic compiler"
+            );
+            assert!(
+                current
+                    .validate_worker_wire_codec_requirements(Some(&manifest))
+                    .is_ok(),
+                "R1"
+            );
+            assert!(
+                legacy
+                    .validate_worker_wire_codec_requirements(Some(&manifest))
+                    .is_err(),
+                "R2 unmarked row"
+            );
+            assert!(
+                current
+                    .validate_worker_wire_codec_requirements(None)
+                    .is_err(),
+                "R2 absent offered manifest"
+            );
+            for capability in &manifest.capabilities {
+                let mut omitted = manifest.clone();
+                omitted.capabilities.remove(capability);
+                assert!(
+                    current
+                        .validate_worker_wire_codec_requirements(Some(&omitted))
+                        .is_err(),
+                    "R2 missing {capability}"
+                );
+            }
+            let conformance = crate::ready_dispatch_worker("codec-manifest", "conformance");
+            assert_eq!(
+                conformance.manifest, manifest,
+                "R3 existing conformance consumer"
+            );
+            let (directory, identity) = ready_worker("codec-manifest-http").await;
+            let workers = directory.list().await.unwrap();
+            assert_eq!(workers.len(), 1);
+            assert_eq!(workers[0].snapshot.identity, identity);
+            assert_eq!(
+                workers[0].snapshot.manifest, manifest,
+                "R3 existing HTTP consumer"
+            );
+            assert_eq!(
+                workers[0].snapshot.capability_fingerprint,
+                manifest.fingerprint().unwrap(),
+                "R3 same registered manifest fingerprint"
+            );
         }
     }
 }

@@ -1022,12 +1022,11 @@ pub(super) async fn record_tool_output(
         if let Some(result) = PendingChildRunResults::load(store)
             .map_err(|error| Error::Execution(error.to_string()))?
             .get(&id)
-        {
-            if !output.state.iter().any(|command| {
+            && !output.state.iter().any(|command| {
                 command.scope == ThreadUsageKey::SCOPE && command.key.0 == ThreadUsageKey::KEY
-            }) {
-                merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
-            }
+            })
+        {
+            merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
         }
         stage_delegation_completed(runtime, run_id, call, store, &mut ledger.staged_state)?;
     }

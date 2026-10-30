@@ -227,7 +227,7 @@ pub(super) async fn drive_resumed(
         decision_precommitted = true;
     }
     let result = if approved && let Some(call) = pending_call.as_ref() {
-        let result = match super::tool_execution::cancellable_tool_phase(
+        match super::tool_execution::cancellable_tool_phase(
             context,
             invoke_delegation(
                 runtime,
@@ -240,7 +240,7 @@ pub(super) async fn drive_resumed(
                     thread_id,
                 },
                 call,
-                &mut store,
+                &store,
             ),
         )
         .await?
@@ -316,8 +316,7 @@ pub(super) async fn drive_resumed(
                 ))
             }
             None => result,
-        };
-        result
+        }
     } else {
         result
     };
