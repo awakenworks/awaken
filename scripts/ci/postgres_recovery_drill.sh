@@ -63,7 +63,7 @@ fi
 RECOVERY_MOUNT_ROOT=$(postgres_recovery_mount_root "$RECOVERY_ROOT") || exit 2
 
 cleanup() {
-  docker rm -f "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f -v "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
   # pg_basebackup and archive_command write as the container's postgres uid.
   # Return ownership of this exact disposable mount to pg_tests.sh so its
   # already-owned cleanup can remove the directory on every failure path.

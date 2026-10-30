@@ -42,7 +42,7 @@ cleanup() {
       kubectl --context "$LAZY_CONTEXT" -n awaken-system get events > "$LAZY_OUTPUT/kubernetes-events.txt" 2>&1 || true
     fi
   fi
-  [[ "$LAZY_RUNTIME_CREATED" = 0 ]] || docker rm -f "$LAZY_POD" >/dev/null || status=1
+  [[ "$LAZY_RUNTIME_CREATED" = 0 ]] || docker rm -f -v "$LAZY_POD" >/dev/null || status=1
   [[ -z "$LAZY_DATA_VOLUME" ]] || docker volume rm "$LAZY_DATA_VOLUME" >/dev/null || status=1
   if [[ "$LAZY_CREATED" = 1 ]]; then
     # Undo only this fixture's attachment to the pre-existing Registry. K3D
@@ -64,6 +64,8 @@ cleanup() {
 }
 mkdir -p "$LAZY_OUTPUT"
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [[ -z "${AWAKEN_LAZY_RUNTIME_IMAGE:-}" ]]; then
   cargo build --release -p awaken-cli --bins -p awaken-worker --features awaken-cli/container-k8s,awaken-worker/container-k8s
   cp target/release/awaken "$LAZY_TEMP/awaken-server"
@@ -121,7 +123,7 @@ kubectl --context "$LAZY_CONTEXT" apply -f "$LAZY_TEMP/fixture.json"
 # is isolated in this owned container. Only Sandbox execution runs in K3D.
 # This avoids inheriting a developer Docker bridge's DNS/egress failures while
 # preserving the same production runtime, official SDK and Kubernetes provider.
-LAZY_DATA_VOLUME="$(docker volume create --label awaken.test.case=skill-lazy-real)"
+LAZY_DATA_VOLUME="$(docker volume create --label awaken.test.case=skill-lazy-real --label awaken.e2e.owner=managed-skill-lazy-real "awaken-e2e-skill-lazy-$$")"
 docker run --rm --network host --name "$LAZY_POD" --label awaken.test.case=skill-lazy-real \
   -v "$LAZY_TEMP/config.toml:/etc/awaken/config.toml:ro" -v "$LAZY_DATA_VOLUME:/var/lib/awaken" \
   --entrypoint /usr/local/bin/awaken "$LAZY_IMAGE" database migrate --config /etc/awaken/config.toml \

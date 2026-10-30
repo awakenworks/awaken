@@ -10,6 +10,7 @@
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/ci/_deadline.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/ci/e2e_docker_lib.sh"
 
 K3D_PLATFORM="${AWAKEN_K3D_PLATFORM:-linux/amd64}"
 K3D_EXIT_CLEANUP_FUNCTION=""
@@ -420,8 +421,13 @@ k3d_delete_cluster() {
     echo "cannot delete or verify k3d cluster $cluster: k3d is unavailable" >&2
     return 1
   }
-  local delete_status=0
+  local delete_status=0 node_volumes
+  # `k3d cluster delete` removes the node volumes it created; capturing them
+  # first lets an interrupted or partial delete still be reclaimed below.
+  node_volumes="$(e2e_k3d_node_volumes "$cluster")"
   k3d cluster delete "$cluster" >/dev/null 2>&1 || delete_status=$?
+  # shellcheck disable=SC2086 # volume names never contain whitespace
+  e2e_docker_rm_volumes $node_volumes
   local observation_status=0
   k3d_cluster_residue "$cluster" || observation_status=$?
   case "$observation_status" in
@@ -472,6 +478,9 @@ k3d_install_exit_cleanup() {
   }
   K3D_EXIT_CLEANUP_FUNCTION="$cleanup_function"
   trap 'k3d_run_exit_cleanup "$?"' EXIT
+  # A signal must run the EXIT cleanup too, or the cluster and its volumes stay.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }
 
 k3d_run_exit_cleanup() {
@@ -568,9 +577,10 @@ k3d_create_cluster() {
   local images=("${@:5}") shared_volume=""
   if [[ "${images[0]:-}" = "--shared-volume" ]]; then
     shared_volume="${images[1]:-}"
-    # Only a Docker-generated, already-owned volume ID is accepted. Never let
-    # a missing source silently create a bind directory or another named volume.
-    [[ "$shared_volume" =~ ^[0-9a-f]{64}$ ]] \
+    # Only an already-owned volume is accepted: a Docker-generated ID or the
+    # run-scoped awaken-e2e-<cluster>-continuation name. Never let a missing
+    # source silently create a bind directory or another named volume.
+    [[ "$shared_volume" =~ ^([0-9a-f]{64}|awaken-e2e-[a-z0-9-]+-continuation)$ ]] \
       && docker volume inspect "$shared_volume" >/dev/null 2>&1 || {
       echo "invalid or missing shared continuation volume" >&2
       return 2

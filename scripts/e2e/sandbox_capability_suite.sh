@@ -166,10 +166,10 @@ elif command -v kubectl >/dev/null 2>&1 && kubectl get nodes >/dev/null 2>&1; th
   # contract. The hand smoke image is built above and contains the real runtime.
   read -r -a NODES <<<"$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"
   if [ "${#NODES[@]}" -gt 0 ] && docker info >/dev/null 2>&1; then
-    docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
+    docker rm -f -v awaken-bb-tmp >/dev/null 2>&1 || true
     docker run --name awaken-bb-tmp busybox:latest true >/dev/null 2>&1
     docker commit awaken-bb-tmp awaken-bb:1 >/dev/null
-    docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
+    docker rm -f -v awaken-bb-tmp >/dev/null 2>&1 || true
     k8s_hand_image=awaken-sandbox-hand-k8s:test
     docker tag awaken-sandbox-hand-smoke:test "$k8s_hand_image"
     for NODE in "${NODES[@]}"; do
