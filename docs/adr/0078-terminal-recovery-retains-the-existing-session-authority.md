@@ -1161,3 +1161,22 @@ preparation itself is neither physical disposal nor a cleanup receipt. Missing
 handles with live Control sources remain refused. Ordinary recovery continues
 to require its exact live control binding. No new role, state, protocol or
 recovery authority is introduced.
+
+## Amendment 2026-10-31: an externally deleted guarded original stays a retained source
+
+Eviction and Pod GC can set `deletionTimestamp` on an original Sandbox Pod that
+is already Failed and still carries `awaken.dev/create-result-guard`. The guard
+keeps the object and its terminal phase, so the DELETE adds no physical fact:
+the same Pod without the timestamp already observes as Terminal. Recovery
+previously refused this row as an indeterminate deletion. The refusal was a
+retryable effect failure, so a Running Session re-claimed the same unresolved
+observation hundreds of times while the Pod and its PVC stayed pinned.
+
+Recovery now classifies an exact, fenced, guarded terminal original whose PVC is
+still live as the same retained source TerminalCleanup already observes. The
+existing Terminal handoff then re-adopts it under TerminalCleanup. The guard,
+the PVC and the projected participants are unchanged; no finalizer is released,
+no absence or exit receipt is inferred, and the hard-node-loss rule above still
+holds. An unguarded, unfenced, foreign or non-terminal deleting Pod, and a
+terminating claim without its Disposing evidence, remain unresolved exactly as
+before.

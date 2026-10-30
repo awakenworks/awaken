@@ -217,10 +217,11 @@ fn project_continuation_observation(
         }),
         (
             ContinuationObservationDisposition::RetainedOriginal,
-            SandboxObservationPurpose::TerminalCleanup,
+            SandboxObservationPurpose::TerminalCleanup | SandboxObservationPurpose::Recovery,
         ) => {
             // Terminal admission requires an actual Failed/Succeeded original,
             // including one whose deletion is held by its original guard.
+            // Recovery sees the same source and hands it to TerminalCleanup.
             Ok(pc::SandboxObservation::Terminal {
                 physical_incarnation,
             })

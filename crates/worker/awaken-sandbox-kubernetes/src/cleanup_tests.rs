@@ -252,6 +252,9 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     // with zero writes. Each independent missing/foreign UID, fingerprint,
     // fence, guard or GC-independence premise => Incompatible; HTTP 403/503
     // remains an error. Recovery still rejects configuration drift before I/O.
+    // CC7 the CC4 source after an external DELETE (eviction, Pod GC): ordinary
+    // Recovery observes the same retained Terminal source before the terminal
+    // owner prepares it, with zero writes, instead of an indeterminate deletion.
     use awaken_provisioning_contract::SandboxProvider as _;
     use awaken_sandbox_container::ContainerHandleCodec as _;
     for row in [
@@ -679,6 +682,28 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             server.abort();
             assert!(server.await.unwrap_err().is_cancelled());
             continue;
+        }
+        if row == "control-deleting-bound" {
+            let handle = bound_handle.as_ref().unwrap();
+            let before = {
+                let state = state.lock().unwrap();
+                (json!(state.pod), json!(state.claim), state.writes.len())
+            };
+            let adoption = pc::SandboxAdoption::new(&spec, handle);
+            let observed = provider
+                .observe(adoption, adoption.effect_basis(&create))
+                .await
+                .unwrap();
+            assert!(
+                matches!(observed, pc::SandboxObservation::Terminal { .. }),
+                "CC7 Recovery observes the retained terminal source: {observed:?}"
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(
+                (json!(state.pod), json!(state.claim), state.writes.len()),
+                before,
+                "CC7 no guard, PVC or Pod write"
+            );
         }
         let terminal_authority = EffectAuthority::new(&terminal);
         let result = provider

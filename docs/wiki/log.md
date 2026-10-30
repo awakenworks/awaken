@@ -1005,3 +1005,11 @@
 - [Session acceptance bindings](../design/session-execution-test-acceptance.md#现有测试绑定索引)
   follow the current unchanged declaration and assertion lines after source
   movement; original receipt and historical file digests remain immutable.
+
+## 2026-10-31 — Recover an externally deleted guarded original as retained
+
+- [Terminal recovery](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md#amendment-2026-10-31-an-externally-deleted-guarded-original-stays-a-retained-source)
+  lets Recovery observe an evicted or GC-deleted guarded terminal original as
+  the retained source TerminalCleanup already sees, instead of an unresolved
+  deletion that a Running Session re-claimed indefinitely. No guard, PVC or
+  receipt changes.
