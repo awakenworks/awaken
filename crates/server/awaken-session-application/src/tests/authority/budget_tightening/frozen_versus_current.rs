@@ -15,7 +15,7 @@
 //! the provider is shown to really answer v2, and the `keeps_frozen_pins`
 //! checker rejects the pins a re-resolving implementation would hold.
 use super::*;
-use awaken_session_budget_contract::{ManagedListPriceError, ManagedListPriceRequest};
+use awaken_session_contract::{ManagedListPriceError, ManagedListPriceRequest};
 
 /// The current list-price catalog, already moved to a later snapshot.
 #[derive(Default)]
@@ -34,7 +34,7 @@ fn current_snapshot() -> ManagedListPriceSnapshot {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_budget_contract::ManagedListPriceProvider for CurrentPrices {
+impl awaken_session_contract::ManagedListPriceProvider for CurrentPrices {
     async fn resolve_snapshot(
         &self,
         _request: ManagedListPriceRequest,
@@ -103,7 +103,7 @@ async fn frozen_pins_survive_a_moved_price_catalog_through_later_commands() {
     );
 
     // NC: the current authority really answers a different version.
-    let moved = awaken_session_budget_contract::ManagedListPriceProvider::resolve_snapshot(
+    let moved = awaken_session_contract::ManagedListPriceProvider::resolve_snapshot(
         prices.as_ref(),
         ManagedListPriceRequest {
             occurred_at_unix_ms: 3,

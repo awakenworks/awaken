@@ -30,7 +30,7 @@
 //! dynamic egress limit is updatable through a Session command (egress is
 //! bounded by lease revocation in the provisioning contract instead).
 use super::*;
-use awaken_session_budget_contract::{
+use awaken_session_contract::{
     ManagedListPriceSnapshot, ManagedTokenListRates, SessionBudgetState, SessionModelUsage,
     SessionUsage,
 };

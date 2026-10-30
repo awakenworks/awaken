@@ -27,7 +27,7 @@
 //! independent pool (required when `AWAKEN_TEST_REQUIRE_POSTGRES=1`).
 use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
-use awaken_session_state_contract::ActivationState;
+use awaken_session_contract::ActivationState;
 
 const CHILD_STORE: &str = "AWAKEN_T14_C03_STORE";
 const CHILD_SESSION: &str = "AWAKEN_T14_C03_SESSION";
@@ -120,7 +120,7 @@ fn states(session: &PersistedSession) -> Vec<(String, ActivationState)> {
     states
 }
 
-type Store = Arc<dyn awaken_session_repository_contract::SessionStore>;
+type Store = Arc<dyn crate::SessionStore>;
 
 #[derive(Clone)]
 enum Backend {

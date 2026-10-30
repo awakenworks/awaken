@@ -431,8 +431,8 @@ async fn assert_unkeyed_credential_renewal(legacy: bool) {
         Some(holder),
     )
     .unwrap();
-    let mut root = awaken_session_state_contract::SessionAggregate::try_from(
-        PersistedSession::frozen_with_budget(
+    let mut root =
+        awaken_session_contract::SessionAggregate::try_from(PersistedSession::frozen_with_budget(
             &id,
             baseline.clone(),
             original.resources,
@@ -441,9 +441,8 @@ async fn assert_unkeyed_credential_renewal(legacy: bool) {
             original.metadata,
             original.tools,
             original.budget,
-        ),
-    )
-    .unwrap();
+        ))
+        .unwrap();
     let mut configuration = crate::agent_configuration::agent_configuration_from_profile(
         &baseline.agent_id,
         awaken_executable_agent_contract::ExecutableAgentSessionProfile {
@@ -472,7 +471,7 @@ async fn assert_unkeyed_credential_renewal(legacy: bool) {
     let session_id = SessionId::from(id.as_str());
     let before = repo.get(&session_id).await.unwrap();
     assert_eq!(
-        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&before).is_some(),
+        awaken_session_contract::SessionUpdateHistory::agent_configuration(&before).is_some(),
         !legacy,
     );
     let generation_before = before.mcp.desired_attachments()[0].generation.version();
@@ -539,12 +538,12 @@ async fn assert_unkeyed_credential_renewal(legacy: bool) {
         before.configured_mcp_servers()
     );
     assert_eq!(
-        awaken_session_state_contract::SessionUpdateHistory::for_session(&after),
-        awaken_session_state_contract::SessionUpdateHistory::for_session(&before),
+        awaken_session_contract::SessionUpdateHistory::for_session(&after),
+        awaken_session_contract::SessionUpdateHistory::for_session(&before),
     );
     assert_eq!(
-        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&after),
-        awaken_session_state_contract::SessionUpdateHistory::agent_configuration(&before),
+        awaken_session_contract::SessionUpdateHistory::agent_configuration(&after),
+        awaken_session_contract::SessionUpdateHistory::agent_configuration(&before),
     );
 }
 
