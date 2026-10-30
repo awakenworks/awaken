@@ -115,6 +115,7 @@ pub(super) struct FileConfig {
     pub(super) k8s_unschedulable_wait_secs: Option<u64>,
     pub(super) k8s_continuation_volume: Option<awaken_container_contract::K8sContinuationVolume>,
     pub(super) k8s_image_prewarm: Option<awaken_container_contract::K8sImagePrewarm>,
+    pub(super) k8s_pod_bounds: Option<awaken_container_contract::K8sPodBounds>,
     pub(super) k8s_image_pull_secrets: Option<Vec<String>>,
     pub(super) container_hand_bin: Option<String>,
     pub(super) container_hand_residency: Option<String>,

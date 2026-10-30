@@ -153,6 +153,9 @@ pub struct SandboxSettings {
     pub k8s_continuation_volume: Option<awaken_container_contract::K8sContinuationVolume>,
     /// Optional native node-image prewarming, independent of container pooling.
     pub k8s_image_prewarm: Option<awaken_container_contract::K8sImagePrewarm>,
+    /// CPU/memory bounds and the disposable-Pod deadline every hosted Sandbox
+    /// Pod carries. Always present: the default is bounded, never BestEffort.
+    pub k8s_pod_bounds: awaken_container_contract::K8sPodBounds,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
     /// Whether the container Hand is Worker-attached or Environment-resident.
@@ -207,6 +210,7 @@ impl Default for SandboxSettings {
             k8s_image_pull_secrets: Vec::new(),
             k8s_continuation_volume: None,
             k8s_image_prewarm: None,
+            k8s_pod_bounds: awaken_container_contract::K8sPodBounds::default(),
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
             container_hand_residency: ContainerHandResidency::AttachedExec,
             container_hand_idle_secs: 300,

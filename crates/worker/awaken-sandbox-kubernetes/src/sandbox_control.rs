@@ -35,6 +35,18 @@ fn normalized_forwarder_security_projection(container: &Container) -> Container 
     projected
 }
 
+/// A capacity bound (`sizeLimit`) on the private control emptyDir is node
+/// resource policy, not trust topology; every other volume field stays exact.
+fn normalized_control_volume(
+    volume: &k8s_openapi::api::core::v1::Volume,
+) -> k8s_openapi::api::core::v1::Volume {
+    let mut projected = volume.clone();
+    if let Some(empty_dir) = projected.empty_dir.as_mut() {
+        empty_dir.size_limit = None;
+    }
+    projected
+}
+
 pub(super) fn pod_incarnation(
     pod: &Pod,
     expected_name: &str,
@@ -89,7 +101,9 @@ pub(super) fn pod_incarnation(
         .iter()
         .filter(|volume| volume.name == expected_volume.name)
         .collect::<Vec<_>>();
-    if control_volumes.len() != 1 || control_volumes[0] != &expected_volume {
+    if control_volumes.len() != 1
+        || normalized_control_volume(control_volumes[0]) != expected_volume
+    {
         return Err(backend(
             "Kubernetes Sandbox control Pod has no exact private emptyDir",
         ));

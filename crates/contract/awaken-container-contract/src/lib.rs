@@ -41,8 +41,8 @@ pub use k8s_capacity::{
 pub use package_image::{PackageImageBuildSettings, PackageImageProvisioner};
 pub use package_recipe::{package_containerfile, package_image_recipe};
 pub use policy::{
-    ForwardProxy, K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, MANAGED_SANDBOX_LABEL,
-    REPOSITORY_GATEWAY_CA_PATH, live_input_relative_path,
+    ForwardProxy, K8sContainerBounds, K8sContinuationVolume, K8sImagePrewarm, K8sPodBounds,
+    LIVE_INPUTS_ROOT, MANAGED_SANDBOX_LABEL, REPOSITORY_GATEWAY_CA_PATH, live_input_relative_path,
 };
 pub use runtime_error::RuntimeError;
 

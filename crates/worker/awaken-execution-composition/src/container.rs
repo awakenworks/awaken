@@ -225,7 +225,9 @@ async fn k8s_runtime_for_realization(
     .with_clock(clock.clone())
     .with_unschedulable_wait(std::time::Duration::from_secs(
         settings.k8s_unschedulable_wait_secs,
-    ));
+    ))
+    .with_pod_bounds(settings.k8s_pod_bounds)
+    .map_err(|error| format!("k8s_pod_bounds: {error}"))?;
     if let Some(policy) = settings.k8s_image_prewarm.clone() {
         runtime = runtime
             .with_image_prewarm(policy)
