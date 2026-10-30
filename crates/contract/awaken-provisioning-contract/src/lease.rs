@@ -766,10 +766,6 @@ mod actuator_tests {
     impl SandboxProvider for FakeProvider {
         type Environment = FakeSandbox;
 
-        fn install_memory_mounter(&self, _mounter: Arc<dyn crate::MemoryMounter>) {}
-
-        fn install_secret_broker(&self, _broker: Arc<dyn crate::SecretBroker>) {}
-
         async fn prewarm_images(&self, _specs: &[SandboxSpec]) -> Result<(), SandboxError> {
             Ok(())
         }
@@ -844,6 +840,12 @@ mod actuator_tests {
         fn restoration(&self) -> crate::SandboxRestoration<'_, Arc<FakeSandbox>> {
             crate::SandboxRestoration::Unsupported
         }
+    }
+
+    impl crate::SandboxInstallation for FakeProvider {
+        fn install_memory_mounter(&self, _mounter: Arc<dyn crate::MemoryMounter>) {}
+
+        fn install_secret_broker(&self, _broker: Arc<dyn crate::SecretBroker>) {}
     }
 
     impl FakeProvider {

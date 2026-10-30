@@ -23,6 +23,10 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Default)]
 pub struct FakeContainerProvider {
+    /// Readiness is fresh provider state, independent of its realized handles.
+    pub readiness_error: std::sync::Mutex<Option<pc::SandboxError>>,
+    pub readiness_calls: std::sync::atomic::AtomicUsize,
+    pub checkpoint_formats: std::sync::Mutex<Vec<String>>,
     pub observation_calls: std::sync::atomic::AtomicUsize,
     /// One typed observation override; None retains the original unavailable
     /// read. Filesystem test bytes no longer double as provider control state.
@@ -196,29 +200,21 @@ impl awaken_provisioning_contract::SandboxReadiness for FakeContainerProvider {
     }
 
     fn checkpoint_formats(&self) -> Vec<String> {
-        Vec::new()
+        self.checkpoint_formats.lock().unwrap().clone()
     }
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        Ok(())
+        self.readiness_calls.fetch_add(1, Ordering::SeqCst);
+        match self.readiness_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxProvider for FakeContainerProvider {
     type Environment = dyn awaken_provisioning_contract::SessionSandbox;
-
-    fn install_memory_mounter(
-        &self,
-        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-    ) {
-    }
-
-    fn install_secret_broker(
-        &self,
-        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
-    ) {
-    }
 
     async fn prewarm_images(
         &self,
@@ -360,6 +356,20 @@ impl awaken_provisioning_contract::SandboxProvider for FakeContainerProvider {
         std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
     > {
         awaken_provisioning_contract::SandboxRestoration::Unsupported
+    }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for FakeContainerProvider {
+    fn install_memory_mounter(
+        &self,
+        _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+    }
+
+    fn install_secret_broker(
+        &self,
+        _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+    ) {
     }
 }
 
@@ -954,9 +964,8 @@ impl crate::SandboxEnvironmentProvider {
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
     ) -> Self {
-        Self::container_with_capacity_and_hand_idle(
+        Self::container_with_hand_idle(
             provider,
-            None,
             extra_mounts,
             hand_factory,
             hand_bin,
@@ -964,21 +973,19 @@ impl crate::SandboxEnvironmentProvider {
         )
     }
 
-    pub fn container_with_capacity_and_hand_idle(
+    pub fn container_with_hand_idle(
         provider: Arc<
             dyn awaken_provisioning_contract::SandboxProvider<
                     Environment = dyn awaken_provisioning_contract::SessionSandbox,
                 >,
         >,
-        capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
         hand_idle_after: std::time::Duration,
     ) -> Self {
-        Self::container_with_capacity_hand_idle_and_residency(
+        Self::container_with_hand_idle_and_residency(
             provider,
-            capacity,
             extra_mounts,
             hand_factory,
             hand_bin,

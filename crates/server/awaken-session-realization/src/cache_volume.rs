@@ -652,18 +652,6 @@ mod tests {
             awaken_sandbox_container::container_adoption_layout(handle)
         }
 
-        fn install_memory_mounter(
-            &self,
-            _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
-        ) {
-        }
-
-        fn install_secret_broker(
-            &self,
-            _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
-        ) {
-        }
-
         async fn prewarm_images(
             &self,
             _specs: &[awaken_provisioning_contract::SandboxSpec],
@@ -781,6 +769,20 @@ mod tests {
             std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,
         > {
             awaken_provisioning_contract::SandboxRestoration::Unsupported
+        }
+    }
+
+    impl awaken_provisioning_contract::SandboxInstallation for RecordingProvider {
+        fn install_memory_mounter(
+            &self,
+            _mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+        ) {
+        }
+
+        fn install_secret_broker(
+            &self,
+            _broker: std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>,
+        ) {
         }
     }
 

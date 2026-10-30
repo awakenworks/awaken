@@ -12,24 +12,36 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffect;
 use awaken_session_environment_contract::{
-    EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentCapacity,
-    EnvironmentProviderInstallation, EnvironmentRealizationKind, EnvironmentRealizer,
-    EnvironmentTerminalRealization, SessionEnvironment, SessionEnvironmentProvider,
+    EnvironmentAdoption, EnvironmentAdoptionLayout, EnvironmentRealizationKind,
+    EnvironmentRealizer, EnvironmentTerminalRealization, SessionEnvironment,
+    SessionEnvironmentProvider,
 };
 
 /// The construction-time Session provider: the Workdir adapter rooted at
 /// `sandbox_root` in this crate's own tests, otherwise one that refuses every
 /// realization until the process composition installs its provider.
-pub(crate) fn default_session_provider(sandbox_root: PathBuf) -> SessionEnvironmentProvider {
+pub(crate) fn default_session_provider(
+    sandbox_root: PathBuf,
+) -> (
+    SessionEnvironmentProvider,
+    Option<Arc<dyn pc::SandboxCapacity>>,
+) {
     #[cfg(test)]
     {
-        awaken_session_environment::SandboxEnvironmentProvider::workdir(sandbox_root)
-            .into_session_provider()
+        (
+            awaken_session_environment::SandboxEnvironmentProvider::workdir(sandbox_root)
+                .into_session_provider(),
+            None,
+        )
     }
     #[cfg(not(test))]
     {
         let _ = sandbox_root;
-        SessionEnvironmentProvider::new(Arc::new(UninstalledSessionEnvironmentProvider))
+        let provider = Arc::new(UninstalledSessionEnvironmentProvider);
+        (
+            SessionEnvironmentProvider::new(provider.clone()),
+            Some(provider),
+        )
     }
 }
 
@@ -47,17 +59,32 @@ fn not_installed() -> pc::SandboxError {
 }
 
 #[async_trait]
-impl EnvironmentRealizer for UninstalledSessionEnvironmentProvider {
+impl pc::SandboxReadiness for UninstalledSessionEnvironmentProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
         // Nothing is enforced because nothing can be realized.
         awaken_session_environment_contract::workdir_capabilities()
     }
 
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        Err(not_installed())
+    }
+}
+
+#[async_trait]
+impl EnvironmentRealizer for UninstalledSessionEnvironmentProvider {
     fn supports_host_identity(&self) -> bool {
         false
     }
 
     fn effective_spec(&self, _spec: &pc::SandboxSpec) -> Result<pc::SandboxSpec, pc::SandboxError> {
+        Err(not_installed())
+    }
+
+    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
         Err(not_installed())
     }
 
@@ -160,12 +187,8 @@ impl EnvironmentTerminalRealization for UninstalledSessionEnvironmentProvider {
 }
 
 #[async_trait]
-impl EnvironmentCapacity for UninstalledSessionEnvironmentProvider {
-    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
-        Err(not_installed())
-    }
-
-    async fn prewarm(
+impl pc::SandboxCapacity for UninstalledSessionEnvironmentProvider {
+    async fn prewarm_to(
         &self,
         _spec: &pc::SandboxSpec,
         _target: usize,
@@ -173,7 +196,7 @@ impl EnvironmentCapacity for UninstalledSessionEnvironmentProvider {
         Err(not_installed())
     }
 
-    async fn discard_capacity(&self, _spec: &pc::SandboxSpec) {
+    async fn discard_shape(&self, _spec: &pc::SandboxSpec) {
         // No capacity was ever created.
     }
 
@@ -186,7 +209,7 @@ impl EnvironmentCapacity for UninstalledSessionEnvironmentProvider {
     }
 }
 
-impl EnvironmentProviderInstallation for UninstalledSessionEnvironmentProvider {
+impl pc::SandboxInstallation for UninstalledSessionEnvironmentProvider {
     fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {
         // Nothing realizes a mount until a provider is installed; the Host
         // hands the mounter to that provider when it arrives.
@@ -202,12 +225,35 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn an_uninstalled_provider_refuses_every_environment_effect() {
-        // Decision table: U1 realization, U2 adoption and U4 capacity warmup
-        // through the uninstalled provider => refused as not ready, naming the
-        // missing installation; U5 no capacity is reported.
+    async fn an_uninstalled_provider_refuses_readiness_without_claiming_checkpoint_support() {
+        // C1 no provider is installed; C2 readiness is read through the existing
+        // realizer handle. R1 C1+C2 -> the same typed NotReady refusal, original
+        // conservative capabilities and no checkpoint format. These reads grant
+        // no realization authority and cannot turn an absent adapter into Ready.
         let provider =
             SessionEnvironmentProvider::new(Arc::new(UninstalledSessionEnvironmentProvider));
+        assert_eq!(
+            provider.realizer().probe_ready().await,
+            Err(not_installed())
+        );
+        assert_eq!(
+            provider.realizer().capabilities(),
+            awaken_session_environment_contract::workdir_capabilities()
+        );
+        assert!(provider.realizer().checkpoint_formats().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_uninstalled_provider_refuses_every_environment_effect() {
+        // Causes: no provider was installed; the SAME unavailable adapter also
+        // supplies the existing SandboxCapacity refusal, rather than a pool.
+        // U1 realization, U2 adoption, U3 image preparation and U4 enabled
+        // capacity warmup still refuse as not ready. U4 uses the existing
+        // EnvironmentProviders owner and its selected unavailable capability;
+        // the missing provider cannot become success. U5 capacity remains zero.
+        let unavailable = Arc::new(UninstalledSessionEnvironmentProvider);
+        let provider = SessionEnvironmentProvider::new(unavailable.clone());
+        let capacity: Arc<dyn pc::SandboxCapacity> = unavailable;
         let spec = crate::sandbox_layout::agent_run_sandbox_spec("uninstalled");
         let handle = pc::SandboxHandle::new("local", "none");
         let refused = |error: pc::SandboxError, row: &str| {
@@ -224,10 +270,35 @@ mod tests {
             "U2",
         );
         refused(
-            provider.capacity().prewarm(&spec, 1).await.expect_err("U4"),
+            provider
+                .realizer()
+                .prewarm_images(&[])
+                .await
+                .expect_err("U3"),
+            "U3",
+        );
+        refused(capacity.prewarm_to(&spec, 1).await.expect_err("U4"), "U4");
+        let mut providers = crate::environment_providers::EnvironmentProviders::new(
+            std::env::temp_dir().join("uninstalled-capacity"),
+            provider.clone(),
+            Some(capacity),
+            crate::auxiliary_sandbox::default_auxiliary_sandboxes(),
+            crate::TrustedHostPolicy::Refused,
+            crate::WarmPool::new(1, 1),
+        );
+        providers.runs_local_dispatch_pool = true;
+        refused(
+            providers
+                .prewarm_default_environment_capacity(1)
+                .await
+                .expect_err("U4"),
             "U4",
         );
-        assert_eq!(provider.capacity().ready_capacity(&spec), 0, "U5");
+        assert_eq!(
+            providers.ready_environment_snapshot_capacity(&crate::host::eager_environment()),
+            0,
+            "U5"
+        );
         assert!(
             !provider.realizer().supports_host_identity(),
             "U1 no host identity"

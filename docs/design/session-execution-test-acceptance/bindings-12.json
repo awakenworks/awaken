@@ -668,22 +668,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
-        "line": 315,
+        "line": 317,
         "file_sha256": "71da56096fe20b4c29e79be80464c8c62408cad133b655a3167acd89855a684d"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
-        "line": 334
+        "line": 336
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
-        "line": 341
+        "line": 343
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
-        "line": 351
+        "line": 353
       }
     ],
     "execution_witnesses": [

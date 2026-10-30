@@ -65,10 +65,6 @@ impl pc::SandboxReadiness for CountingRestoreProvider {
 impl pc::SandboxProvider for CountingRestoreProvider {
     type Environment = dyn pc::SessionSandbox;
 
-    fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
-
-    fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
-
     async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
         Ok(())
     }
@@ -144,6 +140,12 @@ impl pc::SandboxProvider for CountingRestoreProvider {
     fn restoration(&self) -> pc::SandboxRestoration<'_, Arc<dyn pc::SessionSandbox>> {
         pc::SandboxRestoration::Unsupported
     }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for CountingRestoreProvider {
+    fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
+
+    fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
 }
 
 fn builder(provider: Arc<CountingRestoreProvider>, with_store: bool) -> WorkerNodeBuilder {

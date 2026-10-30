@@ -25,12 +25,10 @@ pub enum EnvironmentRealizationKind {
 }
 
 /// Realizing a fresh environment. Consumers: Session realization, the Worker
-/// projection synchronizer.
+/// projection synchronizer. Backend facts and liveness retain the existing
+/// Sandbox readiness contract, over the same selected physical provider.
 #[async_trait]
-pub trait EnvironmentRealizer: Send + Sync {
-    /// What every environment this provider realizes enforces.
-    fn capabilities(&self) -> pc::SandboxCapabilities;
-
+pub trait EnvironmentRealizer: pc::SandboxReadiness {
     /// Whether environments run Agents as the trusted host user.
     fn supports_host_identity(&self) -> bool;
 
@@ -38,6 +36,10 @@ pub trait EnvironmentRealizer: Send + Sync {
     /// and creation mounts, computed without I/O. Admission, capacity, create,
     /// adopt and restore all consume this one projection.
     fn effective_spec(&self, spec: &pc::SandboxSpec) -> Result<pc::SandboxSpec, pc::SandboxError>;
+
+    /// Prepare immutable images through the same physical provider, regardless
+    /// of whether this deployment owns never-used warm capacity.
+    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError>;
 
     /// Realize an environment for an already-effective `spec` under `effect`.
     /// `source_handle` names the environment a Rebuild replaces.
@@ -168,52 +170,24 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
     ) -> Result<(), pc::SandboxError>;
 }
 
-/// Never-used capacity ahead of demand. A provider without a capacity owner
-/// reports none. Consumer: warm capacity.
-#[async_trait]
-pub trait EnvironmentCapacity: Send + Sync {
-    /// Pull the images these specs will need.
-    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError>;
-
-    /// Pre-create capacity for `spec` up to `target`, returning how many are
-    /// ready.
-    async fn prewarm(
-        &self,
-        spec: &pc::SandboxSpec,
-        target: usize,
-    ) -> Result<usize, pc::SandboxError>;
-
-    /// Drop unused capacity of `spec`'s shape.
-    async fn discard_capacity(&self, spec: &pc::SandboxSpec);
-
-    /// Ready unused capacity of `spec`'s shape.
-    fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize;
-
-    /// Drain every unused capacity; live environments keep their lifecycle.
-    async fn shutdown_capacity(&self);
-}
-
-/// Process-startup installation of the services every environment shares.
-/// Consumer: Host startup.
-pub trait EnvironmentProviderInstallation: Send + Sync {
-    /// The governed MemoryStore mount adapter.
-    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>);
-
-    /// The credential-file broker for secret mounts.
-    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>);
-}
-
 /// The process's Session environment roles. Execution construction uses one
 /// adapter; observation-only composition may replace its read roles while
 /// retaining the uninstalled effect roles and execution origin. Consumers:
 /// every Host module listed on the roles above.
+///
+/// Installation type decision table: SI2 the retired Session-specific spelling
+/// must not resolve. The physical installation role has exactly one owner in
+/// the provisioning contract; an alias would make the forbidden import compile.
+///
+/// ```compile_fail
+/// use awaken_session_environment_contract::EnvironmentProviderInstallation;
+/// ```
 #[derive(Clone)]
 pub struct SessionEnvironmentProvider {
     realizer: Arc<dyn EnvironmentRealizer>,
     adoption: Arc<dyn EnvironmentAdoption>,
     terminal: Arc<dyn EnvironmentTerminalRealization>,
-    capacity: Arc<dyn EnvironmentCapacity>,
-    installation: Arc<dyn EnvironmentProviderInstallation>,
+    installation: Arc<dyn pc::SandboxInstallation>,
     origin: Arc<dyn Any + Send + Sync>,
 }
 
@@ -224,8 +198,7 @@ impl SessionEnvironmentProvider {
         P: EnvironmentRealizer
             + EnvironmentAdoption
             + EnvironmentTerminalRealization
-            + EnvironmentCapacity
-            + EnvironmentProviderInstallation
+            + pc::SandboxInstallation
             + Any
             + Send
             + Sync
@@ -235,7 +208,6 @@ impl SessionEnvironmentProvider {
             realizer: provider.clone(),
             adoption: provider.clone(),
             terminal: provider.clone(),
-            capacity: provider.clone(),
             installation: provider.clone(),
             origin: provider,
         }
@@ -257,12 +229,7 @@ impl SessionEnvironmentProvider {
     }
 
     #[must_use]
-    pub fn capacity(&self) -> &Arc<dyn EnvironmentCapacity> {
-        &self.capacity
-    }
-
-    #[must_use]
-    pub fn installation(&self) -> &Arc<dyn EnvironmentProviderInstallation> {
+    pub fn installation(&self) -> &Arc<dyn pc::SandboxInstallation> {
         &self.installation
     }
 

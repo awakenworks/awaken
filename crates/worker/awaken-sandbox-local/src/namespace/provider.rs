@@ -45,12 +45,6 @@ impl pc::SandboxReadiness for NamespaceProvider {
 #[async_trait]
 impl pc::SandboxProvider for NamespaceProvider {
     type Environment = dyn pc::Sandbox;
-    fn install_memory_mounter(&self, mounter: std::sync::Arc<dyn pc::MemoryMounter>) {
-        self.install_memory_mounter(mounter);
-    }
-    fn install_secret_broker(&self, broker: std::sync::Arc<dyn pc::SecretBroker>) {
-        self.install_secret_broker(broker);
-    }
 
     async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
         Ok(())
@@ -160,5 +154,15 @@ impl pc::SandboxProvider for NamespaceProvider {
     }
     fn restoration(&self) -> pc::SandboxRestoration<'_, std::sync::Arc<dyn pc::Sandbox>> {
         pc::SandboxRestoration::Unsupported
+    }
+}
+
+impl awaken_provisioning_contract::SandboxInstallation for NamespaceProvider {
+    fn install_memory_mounter(&self, mounter: std::sync::Arc<dyn pc::MemoryMounter>) {
+        self.install_memory_mounter(mounter);
+    }
+
+    fn install_secret_broker(&self, broker: std::sync::Arc<dyn pc::SecretBroker>) {
+        self.install_secret_broker(broker);
     }
 }
