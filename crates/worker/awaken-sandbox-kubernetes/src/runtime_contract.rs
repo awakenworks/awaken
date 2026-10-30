@@ -73,6 +73,17 @@ impl K8sRuntime {
         self
     }
 
+    /// Replace the CPU/memory bounds and disposable-Pod deadline
+    /// (`k8s_pod_bounds`). An unbounded or inverted role is refused.
+    pub fn with_pod_bounds(
+        mut self,
+        bounds: awaken_container_contract::K8sPodBounds,
+    ) -> Result<Self, RuntimeError> {
+        bounds.validate().map_err(RuntimeError::Backend)?;
+        self.pod_bounds = bounds;
+        Ok(self)
+    }
+
     pub(super) async fn admit_observed_creation_attempt(
         &self,
         context: &ContainerRealizationContext<'_>,

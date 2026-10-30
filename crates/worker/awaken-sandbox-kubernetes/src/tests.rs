@@ -2099,3 +2099,192 @@ fn retained_original_source_observation_never_grants_absence_or_execution() {
         }
     }
 }
+
+/// Guardrail: no hosted Sandbox Pod this runtime renders is BestEffort or has
+/// an unbounded container, whatever optional sidecars its plan demands.
+fn assert_every_container_bounded(pod: &Pod, row: &str) {
+    let spec = pod.spec.as_ref().expect("Pod spec");
+    let containers = spec
+        .containers
+        .iter()
+        .chain(spec.init_containers.iter().flatten());
+    for container in containers {
+        let resources = container
+            .resources
+            .as_ref()
+            .unwrap_or_else(|| panic!("{row}: `{}` has no resources", container.name));
+        for (kind, map) in [
+            ("requests", &resources.requests),
+            ("limits", &resources.limits),
+        ] {
+            let map = map
+                .as_ref()
+                .unwrap_or_else(|| panic!("{row}: `{}` has no {kind}", container.name));
+            for key in ["cpu", "memory"] {
+                assert!(
+                    map.contains_key(key),
+                    "{row}: `{}` {kind} lacks {key}",
+                    container.name
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_hosted_pod_container_carries_bounds_and_only_disposable_pods_a_deadline() {
+    /* Hosted Pod bounds decision table. Causes: C1 the plan demands Memory
+     * projection, live File projection, a native credential init container and
+     * the Repository control forwarder; C2 the plan declares its own Agent
+     * CPU/memory values; C3 filesystem continuity is Ephemeral/Retained; C4 the
+     * operator disables the deadline. Effects: E1 every container and init
+     * container carries cpu+memory requests and limits (no BestEffort Pod);
+     * E2 a declared plan value wins and a plan ceiling below the default
+     * reservation lowers the reservation; E3 only an Ephemeral Pod carries
+     * activeDeadlineSeconds; E4 a zero deadline omits it; E5 quantities are
+     * the apiserver's canonical text so the verbatim projection check holds;
+     * E6 every emptyDir carries a sizeLimit. Rules: B1 C1+C3=>E1; B2 C2=>E2;
+     * B3 C3=>E3; B4 C3=Ephemeral+C4=>E4; B5 E5; B6 C1=>E6.
+     */
+    let forwarder = K8sSandboxControlForwarder::new(
+        format!("registry.test/awaken-sandbox@sha256:{}", "a".repeat(64)),
+        "/usr/local/bin/awaken-sandbox",
+        DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
+    )
+    .unwrap();
+    let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+        .with_sandbox_control_forwarder(forwarder);
+    let mut plan = plan_with_memory(vec![awaken_sandbox_container::MemoryMount {
+        store_id: "s1".into(),
+        mount_path: "/workspace/.mnt/a".into(),
+        access: pc::MountAccess::ReadWrite,
+        snapshot_tar: empty_memory_tar(),
+    }]);
+    plan.control_services =
+        std::collections::BTreeSet::from([SandboxControlServiceKind::RepositoryGitCredential]);
+    plan.binds = vec![awaken_sandbox_container::BindPlan {
+        source_ref: "credential://acp/native/codex".into(),
+        mount_path: "/acp-config".into(),
+        read_only: false,
+        content: None,
+        content_bytes: None,
+        secret_content: Some(awaken_sandbox_container::SecretBytes::new(b"{}".to_vec())),
+        secret_writeback: true,
+        credential_file_path: Some("/acp-config/auth.json".into()),
+    }];
+    plan.limits = pc::ResourceLimits {
+        cpu_millis: Some(100),
+        memory_bytes: Some(1 << 30),
+        ..Default::default()
+    };
+    let fence =
+        SandboxEffectFence::new("bounds-create", "owner-1", "runtime-1", 1, u64::MAX).unwrap();
+
+    let retained = rt.pod_for_effect("bounded", &plan, Some(&fence));
+    assert_every_container_bounded(&retained, "B1");
+    let spec = retained.spec.as_ref().unwrap();
+    let empty_dirs = spec
+        .volumes
+        .iter()
+        .flatten()
+        .filter_map(|volume| volume.empty_dir.as_ref())
+        .collect::<Vec<_>>();
+    assert!(
+        !empty_dirs.is_empty(),
+        "B6 fixture renders emptyDir volumes"
+    );
+    for empty_dir in empty_dirs {
+        assert_eq!(
+            empty_dir.size_limit.as_ref().map(|limit| limit.0.as_str()),
+            Some("21474836480"),
+            "B6 every emptyDir is size-bounded"
+        );
+    }
+    let names = spec
+        .containers
+        .iter()
+        .chain(spec.init_containers.iter().flatten())
+        .map(|container| container.name.as_str())
+        .collect::<Vec<_>>();
+    for role in [
+        "agent",
+        memory::PROJECTOR,
+        projection::PROJECTOR,
+        "sandbox-control",
+        "credential-init-0",
+    ] {
+        assert!(
+            names.contains(&role),
+            "B1 fixture renders `{role}`: {names:?}"
+        );
+    }
+    let agent = spec.containers[0].resources.as_ref().unwrap();
+    let agent_limits = agent.limits.as_ref().unwrap();
+    let agent_requests = agent.requests.as_ref().unwrap();
+    assert_eq!(agent_limits["memory"].0, "1073741824", "B2 plan value wins");
+    assert_eq!(agent_limits["cpu"].0, "100m", "B2 plan value wins");
+    assert_eq!(agent_requests["cpu"].0, "100m", "B2 reservation <= ceiling");
+    assert_eq!(spec.active_deadline_seconds, None, "B3 retained");
+
+    plan.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+    plan.limits = pc::ResourceLimits::default();
+    let ephemeral = rt.pod_for_effect("bounded", &plan, Some(&fence));
+    assert_every_container_bounded(&ephemeral, "B1 ephemeral");
+    let spec = ephemeral.spec.as_ref().unwrap();
+    assert_eq!(spec.active_deadline_seconds, Some(6 * 60 * 60), "B3");
+    let agent_limits = spec.containers[0]
+        .resources
+        .as_ref()
+        .unwrap()
+        .limits
+        .as_ref()
+        .unwrap();
+    assert_eq!(agent_limits["cpu"].0, "4", "B5 whole cores are canonical");
+
+    let no_deadline = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+        .with_pod_bounds(awaken_container_contract::K8sPodBounds {
+            ephemeral_active_deadline_secs: 0,
+            ..Default::default()
+        })
+        .unwrap();
+    plan.control_services = Default::default();
+    let pod = no_deadline.pod_for_effect("bounded", &plan, Some(&fence));
+    assert_eq!(pod.spec.unwrap().active_deadline_seconds, None, "B4");
+
+    let mut inverted = awaken_container_contract::K8sPodBounds::default();
+    inverted.sidecar.cpu_request_millis = 0;
+    assert!(
+        K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+            .with_pod_bounds(inverted)
+            .is_err(),
+        "an unbounded sidecar role is refused"
+    );
+}
+
+#[test]
+fn quantities_render_in_apiserver_canonical_form() {
+    // Observed on a live apiserver: `4000m` reads back `4`, `8000000000`
+    // reads back `8G`, and non-multiples stay verbatim. A divergent rendering
+    // would fail the verbatim restore/cleanup projection check.
+    let r = pod_resources(
+        &pc::ResourceRequests {
+            cpu_millis: Some(250),
+            memory_bytes: Some(268_435_456),
+            disk_bytes: None,
+        },
+        &pc::ResourceLimits {
+            cpu_millis: Some(4_000),
+            memory_bytes: Some(8_000_000_000),
+            pids: None,
+            disk_bytes: Some(1_500_000),
+        },
+    )
+    .unwrap();
+    let requests = r.requests.unwrap();
+    let limits = r.limits.unwrap();
+    assert_eq!(requests["cpu"].0, "250m");
+    assert_eq!(requests["memory"].0, "268435456");
+    assert_eq!(limits["cpu"].0, "4");
+    assert_eq!(limits["memory"].0, "8G");
+    assert_eq!(limits["ephemeral-storage"].0, "1500k");
+}
