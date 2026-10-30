@@ -759,3 +759,76 @@ not the acceptance claim by themselves.
 
 G1, G2, G3, G4, G5, G6, G8, G9, G10, G13, G18, G23, G28, G29,
 G37, G38, G42, and G43 in [INVARIANTS](../INVARIANTS.md).
+
+
+## Publication execution diagnostics (2026-10-28)
+
+`GET /v1/awaken/agents/execution-evidence` is a Workspace-read-only projection,
+separate from the frozen Managed Agent wire. It reuses `ManagedAgentRepository`
+and its canonical visible-publication list; one request-local publication index
+serves both visibility and exact `(agent_id, version)` execution lookup. Each
+row exposes only backend ref, model ref and provisioning kind from the immutable
+candidate. Drafts, current-catalog guesses, endpoint details and credential
+material never replace those facts. No diagnostic row grants placement.
+
+Static ownership: Control ConfigPlane/publication -> repository query -> native
+HTTP projection -> consuming application. The standard Agent SDK projection,
+ConfigService validation, Environment registration and Worker placement remain
+unchanged. Runtime capabilities additionally project source-specific
+`availability.provider` and `availability.backend_owned` from the same current
+host observation, so applications do not decode ACP login strings.
+
+Dynamic behavior: the client reads standard published Agents and native evidence,
+joins only equal Agent ID/version, and matches one runtime backend. Missing,
+stale, malformed or ambiguous facts refuse new task selection. Submission still
+rechecks current runtime observations; Session creation and Dispatch revalidate
+Environment, Worker, credentials and isolation through their existing owners.
+A foreign Workspace returns no publication rows; storage failure is unavailable,
+never an empty-success substitute. The query performs no publication, realization,
+credential resolution, execution or retry and creates no persistent state.
+
+Fluent Runtime composition may call `awaken_runtime::validate_configuration` before
+opening an external backend. Fresh, resumed and recovered tool entry points use
+the same registry validator; duplicates refuse before model/tool/commit effects.
+Message ID owns the common batch-result Run/Step/call occurrence match; Native
+and ACP projectors retain their separate protocol output and Runtime-origin checks.
+
+ACP traces SDK reaping, Requested commit, Runtime recovery, receipt bytes/count
+and SDK reopen separately, without arguments or result contents. Individual
+outputs retain the existing Runtime-owned durable spill path. Aggregate receipt
+context is limited to 1 MiB UTF-8 JSON; exceeding it returns
+`acp_receipt_context_exceeded` without dropping receipts or replaying tools.
+This is a bounded refusal, not transparent long-context compaction. No aggregate
+file is written outside a receipted Runtime effect, and physical SDK exit remains
+mandatory before the original execution owner proceeds.
+
+The existing ACP SDK lookup projection retains each explicitly presented builtin's
+canonical ID as well as its declared alias. Both spellings resolve in the same
+single-hop table to the same registered in-Session MCP tool; explicit aliases
+keep `ToolPresentation::resolve` precedence. Already addressable MCP identities
+never acquire self-aliases, and unknown case/spelling is not inferred. SDK-native
+tools stay disabled/disallowed, argument schemas and permissions stay with their
+original owners, and the MCP invocation still enters the original Runtime
+ToolBatch/operation-token path. This closes the transport gap where a published
+canonical `read` could fail SDK name lookup although its declared `Read` alias
+already routed to that same capability; it creates no additional tool registry.
+
+
+Known failed Environment image attempts are reported immediately by the existing
+blocking `EnvironmentImageReadiness::ready_image` query as unavailable. The query
+keeps provider diagnostics in the operator build record, creates no retry or
+terminal state, and leaves the original build queue, lease/CAS and backoff intact.
+Pending/Building retain the cold-preparation deadline, exact Ready retains its
+availability proof, and nonblocking capacity reads retain `None` until ready.
+A caller can retry the original creation after the same build owner succeeds;
+it must not interpret a long cold-build budget as evidence that a known failure
+is still making progress. This does not repair or restart the container engine.
+
+
+ACP receipt context also carries each occurrence's original committed input.
+A reopened opaque SDK history may omit that ToolUse; the request-only projection
+therefore joins input, tool, outcome and content at the existing exact occurrence
+boundary. It does not reconstruct input from a later MCP arrival, infer success
+from SDK callback cancellation, or persist an acknowledgement. Input and result
+content remain data. Deterministic provider probes consume these same complete
+facts without requiring an SDK-history copy of an already committed call.

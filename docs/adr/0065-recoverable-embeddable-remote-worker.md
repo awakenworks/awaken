@@ -816,3 +816,20 @@ that original domain and are never mutated. A previously released finalizer does
 not prevent retirement of a proven closed-idle Pod. The Kubernetes Deployment
 owns replacement and supplies a new UID; no new cleanup controller, registry,
 attempt inventory, process-exit assertion, or replay permission is introduced.
+
+## Amendment: bounded Session authority reads survive Coordinator drain (2026-10-29)
+
+Worker preparation and source-retention qualification can authenticate an MCP
+connection through its application owner. That owner reads the original Session
+and execution selection back from Coordinator. Rejecting those bounded reads
+while waiting for the Worker to retire creates a dependency cycle.
+
+Reuse the existing Session query handlers, authorization, Workspace addressing,
+request counter and drain exclusion. The process admission owner admits only
+GET/HEAD of one Session root or its execution-evidence projection after drain;
+mutations, new execution, event streams and unrelated public routes remain
+closed. Permitted reads retain the same body-lifetime counter and authorization.
+They create no execution, exit, source-retention or cleanup receipt. Readiness
+continues to report draining. Deployment composition must retain authenticated
+internal reachability to these queries while excluding drained Pods from public
+serving. No second Session authority, credential issuer or recovery state is added.
