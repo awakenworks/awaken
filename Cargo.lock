@@ -1320,7 +1320,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -1459,7 +1458,6 @@ dependencies = [
  "awaken-time",
  "proptest",
  "serde",
- "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -1668,14 +1666,12 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
- "blake3",
  "futures",
  "object_store",
  "proptest",
  "serde_json",
  "sqlx",
  "tempfile",
- "thiserror",
  "tokio",
 ]
 
@@ -1834,10 +1830,8 @@ name = "awaken-lease-contract"
 version = "1.0.0"
 dependencies = [
  "awaken-time",
- "proptest",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2587,7 +2581,6 @@ dependencies = [
  "awaken-sql-storage",
  "awaken-sqlite-pool",
  "awaken-store-conformance",
- "parking_lot",
  "proptest",
  "serde",
  "serde_json",
@@ -2702,7 +2695,6 @@ dependencies = [
  "awaken-time",
  "awaken-tool-contract",
  "futures-util",
- "jsonschema",
  "parking_lot",
  "schemars 1.2.1",
  "serde",
@@ -3205,7 +3197,6 @@ dependencies = [
  "awaken-tool-contract",
  "chrono",
  "chrono-tz",
- "http",
  "proptest",
  "schemars 1.2.1",
  "serde",
@@ -3603,7 +3594,6 @@ dependencies = [
 name = "awaken-session-state-contract"
 version = "1.0.0"
 dependencies = [
- "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-contract",
@@ -3619,7 +3609,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -3655,7 +3644,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -3819,7 +3807,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "serde",
  "serde_json",
 ]
 
@@ -3938,7 +3925,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
- "thiserror",
  "tokio",
  "url",
  "uuid",

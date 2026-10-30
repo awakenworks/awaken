@@ -16,7 +16,6 @@ separation = "contract"
 
 [dependencies]
 awaken-agent-contract.workspace = true
-serde = { workspace = true }
 # The Org request-admission port (`org_admission::OrgRequestAdmission`).
 async-trait.workspace = true
 

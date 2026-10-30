@@ -17,7 +17,6 @@ separation = "protocol"
 protocol = "a2a"
 
 [dependencies]
-awaken-tool-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-protocol-a2a.workspace = true
@@ -29,5 +28,6 @@ serde_json.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-tool-contract.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "test-util"] }
 axum = "0.8"

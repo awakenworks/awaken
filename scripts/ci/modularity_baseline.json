@@ -280,7 +280,7 @@
     "awaken-package-image::kubernetes_build.rs::build_objects": 229,
     "awaken-package-image::package_realization.rs::verify_k8s_package_realization": 194,
     "awaken-process-startup::config/resolve.rs::resolve_file": 500,
-    "awaken-process-startup::control_component.rs::prepare_control_routers": 228,
+    "awaken-process-startup::control_component.rs::prepare_control_routers": 226,
     "awaken-process-startup::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 207,
     "awaken-process-startup::process_stores.rs::open_process_stores": 393,
     "awaken-process-startup::service.rs::serve_prepared_process": 232,
@@ -289,7 +289,7 @@
     "awaken-protocol-managed::routes/sessions/stream.rs::live_sse_stream": 209,
     "awaken-protocol-managed::routes/vaults.rs::create_credential": 181,
     "awaken-protocol-managed::routes/vaults.rs::update_credential": 217,
-    "awaken-protocol-managed::state/events/admission.rs::send_event_batch": 235,
+    "awaken-protocol-managed::state/events/admission.rs::send_event_batch": 234,
     "awaken-protocol-managed::state/events/admission.rs::validate_event_batch": 353,
     "awaken-protocol-managed::state/events/committed_projection.rs::build_committed_projection_candidate_over": 172,
     "awaken-protocol-managed::state/events/committed_projection/canonical_order.rs::canonicalize_committed_events": 200,
@@ -322,7 +322,7 @@
     "awaken-session-application::coordination.rs::send_session_agent_message": 159,
     "awaken-session-application::creation.rs::create_session_with_completion": 252,
     "awaken-session-application::creation/profiled.rs::create_profiled_session_with_completion": 327,
-    "awaken-session-application::creation/request.rs::create_requested_session": 474,
+    "awaken-session-application::creation/request.rs::create_requested_session": 470,
     "awaken-session-application::event_batches.rs::reconcile_one_session_event": 281,
     "awaken-session-application::lifecycle.rs::settle_activity_observed_for_event": 168,
     "awaken-session-application::realization/control.rs::begin_session_realization_inner": 188,
@@ -365,7 +365,7 @@
   },
   "crate-budget": {
     "awaken-protocol-managed": {
-      "deps": 34,
+      "deps": 33,
       "lines": 23754,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
@@ -375,7 +375,7 @@
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     },
     "awaken-session-executor": {
-      "deps": 41,
+      "deps": 40,
       "lines": 19272,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root; +127 2026-10-18 for typed poison refusals and their decision tables at every read role, plan v4 P6/P7); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
       "host_lines": 19272

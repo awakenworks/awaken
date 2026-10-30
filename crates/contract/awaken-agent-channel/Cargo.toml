@@ -16,6 +16,3 @@ separation = "contract"
 
 [dependencies]
 tokio = { workspace = true, features = ["io-util"] }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "io-util"] }

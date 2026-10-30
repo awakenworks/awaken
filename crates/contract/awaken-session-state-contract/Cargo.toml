@@ -24,7 +24,6 @@ awaken-session-budget-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-event-contract.workspace = true
 awaken-session-types.workspace = true
-async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -32,7 +31,6 @@ thiserror.workspace = true
 [dev-dependencies]
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 proptest.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
 awaken-environment-contract.workspace = true
 
 [lints]

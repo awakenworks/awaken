@@ -26,8 +26,5 @@ tokio.workspace = true
 tokio-util.workspace = true
 schemars = "1"
 
-[dev-dependencies]
-tokio.workspace = true
-
 [lints]
 workspace = true

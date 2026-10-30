@@ -646,6 +646,8 @@ mod tests {
 
     #[test]
     fn dream_model_speed_is_the_existing_sdk_value_on_the_wire_and_in_stored_records() {
+        // JSON is a dev-only test driver. Production serde/default/legacy laws
+        // stay unchanged when its declaration leaves the normal graph.
         // Cause/effect table: S1 omitted or null -> canonical None + omitted
         // output; S2 standard/fast -> the SAME SDK value + exact original
         // literal; S3 an unknown literal or non-string -> serde rejection.

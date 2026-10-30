@@ -25,8 +25,6 @@ awaken-tool-contract.workspace = true
 # The auxiliary-run sandbox port this Workdir provider implements.
 awaken-session-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-session-state-contract.workspace = true
-awaken-session-types.workspace = true
 awaken-resource-contract.workspace = true
 awaken-local-process.workspace = true
 awaken-fs-durability = { workspace = true, features = ["native-fs"] }
@@ -38,7 +36,6 @@ awaken-sandbox-control-transport.workspace = true
 blake3 = "1"
 getrandom = "0.2"
 awaken-ext-builtin-tools = { workspace = true }
-awaken-time.workspace = true
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -53,6 +50,9 @@ url.workspace = true
 command-fds = "0.3.3"
 
 [dev-dependencies]
+# Only the cfg(test) checkpoint fixture consumes these Session values.
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
 awaken-resource-application.workspace = true
 awaken-time.workspace = true
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }

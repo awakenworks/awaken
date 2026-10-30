@@ -355,6 +355,9 @@ mod tests {
 
     #[test]
     fn deployment_seed_events_read_managed_names_and_serialize_as_domain_data() {
+        // The JSON driver is dev-only; serde remains a production contract.
+        // Moving that declaration must preserve every historical decode and
+        // canonical encode below, not replace the domain's serde implementation.
         // Historical rows contain the Managed API's `{domain}.{action}` names.
         // They must remain readable without making that public vocabulary the
         // canonical encoding of the protocol-independent domain type.

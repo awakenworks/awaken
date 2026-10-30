@@ -561,6 +561,7 @@ def production_module_files(
     *,
     project: Callable[[str], str] = production_rust,
     include_test_targets: bool = False,
+    unresolved_includes: list[str] | None = None,
 ) -> set[Path]:
     """Structural module reachability from Cargo library/binary roots.
 
@@ -573,6 +574,10 @@ def production_module_files(
     while feature/platform branches are a conservative union, not proof that a
     particular release configuration executes them. Compiler checks still own
     cfg resolution, macro expansion and generated OUT_DIR code.
+
+    Callers may collect reachable non-literal/missing includes as unknown compiler
+    inputs. The walker does not turn uncertainty into a usage verdict: a known
+    positive reference still proves use; missing references cannot prove non-use.
     """
     reachable: set[Path] = set()
     visited: set[tuple[Path, Path]] = set()
@@ -607,7 +612,12 @@ def production_module_files(
                     continue
                 argument = source[cursor:end - 1].strip()
                 if re.fullmatch(r'"[^"\\]+"', argument):
-                    visit(path.parent / argument[1:-1], module_dir)
+                    included = path.parent / argument[1:-1]
+                    if unresolved_includes is not None and not included.is_file():
+                        unresolved_includes.append(f"{path}: unresolved include {argument}")
+                    visit(included, module_dir)
+                elif unresolved_includes is not None:
+                    unresolved_includes.append(f"{path}: unresolved include {argument}")
                 cursor = end
                 continue
             name, delimiter = match.group(1, 2)

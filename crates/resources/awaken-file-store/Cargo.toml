@@ -22,11 +22,7 @@ isolates = ["object_store", "sqlx"]
 awaken-resource-contract.workspace = true
 awaken-fs-durability.workspace = true
 async-trait.workspace = true
-thiserror.workspace = true
 serde_json.workspace = true
-# Content id = a stable, collision-resistant hash (not the old 64-bit DefaultHasher),
-# so the same bytes get the same id on every backend (fs / postgres / s3).
-blake3 = "1"
 tokio = { workspace = true, features = ["fs", "io-util"] }
 
 # Network / durable relational backends over the same trait. Optional: the
