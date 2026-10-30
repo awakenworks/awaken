@@ -42,6 +42,8 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use tokio_util::sync::CancellationToken;
 
+#[path = "tests/claim_path_stack.rs"]
+mod claim_path_stack;
 #[path = "tests/operation_receipts.rs"]
 mod operation_receipts;
 #[path = "tests/terminal_pending.rs"]
