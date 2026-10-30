@@ -14,9 +14,6 @@ import sys
 
 import anthropic
 
-BASE_URL = os.environ["AWAKEN_MANAGED_BASE_URL"]
-
-
 def error_row(call):
     try:
         call()
@@ -122,15 +119,19 @@ def observe(client: anthropic.Anthropic, store_id: str) -> dict:
     }
 
 
+USAGE = "usage: sdk_differential_driver.py lifecycle <label> <model> | observe <store_id>"
+
+
 def main() -> None:
+    arity = {"lifecycle": 4, "observe": 3}
+    if len(sys.argv) < 2 or arity.get(sys.argv[1]) != len(sys.argv):
+        raise SystemExit(USAGE)
     mode = sys.argv[1]
-    with anthropic.Anthropic(api_key="e2e-local", base_url=BASE_URL, max_retries=0) as client:  # awaken-allow(secret): local test key
+    with anthropic.Anthropic(api_key="e2e-local", base_url=os.environ["AWAKEN_MANAGED_BASE_URL"], max_retries=0) as client:  # awaken-allow(secret): local test key
         if mode == "lifecycle":
             result = lifecycle(client, sys.argv[2], sys.argv[3])
         elif mode == "observe":
             result = observe(client, sys.argv[2])
-        else:
-            raise SystemExit(f"unknown mode {mode}")
     result["sdk"] = {"language": "python", "version": anthropic.__version__}
     print(json.dumps(result))
 
