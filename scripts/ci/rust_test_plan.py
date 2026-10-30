@@ -127,9 +127,8 @@ def static_metadata_tightens(path: str, before: bytes, after: bytes) -> bool:
 
         old, new = (json.loads(text, object_pairs_hook=unique)
                     for text in (old_text, new_text))
-        numeric = {"super-glob", "module-cycle", "long-function"}
-        structured = {"impl-spread": {"files", "methods"},
-                      "crate-budget": {"lines", "deps", "host_lines"}}
+        numeric = {"super-glob", "module-cycle", "long-function", "crate-line-ceiling"}
+        structured = {"impl-spread": {"files", "methods"}, "crate-budget": {"deps"}}
         frozen = {"unreachable-pub-pending", "growth_reasons", "$comment"}
         if (not isinstance(old, dict) or not isinstance(new, dict)
                 or old.keys() != new.keys()
@@ -154,7 +153,7 @@ def static_metadata_tightens(path: str, before: bytes, after: bytes) -> bool:
                     continue
                 previous, candidate = a[key], b[key]
                 allowed = structured[rule]
-                required = {"files", "methods"} if rule == "impl-spread" else {"lines", "deps"}
+                required = allowed
                 if (not isinstance(previous, dict) or not isinstance(candidate, dict)
                         or previous.keys() != candidate.keys()
                         or set(previous) - allowed - {"reason"}
@@ -362,11 +361,14 @@ class PlanTests(unittest.TestCase):
                 self.assertEqual(static_metadata_tightens(floor, before, after), expected)
         path = "scripts/ci/modularity_baseline.json"
         old = {"impl-spread": {"crate::Owner": {"files": 4, "methods": 58, "reason": "split owner"}},
-               "super-glob": {"crate": 3}, "unreachable-pub-pending": ["pending"]}
+               "super-glob": {"crate": 3}, "unreachable-pub-pending": ["pending"],
+               "crate-line-ceiling": {"crate": 6000}, "crate-budget": {"crate": {"deps": 3, "reason": "review"}}}
         encode = lambda value: json.dumps(value).encode()
         new = json.loads(json.dumps(old)); new["impl-spread"]["crate::Owner"]["methods"] = 57
+        new["crate-line-ceiling"]["crate"] = 5500; new["crate-budget"]["crate"]["deps"] = 2
         self.assertTrue(static_metadata_tightens(path, encode(old), encode(new)))
-        for fault in ("increase", "boolean", "negative", "float", "reason", "remove", "new-key", "pending", "unknown"):
+        for fault in ("increase", "boolean", "negative", "float", "reason", "remove", "new-key", "pending", "unknown",
+                      "ceiling-raise", "ceiling-new", "budget-lines", "budget-deps"):
             candidate = json.loads(json.dumps(new))
             row = candidate["impl-spread"]["crate::Owner"]
             if fault == "increase": candidate["super-glob"]["crate"] = 4
@@ -377,6 +379,10 @@ class PlanTests(unittest.TestCase):
             elif fault == "remove": del candidate["impl-spread"]["crate::Owner"]
             elif fault == "new-key": candidate["super-glob"]["other"] = 0
             elif fault == "pending": candidate["unreachable-pub-pending"] = []
+            elif fault == "ceiling-raise": candidate["crate-line-ceiling"]["crate"] = 6001
+            elif fault == "ceiling-new": candidate["crate-line-ceiling"]["other"] = 1000
+            elif fault == "budget-lines": candidate["crate-budget"]["crate"]["lines"] = 1
+            elif fault == "budget-deps": candidate["crate-budget"]["crate"]["deps"] = 4
             else: candidate["future-rule"] = {}
             with self.subTest(fault=fault):
                 self.assertFalse(static_metadata_tightens(path, encode(old), encode(candidate)))

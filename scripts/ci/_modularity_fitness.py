@@ -1,50 +1,64 @@
-"""Module ownership and dependency ratchets, with diagnostic line measurements.
+"""Module ownership and dependency ratchets, with approved line ceilings.
 
 Plan 9.12 / W22. A module is a boundary when it owns its state and callers
 reach it through a narrow surface. Production measurements exclude comments
 and provably test-only code. Structural and dependency ratchets stay hard;
-line counts remain visible WARN diagnostics and never require a baseline
-rewrite before continuing (ADR-0091, 2026-10-28).
+line counts remain visible WARN diagnostics and never block a check
+(ADR-0091, 2026-10-28). Line ceilings are approved allowances that a review
+record may raise (ADR-0091, 2026-10-31).
 
 * `impl-spread`: one type's inherent impls exceed MAX_IMPL_FILES or
   MAX_IMPL_METHODS. Recorded files/methods may only fall and retain their review.
 * `super-glob`: counted `use super::*` imports may only fall.
 * `module-cycle`: top-level crate/super dependency cycles may only shrink.
 * `unreachable-pub`: adoption and the pending-crate registry remain enforced.
-* `long-function`: new, growing, shrinking and disappearing measured functions
-  are advisory. Historical line measurements may remain without being raised.
-* `crate-budget`: whole, host and extracting-realization line measurements are
-  advisory, including threshold crossings. Registered crate review metadata
-  and exact workspace-dependency ceilings remain hard, even after line counts
-  fall below the review threshold. Line changes cannot erase dependency review.
+* `crate-line-ceiling`: every crate's approved functional-line ceiling, its
+  lines plus headroom when recorded. Silent at or below it; a crate above its
+  ceiling, a crate without one and the ceiling of an absent crate each WARN.
+* `long-function`: a function above MAX_FUNCTION_LINES holds its approved
+  length, without headroom. Growth, a new long function, a shorter one and a
+  disappeared one WARN.
+* `crate-budget`: the review registry of crates above CRATE_REVIEW_LINES: a
+  mandatory review reason and an exact workspace-dependency count, both hard,
+  even after the crate falls below the review threshold.
 
-Default/--check is read-only. --tighten only lowers/removes held measurements,
-never adds or raises an allowance; historical crate dependency entries remain
-registered below the line threshold. Explicit baseline recording retains the
-existing review admission and cannot waive structural, metadata or dependency
-checks. No other architecture guard changes its policy through this module.
+Default/--check is read-only. --tighten only lowers/removes held values, never
+adds or raises an allowance. --write-baseline records the tree; any allowance
+it adds or raises, including a line ceiling or a long function, needs a
+--reason review record, which is appended to the allowance's history. A reason
+cannot waive structural, metadata or dependency checks. No other architecture
+guard changes its policy through this module.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from fractions import Fraction
 from pathlib import Path
 
 import _crate_boundary_workspace
 import _architecture_ratchet
-import _module_layer_fitness
 from _context_map_fitness import _flatten_path_tree
 
 BASELINE = Path(__file__).with_name("modularity_baseline.json")
 MAX_IMPL_FILES = 5
 MAX_IMPL_METHODS = 60
 MAX_FUNCTION_LINES = 150
-BUDGET_LINE_SLACK = 1000
 CRATE_REVIEW_LINES = 15000
+# A crate's approved line ceiling is its functional lines plus
+# max(ratio * lines, floor), rounded up (user decision 2026-10-31).
+LINE_HEADROOM_RATIO = Fraction(1, 10)
+LINE_HEADROOM_FLOOR = 1000
+# crate -> (ratio, floor). The SDK engine stays minimal, so its ceiling sits
+# 5% above its size with no fixed floor.
+LINE_HEADROOM_OVERRIDES: dict[str, tuple[Fraction, int]] = {"awaken-runtime": (Fraction(1, 20), 0)}
+_RECORD = (f"python3 scripts/ci/{Path(__file__).name} --write-baseline --reason "
+           "'<JSON review: reason, approved_by, date, remove_when>'")
 
 # An inherent impl may name its type through a crate path (`impl crate::host::ExecutorComponents`);
 # that block belongs to the same type, so the path prefix is part of the match.
@@ -171,13 +185,15 @@ def _components(nodes: Iterable[str], edges: dict[str, set[str]]) -> list[list[s
     return found
 
 
-def extracting_realization_files(crate: str, files: Iterable[str], table=None) -> set[str]:
-    """Files of the runtime-host modules the module-layer guard classifies as `realization`."""
-    if crate != _module_layer_fitness.CRATE:
-        return set()
-    table = _module_layer_fitness.layer_table() if table is None else table
-    return {relative for relative in files if _module_layer_fitness.target_of(
-        tuple(_module_of(relative)), table) == _module_layer_fitness.REALIZATION}
+def line_ceiling(crate: str, lines: int) -> int:
+    """The ceiling a review approves for `lines` functional lines of `crate`."""
+    ratio, floor = LINE_HEADROOM_OVERRIDES.get(crate, (LINE_HEADROOM_RATIO, LINE_HEADROOM_FLOOR))
+    return lines + max(math.ceil(ratio * lines), floor)
+
+
+def _record_or_move(subject: str, owner: str) -> str:
+    return (f"if the growth is this {subject}'s own responsibility, record it with {_RECORD}; "
+            f"otherwise move the code to the {owner} that owns it")
 
 
 def crate_measures(manifest_path: Path) -> dict:
@@ -193,17 +209,9 @@ def crate_measures(manifest_path: Path) -> dict:
     adopted = bool(crate_root and _UNREACHABLE_PUB.search(crate_root.read_text(encoding="utf-8")))
     manifest = _crate_boundary_workspace.load_manifest(manifest_path)
     layer = manifest.get("package", {}).get("metadata", {}).get("awaken", {}).get("layer", "")
-    extracting = extracting_realization_files(_crate_boundary_workspace.package_name(manifest), files)
-
-    def code_lines(selected: Iterable[str]) -> int:
-        return sum(1 for relative in selected for line in files[relative].splitlines() if line.strip())
-
     return {
-        "lines": code_lines(files),
-        "host-lines": code_lines(set(files) - extracting),
-        "extracting-realization-lines": code_lines(extracting),
-        "deps": _crate_boundary_workspace.normal_dependency_names(
-            _crate_boundary_workspace.load_manifest(manifest_path)),
+        "lines": sum(1 for source in files.values() for line in source.splitlines() if line.strip()),
+        "deps": _crate_boundary_workspace.normal_dependency_names(manifest),
         "long-function": {} if layer == "tooling" else long_functions(files),
         "impl-spread": impl_spread(files),
         "super-glob": super_globs(files),
@@ -222,7 +230,6 @@ def modularity_errors(
     """
     errors: list[str] = []
     line_warnings = warnings if warnings is not None else []
-    line_review = "review responsibility and ownership; line counts are diagnostic, not a split requirement"
     line_lower = f"retain the historical measurement, or optionally use {Path(__file__).name} --tighten to lower it"
     lower = f"python3 scripts/ci/{Path(__file__).name} --tighten to lower {BASELINE.name} in this commit"
     spread_held: dict[str, dict] = baseline.get("impl-spread", {})
@@ -270,6 +277,7 @@ def modularity_errors(
     for crate in sorted(pending - set(measures)):
         errors.append(_architecture_ratchet.diagnostic("unreachable-pub", crate, "pending crate", "absent", lower))
     long_held: dict[str, int] = baseline.get("long-function", {})
+    function_growth = _record_or_move("function", "component")
     seen_long: set[str] = set()
     for crate, measure in sorted(measures.items()):
         for function, lines in sorted(measure.get("long-function", {}).items()):
@@ -277,27 +285,36 @@ def modularity_errors(
             held = long_held.get(key)
             if held is None:
                 line_warnings.append(_architecture_ratchet.diagnostic(
-                    "long-function", key, MAX_FUNCTION_LINES, lines,
-                    line_review))
+                    "long-function", key, MAX_FUNCTION_LINES, lines, function_growth))
                 continue
             seen_long.add(key)
             if lines > held:
-                line_warnings.append(_architecture_ratchet.diagnostic("long-function", key, held, lines, line_review))
+                line_warnings.append(_architecture_ratchet.diagnostic("long-function", key, held, lines, function_growth))
             elif lines < held:
                 line_warnings.append(_architecture_ratchet.diagnostic("long-function", key, held, lines, line_lower))
+    for key in sorted(set(long_held) - seen_long):
+        line_warnings.append(_architecture_ratchet.diagnostic(
+            "long-function", key, long_held[key], f"absent or <= {MAX_FUNCTION_LINES}", line_lower))
+    ceilings: dict[str, int] = baseline.get("crate-line-ceiling", {})
+    for crate, measure in sorted(measures.items()):
+        lines, ceiling = measure.get("lines", 0), ceilings.get(crate)
+        if ceiling is None:
+            line_warnings.append(_architecture_ratchet.diagnostic(
+                "crate-line-ceiling", crate, "unrecorded", lines,
+                f"record the new crate's ceiling ({line_ceiling(crate, lines)}) with {_RECORD}"))
+        elif lines > ceiling:
+            line_warnings.append(_architecture_ratchet.diagnostic(
+                "crate-line-ceiling", f"{crate}.lines", ceiling, lines, _record_or_move("crate", "crate")))
+    for crate in sorted(set(ceilings) - set(measures)):
+        line_warnings.append(_architecture_ratchet.diagnostic(
+            "crate-line-ceiling", crate, "recorded crate", "absent", f"{Path(__file__).name} --tighten removes it"))
     budgeted = baseline.get("crate-budget", {})
     for crate, measure in sorted(measures.items()):
         lines = measure.get("lines", 0)
         if lines > CRATE_REVIEW_LINES and crate not in budgeted:
             line_warnings.append(_architecture_ratchet.diagnostic(
                 "crate-budget", f"{crate}.lines", CRATE_REVIEW_LINES, lines,
-                line_review))
-    for crate, measure in sorted(measures.items()):
-        extracting = measure.get("extracting-realization-lines", 0)
-        if extracting > CRATE_REVIEW_LINES:
-            line_warnings.append(_architecture_ratchet.diagnostic(
-                "crate-budget", f"{crate}.extracting-realization-lines", CRATE_REVIEW_LINES, extracting,
-                line_review))
+                f"register the crate's review reason and exact dependencies with {_RECORD}"))
     for crate, held in sorted(budgeted.items()):
         measure = measures.get(crate)
         if measure is None:
@@ -307,33 +324,12 @@ def modularity_errors(
             errors.append(_architecture_ratchet.diagnostic(
                 "crate-budget", f"{crate}.reason", "reviewed split", "missing",
                 f"restore the owning reviewed split in {BASELINE.name} crate-budget[{crate}].reason"))
-        lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
-        if lines <= CRATE_REVIEW_LINES:
-            line_warnings.append(_architecture_ratchet.diagnostic(
-                "crate-budget", f"{crate}.lines", held.get("lines", "recorded above review threshold"), lines, line_lower,
-                details=f"within review threshold {CRATE_REVIEW_LINES}"))
-        elif lines > held["lines"]:
-            line_warnings.append(_architecture_ratchet.diagnostic(
-                "crate-budget", f"{crate}.lines", held["lines"], lines, line_review))
-        elif lines <= held["lines"] - BUDGET_LINE_SLACK:
-            line_warnings.append(_architecture_ratchet.diagnostic("crate-budget", f"{crate}.lines", held["lines"], lines, line_lower))
-        if "host_lines" in held:
-            host = measure.get("host-lines", lines)
-            if host > held["host_lines"]:
-                line_warnings.append(_architecture_ratchet.diagnostic(
-                    "crate-budget", f"{crate}.host_lines", held["host_lines"], host,
-                    line_review))
-            elif host <= held["host_lines"] - BUDGET_LINE_SLACK:
-                line_warnings.append(_architecture_ratchet.diagnostic("crate-budget", f"{crate}.host_lines", held["host_lines"], host, line_lower))
+        deps = len(measure.get("workspace-deps", ()))
         if deps > held["deps"]:
             errors.append(_architecture_ratchet.diagnostic(
                 "crate-budget", f"{crate}.deps", held["deps"], deps, "put the new dependency in the crate it is moving to"))
         elif deps < held["deps"]:
             errors.append(_architecture_ratchet.diagnostic("crate-budget", f"{crate}.deps", held["deps"], deps, lower))
-    for key in sorted(set(long_held) - seen_long):
-        line_warnings.append(_architecture_ratchet.diagnostic(
-            "long-function", key, long_held[key], f"absent or <= {MAX_FUNCTION_LINES}",
-            line_lower))
     return [f"modularity: {error}" for error in errors]
 
 
@@ -352,26 +348,44 @@ def _reported_modularity_errors(
     return errors
 
 
-def tightened(measures: dict[str, dict], baseline: dict, *, record: bool = False, reason: str | None = None) -> dict:
-    """The existing candidate writer, shrink-only unless explicitly recording.
+def recorded_line_growth(measures: dict[str, dict], baseline: dict) -> list[str]:
+    """Line allowances `--write-baseline` would add or raise; each needs a review record."""
+    ceilings, long_held = baseline.get("crate-line-ceiling", {}), baseline.get("long-function", {})
+    found = [f"crate-line-ceiling: {crate} {ceilings.get(crate, 'unrecorded')} -> {line_ceiling(crate, measure.get('lines', 0))}"
+             for crate, measure in sorted(measures.items())
+             if crate not in ceilings or measure.get("lines", 0) > ceilings[crate]]
+    for crate, measure in sorted(measures.items()):
+        for function, lines in sorted(measure.get("long-function", {}).items()):
+            key = f"{crate}::{function}"
+            held = long_held.get(key)
+            if held is None or lines > held:
+                found.append(f"long-function: {key} {MAX_FUNCTION_LINES if held is None else held} -> {lines}")
+    return found
 
-    Shrink mode never adds/raises an allowance. The CLI checks its candidate
-    with the same decision owner, so a clamp cannot hide structural or
-    dependency growth. Line changes are advisory; explicit recording cannot
-    add lint exemptions or waive required review metadata.
+
+def tightened(measures: dict[str, dict], baseline: dict, *, record: bool = False, reason: str | None = None) -> dict:
+    """The candidate writer, shrink-only unless explicitly recording.
+
+    Shrink mode never adds/raises an allowance; it lowers a line ceiling to
+    lines plus headroom and drops absent crates. Recording also raises an
+    over-ceiling crate and adds a new one at lines plus headroom, and appends
+    the reason to every allowance it adds or raises. The CLI checks its
+    candidate with the same decision owner, so a clamp cannot hide structural
+    or dependency growth; recording cannot add lint exemptions or waive
+    required review metadata.
     """
     out = json.loads(json.dumps(baseline))
     reasons = out.pop("growth_reasons", {})
-    owned = {"impl-spread", "super-glob", "module-cycle", "long-function", "crate-budget"}
+    owned = {"impl-spread", "super-glob", "module-cycle", "long-function", "crate-line-ceiling", "crate-budget"}
     kept_reasons: dict[str, dict[str, str]] = {name: value for name, value in reasons.items() if name not in owned}
 
-    def count(rule: str, key: str, now: int, was: int, slack: int = 1) -> int:
+    def count(rule: str, key: str, now: int, was: int) -> int:
         earlier = kept_reasons.get(rule, {}).get(key, reasons.get(rule, {}).get(key))
         if record and now > was and reason:
             earlier = _architecture_ratchet.growth_reason(earlier, reason)
         if earlier:
             kept_reasons.setdefault(rule, {})[key] = earlier
-        return now if record or now <= was - slack else was
+        return now if record else min(now, was)
 
     spread = {}
     held_spread = baseline.get("impl-spread", {})
@@ -409,23 +423,30 @@ def tightened(measures: dict[str, dict], baseline: dict, *, record: bool = False
         if now is not None:
             long_held[key] = count("long-function", key, now, held_long.get(key, MAX_FUNCTION_LINES))
     out["long-function"] = long_held
+    held_ceilings = baseline.get("crate-line-ceiling", {})
+    ceilings = {}
+    for crate in sorted(set(measures) if record else set(held_ceilings) & set(measures)):
+        lines, held = measures[crate].get("lines", 0), held_ceilings.get(crate)
+        approved = line_ceiling(crate, lines)
+        raised = record and (held is None or lines > held)
+        ceilings[crate] = approved if raised else min(held, approved)
+        earlier = reasons.get("crate-line-ceiling", {}).get(crate)
+        if raised and reason:
+            earlier = _architecture_ratchet.growth_reason(earlier, reason)
+        if earlier:
+            kept_reasons.setdefault("crate-line-ceiling", {})[crate] = earlier
+    out["crate-line-ceiling"] = ceilings
     held_budget = baseline.get("crate-budget", {})
     keys = set(held_budget) | (set(measures) if record else set())
     budget = {}
     for crate in sorted(keys):
         measure = measures.get(crate)
-        if measure is None:
-            continue
-        lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
-        if lines <= CRATE_REVIEW_LINES and crate not in held_budget:
+        if measure is None or (measure.get("lines", 0) <= CRATE_REVIEW_LINES and crate not in held_budget):
             continue
         # A line-threshold crossing must not delete the held dependency ceiling.
-        held = held_budget.get(crate, {"lines": CRATE_REVIEW_LINES, "deps": 0, "reason": reason or ""})
-        budget[crate] = {**held, "lines": count("crate-budget", crate, lines, held["lines"], BUDGET_LINE_SLACK),
-                         "deps": count("crate-budget", crate, deps, held["deps"])}
-        if "host_lines" in held:
-            host = measure.get("host-lines", lines)
-            budget[crate]["host_lines"] = count("crate-budget", crate, host, held["host_lines"], BUDGET_LINE_SLACK)
+        held = held_budget.get(crate, {"reason": reason or "", "deps": 0})
+        budget[crate] = {"deps": count("crate-budget", crate, len(measure.get("workspace-deps", ())), held["deps"]),
+                         "reason": held.get("reason", "")}
     out["crate-budget"] = budget
     if kept_reasons:
         out["growth_reasons"] = kept_reasons
@@ -456,19 +477,28 @@ def selftest() -> None:
     | M4   | `use super::*` count above / below / at baseline             | error / error (lower) / accept |
     | M5   | `crate::a` <-> `super::b` paths close a cycle of top modules | cycle size counted |
     | M6   | lint adopted while pending / missing while not pending       | error / error |
-    | M7   | function over the limit: unrecorded / grew / shorter / equal / gone or under | WARN / WARN / WARN / accept / WARN |
-    | M8   | budgeted crate: lines grow / float < slack / fall >= slack; deps grow / shrink / equal | WARN / accept / WARN; error / error (lower) / accept |
-    | M10  | new large / threshold crossing / below threshold with held deps | WARN / WARN / dependency checks remain hard |
-    | M11  | runtime-host file in a realization / host module; other crate; extracting realization over / at threshold | extracting / host lines; host lines; WARN / accept |
-    | M12  | split crate: whole grows / host grows / host falls >= slack / move host->realization at equal whole; tighten | WARN / WARN / WARN / accept; host_lines lowered, never raised |
-    | M13  | any line finding + deps grow/shrink/equal, including below threshold | WARN + error/error/accept, no dependency escape |
+    | M7   | function over the limit: unrecorded / grew / shorter / equal / gone or under | WARN record-or-move / WARN record-or-move / WARN lower / accept / WARN lower |
+    | M8   | crate lines below / at / one above its ceiling                | silent / silent / WARN record-or-move |
+    | M8   | measured crate without a ceiling / ceiling of an absent crate | WARN record new / WARN tighten removes, never an error |
+    | H1   | default crate: 10% of lines above / below / at the floor       | ceiling = lines + ceil(10%) / lines + 1000 / lines + 1000 |
+    | H2   | awaken-runtime: 5%, no floor; fractional percent               | ceiling = lines + ceil(5%); rounded up |
+    | M9   | --tighten: ceiling above / at / below lines + headroom; unrecorded; absent | lowered / kept / kept (never raised) / not added / dropped |
+    | M10  | registry: unregistered crate over / at review threshold         | WARN register / silent |
+    | M10  | registered crate: deps grow / shrink / equal; reason missing; absent | error / error (lower) / accept; error; error |
+    | M13  | lines under / at / over ceiling or threshold x deps grow / shrink / equal | deps error / error / accept, independent of lines |
+    | W1   | record: crate over ceiling / new crate / under ceiling          | raised to lines + headroom / added at lines + headroom / lowered like tighten |
+    | W2   | record: long function grew / new / shorter                      | raised to length / added / lowered (no headroom) |
+    | W3   | record with reason: raised or added allowance / unchanged one   | reason appended to its history / history kept unchanged |
+    | W4   | line allowance a record would add or raise / none               | listed as growth needing --reason / empty |
 
     D3/D4 graph: existing threshold/held/dimension/metadata condition -> the
     same structural hard result or line-only warning -> owning diagnostic.
     M1-M7 retain spread dimensions, exact counts, pending lint and long keys;
-    M8/M10-M13 cross review thresholds, line slack, exact dependencies and
-    whole/host/extracting scope. MCLI3 retains hard admission for structural
-    changes and metadata; no line warning becomes authorization to grow deps.
+    M8/H1/H2 decide a crate's approved ceiling; M10/M13 keep the review
+    registry and its exact dependencies hard whatever the lines; W1-W4 make
+    every raised line allowance carry a review record. MCLI3 retains hard
+    admission for structural changes and metadata; no line ceiling becomes
+    authorization to grow deps.
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
@@ -511,147 +541,171 @@ def selftest() -> None:
     assert "required lint -> missing" in modularity_errors({"c": measure(adopted=False)}, {})[0], "M6 missing"
     body = "fn big() {\n" + "    let x = \"{\";\n" * (MAX_FUNCTION_LINES + 1) + "}\nfn small() {\n}\n"
     assert long_functions({"a.rs": body}) == {"a.rs::big": MAX_FUNCTION_LINES + 2}, "M7 measure (braces in literals)"
-    held = {"long-function": {"c::a.rs::big": 200}}
-    assert "c::a.rs::big 150 -> 200" in line_findings({"c": measure(long={"a.rs::big": 200})}, {})[0], "M7 unrecorded WARN"
-    assert "c::a.rs::big 200 -> 201" in line_findings({"c": measure(long={"a.rs::big": 201})}, held)[0], "M7 grew WARN"
-    assert "c::a.rs::big 200 -> 190" in line_findings({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter WARN"
-    assert modularity_errors({"c": measure(long={"a.rs::big": 200})}, held) == [], "M7 equal"
+    held = {"long-function": {"c::a.rs::big": 200}, "crate-line-ceiling": {"c": 1000}}
+    unrecorded = line_findings({"c": measure(long={"a.rs::big": 200})}, {})[0]
+    assert "c::a.rs::big 150 -> 200" in unrecorded and "--write-baseline --reason" in unrecorded \
+        and "move the code" in unrecorded, "M7 unrecorded WARN record-or-move"
+    grew = line_findings({"c": measure(long={"a.rs::big": 201})}, held)[0]
+    assert "c::a.rs::big 200 -> 201" in grew and "--write-baseline --reason" in grew, "M7 grew WARN record-or-move"
+    assert "--tighten" in line_findings({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter WARN lower"
+    assert line_findings({"c": measure(long={"a.rs::big": 200})}, held) == [], "M7 equal"
     assert "c::a.rs::big 200 -> absent or <= 150" in line_findings({"c": measure()}, held)[0], "M7 gone WARN"
-    budget = {"crate-budget": {"c": {"lines": 20000, "deps": 3, "reason": "split"}}}
 
-    def sized(lines, deps):
-        return {"c": {**measure(), "lines": lines, "workspace-deps": frozenset(f"d{i}" for i in range(deps))}}
+    # H1/H2: ceiling = lines + max(ratio * lines, floor), rounded up.
+    for crate, lines, ceiling in (
+            ("c", 20000, 22000), ("c", 20001, 22002), ("c", 5000, 6000), ("c", 10000, 11000), ("c", 0, 1000),
+            ("awaken-runtime", 9256, 9719), ("awaken-runtime", 100, 105), ("awaken-runtime", 21, 23),
+            ("awaken-runtime", 0, 0)):
+        assert line_ceiling(crate, lines) == ceiling, f"H1/H2 {crate} {lines} -> {ceiling}"
+    assert set(LINE_HEADROOM_OVERRIDES) == {"awaken-runtime"}, "H2 one override table, one minimal crate"
 
-    assert modularity_errors(sized(20000, 3), budget) == [], "M8 equal"
-    assert "c.lines 20000 -> 20001" in line_findings(sized(20001, 3), budget)[0], "M8 lines grow WARN"
-    assert modularity_errors(sized(20000 - BUDGET_LINE_SLACK + 1, 3), budget) == [], "M8 float"
-    assert "lower" in line_findings(sized(20000 - BUDGET_LINE_SLACK, 3), budget)[0], "M8 fall WARN"
-    assert "c.deps 3 -> 4" in modularity_errors(sized(20000, 4), budget)[0], "M8 deps grow"
-    assert "c.deps 3 -> 2" in modularity_errors(sized(20000, 2), budget)[0], "M8 deps shrink"
-    # M10: line thresholds are advisory; a historical dependency ceiling
-    # remains enforceable after crossing the threshold in either direction.
-    assert "c.lines 15000 -> 15001" in line_findings(sized(CRATE_REVIEW_LINES + 1, 3), {})[0], "M10 unrecorded over WARN"
-    assert modularity_errors(sized(CRATE_REVIEW_LINES, 3), {}) == [], "M10 unrecorded at threshold"
-    assert "c.lines 20000 -> 15000" in line_findings(sized(CRATE_REVIEW_LINES, 3), budget)[0], "M10 recorded fell to threshold WARN"
-    assert tightened(sized(CRATE_REVIEW_LINES, 3), budget)["crate-budget"]["c"] == {
-        "lines": CRATE_REVIEW_LINES, "deps": 3, "reason": "split"}, "M10 tighten retains dependency metadata"
-    # M11 the realization being extracted from runtime-host is measured as its future crate.
-    layers = _module_layer_fitness.layer_table((
-        (_module_layer_fitness.REALIZATION, "r", ("host::session::environment_lifecycle", "provisioning")),
-        (_module_layer_fitness.HOST, "h", ("host", "host::session", "host::run"))))
-    host_files = ["host/session/environment_lifecycle/renewal.rs", "provisioning/mod.rs", "host/run.rs", "lib.rs"]
-    assert extracting_realization_files("awaken-session-executor", host_files, layers) == {
-        "host/session/environment_lifecycle/renewal.rs", "provisioning/mod.rs"}, "M11 realization vs host modules"
-    assert extracting_realization_files("awaken-session-application", ["provisioning.rs"], layers) == set(), \
-        "M11 other crates are measured whole"
-    over = {"c": {**measure(), "lines": 10, "extracting-realization-lines": CRATE_REVIEW_LINES + 1,
-                  "workspace-deps": frozenset()}}
-    assert "c.extracting-realization-lines 15000 -> 15001" in line_findings(over, {})[0], "M11 extracting over threshold WARN"
-    over["c"]["extracting-realization-lines"] = CRATE_REVIEW_LINES
-    assert modularity_errors(over, {}) == [], "M11 extracting at threshold"
-    # M12 a crate being split holds its whole size and, separately, its host part.
-    split = {"crate-budget": {"c": {"lines": 20000, "host_lines": 15000, "deps": 3, "reason": "split"}}}
+    def sized(lines, deps=3, crate="c"):
+        return {crate: {**measure(), "lines": lines, "workspace-deps": frozenset(f"d{i}" for i in range(deps))}}
 
-    def parts(whole: int, host: int) -> dict:
-        return {"c": {**measure(), "lines": whole, "host-lines": host, "extracting-realization-lines": whole - host,
-                      "workspace-deps": frozenset({"d0", "d1", "d2"})}}
-    assert any("c.lines 20000 -> 20001" in e for e in line_findings(parts(20001, 15000), split)), "M12 whole grows WARN"
-    assert any("c.host_lines 15000 -> 15001" in e for e in line_findings(parts(20000, 15001), split)), "M12 host grows WARN"
-    assert any("c.host_lines 15000 -> 14000" in e for e in line_findings(parts(20000, 14000), split)), "M12 host falls WARN"
-    assert modularity_errors(parts(20000, 14500), split) == [], "M12 move inside the crate is not growth"
-    assert tightened(parts(20000, 14000), split)["crate-budget"]["c"]["host_lines"] == 14000, "M12 tighten lowers"
-    assert tightened(parts(20000, 15500), split)["crate-budget"]["c"]["host_lines"] == 15000, "M12 never raises"
-    # M13 cause/effect table: line growth, slack shrink and threshold shrink
-    # cannot hide either direction of exact dependency drift. Equal deps accept
-    # with WARN; grow/shrink retain their original hard error, even below the
-    # old size threshold. No check mutates the baseline to make that true.
-    for lines in (20001, 20000 - BUDGET_LINE_SLACK, CRATE_REVIEW_LINES, CRATE_REVIEW_LINES - 1):
+    # M8 crate line ceilings decide only warnings, never errors.
+    ceiling = {"crate-line-ceiling": {"c": 12000}}
+    assert line_findings(sized(11999), ceiling) == [], "M8 below ceiling silent"
+    assert line_findings(sized(12000), ceiling) == [], "M8 at ceiling silent"
+    over = line_findings(sized(12001), ceiling)
+    assert len(over) == 1 and "crate-line-ceiling: c.lines 12000 -> 12001" in over[0] \
+        and "--write-baseline --reason" in over[0] and "move the code to the crate that owns it" in over[0], \
+        "M8 over ceiling WARN record-or-move"
+    new = line_findings(sized(500), {})
+    assert len(new) == 1 and "crate-line-ceiling: c unrecorded -> 500" in new[0] and "(1500)" in new[0] \
+        and "--write-baseline --reason" in new[0], "M8 new crate WARN record"
+    gone = line_findings({}, ceiling)
+    assert len(gone) == 1 and "c recorded crate -> absent" in gone[0] and "--tighten" in gone[0], \
+        "M8 absent crate WARN, not an error"
+
+    # M10 the crate-budget review registry: reason and exact deps stay hard.
+    budget = {"crate-line-ceiling": {"c": 30000}, "crate-budget": {"c": {"deps": 3, "reason": "split"}}}
+    unregistered = line_findings(sized(CRATE_REVIEW_LINES + 1), {"crate-line-ceiling": {"c": 30000}})
+    assert len(unregistered) == 1 and "crate-budget: c.lines 15000 -> 15001" in unregistered[0], "M10 register WARN"
+    assert line_findings(sized(CRATE_REVIEW_LINES), {"crate-line-ceiling": {"c": 30000}}) == [], "M10 at threshold"
+    assert line_findings(sized(20000), budget) == [], "M10 registered equal deps"
+    assert "c.deps 3 -> 4" in modularity_errors(sized(20000, 4), budget)[0], "M10 deps grow"
+    assert "c.deps 3 -> 2" in modularity_errors(sized(20000, 2), budget)[0], "M10 deps shrink"
+    assert "recorded crate -> absent" in modularity_errors({}, budget)[0], "M10 absent registered crate stays hard"
+    no_reason = {**budget, "crate-budget": {"c": {"deps": 3, "reason": ""}}}
+    assert any("c.reason" in error for error in modularity_errors(sized(CRATE_REVIEW_LINES - 1), no_reason)), \
+        "M10 missing review reason stays hard below the threshold"
+    # M13 the deps decision is independent of every line row: within, at and
+    # over the ceiling and below the review threshold. No check mutates the baseline.
+    for lines in (30001, 30000, 20000, CRATE_REVIEW_LINES, CRATE_REVIEW_LINES - 1):
         for deps in (2, 3, 4):
             warnings: list[str] = []
             before = json.dumps(budget, sort_keys=True)
             errors = modularity_errors(sized(lines, deps), budget, warnings=warnings)
-            assert warnings and all(".lines" not in error for error in errors), "M13 lines only diagnose"
+            assert bool(warnings) == (lines > 30000), f"M13 lines warn only above the ceiling {lines}"
             assert bool(errors) == (deps != 3), f"M13 independent deps {lines}/{deps}"
             if deps != 3:
                 assert any(f"c.deps 3 -> {deps}" in error for error in errors), "M13 exact deps stay hard"
             assert json.dumps(budget, sort_keys=True) == before, "M13 pure decision is read-only"
-    assert "recorded crate -> absent" in modularity_errors({}, budget)[0], "M13 absent crate metadata remains hard"
-    no_reason = {"crate-budget": {"c": {**budget["crate-budget"]["c"], "reason": ""}}}
-    assert any("c.reason" in error for error in modularity_errors(sized(CRATE_REVIEW_LINES - 1, 3), no_reason)), \
-        "M13 missing metadata stays hard below a line threshold"
+
     # M9 `--tighten`: lowers or removes held entries, never adds or raises one.
     held = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": "r"}, "c::Gone": {"files": 9,
             "methods": 90, "reason": "r"}}, "super-glob": {"c": 3}, "module-cycle": {"c": 2},
             "unreachable-pub-pending": ["c", "gone"], "long-function": {"c::a.rs::big": 200, "c::a.rs::gone": 300},
-            "crate-budget": {"c": {"lines": 20000, "deps": 3, "reason": "split"}}}
-    now = {"c": {**measure({"T": (8, 120)}, globs=1, cycle=4, adopted=True, long={"a.rs::big": 180}),
-                 "lines": 20000 - BUDGET_LINE_SLACK, "workspace-deps": frozenset({"d0", "d1"})}}
+            "crate-line-ceiling": {"c": 25000, "at": 6000, "over": 6000, "under": 1000, "gone": 7000},
+            "crate-budget": {"c": {"deps": 3, "reason": "split"}},
+            "growth_reasons": {"crate-line-ceiling": {"c": "first", "gone": "old"}}}
+    now = {"c": {**measure({"T": (8, 120)}, globs=1, cycle=4, adopted=True, long={"a.rs::big": 180, "a.rs::new": 170}),
+                 "lines": 20000, "workspace-deps": frozenset({"d0", "d1"})},
+           "at": {**measure(), "lines": 5000, "workspace-deps": frozenset()},
+           "over": {**measure(), "lines": 9000, "workspace-deps": frozenset()},
+           "under": {**measure(), "lines": 100, "workspace-deps": frozenset()},
+           "new": {**measure(), "lines": 100, "workspace-deps": frozenset()}}
     tight = tightened(now, held)
     assert tight["impl-spread"] == {"c::T": {"files": 8, "methods": 100, "reason": "r"}}, "M9 spread"
     assert tight["super-glob"] == {"c": 1} and tight["module-cycle"] == {"c": 2}, "M9 counts never rise"
     assert tight["unreachable-pub-pending"] == [], "M9 pending"
-    assert tight["long-function"] == {"c::a.rs::big": 180}, "M9 long-function"
-    assert tight["crate-budget"]["c"] == {"lines": 20000 - BUDGET_LINE_SLACK, "deps": 2, "reason": "split"}, "M9 budget"
-    assert modularity_errors({"c": {**now["c"], "impl-spread": {"T": (8, 100)}, "module-cycle": 2}}, tight) == [], \
+    assert tight["long-function"] == {"c::a.rs::big": 180}, "M9 long-function lowers, never adds"
+    assert tight["crate-line-ceiling"] == {"c": 22000, "at": 6000, "over": 6000, "under": 1000}, \
+        "M9 ceiling lowered to lines + headroom / kept at it / never raised / never added / absent dropped"
+    assert tight["growth_reasons"] == {"crate-line-ceiling": {"c": "first"}}, "M9 absent crate's history dropped"
+    assert tight["crate-budget"]["c"] == {"deps": 2, "reason": "split"}, "M9 budget"
+    assert modularity_errors({**now, "c": {**now["c"], "impl-spread": {"T": (8, 100)}, "module-cycle": 2}}, tight) == [], \
         "M9 a tightened baseline holds"
+    # W1-W4 explicit recording raises or adds a line allowance only with its review.
+    review = _architecture_ratchet._test_growth_reason("reviewed")
+    growth = recorded_line_growth(now, held)
+    assert growth == ["crate-line-ceiling: new unrecorded -> 1100", "crate-line-ceiling: over 6000 -> 10000",
+                      "long-function: c::a.rs::new 150 -> 170"], "W4 listed growth"
+    assert recorded_line_growth({"c": now["c"]}, tight | {"long-function": {"c::a.rs::big": 180, "c::a.rs::new": 170}}) \
+        == [], "W4 nothing to raise"
+    written = tightened(now, held, record=True, reason=review)
+    assert written["crate-line-ceiling"] == {"c": 22000, "at": 6000, "over": 10000, "under": 1000, "new": 1100}, \
+        "W1 raised / added at lines + headroom, under-ceiling lowered like tighten"
+    assert written["long-function"] == {"c::a.rs::big": 180, "c::a.rs::new": 170}, "W2 exact lengths, no headroom"
+    raised = {**held, "long-function": {"c::a.rs::big": 170}}
+    assert tightened(now, raised, record=True, reason=review)["long-function"]["c::a.rs::big"] == 180, "W2 raised"
+    assert tightened(now, raised, record=True, reason=review)["growth_reasons"]["long-function"]["c::a.rs::big"] == review, \
+        "W3 long-function reason recorded"
+    assert written["growth_reasons"]["crate-line-ceiling"] == {"c": "first", "over": review, "new": review}, \
+        "W3 reason for raised/added only; unchanged history kept"
+    again = tightened({**now, "over": {**now["over"], "lines": 10001}}, written, record=True, reason=review.replace("reviewed", "again"))
+    assert again["growth_reasons"]["crate-line-ceiling"]["over"] == review + "; then: " + review.replace("reviewed", "again"), \
+        "W3 reason history appended"
+    assert again["crate-line-ceiling"]["over"] == 10001 + 1001, "W1 raised again"
     _selftest_cli()
     print("_modularity_fitness selftest: the decision tables hold")
 
 
 def _selftest_cli() -> None:
-    """CLI causes/effects, retaining the original M1-M12 comparison table.
+    """CLI causes/effects over the M1-M13 and W1-W4 decision tables.
 
     MCLI1 default/check are read-only; tighten validates its clamped candidate
     and rejects structural/dependency growth, including mixed shrink/growth;
-    line-only conditions WARN and accept without raising ceilings. MCLI2 pure
+    line-only growth WARNs and accepts without raising a ceiling. MCLI2 pure
     shrink writes, equality preserves bytes, owner/expiry/foreign counters and
     their unknown reasons survive.
-    MCLI3 explicit growth needs a reason and keeps its history, but a reason
-    cannot waive lint or missing review metadata; realization size only warns.
+    MCLI3 explicit growth needs a reason and keeps its history, including a
+    raised crate ceiling or long function, but a reason cannot waive lint or
+    missing review metadata.
     MCLI4 invalid modes/blank reasons/missing baseline precede measurement.
-    MCLI5 line-only checks and aggregate check_all both display WARN; historical
-    baseline bytes stay read-only and threshold shrink cannot waive deps.
+    MCLI5 over-ceiling and long-function rows display WARN in the CLI and the
+    aggregate check_all; within-ceiling rows are silent; baseline bytes stay
+    read-only and no line row waives deps.
     """
+    review = _architecture_ratchet._test_growth_reason("reviewed")
     measure = {"impl-spread": {"T": (8, 80)}, "super-glob": 2, "module-cycle": 2, "unreachable-pub": True,
-               "long-function": {"a.rs::big": 200}, "lines": 20000, "host-lines": 18000,
-               "workspace-deps": frozenset({"a", "b"})}
+               "long-function": {"a.rs::big": 200}, "lines": 20000, "workspace-deps": frozenset({"a", "b"})}
     foreign = {"future-counter": {"k": "  foreign review  "}}
     held = {"owner": "modularity", "expiry": "split", "future-counter": {"k": 9}, "growth_reasons": foreign, "impl-spread": {"c::T": {"files": 8, "methods": 80,
             "reason": "extract component"}}, "super-glob": {"c": 2}, "module-cycle": {"c": 2},
             "unreachable-pub-pending": [], "long-function": {"c::a.rs::big": 200},
-            "crate-budget": {"c": {"lines": 20000, "host_lines": 18000, "deps": 2, "reason": "split c"}}}
+            "crate-line-ceiling": {"c": 22000}, "crate-budget": {"c": {"deps": 2, "reason": "split c"}}}
 
     def invoke(argv, current=measure, baseline=held):
         return _architecture_ratchet._cli_fixture(main, argv, baseline, "workspace_measures", {"c": current})
 
     for argv in ([], ["--check"], ["--tighten"]):
-        status, before, after, observed, _ = invoke(argv)
-        assert status == 0 and before == after and observed, f"MCLI1/MCLI2 equal {argv}"
+        status, before, after, observed, output = invoke(argv)
+        assert status == 0 and before == after and observed and "WARN" not in output, f"MCLI1/MCLI2 equal {argv}"
     rows = ({"impl-spread": {"T": (8, 81)}}, {"impl-spread": {"T": (8, 80), "New": (6, 10)}},
             {"super-glob": 3}, {"module-cycle": 3}, {"long-function": {"a.rs::big": 201}},
-            {"long-function": {"new.rs::big": 180}}, {"lines": 20001}, {"host-lines": 18001},
+            {"long-function": {"new.rs::big": 180}}, {"lines": 22001},
             {"workspace-deps": frozenset({"a", "b", "new"})})
     for change in rows:
         # One growing field while super-glob shrinks: a successful min() must
         # not be mistaken for a successful check of the actual tree.
         current = {**measure, "super-glob": 1, **change}
         status, before, after, _, output = invoke(["--tighten"], current)
-        if set(change) <= {"long-function", "lines", "host-lines"}:
+        if set(change) <= {"long-function", "lines"}:
             assert status == 0 and "WARN: modularity:" in output, f"MCLI1 line-only WARN {change}"
             document = json.loads(after)
             assert document["super-glob"] == {"c": 1}, "MCLI1 structural shrink still records"
-            assert document["crate-budget"]["c"]["lines"] <= held["crate-budget"]["c"]["lines"], "MCLI1 tighten never raises lines"
-            assert document["crate-budget"]["c"]["host_lines"] <= held["crate-budget"]["c"]["host_lines"], "MCLI1 tighten never raises host lines"
+            assert document["crate-line-ceiling"] == held["crate-line-ceiling"], "MCLI1 tighten never raises a ceiling"
             assert all(key in held["long-function"] and value <= held["long-function"][key]
                        for key, value in document["long-function"].items()), "MCLI1 tighten never adds/raises long keys"
         else:
             assert status == 1 and before == after, f"MCLI1 growth {change}"
-    smaller = {**measure, "super-glob": 1, "lines": 19000, "host-lines": 17000}
+    smaller = {**measure, "super-glob": 1, "lines": 19000}
     status, _, after, _, _ = invoke(["--tighten"], smaller)
     document = json.loads(after)
     assert status == 0 and document["super-glob"] == {"c": 1}, "MCLI2 shrink"
-    assert document["crate-budget"]["c"] == {**held["crate-budget"]["c"], "lines": 19000, "host_lines": 17000}, \
-        "MCLI2 slack and held review reason"
+    assert document["crate-line-ceiling"] == {"c": 20900}, "MCLI2 ceiling lowered to lines + headroom"
+    assert document["crate-budget"] == held["crate-budget"], "MCLI2 held review reason and deps"
     assert document["owner"] == held["owner"] and document["expiry"] == held["expiry"], "MCLI2 metadata"
     assert document["future-counter"] == held["future-counter"] and document["growth_reasons"] == foreign, \
         "MCLI2 foreign metadata/reason retained"
@@ -659,41 +713,52 @@ def _selftest_cli() -> None:
     status, before, after, _, _ = invoke(["--write-baseline"], current)
     assert status == 1 and before == after, "MCLI3 unreasoned growth"
     prior = {**held, "growth_reasons": {**foreign, "impl-spread": {"c::T": "first"}}}
-    status, _, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], current, prior)
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", review], current, prior)
     document = json.loads(after)
     assert status == 0 and document["impl-spread"]["c::T"] == {"files": 9, "methods": 81,
                                                               "reason": "extract component"}, "MCLI3 exact facts"
-    assert document["growth_reasons"] == {**foreign, "impl-spread": {"c::T": "first; then: " + _architecture_ratchet._test_growth_reason("reviewed")},
-                                          "super-glob": {"c": _architecture_ratchet._test_growth_reason("reviewed")}}, "MCLI3 reason history"
+    assert document["growth_reasons"] == {**foreign, "impl-spread": {"c::T": "first; then: " + review},
+                                          "super-glob": {"c": review}}, "MCLI3 reason history"
     assert document["future-counter"] == held["future-counter"], "MCLI3 foreign counter retained"
-    # MCLI5: every original line partition stays a read-only WARN in default
-    # and --check. Optional --tighten may lower/drop historical measurements,
-    # but never raises them or bypasses the exact dependency comparator.
+    # MCLI3 line allowances: a raise or a new one needs a reason, which joins its history.
+    for change, rule, key, value in (({"lines": 22001}, "crate-line-ceiling", "c", 24202),
+                                     ({"long-function": {"a.rs::big": 201}}, "long-function", "c::a.rs::big", 201),
+                                     ({"long-function": {"a.rs::big": 200, "new.rs::big": 180}}, "long-function",
+                                      "c::new.rs::big", 180)):
+        status, before, after, _, output = invoke(["--write-baseline"], {**measure, **change})
+        assert status == 1 and before == after, f"MCLI3 unreasoned line growth {change}"
+        status, _, after, _, _ = invoke(["--write-baseline", "--reason", review], {**measure, **change})
+        document = json.loads(after)
+        assert status == 0 and document[rule][key] == value, f"MCLI3 reasoned line growth {change}"
+        assert document["growth_reasons"] == {**foreign, rule: {key: review}}, f"MCLI3 line reason {change}"
+    status, _, after, _, _ = invoke(["--write-baseline"], {**measure, "lines": 19000})
+    assert status == 0 and json.loads(after)["crate-line-ceiling"] == {"c": 20900}, "MCLI3 lowering needs no reason"
+    # MCLI5: line rows stay read-only in default and --check; over-ceiling and
+    # long-function rows WARN, rows within the ceiling are silent.
     line_rows = (
-        {"long-function": {"a.rs::big": 201}}, {"long-function": {"a.rs::big": 190}},
-        {"long-function": {"new.rs::big": 180}}, {"long-function": {}},
-        {"lines": 20001}, {"lines": 19000}, {"lines": CRATE_REVIEW_LINES},
-        {"host-lines": 18001}, {"host-lines": 17000},
-        {"extracting-realization-lines": CRATE_REVIEW_LINES + 1},
+        ({"long-function": {"a.rs::big": 201}}, True), ({"long-function": {"a.rs::big": 190}}, True),
+        ({"long-function": {"new.rs::big": 180, "a.rs::big": 200}}, True), ({"long-function": {}}, True),
+        ({"lines": 22001}, True), ({"lines": 22000}, False), ({"lines": 19000}, False),
+        ({"lines": CRATE_REVIEW_LINES}, False),
     )
-    for change in line_rows:
+    for change, warns in line_rows:
         for argv in ([], ["--check"]):
             status, before, after, observed, output = invoke(argv, {**measure, **change})
             assert status == 0 and before == after and observed, f"MCLI5 read-only line row {change}/{argv}"
-            assert "WARN: modularity:" in output, f"MCLI5 visible CLI diagnostic {change}"
-    for lines in (20001, 19000, CRATE_REVIEW_LINES, CRATE_REVIEW_LINES - 1):
+            assert ("WARN: modularity:" in output) == warns, f"MCLI5 CLI diagnostic {change}"
+    for lines in (22001, 19000, CRATE_REVIEW_LINES, CRATE_REVIEW_LINES - 1):
         for argv in ([], ["--check"], ["--tighten"]):
             current = {**measure, "lines": lines, "workspace-deps": frozenset({"a", "b", "new"})}
             status, before, after, _, output = invoke(argv, current)
-            assert status == 1 and before == after and "WARN: modularity:" in output, \
-                f"MCLI5 line+dependency growth stays hard {lines}/{argv}"
+            assert status == 1 and before == after, f"MCLI5 line+dependency growth stays hard {lines}/{argv}"
+            assert ("WARN: modularity:" in output) == (lines > 22000), f"MCLI5 line diagnostic {lines}/{argv}"
     below = {**measure, "lines": CRATE_REVIEW_LINES - 1}
     status, _, after, _, output = invoke(["--tighten"], below)
-    assert status == 0 and "WARN: modularity:" in output
+    assert status == 0
     document = json.loads(after)
-    assert document["crate-budget"]["c"]["deps"] == 2 and document["crate-budget"]["c"]["reason"] == "split c", \
+    assert document["crate-budget"]["c"] == {"deps": 2, "reason": "split c"}, \
         "MCLI5 threshold shrink preserves original dependency review"
-    assert document["crate-budget"]["c"]["lines"] == below["lines"], "MCLI5 explicit tighten only lowers"
+    assert document["crate-line-ceiling"] == {"c": line_ceiling("c", below["lines"])}, "MCLI5 explicit tighten only lowers"
 
     # The real aggregate entrypoint uses the same classifier/reporter; patch
     # its scanner and read only a temporary baseline, never the live workspace.
@@ -705,38 +770,36 @@ def _selftest_cli() -> None:
         baseline_path = Path(temporary) / "baseline.json"
         baseline_path.write_text(json.dumps(held) + "\n", encoding="utf-8")
         before = baseline_path.read_bytes()
-        output = io.StringIO()
-        with patch.dict(check_all.__globals__, {"workspace_measures": lambda _root: {"c": {**measure, "lines": 20001}}}), contextlib.redirect_stdout(output):
-            errors = check_all(Path(temporary) / "crates", baseline_path)
-        assert errors == [] and "WARN: modularity:" in output.getvalue(), "MCLI5 aggregate WARN+accept"
-        assert baseline_path.read_bytes() == before, "MCLI5 aggregate does not rewrite baseline"
-        output = io.StringIO()
-        current = {**measure, "lines": CRATE_REVIEW_LINES - 1, "workspace-deps": frozenset({"a", "b", "new"})}
-        with patch.dict(check_all.__globals__, {"workspace_measures": lambda _root: {"c": current}}), contextlib.redirect_stdout(output):
-            errors = check_all(Path(temporary) / "crates", baseline_path)
-        assert any("c.deps 2 -> 3" in error for error in errors) and "WARN: modularity:" in output.getvalue(), \
-            "MCLI5 aggregate threshold WARN cannot hide dependency growth"
-        assert baseline_path.read_bytes() == before
+        for lines, deps, warns in ((22001, {"a", "b"}, True), (CRATE_REVIEW_LINES - 1, {"a", "b", "new"}, False),
+                                   (22001, {"a", "b", "new"}, True)):
+            output = io.StringIO()
+            current = {**measure, "lines": lines, "workspace-deps": frozenset(deps)}
+            with patch.dict(check_all.__globals__, {"workspace_measures": lambda _root: {"c": current}}), \
+                    contextlib.redirect_stdout(output):
+                errors = check_all(Path(temporary) / "crates", baseline_path)
+            assert ("WARN: modularity:" in output.getvalue()) == warns, f"MCLI5 aggregate WARN {lines}"
+            assert bool(errors) == (len(deps) != 2), "MCLI5 aggregate line row cannot hide dependency growth"
+            if errors:
+                assert any("c.deps 2 -> 3" in error for error in errors)
+            assert baseline_path.read_bytes() == before, "MCLI5 aggregate does not rewrite baseline"
 
     # Unlike shape's explicit crates={} initial state, an existing empty
     # modularity file is not a global authorization to grow a held metric.
     ordinary = {**measure, "impl-spread": {}, "long-function": {}, "lines": 0, "super-glob": 1}
     status, before, after, _, _ = invoke(["--write-baseline"], ordinary, {})
     assert status == 1 and before == after, "MCLI3 no borrowed initialization waiver"
-    for change in ({"unreachable-pub": False}, {"extracting-realization-lines": CRATE_REVIEW_LINES + 1}):
-        status, before, after, _, output = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], {**measure, **change})
-        if "extracting-realization-lines" in change:
-            assert status == 0 and before == after and "WARN: modularity:" in output, "MCLI3 realization lines only warn"
-        else:
-            assert status == 1 and before == after, "MCLI3 hard rule cannot be reasoned away"
+    status, before, after, _, _ = invoke(["--write-baseline", "--reason", review], {**measure, "unreachable-pub": False})
+    assert status == 1 and before == after, "MCLI3 hard rule cannot be reasoned away"
     no_reason = {**held, "crate-budget": {"c": {**held["crate-budget"]["c"], "reason": ""}}}
-    status, before, after, _, _ = invoke(["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], baseline=no_reason)
+    status, before, after, _, _ = invoke(["--write-baseline", "--reason", review], baseline=no_reason)
     assert status == 1 and before == after, "MCLI3 original review metadata remains mandatory"
     # A new recorded exception must itself satisfy the original metadata
     # rule. First-write mode does not silently invent a review or lint waiver.
-    for argv, expected in ((["--write-baseline"], 1), (["--write-baseline", "--reason", _architecture_ratchet._test_growth_reason("reviewed")], 0)):
+    for argv, expected in ((["--write-baseline"], 1), (["--write-baseline", "--reason", review], 0)):
         status, _, after, _, _ = invoke(argv, baseline=None)
         assert status == expected and ((after is not None) == (expected == 0)), "MCLI3 first review"
+        if after is not None:
+            assert json.loads(after)["crate-line-ceiling"] == {"c": 22000}, "MCLI3 first review records the ceiling"
     for argv in ([], ["--check"], ["--tighten"]):
         status, before, after, observed, _ = invoke(argv, baseline=None)
         assert status == 1 and before is None and after is None and not observed, "MCLI4 missing baseline"
@@ -762,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
         check(measured, previous)
         return (
             tightened(measured, previous, record=True, reason=reason),
-            modularity_errors(measured, tightened(measured, previous)),
+            modularity_errors(measured, tightened(measured, previous)) + recorded_line_growth(measured, previous),
         )
 
     return _architecture_ratchet.baseline_cli(
