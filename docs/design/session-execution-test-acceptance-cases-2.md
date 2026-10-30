@@ -96,6 +96,7 @@
 - 反向控制：超时即删 owner 或用新 generation 清理旧句柄必须失败。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
 - 绑定及状态：B042, B038, B039；历史提交有部分执行证明。完整场景：待验收。
+- SQL 恢复补充：B263、B264 通过同一根状态表检查待处理 MCP 更新、原 Worker 绑定、Busy/Idle、独立连接与索引重建；PostgreSQL 只读打开必须拒绝过期索引。必须实际执行两种原生后端才可认领该切片；这两项不证明物理 MCP manager 的热替换、route/remove/reap 或进程死亡恢复。
 
 ### T16-C03 取消与重建
 

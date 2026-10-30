@@ -640,3 +640,6 @@ fn root_cas_postgres_fixture_absence_and_configured_failure_are_distinct() {
         "postgres_root_cas_conforms_to_the_same_decision_table",
     );
 }
+
+#[path = "session_repo_conformance/mcp_candidate_recovery.rs"]
+mod mcp_candidate_recovery;

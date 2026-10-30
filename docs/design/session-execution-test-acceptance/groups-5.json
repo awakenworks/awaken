@@ -858,7 +858,9 @@
           "B199",
           "B203",
           "B207",
-          "B206"
+          "B206",
+          "B263",
+          "B264"
         ],
         "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",

@@ -418,5 +418,53 @@
     },
     "review": "Two handles on each backend reclaim Session Work with the same principal. The old exact epoch fails ACK/heartbeat/stop with unchanged whole item and clock; its bearer is revoked. Positive controls ACK, renew and stop using the current generation; replay retains completion without restoring authority.",
     "limitation": "Sequential exact-generation/current-holder controls complement the existing concurrent takeover rows; they are not a replacement for those races or a guarantee for legacy owner-only messages. Actual native execution is recorded separately; no full acceptance is inferred."
+  },
+  {
+    "id": "B263",
+    "name": "sqlite_hot_mcp_candidates_survive_busy_idle_reopen_and_operational_index_repair",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_repo_conformance/mcp_candidate_recovery.rs",
+        "line": 237,
+        "file_sha256": "871a07c0da626c3610b6d7a9170ab6fd0eb9a43800abc852fdcf84eb69d30aa0"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "The same root-level MCP demand table runs both external and bound self-hosted placement, checks Idle -> Busy -> Idle, retained Worker identity, independent clients and reconstruction. The unbound self-hosted control cannot enter the MCP-update lane. A controlled stale projection must actually hide pending work before operational reconstruction restores it without changing the canonical root. PostgreSQL server mode specifically refuses stale derived indexes without repairing them.",
+    "limitation": "These are native SQL store/index tests. They do not execute a physical MCP manager, prove process-death recovery, qualify all preparation/cleanup transports, or accept a complete T16/T34 scenario. Actual execution remains separately qualified with its original source identity."
+  },
+  {
+    "id": "B264",
+    "name": "postgres_hot_mcp_candidates_survive_busy_idle_new_pools_and_operational_index_repair",
+    "source_locations": [
+      {
+        "path": "crates/stores/awaken-session-store/tests/session_repo_conformance/mcp_candidate_recovery.rs",
+        "line": 309,
+        "file_sha256": "871a07c0da626c3610b6d7a9170ab6fd0eb9a43800abc852fdcf84eb69d30aa0"
+      }
+    ],
+    "execution_witnesses": [],
+    "relation": "supports_subset_only",
+    "covers": {
+      "T34-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "The same root-level MCP demand table runs both external and bound self-hosted placement, checks Idle -> Busy -> Idle, retained Worker identity, independent clients and reconstruction. The unbound self-hosted control cannot enter the MCP-update lane. A controlled stale projection must actually hide pending work before operational reconstruction restores it without changing the canonical root. PostgreSQL server mode specifically refuses stale derived indexes without repairing them.",
+    "limitation": "These are native SQL store/index tests. They do not execute a physical MCP manager, prove process-death recovery, qualify all preparation/cleanup transports, or accept a complete T16/T34 scenario. Actual execution remains separately qualified with its original source identity."
   }
 ]
