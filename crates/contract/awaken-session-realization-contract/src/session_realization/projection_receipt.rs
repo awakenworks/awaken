@@ -14,6 +14,9 @@ pub struct FrozenProjectionReceipt {
     pub fingerprint: String,
 }
 
+/// The stable effect code of a [`ProjectionReceiptRefusal::Stale`] refusal.
+pub const STALE_PROJECTION_CODE: &str = "session_projection_stale";
+
 /// Why a frozen root projection may not replace the held one.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProjectionReceiptRefusal {
@@ -32,7 +35,7 @@ impl From<ProjectionReceiptRefusal> for RunError {
     fn from(refusal: ProjectionReceiptRefusal) -> Self {
         match refusal {
             ProjectionReceiptRefusal::Stale => {
-                RunError::unavailable_classified("session_projection_stale", refusal.to_string())
+                RunError::unavailable_classified(STALE_PROJECTION_CODE, refusal.to_string())
             }
             ProjectionReceiptRefusal::Conflict => RunError::classified(
                 "session_realization_invariant_violated",
@@ -87,6 +90,46 @@ impl FrozenProjectionReceipt {
             }
         })
     }
+}
+
+/// Install `directive`'s frozen projection through `synchronizer`; `Ok(true)`
+/// means the directive is superseded and the Session is already realized.
+///
+/// A Run-free preparation exists only to leave the Session realized. When its
+/// directive is older than a projection this Worker already installed under the
+/// same lease generation, a newer Control directive has realized the Session:
+/// the preparation is superseded, not failed. Reporting it would expire the
+/// lease that newer realization is using and record a failure the Session never
+/// had. A stale refusal with no such newer holder, or one raised for a Run,
+/// stays a loud failure.
+pub async fn synchronize_or_supersede(
+    synchronizer: &dyn crate::SessionProjectionSynchronizer,
+    session_id: &crate::SessionId,
+    source_run_id: Option<&awaken_agent_contract::agent::run::Id>,
+    directive: &crate::SessionRealizationDirective,
+    request_started: awaken_lease_contract::authority::AuthorityProofStarted,
+) -> Result<bool, crate::SessionRealizationEffectFailure> {
+    let lease = &directive.authority.lease;
+    let Err(error) = synchronizer
+        .synchronize_session_projection(
+            session_id,
+            &directive.projection,
+            &directive.authority.clone().observed(request_started),
+            directive.action.prepares_session(),
+        )
+        .await
+    else {
+        return Ok(false);
+    };
+    if source_run_id.is_none()
+        && error.run_error().code == STALE_PROJECTION_CODE
+        && synchronizer
+            .holds_newer_projection(session_id, lease, directive.projection.revision)
+            .await
+    {
+        return Ok(true);
+    }
+    Err(error)
 }
 
 // This production kernel is also the bounded proof boundary. Neither a lease
@@ -175,5 +218,99 @@ mod tests {
             "session_realization_invariant_violated",
             "R4 code"
         );
+    }
+
+    /// Refuses every projection (`Some(true)`: stale, `Some(false)`: another
+    /// effect error), holding a newer one or not.
+    struct Refusing {
+        newer: bool,
+        refusal: Option<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::SessionProjectionSynchronizer for Refusing {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<
+            awaken_lease_contract::authority::AuthorityProofStarted,
+            crate::SessionRealizationEffectFailure,
+        > {
+            unreachable!("supersession samples no authority")
+        }
+        async fn synchronize_session_projection(
+            &self,
+            _: &crate::SessionId,
+            _: &FrozenSessionProjection,
+            _: &crate::ObservedSessionRealizationLease,
+            _: bool,
+        ) -> Result<(), crate::SessionRealizationEffectFailure> {
+            self.refusal.map_or(Ok(()), |stale| {
+                Err(if stale {
+                    RunError::from(ProjectionReceiptRefusal::Stale)
+                } else {
+                    RunError::unavailable("environment")
+                }
+                .into())
+            })
+        }
+        async fn holds_newer_projection(
+            &self,
+            _: &crate::SessionId,
+            _: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+            _: SessionRevision,
+        ) -> bool {
+            self.newer
+        }
+        async fn invalidate_session_realization_lease(
+            &self,
+            _: &crate::SessionId,
+            _: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+        ) -> Result<(), crate::SessionRealizationEffectFailure> {
+            unreachable!("supersession invalidates nothing")
+        }
+    }
+
+    #[tokio::test]
+    async fn older_run_free_preparation_is_superseded_only_by_a_newer_held_projection() {
+        // Decision table S0-S4. C1 the refused directive is Run-free or a Run's;
+        // C2 the refusal is the stale-projection code; C3 this Worker holds a
+        // newer projection under the same lease generation.
+        // S0 installed => Ok(false); S1 Run-free + stale + newer held =>
+        // superseded Ok(true) (no failure, no lease expiry); S2 no newer held =>
+        // genuine stale, still an error; S3 a Run's directive stays an error;
+        // S4 any other effect error stays an error.
+        let session = crate::SessionId::from("session");
+        let run = awaken_agent_contract::agent::run::Id("run".into());
+        let mut projection = crate::session_realization::tests::legacy_resource_projection(false);
+        projection.revision = SessionRevision(3);
+        let directive = crate::SessionRealizationDirective {
+            projection,
+            authority: crate::SessionRealizationLeaseReceipt {
+                lease: awaken_session_configuration_contract::resource::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "boot".into(),
+                    epoch: 3,
+                    expires_at_unix_ms: 10_000,
+                },
+                remaining_ms: std::num::NonZeroU64::MIN,
+            },
+            action: crate::SessionRealizationAction::Complete,
+        };
+        let started = awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(
+            awaken_time::mono::now(),
+            std::time::Duration::ZERO,
+        );
+        let drive = async |newer, refusal, source| {
+            let synchronizer = Refusing { newer, refusal };
+            synchronize_or_supersede(&synchronizer, &session, source, &directive, started).await
+        };
+        assert!(matches!(drive(false, None, None).await, Ok(false)), "S0");
+        assert!(
+            matches!(drive(true, Some(true), None).await, Ok(true)),
+            "S1"
+        );
+        assert!(drive(false, Some(true), None).await.is_err(), "S2");
+        assert!(drive(true, Some(true), Some(&run)).await.is_err(), "S3");
+        assert!(drive(true, Some(false), None).await.is_err(), "S4");
     }
 }

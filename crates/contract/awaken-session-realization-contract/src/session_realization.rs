@@ -32,7 +32,10 @@ pub use agent_publication_projection::{
 pub use canonical_publication::{
     CanonicalPublicationError, CanonicalSessionPublication, resolve_canonical_session_projection,
 };
-pub use projection_receipt::{FrozenProjectionReceipt, ProjectionReceiptRefusal};
+pub use projection_receipt::{
+    FrozenProjectionReceipt, ProjectionReceiptRefusal, STALE_PROJECTION_CODE,
+    synchronize_or_supersede,
+};
 mod repository_publication_projection;
 pub use repository_publication_projection::SessionRepositoryPublicationProjection;
 mod control_failure;
@@ -499,6 +502,19 @@ pub trait SessionProjectionSynchronizer: Send + Sync {
         lease: &ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), SessionRealizationEffectFailure>;
+
+    /// Whether this Worker already holds, under the same owner/incarnation/epoch
+    /// generation as `lease`, a frozen projection newer than `revision`. Such a
+    /// holder installed it from a newer Control directive, so an older
+    /// directive's stale refusal is superseded rather than a realization failure.
+    async fn holds_newer_projection(
+        &self,
+        _session_id: &crate::SessionId,
+        _lease: &SessionRealizationLease,
+        _revision: crate::SessionRevision,
+    ) -> bool {
+        false
+    }
 
     /// Invalidate only the disposable projection of a failed exact lease. A
     /// retry must reload aggregate truth instead of reusing the fence that the
