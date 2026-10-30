@@ -42,6 +42,18 @@ impl FaultInjectingResourceRegistry {
             })
             .is_ok()
     }
+
+    fn admit_registration(&self) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.registration_calls.fetch_add(1, Ordering::SeqCst);
+        if Self::consume_failure(&self.registration_failures) {
+            return Err(
+                awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
+                    detail: "injected registration failure".into(),
+                },
+            );
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -129,11 +141,15 @@ impl awaken_resource_contract::ResourceAdministration for FaultInjectingResource
     async fn register_repository_idempotent(
         &self,
         command: awaken_resource_contract::RegisterRepository,
+        mode: awaken_resource_contract::RepositoryRegistrationMode,
     ) -> Result<
-        awaken_resource_contract::RepositoryDefinition,
+        awaken_resource_contract::RepositoryRegistration,
         awaken_resource_contract::ResourceRegistryError,
     > {
-        self.inner.register_repository_idempotent(command).await
+        self.admit_registration()?;
+        self.inner
+            .register_repository_idempotent(command, mode)
+            .await
     }
 
     async fn register_memory_store_idempotent(
@@ -178,14 +194,7 @@ impl awaken_resource_contract::ResourceAdministration for FaultInjectingResource
         &self,
         command: awaken_resource_contract::RegisterRepository,
     ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
-        self.registration_calls.fetch_add(1, Ordering::SeqCst);
-        if Self::consume_failure(&self.registration_failures) {
-            return Err(
-                awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
-                    detail: "injected registration failure".into(),
-                },
-            );
-        }
+        self.admit_registration()?;
         self.inner.register_repository(command).await
     }
 

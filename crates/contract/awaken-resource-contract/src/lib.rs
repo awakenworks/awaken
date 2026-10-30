@@ -102,6 +102,7 @@ pub use registry::{
     MemoryStoreConfigVersion, MemoryStoreDefinition, PublishMemoryStoreConfig,
     PublishRepositoryConfig, RegisterMemoryStore, RegisterRepository, RegistryRepositoryError,
     ReplaceOutcome, RepositoryAggregate, RepositoryConfigVersion, RepositoryDefinition,
+    RepositoryPreparation, RepositoryRegistration, RepositoryRegistrationMode,
     ResourceAdministration, ResourceInventory, ResourceRegistry, ResourceRegistryError,
     ResourceRegistryRepository, ResourceState, ResourceTimestamps, RetentionPolicy, Stored,
     UpdateMemoryStoreProfile,

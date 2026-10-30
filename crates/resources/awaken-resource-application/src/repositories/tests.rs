@@ -52,6 +52,114 @@ fn command() -> CreateRepositoryCommand {
 }
 
 #[tokio::test]
+async fn concurrent_staged_activation_has_one_transition_and_never_undoes_admin_suspend() {
+    // C1 one staged registration/proof; C2 eight concurrent exact completions;
+    // C3 administrative suspension after completion. E1 C1+C2 => all callers
+    // resolve with one aggregate revision increment; E2 C3 => the old proof
+    // rejects and the resource stays suspended. Observe the original SQL store,
+    // not a copied completion predicate or timestamp-based approximation.
+    use awaken_resource_contract::{
+        AggregateRevision, InsertOutcome, RegisterRepository, RepositoryConfigVersion,
+        RepositoryDefinition, RepositoryRegistrationMode, ResourceAdministration,
+        ResourceInventory, ResourceRegistryRepository, ResourceTimestamps,
+    };
+    let store = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .await
+            .unwrap(),
+    );
+    let registry = Arc::new(crate::RegistryApplication::new(
+        store.clone(),
+        awaken_time::system_clock(),
+    ));
+    let registered = registry
+        .register_repository_idempotent(
+            RegisterRepository {
+                definition: RepositoryDefinition {
+                    id: "staged".into(),
+                    workspace_id: "workspace-a".into(),
+                    name: "staged".into(),
+                    description: String::new(),
+                    metadata: Default::default(),
+                    state: ResourceState::Suspended,
+                    current_config_version: ConfigVersion::INITIAL,
+                    timestamps: ResourceTimestamps::default(),
+                },
+                initial_config: RepositoryConfigVersion {
+                    repository_id: "staged".into(),
+                    version: ConfigVersion::INITIAL,
+                    remote_url: "https://github.com/example/staged.git".into(),
+                    credential_binding: None,
+                    initial_branch: None,
+                    initial_commit: None,
+                    clone_policy: ClonePolicy::default(),
+                },
+            },
+            RepositoryRegistrationMode::Preparation,
+        )
+        .await
+        .unwrap();
+    assert_eq!(registered.outcome, InsertOutcome::Inserted);
+    let proof = registered.preparation.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut workers = Vec::new();
+    for _ in 0..8 {
+        let (registry, proof, barrier) = (registry.clone(), proof.clone(), barrier.clone());
+        workers.push(tokio::spawn(async move {
+            barrier.wait().await;
+            registry
+                .change_repository_state(ChangeRepositoryState {
+                    workspace_id: "workspace-a".into(),
+                    id: "staged".into(),
+                    state: ResourceState::Active,
+                    preparation: Some(proof),
+                })
+                .await
+        }));
+    }
+    for worker in workers {
+        worker.await.unwrap().unwrap();
+    }
+    let stored = store.load_repository("staged").await.unwrap().unwrap();
+    assert_eq!(
+        stored.revision,
+        AggregateRevision::new(2).unwrap(),
+        "E1 one completion CAS"
+    );
+    assert_eq!(stored.aggregate.definition().state, ResourceState::Active);
+    registry
+        .change_repository_state(ChangeRepositoryState {
+            workspace_id: "workspace-a".into(),
+            id: "staged".into(),
+            state: ResourceState::Suspended,
+            preparation: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        registry
+            .change_repository_state(ChangeRepositoryState {
+                workspace_id: "workspace-a".into(),
+                id: "staged".into(),
+                state: ResourceState::Active,
+                preparation: Some(proof),
+            })
+            .await
+            .is_err(),
+        "E2 old completion cannot revive an administrator's suspension"
+    );
+    assert_eq!(
+        registry
+            .find_repository("workspace-a", "staged")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Suspended
+    );
+}
+
+#[tokio::test]
 async fn exact_retry_survives_config_changes_but_changed_payload_and_retirement_do_not() {
     // R1 same key+payload -> same identity; R2 payload change -> conflict;
     // R3 later config -> preserve current config; R4 retired -> never revive.
@@ -115,6 +223,7 @@ async fn exact_retry_survives_config_changes_but_changed_payload_and_retirement_
                 workspace_id: "workspace-a".into(),
                 id: original.definition.id.clone(),
                 state,
+                preparation: None,
             })
             .await
             .unwrap();
