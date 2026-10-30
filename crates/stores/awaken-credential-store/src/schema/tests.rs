@@ -8,6 +8,48 @@ fn credential_bundle_lints() {
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
+async fn material_close_tail_preserves_existing_v10_ciphertext_as_open() {
+    // DT-M: C1 published V10 database with ciphertext; C2 V11 applied/replayed.
+    // M1 C1+C2 first => same bytes and open default, all older receipts accepted;
+    // M2 C2 replay => one V11 receipt and unchanged material. Upgrading must not
+    // reinterpret an existing material row as closed or edit a published checksum.
+    use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+    let pool = awaken_sqlite_pool::EmbeddedSqlite::memory()
+        .open()
+        .await
+        .unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), "credential").unwrap();
+    runner
+        .run_bundle(&credential_bundle_through(10).unwrap())
+        .await
+        .unwrap();
+    let bytes = vec![1_u8, 2, 3];
+    sqlx::query("INSERT INTO credential_secret(secret_ref,sealed) VALUES('legacy-material',?1)")
+        .bind(&bytes)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        runner
+            .run_bundle(&credential_bundle().unwrap())
+            .await
+            .unwrap();
+        let actual: (Vec<u8>, i64) = sqlx::query_as(
+            "SELECT sealed,closed FROM credential_secret WHERE secret_ref='legacy-material'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            actual,
+            (bytes.clone(), 0),
+            "M1/M2 legacy material remains open"
+        );
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
 async fn receipt_delivery_tail_preserves_legacy_pending_and_malformed_rows() {
     use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
     // Causes: C1 V9 exact pending payload; C2 undecodable SQLite payload; C3

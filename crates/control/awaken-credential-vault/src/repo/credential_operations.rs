@@ -811,8 +811,8 @@ async fn execute_managed_mutation(
     repo: &dyn ManagedCredentialRepository,
     clock: &dyn WallClock,
 ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
-    // A late effect from a fenced writer may leave an orphan, but it can never
-    // overwrite a later attempt's material. Inventory reconciliation reports
+    // Attempt namespaces isolate later writes. Once cleanup closes this
+    // reference, a delayed effect cannot recreate its material. Inventory reconciliation reports
     // such unowned material for a backend-specific exact collector.
     fence_material_writes(
         &pending.material_fence,
@@ -1763,8 +1763,9 @@ pub async fn revoke_credential_exact(
 /// Reconcile every interrupted source-only mutation through the shared
 /// material fence. A live `Writing` owner is skipped. An expired owner is
 /// atomically fenced and aborted, never promoted by inspecting its bytes: a
-/// late non-CAS SecretStore put can then create only an unreachable
-/// attempt-specific orphan. Only durable `Ready` may publish.
+/// delayed put cannot republish an executable Source; cleanup closes its exact
+/// material reference so the delayed put cannot recreate material either.
+/// Only durable `Ready` may publish.
 pub async fn recover_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,

@@ -255,8 +255,8 @@ Recovery never inspects those bytes and promotes them: SecretStore has no
 conditional-put CAS against the writer epoch, so a late old writer could still
 overwrite that attempt ref. Only a durable `Ready` fact is eligible to publish.
 The lease test uses injected process time and has no renewal heartbeat, so a
-slow external write may be fenced; attempt-specific refs ensure its late write
-can create only an unreachable orphan.
+slow external write may be fenced. Attempt-specific refs isolate later attempts;
+the material backend's absorbing close rejects a write arriving after cleanup.
 
 One `ManagedCredentialRepository` transaction locks the parent Vault, checks
 both revision fences, publishes `CredentialSource` plus
@@ -302,9 +302,9 @@ with an empty delta. One executor deletes each selected opaque reference and
 requires an exact-reference `SecretNotFound` readback before allowing WAL
 completion. A success acknowledgement with remaining bytes, unavailable
 readback, or an absence response naming another reference retains cleanup work.
-This observation is not a cross-store atomic receipt: future stale writes,
-legacy reference reuse and arbitrary remote adapter behavior remain explicit
-boundaries. The shared creation model separates physical removal from WAL
+This observation is not a cross-store transaction. The material backend's close
+contract excludes future writes to that reference; legacy reference reuse and
+arbitrary nonconforming remote adapters cannot claim this guarantee. The shared creation model separates physical removal from WAL
 completion; Source-only verification projects that model instead of assuming
 atomic compensation. Conditional progress additionally assumes physical
 deletion and observation eventually succeed.
@@ -419,8 +419,9 @@ the bounded admission predicate: a current-format new-material path requires a
 declared owner and a matching namespace flag. Constructor/validation tests
 cover suffix construction; UUID entropy and arbitrary SecretStore behavior are
 not proved. Given distinct namespaces, a fenced writer's delayed write cannot
-overwrite a later attempt; it may still create an unreferenced blob. The generic
-inventory reconciler detects and reports that blob while protecting both
+overwrite a later attempt. Material closure additionally excludes writes after
+cleanup. The generic inventory reconciler reports pre-existing, legacy or
+unclosed orphaned blobs while protecting both
 ordinary and Managed pending facts, but does not delete it: the SecretStore and
 repository have no shared transaction, and a snapshot-based delete could race a
 new mutation reusing a deterministic reference. Physical reclamation therefore
@@ -1074,3 +1075,27 @@ existing draft equivalence owns all replacement matching; replay retains the
 same desired head and retired identities. Preparing credential admission accepts
 those never-started retired records as history, while archive admission retains
 its original no-activity and all-Requested preparation rule.
+
+## Material reference closure
+
+The existing `SecretStore::delete` and `SealedBlobStore::delete_blob` close the
+exact reference permanently, including when no material has arrived yet. The
+material backend atomically removes its bytes and retains a secret-free closed
+marker under that same key. A concurrent put either precedes close and is
+removed, or follows close and is rejected. Closed references are absent from
+reads and material inventory. Their markers cannot be garbage-collected while
+a delayed writer may still present that reference. A new credential write or
+rotation continues to use the existing attempt-specific reference.
+
+The Vault WAL, writer fence, publication CAS and cleanup executor remain the
+only lifecycle authority. They do not acquire a second cleanup queue. An
+unavailable close retains the original WAL responsibility; an acknowledged
+close plus the existing exact-absence observation allows its ordinary
+completion. SQLite and PostgreSQL append this marker through the original
+Credential migration ledger, preserving all published migration checksums.
+All material writers must upgrade together before relying on closure: an old
+writer that ignores the marker is outside the supported source/image cohort.
+
+The in-memory SecretStore delegates material lifecycle to its existing blob
+store, as the AEAD adapter does, so tests have one close/put arbitration owner.
+This does not certify an arbitrary third-party SecretStore implementation.

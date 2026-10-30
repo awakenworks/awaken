@@ -164,10 +164,10 @@ impl WebhookStore for MemStore {
     }
 }
 
-/// An in-memory secret vault. `failing` makes every `put` return a storage fault,
-/// to exercise the seal-failure arm.
+/// Fault-only decorator over the canonical in-memory material authority.
+/// `failing` exercises the seal-failure arm; lifecycle stays in the inner store.
 struct MemSecrets {
-    map: Mutex<HashMap<String, String>>,
+    inner: awaken_credential_vault::InMemorySecretStore,
     failing: bool,
     fail_delete: AtomicBool,
     after_first_inventory: Mutex<Option<(SecretRef, String)>>,
@@ -176,7 +176,7 @@ struct MemSecrets {
 impl MemSecrets {
     fn ok() -> Self {
         Self {
-            map: Mutex::new(HashMap::new()),
+            inner: awaken_credential_vault::InMemorySecretStore::new(),
             failing: false,
             fail_delete: AtomicBool::new(false),
             after_first_inventory: Mutex::new(None),
@@ -184,7 +184,7 @@ impl MemSecrets {
     }
     fn failing() -> Self {
         Self {
-            map: Mutex::new(HashMap::new()),
+            inner: awaken_credential_vault::InMemorySecretStore::new(),
             failing: true,
             fail_delete: AtomicBool::new(false),
             after_first_inventory: Mutex::new(None),
@@ -204,38 +204,24 @@ impl SecretStore for MemSecrets {
         if self.failing {
             return Err(CredentialError::Storage("seal failed".into()));
         }
-        self.map
-            .lock()
-            .unwrap()
-            .insert(r.0.clone(), secret.expose_secret().to_string());
-        Ok(())
+        self.inner.put(r, secret).await
     }
     async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError> {
-        self.map
-            .lock()
-            .unwrap()
-            .get(&r.0)
-            .map(|s| RedactedString::new(s.clone()))
-            .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
+        self.inner.get(r).await
     }
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
         if self.fail_delete.load(Ordering::SeqCst) {
             return Err(CredentialError::Storage("delete failed".into()));
         }
-        self.map.lock().unwrap().remove(&r.0);
-        Ok(())
+        self.inner.delete(r).await
     }
     async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        let inventory = self
-            .map
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .map(SecretRef)
-            .collect();
-        if let Some((reference, material)) = self.after_first_inventory.lock().unwrap().take() {
-            self.map.lock().unwrap().insert(reference.0, material);
+        let inventory = self.inner.inventory().await?;
+        let material = self.after_first_inventory.lock().unwrap().take();
+        if let Some((reference, material)) = material {
+            self.inner
+                .put(&reference, RedactedString::new(material))
+                .await?;
         }
         Ok(inventory)
     }
@@ -365,7 +351,7 @@ async fn malformed_authoring_fields_are_rejected_without_side_effects() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "R1/R2");
         assert!(store.get("wh_invalid").await.is_none(), "E2");
-        assert!(secrets.map.lock().unwrap().is_empty(), "E3");
+        assert!(secrets.inventory().await.unwrap().is_empty(), "E3");
         assert!(store.pending_mutations().await.unwrap().is_empty(), "E4");
     }
 }
@@ -456,7 +442,7 @@ async fn an_ssrf_shaped_url_is_rejected_and_seals_no_secret() {
             "no row stored for {bad}"
         );
         assert!(
-            secrets.map.lock().unwrap().is_empty(),
+            secrets.inventory().await.unwrap().is_empty(),
             "no secret sealed for a rejected url {bad}"
         );
     }
