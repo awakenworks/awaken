@@ -296,6 +296,11 @@ pub struct ToolExecutionDomainFootprint {
     pub outstanding: Vec<ToolExecutionDomain>,
 }
 
+/// One entered invocation: batch id, call id and the log position of its entry.
+type EnteredCallKey = (String, String, usize);
+/// The entered call, its recovery policy and the output it completed with.
+type EnteredCall = (ToolCall, ToolRecoveryPolicy, Option<ToolOutput>);
+
 impl ActiveToolBatch {
     /// Transient history fold over the canonical cell. Each (batch, call,
     /// attempt) keeps its original containment even when a later batch replaces
@@ -316,10 +321,8 @@ impl ActiveToolBatch {
     ) -> Result<ToolExecutionDomainFootprint, ToolBatchError> {
         let mut domains = std::collections::BTreeMap::new();
         let mut returned = std::collections::BTreeSet::new();
-        let mut entered_calls: std::collections::BTreeMap<
-            (String, String, usize),
-            (ToolCall, ToolRecoveryPolicy, Option<ToolOutput>),
-        > = std::collections::BTreeMap::new();
+        let mut entered_calls: std::collections::BTreeMap<EnteredCallKey, EnteredCall> =
+            std::collections::BTreeMap::new();
         // The original log position identifies an entry, not a fabricated epoch.
         // Resume legally returns to attempt 1, so attempt alone cannot key it.
         let mut entries = std::collections::BTreeMap::new();
@@ -415,10 +418,9 @@ impl ActiveToolBatch {
                     let published = call
                         .result_messages
                         .iter()
-                        .skip_while(|message| {
-                            message.role == awaken_agent_contract::agent::message::Role::System
+                        .find(|message| {
+                            message.role != awaken_agent_contract::agent::message::Role::System
                         })
-                        .next()
                         .is_some_and(|message| {
                             use awaken_agent_contract::agent::{
                                 content::ContentBlock, message::Role,
@@ -613,7 +615,7 @@ mod tests {
                             candidate.result_message_id("c").unwrap(),
                             Role::Tool,
                             vec![ContentBlock::tool_result_with_error(
-                                "c".into(),
+                                "c",
                                 output.content,
                                 false,
                             )],
