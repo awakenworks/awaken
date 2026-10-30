@@ -255,7 +255,7 @@ impl pc::SandboxInstallation for RecordingAdapter {
 #[tokio::test]
 async fn unattached_creation_projects_the_spec_once_then_creates_the_projection() {
     let adapter = Arc::new(RecordingAdapter::default());
-    let provider = SessionEnvironmentProvider::new(adapter.clone());
+    let provider = SandboxProviderRoles::new(adapter.clone());
     let refused = provider
         .realizer()
         .create_unattached(&spec("s"))
@@ -277,7 +277,7 @@ async fn unattached_creation_projects_the_spec_once_then_creates_the_projection(
     );
 
     let adapter = Arc::new(RecordingAdapter::refusing_projection());
-    let provider = SessionEnvironmentProvider::new(adapter.clone());
+    let provider = SandboxProviderRoles::new(adapter.clone());
     let refused = provider
         .realizer()
         .create_unattached(&spec("s"))
@@ -296,7 +296,7 @@ async fn unattached_creation_projects_the_spec_once_then_creates_the_projection(
 async fn unattached_adoption_reopens_through_the_adapters_own_layout() {
     let handle = pc::SandboxHandle::new("recorded", "h");
     let adapter = Arc::new(RecordingAdapter::default());
-    let provider = SessionEnvironmentProvider::new(adapter.clone());
+    let provider = SandboxProviderRoles::new(adapter.clone());
     let refused = provider
         .adoption()
         .adopt_unattached(&spec("s"), &handle)
@@ -314,7 +314,7 @@ async fn unattached_adoption_reopens_through_the_adapters_own_layout() {
     );
 
     let adapter = Arc::new(RecordingAdapter::refusing_projection());
-    let provider = SessionEnvironmentProvider::new(adapter.clone());
+    let provider = SandboxProviderRoles::new(adapter.clone());
     let refused = provider
         .adoption()
         .adopt_unattached(&spec("s"), &handle)
@@ -332,7 +332,7 @@ async fn unattached_adoption_reopens_through_the_adapters_own_layout() {
 #[tokio::test]
 async fn readiness_is_answered_by_the_one_selected_adapter() {
     let adapter = Arc::new(RecordingAdapter::default());
-    let provider = SessionEnvironmentProvider::new(adapter.clone());
+    let provider = SandboxProviderRoles::new(adapter.clone());
     let readiness: &dyn pc::SandboxReadiness = provider.readiness().as_ref();
     assert_eq!(
         readiness.capabilities(),

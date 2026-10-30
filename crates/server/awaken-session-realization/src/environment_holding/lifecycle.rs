@@ -54,7 +54,7 @@ struct UnavailableEnvironmentRecovery<'a> {
     pending_adoption: Option<(BoundSessionEnvironmentIdentity, String)>,
     revoked_durable: Option<&'a RetiringSessionEnvironment>,
     policy: SessionEnvironmentUnavailablePolicy,
-    provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    provider: &'a crate::session_environment::SandboxProviderRoles,
     handle: &'a awaken_provisioning_contract::SandboxHandle,
     observation: &'a awaken_provisioning_contract::SandboxObservation,
 }
@@ -186,7 +186,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<(), RealizationError> {
         let retiring = self
             .sessions
@@ -571,7 +571,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
         Ok(match resolved_resources {
@@ -642,7 +642,7 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         source_generation_id: Option<&str>,
     ) -> Result<ValidatedSessionEnvironmentAdoption, RealizationError> {
@@ -794,7 +794,7 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: Option<&str>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         source_generation_id: Option<&str>,
         rebuild_unavailable: bool,
     ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
@@ -827,7 +827,7 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         encoded: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         source_generation_id: Option<&str>,
         unavailable_policy: SessionEnvironmentUnavailablePolicy,
         preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,

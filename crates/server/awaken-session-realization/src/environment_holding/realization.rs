@@ -18,7 +18,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub async fn create_session_environment(
         &self,
         peers: crate::peers::Peers<'_>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, RealizationError> {
         self.create_session_environment_with_provider_effect(
@@ -36,7 +36,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub fn session_environment_provider(
         &self,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+    ) -> Result<&crate::session_environment::SandboxProviderRoles, RealizationError> {
         select_provisioning_provider(&self.providers, provisioning)
     }
 
@@ -48,7 +48,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+    ) -> Result<&crate::session_environment::SandboxProviderRoles, RealizationError> {
         let frozen = self.sessions.frozen(thread)?;
         session_environment_provider_for_environment(
             &self.providers,
@@ -60,7 +60,7 @@ impl crate::environment_holding::EnvironmentHolding {
     async fn create_session_environment_for_effect(
         &self,
         peers: crate::peers::Peers<'_>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<crate::session_environment::SessionEnvironment, RealizationError> {
@@ -100,7 +100,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub(crate) async fn create_session_environment_with_provider_effect(
         &self,
         peers: crate::peers::Peers<'_>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
         authority: Option<&dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
@@ -162,7 +162,7 @@ impl crate::environment_holding::EnvironmentHolding {
     pub fn validate_session_environment_capabilities(
         &self,
         peers: crate::peers::Peers<'_>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
         let resources = peers.staging.thread_resources_snapshot(&spec.scope)?;
@@ -189,7 +189,7 @@ impl crate::environment_holding::EnvironmentHolding {
     /// and base-environment coordinates that built-in providers reopen.
     pub fn validate_session_environment_adoption(
         &self,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &awaken_provisioning_contract::SandboxSpec,
         handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, RealizationError> {
@@ -250,7 +250,7 @@ impl crate::environment_holding::EnvironmentHolding {
 
     fn validate_effective_session_environment_capabilities(
         &self,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: awaken_provisioning_contract::SandboxSpec,
         repository_paths: &[String],
         historical_owned_paths: &[&str],
@@ -476,7 +476,7 @@ impl crate::environment_holding::EnvironmentHolding {
         lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
         let realizations = self.sessions.clone();
         let staging = peers.staging;
@@ -589,7 +589,7 @@ impl crate::environment_holding::EnvironmentHolding {
         lifecycle: crate::session_realizations::LifecycleHeld<'_>,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         binding: &str,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, RealizationError> {
@@ -748,7 +748,7 @@ pub(super) fn session_environment_provider_for_environment<'a>(
         &awaken_session_configuration_contract::environment_projection::FrozenEnvironmentInputs,
     >,
     provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-) -> Result<&'a crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+) -> Result<&'a crate::session_environment::SandboxProviderRoles, RealizationError> {
     let sandbox = environment.and_then(|environment| environment.sandbox.as_ref());
     if sandbox.as_ref().is_some_and(|sandbox| {
         sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
@@ -789,7 +789,7 @@ pub(super) fn session_environment_provider_for_environment<'a>(
 fn select_provisioning_provider<'a>(
     providers: &'a crate::environment_providers::EnvironmentProviders,
     provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-) -> Result<&'a crate::session_environment::SessionEnvironmentProvider, RealizationError> {
+) -> Result<&'a crate::session_environment::SandboxProviderRoles, RealizationError> {
     match provisioning {
         awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => providers
             .backend_owned_session_provider

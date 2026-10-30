@@ -281,7 +281,7 @@ mod tests {
                 "/bin/sh",
                 std::time::Duration::ZERO,
             )
-            .into_session_provider();
+            .into_provider_roles();
         #[cfg(target_os = "linux")]
         if scoped {
             let mut provider = awaken_session_environment::SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(storage.path(), false);
@@ -302,7 +302,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            dependencies.env.session_provider = provider.into_session_provider();
+            dependencies.env.session_provider = provider.into_provider_roles();
         }
         let dependencies = dependencies.with_store_dir(storage.path()).await;
         let dependencies = if successor_cancellations.is_empty() {

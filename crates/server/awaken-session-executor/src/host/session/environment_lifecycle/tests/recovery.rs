@@ -335,7 +335,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     let thread = "closed-revoked-durable-rebuild";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let source_generation = generation(thread).id().to_owned();
@@ -427,7 +427,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
     // no rebuild predecessor. Physical absence is not lifecycle authority.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     for terminal in [false, true] {
         let thread = if terminal {
             "closed-terminal"
@@ -507,7 +507,7 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // Decision rules R17/R19: C1+C2+C3=>E1; exact replacement=>E2.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let first = environment(&provider, "aba-retirement").await;
     let second = Arc::new(
         provider
@@ -580,7 +580,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     let thread = "checkpoint-owner-fence";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let host = (crate::SessionExecutorBuilder::ephemeral(

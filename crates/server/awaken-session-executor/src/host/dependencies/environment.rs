@@ -48,7 +48,7 @@ impl SessionExecutorBuilder {
     /// order of the selections never drops a capability.
     pub(super) fn install_shared_environment_services(
         &self,
-        provider: &awaken_session_environment_contract::SessionEnvironmentProvider,
+        provider: &awaken_session_environment_contract::SandboxProviderRoles,
     ) {
         if let Some(mounter) = self.env.memory_mounter.clone() {
             provider.installation().install_memory_mounter(mounter);
@@ -69,7 +69,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_session_environment_provider(
         mut self,
-        provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+        provider: awaken_session_environment_contract::SandboxProviderRoles,
         capacity: Option<Arc<dyn awaken_provisioning_contract::SandboxCapacity>>,
     ) -> Self {
         self.env.session_provider = provider;
@@ -86,7 +86,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_fallback_session_environment_provider(
         mut self,
-        provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+        provider: awaken_session_environment_contract::SandboxProviderRoles,
     ) -> Self {
         self.env.session_provider = provider;
         self.env.session_capacity = None;
@@ -100,7 +100,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_backend_owned_environment_provider(
         mut self,
-        provider: awaken_session_environment_contract::SessionEnvironmentProvider,
+        provider: awaken_session_environment_contract::SandboxProviderRoles,
     ) -> Self {
         self.install_shared_environment_services(&provider);
         self.env.backend_owned_session_provider = Some(provider);
@@ -120,7 +120,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn installed_session_environment_provider(
         &self,
-    ) -> &awaken_session_environment_contract::SessionEnvironmentProvider {
+    ) -> &awaken_session_environment_contract::SandboxProviderRoles {
         &self.env.session_provider
     }
 
@@ -129,7 +129,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn installed_backend_owned_environment_provider(
         &self,
-    ) -> Option<&awaken_session_environment_contract::SessionEnvironmentProvider> {
+    ) -> Option<&awaken_session_environment_contract::SandboxProviderRoles> {
         self.env.backend_owned_session_provider.as_ref()
     }
 
@@ -158,7 +158,7 @@ impl SessionExecutorBuilder {
                 hand.container_hand_residency,
                 self.clock.clone(),
             )
-            .into_session_provider();
+            .into_provider_roles();
         self.with_session_environment_provider(environment, None)
     }
 

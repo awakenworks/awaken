@@ -39,7 +39,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let host = (raw_host).build().unwrap();
     let managed = managed_test_host(host.clone());
     let bytes = b"frozen worker input".to_vec();
@@ -298,7 +298,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let host = raw_host.build().unwrap();
     let managed = managed_test_host(host.clone());
     let claim = ingress::RunClaim {

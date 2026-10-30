@@ -117,7 +117,7 @@ pub struct SessionAcpCapabilityNegotiator {
 /// the task does not retain its own background supervisor or Session owners.
 #[derive(Clone)]
 struct AcpProbe {
-    provider: crate::session_environment::SessionEnvironmentProvider,
+    provider: crate::session_environment::SandboxProviderRoles,
     timeout: Duration,
     handshake: Arc<dyn AcpCapabilityHandshake>,
     stranded: Arc<StrandedProbeEnvironments>,

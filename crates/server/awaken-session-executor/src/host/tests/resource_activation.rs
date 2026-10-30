@@ -912,7 +912,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let repository_path_fidelity = raw_host
         .env
         .session_provider
@@ -1516,7 +1516,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let replacement_host = (crate::host::with_test_resource_validation(raw_replacement))
         .build()
         .unwrap();

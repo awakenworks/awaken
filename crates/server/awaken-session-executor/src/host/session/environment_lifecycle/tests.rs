@@ -31,7 +31,7 @@ fn environment_effect_fence(thread: &str) -> awaken_provisioning_contract::Sandb
 }
 
 async fn environment(
-    provider: &crate::session_environment::SessionEnvironmentProvider,
+    provider: &crate::session_environment::SandboxProviderRoles,
     thread: &str,
 ) -> Arc<crate::session_environment::SessionEnvironment> {
     // Fixture cause/effect rule: C1 lifecycle tests later perform exact,

@@ -906,7 +906,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(
         tempfile::tempdir().unwrap().path(),
     )
-    .into_session_provider();
+    .into_provider_roles();
     let bare = host.realization_executor.sandbox_spec("bare");
     assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
 
@@ -1030,7 +1030,7 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
 
     let root = tempfile::tempdir().unwrap();
     let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let spec = host.realization_executor.sandbox_spec("projected-acp");
     assert_eq!(
         spec.isolation,
@@ -1124,7 +1124,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
 
     let root = tempfile::tempdir().unwrap();
     let local = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let spec = host.realization_executor.sandbox_spec("model-override-acp");
     assert_eq!(
         spec.isolation,

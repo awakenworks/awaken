@@ -107,7 +107,7 @@ impl RealizationExecutor {
         &self,
         thread: &str,
         encoded: Option<&str>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         source_generation_id: Option<&str>,
         rebuild_unavailable: bool,
     ) -> Result<
@@ -130,7 +130,7 @@ impl RealizationExecutor {
     pub async fn rebuild_claimed_legacy_environment_after_revocation(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<(), crate::realization_error::RealizationError> {
         self.environments
             .rebuild_claimed_legacy_environment_after_revocation(self.peers(), thread, provider)

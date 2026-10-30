@@ -1992,7 +1992,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut first = adoption_dependencies_at(storage.path()).await;
     first.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
-            .into_session_provider(),
+            .into_provider_roles(),
     );
     let first = roots.configure(first).build().unwrap();
     let first_managed = managed_test_host(first.clone());
@@ -2023,7 +2023,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut replacement = adoption_dependencies_at(storage.path()).await;
     replacement.env.backend_owned_session_provider = Some(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
-            .into_session_provider(),
+            .into_provider_roles(),
     );
     let replacement = roots.configure(replacement).build().unwrap();
 

@@ -915,7 +915,7 @@ pub trait SandboxEnvironmentProviderAccess {
 }
 
 impl SandboxEnvironmentProviderAccess
-    for awaken_session_environment_contract::SessionEnvironmentProvider
+    for awaken_session_environment_contract::SandboxProviderRoles
 {
     fn sandbox_provider(&self) -> &crate::SandboxEnvironmentProvider {
         self.origin()
@@ -929,16 +929,16 @@ impl SandboxEnvironmentProviderAccess
 /// not build is kept as installed.
 #[must_use]
 pub fn relocated_provider(
-    provider: &awaken_session_environment_contract::SessionEnvironmentProvider,
+    provider: &awaken_session_environment_contract::SandboxProviderRoles,
     base: impl Into<std::path::PathBuf>,
-) -> awaken_session_environment_contract::SessionEnvironmentProvider {
+) -> awaken_session_environment_contract::SandboxProviderRoles {
     let base = base.into();
     provider
         .origin()
         .downcast_ref::<crate::SandboxEnvironmentProvider>()
         .map_or_else(
             || provider.clone(),
-            |sandbox| sandbox.at_root(base).into_session_provider(),
+            |sandbox| sandbox.at_root(base).into_provider_roles(),
         )
 }
 

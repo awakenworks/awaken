@@ -1068,7 +1068,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
                     "/bin/sh",
                     std::time::Duration::ZERO,
                 )
-                .into_session_provider(),
+                .into_provider_roles(),
             ),
     ));
     let host = roots

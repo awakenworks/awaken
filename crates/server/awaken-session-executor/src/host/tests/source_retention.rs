@@ -195,7 +195,7 @@ async fn source_retention_fixture(
         Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
         "unused-hand",
     )
-    .into_session_provider();
+    .into_provider_roles();
     let spec = host.realization_executor.sandbox_spec(RETENTION_SESSION);
     let handle = terminal_fixture_container_handle(RETENTION_SESSION, &spec);
     assert_eq!(handle.sandbox_id, RETENTION_SESSION);

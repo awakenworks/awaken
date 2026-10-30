@@ -51,7 +51,7 @@ pub fn test_expired_observed_lease(
 /// this adds no poll layer, state, provider or execution grant.
 pub fn create_session_environment<'a>(
     executor: &'a crate::realization_executor::RealizationExecutor,
-    provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    provider: &'a crate::session_environment::SandboxProviderRoles,
     spec: &'a awaken_provisioning_contract::SandboxSpec,
     effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
     authority: Option<&'a dyn awaken_provisioning_contract::CurrentExecutionAuthority>,

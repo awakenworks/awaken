@@ -940,12 +940,19 @@ impl SandboxEnvironmentProvider {
 }
 
 impl SandboxEnvironmentProvider {
-    /// Hand this provider to the Host as one handle per consuming role.
+    /// Hand this adapter over its one physical Sandbox provider to the Host,
+    /// as one handle per consuming role.
+    ///
+    /// Retired spelling decision table: RS2 the conversion into the retired
+    /// Session provider record must not resolve.
+    ///
+    /// ```compile_fail,E0599
+    /// let _ = awaken_session_environment::SandboxEnvironmentProvider::workdir("unused")
+    ///     .into_session_provider();
+    /// ```
     #[must_use]
-    pub fn into_session_provider(
-        self,
-    ) -> awaken_session_environment_contract::SessionEnvironmentProvider {
-        awaken_session_environment_contract::SessionEnvironmentProvider::new(Arc::new(self))
+    pub fn into_provider_roles(self) -> awaken_session_environment_contract::SandboxProviderRoles {
+        awaken_session_environment_contract::SandboxProviderRoles::new(Arc::new(self))
     }
 }
 

@@ -1431,7 +1431,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         deployment,
     )
     .await
-    .with_backend_owned_environment_provider(trusted.into_session_provider())
+    .with_backend_owned_environment_provider(trusted.into_provider_roles())
     .with_execution_authority(gate.clone()))
     .build()
     .expect("validated Host dependencies");

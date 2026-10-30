@@ -792,7 +792,7 @@ mod retry_hint_tests {
                 Arc::new(FakeHandExecutorFactory),
                 "awaken-sandbox",
             )
-            .into_session_provider();
+            .into_provider_roles();
             let roots = ManagedSessionRootFixture::new().await;
             let host = roots
                 .configure(

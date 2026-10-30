@@ -360,7 +360,7 @@ impl ResourceStaging {
 
     pub fn validate_repository_environment_adoption_paths(
         &self,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
         spec: &pc::SandboxSpec,
         repository_paths: &[&str],
         historical_owned_paths: &[&str],

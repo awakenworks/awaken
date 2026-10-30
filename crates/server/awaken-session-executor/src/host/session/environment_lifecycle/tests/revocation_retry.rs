@@ -89,7 +89,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     let thread = "conflicting-revocation-retains-relay";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -328,7 +328,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     let thread = "revocation-retiring-retry-authority";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let host = (crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -712,7 +712,7 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
     // retain their exact owner: root ordering never substitutes for closure.
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let env = environment(&provider, "owner-A").await;
     let bound = BoundSessionEnvironment {
         identity: identity("owner-A"),

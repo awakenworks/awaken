@@ -29,7 +29,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     fn sandbox_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         ResourceStaging::sandbox_spec_for_provider(self, thread, provider)
     }
@@ -38,7 +38,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
         &self,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         ResourceStaging::sandbox_spec_for_resolved_resources_and_provider(
             self, thread, resources, provider,
@@ -48,7 +48,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
     fn sandbox_substrate_spec_for_provider(
         &self,
         thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        provider: &crate::session_environment::SandboxProviderRoles,
     ) -> Result<pc::SandboxSpec, RealizationError> {
         ResourceStaging::sandbox_substrate_spec_for_provider(self, thread, provider)
     }

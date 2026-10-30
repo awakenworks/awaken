@@ -695,7 +695,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
                     "unused",
                 )
-                .into_session_provider();
+                .into_provider_roles();
                 let spec = host
                     .realization_executor
                     .staging()
@@ -839,7 +839,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
             "unused",
         )
-        .into_session_provider();
+        .into_provider_roles();
         let mut spec = awaken_session_environment::test_support::spec();
         spec.scope = "session".into();
         let directory = tempfile::tempdir().unwrap();

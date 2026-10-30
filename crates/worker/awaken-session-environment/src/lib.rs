@@ -6,7 +6,7 @@
 //! of `awaken-session-environment-contract`; the process composition hands
 //! them to the Runtime Host as role handles
 //! ([`SandboxEnvironment::into_session_environment`],
-//! [`SandboxEnvironmentProvider::into_session_provider`]). The Runtime Host
+//! [`SandboxEnvironmentProvider::into_provider_roles`]). The Runtime Host
 //! never links this crate outside its own tests.
 
 mod agent_sandbox;

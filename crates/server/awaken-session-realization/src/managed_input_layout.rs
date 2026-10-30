@@ -15,7 +15,7 @@ pub use resource_prompt::{AgentPathView, ResourcePromptProjection};
 #[derive(Clone, Copy)]
 pub enum ManagedLayoutValidationScope<'a> {
     Structural,
-    Exact(&'a crate::session_environment::SessionEnvironmentProvider),
+    Exact(&'a crate::session_environment::SandboxProviderRoles),
 }
 
 impl ManagedLayoutValidationScope<'_> {

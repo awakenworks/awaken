@@ -16,7 +16,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     let thread = "durable-background-generation";
     let root = tempfile::tempdir().unwrap();
     let provider = awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-        .into_session_provider();
+        .into_provider_roles();
     let environment = environment(&provider, thread).await;
     let physical_id = environment.lifecycle().handle().sandbox_id;
     let durable_generation = generation(thread);

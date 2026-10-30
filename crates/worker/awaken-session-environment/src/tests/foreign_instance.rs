@@ -19,14 +19,14 @@ use super::*;
 
 fn container_provider(
     provider: &Arc<FakeContainerProvider>,
-) -> awaken_session_environment_contract::SessionEnvironmentProvider {
+) -> awaken_session_environment_contract::SandboxProviderRoles {
     SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
-    .into_session_provider()
+    .into_provider_roles()
 }
 
 fn count(counter: &std::sync::atomic::AtomicUsize) -> usize {

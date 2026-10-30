@@ -69,7 +69,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let root = tempfile::tempdir().unwrap();
                 let provider =
                     awaken_session_environment::SandboxEnvironmentProvider::workdir(root.path())
-                        .into_session_provider();
+                        .into_provider_roles();
                 let environment = environment(&provider, thread).await;
                 let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
                 let lease = session_resource::SessionRealizationLease {

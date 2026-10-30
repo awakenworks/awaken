@@ -401,7 +401,7 @@ pub struct TerminalEnvironmentInstallation<'a> {
     pub thread: &'a str,
     pub binding: Option<&'a str>,
     pub committed_candidate: Option<&'a UnboundSessionEnvironment>,
-    pub provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    pub provider: &'a crate::session_environment::SandboxProviderRoles,
     pub spec: &'a awaken_provisioning_contract::SandboxSpec,
     pub handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
     pub expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,

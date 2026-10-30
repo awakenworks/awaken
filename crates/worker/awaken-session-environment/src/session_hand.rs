@@ -1189,7 +1189,7 @@ mod tests {
                     "unused-hand",
                     Duration::ZERO,
                 )
-                .into_session_provider()
+                .into_provider_roles()
             } else {
                 let mut provider =
                     SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
@@ -1201,7 +1201,7 @@ mod tests {
                     "unused-hand".into(),
                     Duration::ZERO,
                 );
-                provider.into_session_provider()
+                provider.into_provider_roles()
             };
             let environment = provider
                 .realizer()

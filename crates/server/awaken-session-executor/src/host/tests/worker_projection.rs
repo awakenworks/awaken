@@ -1807,7 +1807,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
             "/bin/sh",
             std::time::Duration::ZERO,
         )
-        .into_session_provider();
+        .into_provider_roles();
     let host = (raw_host).build().expect("validated Host dependencies");
     let _managed = host.clone();
 

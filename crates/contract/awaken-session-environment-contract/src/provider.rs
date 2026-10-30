@@ -2,8 +2,16 @@
 // @formal reason: Declares the per-role ports of the provider that realizes, adopts, observes, restores
 // @formal reason: and terminally reconstructs one Session environment. Effects carry the aggregate's fence
 // @formal reason: and authority unchanged; the adapter revalidates them. This is not a formal-proof claim.
-//! The provider of a Session's environment, as one port per consuming role,
-//! and the record of handles the Host carries it as.
+//! The Session's roles over the one selected Sandbox provider, and the record
+//! of handles the Host carries that provider as.
+//!
+//! Environment supply has one abstraction, `awaken_provisioning_contract::
+//! SandboxProvider`. The Session adds no second provider: it reads readiness
+//! and installs shared services through the provisioning roles themselves, and
+//! adds only the three roles below, each of which hands out a Hand-bound
+//! [`SessionEnvironment`] rather than a bare Sandbox, carries the retained
+//! instance a rebind or observation must match, or answers a Session-only
+//! question (host identity, terminal data readability).
 
 use std::any::Any;
 use std::sync::Arc;
@@ -27,7 +35,7 @@ pub enum EnvironmentRealizationKind {
 /// Realizing a fresh environment. Consumers: Session realization, the Worker
 /// projection synchronizer. Backend facts and liveness are not realization:
 /// they belong to the Sandbox readiness role, which the same selected provider
-/// supplies through its own handle ([`SessionEnvironmentProvider::readiness`]).
+/// supplies through its own handle ([`SandboxProviderRoles::readiness`]).
 ///
 /// Readiness type decision table: RR1 a realizer handle no longer answers
 /// readiness, so a caller that only reads capabilities cannot be handed
@@ -214,10 +222,20 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
     ) -> Result<(), pc::SandboxError>;
 }
 
-/// The process's Session environment roles. Execution construction uses one
-/// adapter; observation-only composition may replace its read roles while
-/// retaining the uninstalled effect roles and execution origin. Consumers:
-/// every Host module listed on the roles above.
+/// The deployment-selected Sandbox provider, held as one handle per consuming
+/// role, every handle over the same adapter instance. It is not a second
+/// provider abstraction: two of its handles are provisioning roles
+/// ([`pc::SandboxReadiness`], [`pc::SandboxInstallation`]) and the other three
+/// are the Session roles above. Consumers: Session realization (through the
+/// executor's environment providers), startup selection and installation, and
+/// the ACP capability probe.
+///
+/// Retired spelling decision table: RS1 the Session-specific provider name
+/// must not resolve; environment supply has one abstraction.
+///
+/// ```compile_fail,E0432
+/// use awaken_session_environment_contract::SessionEnvironmentProvider;
+/// ```
 ///
 /// Installation type decision table: SI2 the retired Session-specific spelling
 /// must not resolve. The physical installation role has exactly one owner in
@@ -235,17 +253,17 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
 ///
 /// ```compile_fail,E0599
 /// # use awaken_provisioning_contract as pc;
-/// # use awaken_session_environment_contract::SessionEnvironmentProvider;
-/// async fn create(provider: &SessionEnvironmentProvider, spec: &pc::SandboxSpec) {
+/// # use awaken_session_environment_contract::SandboxProviderRoles;
+/// async fn create(provider: &SandboxProviderRoles, spec: &pc::SandboxSpec) {
 ///     let _ = provider.create(spec).await;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0599
 /// # use awaken_provisioning_contract as pc;
-/// # use awaken_session_environment_contract::SessionEnvironmentProvider;
+/// # use awaken_session_environment_contract::SandboxProviderRoles;
 /// async fn adopt(
-///     provider: &SessionEnvironmentProvider,
+///     provider: &SandboxProviderRoles,
 ///     spec: &pc::SandboxSpec,
 ///     handle: &pc::SandboxHandle,
 /// ) {
@@ -253,7 +271,7 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
 /// }
 /// ```
 #[derive(Clone)]
-pub struct SessionEnvironmentProvider {
+pub struct SandboxProviderRoles {
     readiness: Arc<dyn pc::SandboxReadiness>,
     realizer: Arc<dyn EnvironmentRealizer>,
     adoption: Arc<dyn EnvironmentAdoption>,
@@ -262,8 +280,9 @@ pub struct SessionEnvironmentProvider {
     origin: Arc<dyn Any + Send + Sync>,
 }
 
-impl SessionEnvironmentProvider {
-    /// The handles of one adapter that plays every provider role.
+impl SandboxProviderRoles {
+    /// The handles of one adapter that plays every role over one selected
+    /// Sandbox provider.
     pub fn new<P>(provider: Arc<P>) -> Self
     where
         P: pc::SandboxReadiness
@@ -314,9 +333,10 @@ impl SessionEnvironmentProvider {
         &self.installation
     }
 
-    /// The execution-installation adapter, for the composition that built it
-    /// to reconfigure a copy. Read-only role replacement leaves this unchanged.
-    /// The Host never reads it.
+    /// The adapter every handle refers to, for the composition that built it
+    /// to verify its startup or relocate a copy. Consumers: the sandbox-backed
+    /// adapter's test support (`relocated_provider`) and composition startup
+    /// tests. The Host never reads it.
     #[must_use]
     pub fn origin(&self) -> &(dyn Any + Send + Sync) {
         self.origin.as_ref()

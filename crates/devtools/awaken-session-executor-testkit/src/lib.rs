@@ -204,8 +204,7 @@ fn with_workdir_fallback(
     base: std::path::PathBuf,
 ) -> SessionExecutorBuilder {
     dependencies.with_fallback_session_environment_provider(
-        awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
-            .into_session_provider(),
+        awaken_session_environment::SandboxEnvironmentProvider::workdir(base).into_provider_roles(),
     )
 }
 

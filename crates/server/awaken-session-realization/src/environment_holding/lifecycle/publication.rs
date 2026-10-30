@@ -23,7 +23,7 @@ use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, EnvironmentBindingPersistenceError,
     LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
 };
-use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SessionEnvironmentProvider};
+use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SandboxProviderRoles};
 use awaken_session_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentEffectKind,
@@ -156,7 +156,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         agent: Option<&str>,
-    ) -> Result<&SessionEnvironmentProvider, RealizationError> {
+    ) -> Result<&SandboxProviderRoles, RealizationError> {
         let provisioning = self
             .publication
             .projected_session_model_provisioning(thread, agent)?;
