@@ -1,7 +1,7 @@
 // @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 // awaken-allow(file-limit-ceiling): 5239 (legacy oversized test file: split, never grow)
 use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
+    SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use awaken_session_types::SessionId;
 #[macro_use]
@@ -26,7 +26,7 @@ use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::PersistedSession;
 use awaken_session_contract::SessionRepository;
-use awaken_session_execution_contract::{McpAttachmentRealizer, SessionRuntime};
+use awaken_session_execution_contract::{McpAttachmentRealizer, SessionRuns};
 use awaken_session_types::RunError;
 use awaken_time::system_clock;
 use {
@@ -782,7 +782,7 @@ impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for NoopRuntime {
+impl SessionRuns for NoopRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -816,15 +816,15 @@ impl SessionRuntime for NoopRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for NoopRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for NoopRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for NoopRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for NoopRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
 
@@ -1020,7 +1020,7 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for NoopRuntime {
+impl awaken_session_execution_contract::BudgetAccounting for NoopRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resume an exact `BudgetReached` ticket without injecting transcript
@@ -1076,7 +1076,7 @@ impl awaken_session_execution_contract::BudgetRuntime for NoopRuntime {
 no_committed_threads!(NoopRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
+impl awaken_session_execution_contract::TerminalCleanup for NoopRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -1150,7 +1150,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
+impl awaken_session_execution_contract::Outcomes for NoopRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -1200,7 +1200,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingReplyRuntime {
+impl SessionRuns for RecordingReplyRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -1234,15 +1234,15 @@ impl SessionRuntime for RecordingReplyRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingReplyRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingReplyRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingReplyRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingReplyRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingReplyRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingReplyRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for RecordingReplyRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingReplyRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingReplyRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingReplyRuntime);
 
@@ -1317,7 +1317,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
 awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingReplyRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for RecordingReplyRuntime {
     // Fixture rule P1: the fixture records tool replies without starting a prepared Run.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -1325,7 +1325,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRu
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -1641,7 +1641,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RecordingRe
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for RecordingReplyRuntime {
+impl awaken_session_execution_contract::ThreadReads for RecordingReplyRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -1788,7 +1788,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RecordingReplyRunt
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingReplyRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingReplyRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -1838,7 +1838,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingReplyRuntime
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingAgentAdmissionRuntime {
+impl SessionRuns for RecordingAgentAdmissionRuntime {
     async fn run(
         &self,
         agent: &str,
@@ -1874,15 +1874,15 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingAgentAdmissionRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingAgentAdmissionRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingAgentAdmissionRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingAgentAdmissionRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingAgentAdmissionRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingAgentAdmissionRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for RecordingAgentAdmissionRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingAgentAdmissionRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingAgentAdmissionRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingAgentAdmissionRuntime);
 
@@ -1948,7 +1948,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
 awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingAgentAdmissionRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAdmissionRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for RecordingAgentAdmissionRuntime {
     // Fixture rule P1: the fixture records child admission without starting a prepared root Run.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -1956,7 +1956,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -2309,7 +2309,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for RecordingAgentAdmissionRuntime {
+impl awaken_session_execution_contract::ThreadReads for RecordingAgentAdmissionRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -2407,7 +2407,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RecordingAgentAdmi
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingAgentAdmissionRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingAgentAdmissionRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -2459,7 +2459,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingAgentAdmissi
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingBoundaryBudgetRuntime {
+impl SessionRuns for RecordingBoundaryBudgetRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -2493,13 +2493,13 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingBoundaryBudgetRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingBoundaryBudgetRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingBoundaryBudgetRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingBoundaryBudgetRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for RecordingBoundaryBudgetRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingBoundaryBudgetRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingBoundaryBudgetRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingBoundaryBudgetRuntime);
 
@@ -2574,7 +2574,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
 awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingBoundaryBudgetRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundaryBudgetRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for RecordingBoundaryBudgetRuntime {
     // Fixture rule P1: the fixture records boundary budget effects without prepared execution.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -2582,7 +2582,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundar
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -2916,7 +2916,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for RecordingBoundaryBudgetRuntime {
+impl awaken_session_execution_contract::BudgetAccounting for RecordingBoundaryBudgetRuntime {
     async fn resume_budget_reached(
         &self,
         delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
@@ -2970,7 +2970,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RecordingBoundaryBudge
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for RecordingBoundaryBudgetRuntime {
+impl awaken_session_execution_contract::ThreadReads for RecordingBoundaryBudgetRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -3075,7 +3075,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RecordingBoundaryB
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingBoundaryBudgetRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingBoundaryBudgetRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -3125,7 +3125,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingBoundaryBudg
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingCleanupRuntime {
+impl SessionRuns for RecordingCleanupRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -3159,13 +3159,13 @@ impl SessionRuntime for RecordingCleanupRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingCleanupRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingCleanupRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingCleanupRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingCleanupRuntime);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingCleanupRuntime);
+awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingCleanupRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingCleanupRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingCleanupRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingCleanupRuntime);
 
@@ -3238,7 +3238,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanupRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for RecordingCleanupRuntime {
     // Fixture rule P1: the fixture records terminal cleanup without prepared execution.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -3246,7 +3246,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanup
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -3846,7 +3846,7 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCleanupR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingCleanupRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingCleanupRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

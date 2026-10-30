@@ -2,9 +2,9 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SessionInit;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
+    SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use awaken_session_types::{RunError, SessionId};
 use std::sync::Arc;
@@ -49,7 +49,7 @@ pub(super) struct AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for AcceptingFake {
+impl SessionRuns for AcceptingFake {
     async fn run(
         &self,
         _a: &str,
@@ -81,11 +81,11 @@ impl SessionRuntime for AcceptingFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for AcceptingFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for AcceptingFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for AcceptingFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
@@ -170,7 +170,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
+impl awaken_session_execution_contract::ChildRunCoordination for AcceptingFake {
     // Fixture rule P1: Resource tests script ordinary reservation and activation failures.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -178,7 +178,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -749,7 +749,7 @@ impl awaken_session_execution_contract::RealizationEffects for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
+impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -866,7 +866,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake {
+impl awaken_session_execution_contract::TerminalCleanup for AcceptingFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -932,7 +932,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
+impl awaken_session_execution_contract::Outcomes for AcceptingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

@@ -287,7 +287,7 @@ fn mutation_run_errors_preserve_cause_and_permanence() {
 struct UnreachedInbox;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::LiveInboxRuntime for UnreachedInbox {
+impl awaken_session_execution_contract::LiveInboxAccess for UnreachedInbox {
     async fn live_inbox_snapshot(
         &self,
         _: &str,

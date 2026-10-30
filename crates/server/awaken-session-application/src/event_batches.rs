@@ -252,11 +252,11 @@ pub struct SessionEventBatchCommands {
     activities: Arc<crate::SessionActivities>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
     coordination: Arc<crate::SessionCoordination>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
-    coordination_runtime: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
+    coordination_runtime: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
-    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
-    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRuns>,
+    outcomes: Arc<dyn awaken_session_execution_contract::Outcomes>,
 }
 
 /// The collaborators one [`SessionEventBatchCommands`] is built from.

@@ -2,7 +2,7 @@
 use super::*;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingCleanupRuntime {
+impl awaken_session_execution_contract::TerminalCleanup for RecordingCleanupRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,

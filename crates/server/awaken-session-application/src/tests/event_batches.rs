@@ -6,8 +6,7 @@
 // @formal evidence tool_result.one_pending_occurrence_has_one_admitted_reply
 // awaken-allow(file-limit-ceiling): 5853 (legacy oversized test file: split, never grow)
 use awaken_session_execution_contract::{
-    CoordinationRuntime as _, SessionCoordinationReads as _, StreamingRunRuntime as _,
-    ThreadReadRuntime as _,
+    ChildRunCoordination as _, SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use awaken_session_types::SessionId;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -28,7 +27,7 @@ use awaken_session_contract::{
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, CoordinatedThreadTarget,
     OutcomeDrive, OutcomeReport, SessionRunActivation, SessionRunDelivery, SessionRunReservation,
-    SessionRuntime, SessionThreadTarget, SessionThreadToolReplyCommand,
+    SessionRuns, SessionThreadTarget, SessionThreadToolReplyCommand,
     SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, ToolPermissionDecision,
 };
 
@@ -134,7 +133,7 @@ impl EventBatchRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for EventBatchRuntime {
+impl SessionRuns for EventBatchRuntime {
     async fn run(
         &self,
         agent: &str,
@@ -170,13 +169,13 @@ impl SessionRuntime for EventBatchRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for EventBatchRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for EventBatchRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for EventBatchRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for EventBatchRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for EventBatchRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for EventBatchRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for EventBatchRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for EventBatchRuntime);
 
@@ -268,7 +267,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
 awaken_session_execution_contract::neutral_role!(RealizationEffects for EventBatchRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRuntime {
     // Fixture rule P1: public Event batches use ordinary reservations, not prepared Outcome inputs.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -276,7 +275,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -698,7 +697,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for EventBatchRuntime {
+impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -815,7 +814,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for EventBatchRuntim
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for EventBatchRuntime {
+impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -992,7 +991,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EventBatchRuntime 
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for EventBatchRuntime {
+impl awaken_session_execution_contract::Outcomes for EventBatchRuntime {
     async fn prepare_outcome(
         &self,
         _thread: &str,

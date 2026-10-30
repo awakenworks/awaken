@@ -1,7 +1,7 @@
-//! Adapter state: the session store, id minting, and the `SessionRuntime` port.
+//! Adapter state: the session store, id minting, and the `SessionRuns` port.
 //!
 //! The adapter drives one runtime seam and owns no kernel construction. The
-//! server implements [`SessionRuntime`] over the runtime; tests implement it with
+//! server implements [`SessionRuns`] over the runtime; tests implement it with
 //! a fake. Public ids (`sesn_*`, `evt_*`) are minted here; tool-use ids are stable
 //! Thread/source-qualified encodings that a user reply can safely echo and the
 //! command boundary can reverse to the Runtime's batch-local call id.
@@ -71,7 +71,7 @@ use awaken_session_configuration_contract::AgentCapabilities;
 use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::CommittedOutcomeProjection;
 #[cfg(test)]
-use awaken_session_execution_contract::SessionRuntime;
+use awaken_session_execution_contract::SessionRuns;
 #[cfg(test)]
 use awaken_session_execution_contract::{OutcomeDrive, OutcomeFailure, OutcomeReport};
 use awaken_session_types::RunError;

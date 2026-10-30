@@ -299,7 +299,7 @@ pub async fn read_execution_recovery<S, R>(
 ) -> Observation
 where
     S: awaken_dispatch_contract::DispatchAttemptRecordReads + ?Sized,
-    R: awaken_session_execution_contract::ThreadReadRuntime + ?Sized,
+    R: awaken_session_execution_contract::ThreadReads + ?Sized,
 {
     let (threads, runtime_commit_cursor) = match frozen_terminal_scope(session) {
         Ok(scope) => scope,
@@ -625,7 +625,7 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::ThreadReadRuntime for RecoveryHistory {
+    impl awaken_session_execution_contract::ThreadReads for RecoveryHistory {
         async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
             Ok(false)
         }

@@ -3,7 +3,7 @@
 //! Worker runtime projection: frozen baselines, reservations, and coordination contexts.
 
 use super::*;
-use awaken_session_execution_contract::{CoordinationRuntime as _, SessionCoordinationReads as _};
+use awaken_session_execution_contract::{ChildRunCoordination as _, SessionCoordinationReads as _};
 
 #[tokio::test]
 async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {

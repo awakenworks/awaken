@@ -198,9 +198,9 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_application::{SessionApplication, SessionEventBatches};
-/// use awaken_session_execution_contract::StreamingRunRuntime;
+/// use awaken_session_execution_contract::StreamingRuns;
 /// use awaken_session_types::RunError;
-/// async fn existing_policy(runs: &dyn StreamingRunRuntime) -> Result<bool, RunError> {
+/// async fn existing_policy(runs: &dyn StreamingRuns) -> Result<bool, RunError> {
 ///     runs.supports_mid_conversation_system("thread").await
 /// }
 /// fn selected_role(application: &SessionApplication) -> std::sync::Arc<dyn SessionEventBatches> {
@@ -385,9 +385,9 @@ impl SessionPersistence {
 /// Z2b: Thread disposition and exact Outcome reads keep their original owner.
 ///
 /// ```
-/// use awaken_session_execution_contract::ThreadReadRuntime;
+/// use awaken_session_execution_contract::ThreadReads;
 /// use awaken_session_types::SessionId;
-/// async fn existing_role(reads: &dyn ThreadReadRuntime, session: &SessionId) {
+/// async fn existing_role(reads: &dyn ThreadReads, session: &SessionId) {
 ///     let _ = reads.session_thread_disposition(session, "thread").await;
 ///     let _ = reads.committed_outcome_projection("thread", "outcome").await;
 /// }
@@ -398,8 +398,8 @@ impl SessionPersistence {
 /// ```
 /// use std::sync::Arc;
 /// use awaken_agent_contract::stream::sink::Sink;
-/// use awaken_session_execution_contract::StreamingRunRuntime;
-/// async fn existing_role(runs: &dyn StreamingRunRuntime, sink: Arc<dyn Sink>) {
+/// use awaken_session_execution_contract::StreamingRuns;
+/// async fn existing_role(runs: &dyn StreamingRuns, sink: Arc<dyn Sink>) {
 ///     let _ = runs.pending_tool("thread").await;
 ///     let _ = runs.rebind_model("thread", "model").await;
 ///     let _ = runs
@@ -411,8 +411,8 @@ impl SessionPersistence {
 /// Z2d: ticket results remain on the original Runtime role.
 ///
 /// ```
-/// use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
-/// async fn existing_role(runs: &dyn SessionRuntime, decision: ToolPermissionDecision) {
+/// use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
+/// async fn existing_role(runs: &dyn SessionRuns, decision: ToolPermissionDecision) {
 ///     let _ = runs.resume("thread", "call", decision).await;
 ///     let _ = runs.resume_custom("thread", "call", Vec::new(), false).await;
 /// }
@@ -421,8 +421,8 @@ impl SessionPersistence {
 /// Z2e: Outcome commands remain on the original Outcome role.
 ///
 /// ```
-/// use awaken_session_execution_contract::OutcomeRuntime;
-/// async fn existing_role(outcomes: &dyn OutcomeRuntime, executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission) {
+/// use awaken_session_execution_contract::Outcomes;
+/// async fn existing_role(outcomes: &dyn Outcomes, executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission) {
 ///     let _ = outcomes.define_outcome("thread", "goal", "rubric", 3, executor).await;
 ///     let _ = outcomes.continue_outcome("thread", executor).await;
 /// }

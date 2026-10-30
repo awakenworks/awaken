@@ -69,7 +69,7 @@ impl EffectCountingRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::SessionRuns for EffectCountingRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -118,17 +118,17 @@ impl awaken_session_execution_contract::SessionRuntime for EffectCountingRuntime
     }
 }
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for EffectCountingRuntime);
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for EffectCountingRuntime);
-awaken_session_execution_contract::neutral_role!(OutcomeRuntime for EffectCountingRuntime);
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(Outcomes for EffectCountingRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for EffectCountingRuntime);
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for EffectCountingRuntime);
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for EffectCountingRuntime);
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for EffectCountingRuntime);
 no_committed_threads!(EffectCountingRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::BudgetAccounting for EffectCountingRuntime {
     async fn resume_budget_reached(
         &self,
         delivery: SessionBudgetResumeDelivery,
@@ -223,7 +223,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EffectCountingRun
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for EffectCountingRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for EffectCountingRuntime {
     // Fixture rule P1: effect counts cover ordinary admission, without a prepared executor.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -231,7 +231,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EffectCountingRu
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,

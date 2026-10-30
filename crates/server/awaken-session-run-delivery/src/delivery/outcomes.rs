@@ -224,7 +224,7 @@ impl WorkerPlacedSessions {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for WorkerPlacedSessions {
+impl awaken_session_execution_contract::Outcomes for WorkerPlacedSessions {
     async fn prepare_outcome(
         &self,
         thread: &str,

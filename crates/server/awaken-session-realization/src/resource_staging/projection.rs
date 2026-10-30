@@ -162,7 +162,7 @@ impl crate::resource_staging::ResourceStaging {
         let realizations = self.sessions.clone();
         use crate::staged_resources::ResourceBindingCheck;
 
-        // This method is entered only through the SessionRuntime application
+        // This method is entered only through the SessionRuns application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
         realizations.enter_session_dispatch(thread)?;

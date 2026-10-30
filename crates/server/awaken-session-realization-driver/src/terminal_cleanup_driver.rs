@@ -79,7 +79,7 @@ pub async fn drive_session_terminal_cleanup(
     control: &dyn SessionTerminalCleanupControl,
     realization: &dyn awaken_session_execution_contract::RealizationRuntime,
     effects: &dyn awaken_session_execution_contract::RealizationEffects,
-    runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
+    runtime: &dyn awaken_session_execution_contract::TerminalCleanup,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
     let mut lease = asserted_lease.clone();
     'drive: for _ in 0..8 {
@@ -300,7 +300,7 @@ pub(crate) mod tests {
     use awaken_session_contract::{
         SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
     };
-    use awaken_session_execution_contract::SessionRuntime;
+    use awaken_session_execution_contract::SessionRuns;
     use awaken_session_execution_contract::ToolPermissionDecision;
     use awaken_session_realization_contract::{
         FrozenSessionProjection, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
@@ -588,7 +588,7 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl SessionRuntime for RecordingRuntime {
+    impl SessionRuns for RecordingRuntime {
         fn model(&self) -> String {
             "test-model".into()
         }
@@ -622,21 +622,21 @@ pub(crate) mod tests {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(Outcomes for RecordingRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingRuntime);
 
@@ -840,7 +840,7 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingRuntime {
+    impl awaken_session_execution_contract::TerminalCleanup for RecordingRuntime {
         async fn prepare_terminal_cleanup_for_effect(
             &self,
             effect: SessionTerminalCleanupEffect,

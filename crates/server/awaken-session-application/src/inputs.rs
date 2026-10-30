@@ -16,7 +16,7 @@ use crate::SessionInputRequest;
 use crate::mutation::session_owner;
 use crate::session_input::{normalize_session_input_mounts, plan_session_input_attachments};
 use awaken_session_contract::SessionRepositoryReads;
-use awaken_session_execution_contract::LiveInboxRuntime;
+use awaken_session_execution_contract::LiveInboxAccess;
 use awaken_session_types::RunError;
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ mod lowering;
 /// ```
 pub struct SessionInputs {
     repository: Arc<dyn SessionRepositoryReads>,
-    inbox: Arc<dyn LiveInboxRuntime>,
+    inbox: Arc<dyn LiveInboxAccess>,
     inventory: Option<Arc<dyn awaken_resource_contract::ResourceInventory>>,
 }
 
@@ -73,7 +73,7 @@ impl PreparedSessionInputs {
 impl SessionInputs {
     pub(crate) fn new(
         repository: Arc<dyn SessionRepositoryReads>,
-        inbox: Arc<dyn LiveInboxRuntime>,
+        inbox: Arc<dyn LiveInboxAccess>,
         inventory: Option<Arc<dyn awaken_resource_contract::ResourceInventory>>,
     ) -> Self {
         Self {

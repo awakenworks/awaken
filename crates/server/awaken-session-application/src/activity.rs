@@ -26,7 +26,7 @@ use awaken_time::WallClockExt as _;
 
 use std::sync::Arc;
 
-use awaken_session_execution_contract::ThreadReadRuntime;
+use awaken_session_execution_contract::ThreadReads;
 
 use super::{SessionMutationError, mutation::repository_failure};
 
@@ -327,7 +327,7 @@ struct ActivityProjection {
 pub struct SessionActivities {
     mutations: Arc<crate::SessionMutations>,
     clock: Arc<dyn awaken_time::WallClock>,
-    thread_reads: Arc<dyn ThreadReadRuntime>,
+    thread_reads: Arc<dyn ThreadReads>,
     continuations: Arc<crate::SessionContinuations>,
     #[cfg(any(test, feature = "test-support"))]
     runtime_incarnation: String,

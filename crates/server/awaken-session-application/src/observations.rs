@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::DelegatedRun;
 use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::{
-    BudgetRuntime, CoordinationRuntime, SessionCoordinationReads, ThreadReadRuntime,
+    BudgetAccounting, ChildRunCoordination, SessionCoordinationReads, ThreadReads,
 };
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
@@ -31,10 +31,10 @@ pub struct SessionObservations {
     clock: Arc<dyn awaken_time::WallClock>,
     queries: Arc<crate::SessionQueries>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
-    thread_reads: Arc<dyn ThreadReadRuntime>,
-    coordination: Arc<dyn CoordinationRuntime>,
+    thread_reads: Arc<dyn ThreadReads>,
+    coordination: Arc<dyn ChildRunCoordination>,
     coordination_reads: Arc<dyn SessionCoordinationReads>,
-    budget: Arc<dyn BudgetRuntime>,
+    budget: Arc<dyn BudgetAccounting>,
 }
 
 impl SessionObservations {

@@ -4,8 +4,7 @@
 //! read failures, pauses and MCP publication refusals.
 
 use awaken_session_execution_contract::{
-    EnvironmentRuntime as _, SessionCoordinationReads as _, StreamingRunRuntime as _,
-    ThreadReadRuntime as _,
+    EnvironmentRuntime as _, SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
 use std::sync::Arc;
 
@@ -17,7 +16,7 @@ use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use awaken_session_application_contract::DelegatedRun;
-use awaken_session_execution_contract::SessionRuntime;
+use awaken_session_execution_contract::SessionRuns;
 use awaken_session_types::RunError;
 
 use crate::read_control::ReadControl;
@@ -297,7 +296,7 @@ impl RehydrateFake {
 }
 
 #[async_trait]
-impl SessionRuntime for RehydrateFake {
+impl SessionRuns for RehydrateFake {
     async fn run(
         &self,
         _agent: &str,
@@ -331,7 +330,7 @@ impl SessionRuntime for RehydrateFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RehydrateFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RehydrateFake);
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
@@ -418,7 +417,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
+impl awaken_session_execution_contract::ChildRunCoordination for RehydrateFake {
     // Fixture rule P1: rehydration observes projections without running a prepared command.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -426,7 +425,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,

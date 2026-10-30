@@ -3,7 +3,7 @@
 // @formal reason: ChildRunCoordination: Run reservation, activation, child admission, replies, interruption,
 // @formal reason: archive and the dispatch reads they validate against; this is a product-requirement
 // @formal reason: classification, not a direct proof claim.
-//! The Session application's `CoordinationRuntime` role, served by
+//! The Session application's `ChildRunCoordination` role, served by
 //! [`ChildRunCoordination`]. Coordination reads select the shared Thread component.
 
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use super::ChildRunCoordination;
 use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordination {
+impl awaken_session_execution_contract::ChildRunCoordination for ChildRunCoordination {
     async fn run_prepared_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,

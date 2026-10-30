@@ -9,7 +9,7 @@
 //!
 //! This module adds no child registry. It resolves the roster already frozen by
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
-//! existing [`awaken_session_execution_contract::SessionRuntime`] port.
+//! existing [`awaken_session_execution_contract::SessionRuns`] port.
 
 use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
@@ -93,9 +93,9 @@ pub struct SessionCoordination {
     run_admissions: Arc<crate::SessionRunAdmissions>,
     realizations: Arc<crate::SessionRealizations>,
     observations: Arc<crate::SessionObservations>,
-    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
 }
 
 /// The collaborators one [`SessionCoordination`] is built from.

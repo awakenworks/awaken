@@ -44,7 +44,7 @@ mod tests {
         SessionNetworkPolicy,
     };
     use awaken_session_contract::{IdempotencyRecord, SessionResourceState};
-    use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
+    use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
     use awaken_session_realization_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
@@ -61,7 +61,7 @@ mod tests {
     struct NoopRuntime;
 
     #[async_trait::async_trait]
-    impl SessionRuntime for NoopRuntime {
+    impl SessionRuns for NoopRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -95,21 +95,21 @@ mod tests {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for NoopRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for NoopRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReads for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanup for NoopRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for NoopRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
 
@@ -184,7 +184,7 @@ mod tests {
     awaken_session_execution_contract::neutral_role!(RealizationEffects for NoopRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
+    impl awaken_session_execution_contract::Outcomes for NoopRuntime {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.

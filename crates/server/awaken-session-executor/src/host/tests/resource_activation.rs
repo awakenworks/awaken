@@ -1175,7 +1175,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             resources.clone(),
         ),
     );
-    awaken_session_execution_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
+    awaken_session_execution_contract::TerminalCleanup::install_terminal_cleanup_assignment(
         &*managed.run_assembly,
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,

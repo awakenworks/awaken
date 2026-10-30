@@ -20,7 +20,7 @@ use crate::SessionExecutionError;
 use crate::host::capability;
 
 /// Session Run delivery for one process. Consumers: the Session application's
-/// `SessionRuntime` and `StreamingRunRuntime` roles, the protocol-neutral
+/// `SessionRuns` and `StreamingRuns` roles, the protocol-neutral
 /// `RunApplication` (AI SDK, AG-UI, A2A), the durable-ingress verbs, and the
 /// Run-driving parts of coordination, budgets and Outcomes.
 ///

@@ -1759,7 +1759,7 @@ async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
         .unwrap()
         .insert(CHILD.into(), pending);
     let snapshot =
-        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+        awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(
             &fixture.runtime,
             &SessionId::from(&fixture.session_id),
             CHILD,

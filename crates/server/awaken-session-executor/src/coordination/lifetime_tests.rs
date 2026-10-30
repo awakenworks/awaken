@@ -34,7 +34,7 @@ async fn local_live_subscription_reads_no_session_execution_context() {
     // => original live observer; R2 child without committed membership =>
     // InvalidRequest. Both retain C3: the shared read gate may open committed
     // truth, but must not construct a Runtime or Environment to observe it.
-    use awaken_session_execution_contract::CoordinationRuntime as _;
+    use awaken_session_execution_contract::ChildRunCoordination as _;
     let host = crate::SessionExecutorBuilder::ephemeral(
         Arc::new(crate::NoModelConfiguredExecutor),
         "stub",

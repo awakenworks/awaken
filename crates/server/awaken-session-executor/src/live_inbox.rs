@@ -18,7 +18,7 @@ use crate::managed_input_projection::user_message;
 /// The live inboxes of the attempts this process currently owns, one per
 /// Thread with a resident running context. Named in the plural because it
 /// locates the Runtime-owned [`LiveInbox`] of each Thread rather than being one.
-/// Consumer: the Session application's `LiveInboxRuntime` role.
+/// Consumer: the Session application's `LiveInboxAccess` role.
 pub struct LiveInboxes {
     installed_sessions: Arc<crate::InstalledSessions>,
 }
@@ -65,7 +65,7 @@ impl LiveInboxes {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::LiveInboxRuntime for LiveInboxes {
+impl awaken_session_execution_contract::LiveInboxAccess for LiveInboxes {
     async fn live_inbox_snapshot(&self, thread: &str) -> Result<LiveInboxSnapshot, LiveInboxError> {
         Ok(match self.live_inbox(thread).await? {
             Some(inbox) => LiveInboxSnapshot {

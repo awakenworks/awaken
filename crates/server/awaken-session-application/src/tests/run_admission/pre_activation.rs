@@ -316,7 +316,7 @@ async fn return_code_alone_cannot_sign_off_zero_execution() {
     check_zero_execution(&runtime.counts()).expect("NC baseline: no leak yet");
 
     // Mutant: a leaked inline model execution behind the failed admission.
-    awaken_session_execution_contract::SessionRuntime::run(
+    awaken_session_execution_contract::SessionRuns::run(
         runtime.as_ref(),
         "agent",
         session,

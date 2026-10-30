@@ -211,7 +211,7 @@ impl RealizationRuntime for ClockedRealization {
 struct InstallingCleanup;
 
 #[async_trait::async_trait]
-impl TerminalCleanupRuntime for InstallingCleanup {
+impl TerminalCleanup for InstallingCleanup {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         _effect: awaken_session_contract::SessionTerminalCleanupEffect,

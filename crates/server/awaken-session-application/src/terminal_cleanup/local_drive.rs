@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
+    impl awaken_session_execution_contract::SessionRuns for RecordingTerminalProjectionRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -593,21 +593,21 @@ mod tests {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(Outcomes for RecordingTerminalProjectionRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
 
@@ -692,9 +692,7 @@ mod tests {
     awaken_session_execution_contract::neutral_role!(RealizationEffects for RecordingTerminalProjectionRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::TerminalCleanupRuntime
-        for RecordingTerminalProjectionRuntime
-    {
+    impl awaken_session_execution_contract::TerminalCleanup for RecordingTerminalProjectionRuntime {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Make every source-dependent effect durable under the exact aggregate

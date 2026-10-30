@@ -307,7 +307,7 @@ pub fn validate_interrupt_children(
 /// reads nothing.
 pub async fn admit_event_batch_topology(
     coordination: &dyn crate::SessionCoordinationReads,
-    threads: &dyn crate::ThreadReadRuntime,
+    threads: &dyn crate::ThreadReads,
     session_id: &SessionId,
     inputs: &[awaken_session_contract::SessionEventInput],
 ) -> Result<(), crate::RunError> {

@@ -76,7 +76,7 @@ async fn poisoned_registry_refuses_every_session_read() {
     // registry is poisoned. Every reader must return its typed refusal before
     // any default Workspace, capability, generation or recipient is selected.
     use awaken_session_execution_contract::{
-        CapabilityRuntime as _, LiveInboxError, LiveInboxRuntime as _, StreamingRunRuntime as _,
+        CapabilityRuntime as _, LiveInboxAccess as _, LiveInboxError, StreamingRuns as _,
     };
     use awaken_session_mcp::{
         McpGenerationAuthority as _, McpInputHost as _, McpStagingSession as _,

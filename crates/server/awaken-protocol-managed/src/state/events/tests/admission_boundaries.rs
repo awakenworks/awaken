@@ -62,7 +62,7 @@ async fn coordinated_root() -> (CoordinatedRuntimeFake, Arc<ManagedState>, Strin
 
 async fn coordinated_session() -> (CoordinatedRuntimeFake, Arc<ManagedState>, String) {
     let (runtime, state, session_id) = Box::pin(coordinated_root()).await;
-    <CoordinatedRuntimeFake as SessionRuntime>::run(
+    <CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session_id,
@@ -120,7 +120,7 @@ async fn ghost_and_archived_child_interrupt_targets_have_zero_effect() {
         "T3"
     );
 
-    <CoordinatedRuntimeFake as awaken_session_execution_contract::CoordinationRuntime>::archive_session_thread(
+    <CoordinatedRuntimeFake as awaken_session_execution_contract::ChildRunCoordination>::archive_session_thread(
         &runtime,
         &SessionId::from(&session_id),
         child_id,

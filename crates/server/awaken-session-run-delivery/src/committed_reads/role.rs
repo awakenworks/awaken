@@ -1,15 +1,15 @@
 // @formal surface requirement=session.multiagent.thread_authority
-// @formal reason: Static owner: the ThreadReadRuntime role served by CommittedReads. Each method reads committed
+// @formal reason: Static owner: the ThreadReads role served by CommittedReads. Each method reads committed
 // @formal reason: Thread truth through CommittedReads and projects its error once; it holds no state and no write
 // @formal reason: path. This is a product-requirement classification, not a direct proof claim.
-//! The Session application's `ThreadReadRuntime` role, served by [`CommittedReads`].
+//! The Session application's `ThreadReads` role, served by [`CommittedReads`].
 
 use awaken_session_types::RunError;
 
 use super::CommittedReads;
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for CommittedReads {
+impl awaken_session_execution_contract::ThreadReads for CommittedReads {
     async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
         self.has_durable_thread(thread).await
     }

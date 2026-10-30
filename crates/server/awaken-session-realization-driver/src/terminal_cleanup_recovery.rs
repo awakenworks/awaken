@@ -15,9 +15,7 @@
 //! once, in this module.
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_execution_contract::{
-    RealizationEffects, RealizationRuntime, TerminalCleanupRuntime,
-};
+use awaken_session_execution_contract::{RealizationEffects, RealizationRuntime, TerminalCleanup};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionRealizationTarget,
     SessionTerminalCleanupControl,
@@ -82,7 +80,7 @@ pub struct TerminalRecoveryParticipants<'a, P: ?Sized> {
     pub control: &'a dyn SessionTerminalCleanupControl,
     pub realization: &'a dyn RealizationRuntime,
     pub effects: &'a dyn RealizationEffects,
-    pub cleanup: &'a dyn TerminalCleanupRuntime,
+    pub cleanup: &'a dyn TerminalCleanup,
     pub projections: &'a P,
 }
 

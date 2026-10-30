@@ -255,8 +255,8 @@ pub struct SessionTerminationCommands {
     lifecycle: Arc<crate::SessionLifecycle>,
     terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
     activities: Arc<crate::SessionActivities>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
-    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
+    coordination: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
 }
 

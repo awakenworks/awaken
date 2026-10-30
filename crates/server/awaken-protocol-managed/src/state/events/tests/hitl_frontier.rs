@@ -36,7 +36,7 @@ async fn plan_aggregate_from_fixture(
         .collect::<std::collections::HashSet<_>>()
     {
         let snapshot =
-            awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+            awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(
                 &runtime, &session, thread,
             )
             .await

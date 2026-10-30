@@ -299,7 +299,7 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -420,7 +420,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
         )
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -501,7 +501,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
         )
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -589,7 +589,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuns>::run(
         &runtime,
         "coder",
         &session.id,
@@ -786,7 +786,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         "I6 no duplicate effect"
     );
 
-    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::CoordinationRuntime>::archive_session_thread(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::ChildRunCoordination>::archive_session_thread(
         &runtime,
         &SessionId::from(&session.id),
         child_id,
@@ -1787,7 +1787,7 @@ async fn session_create_enforces_the_500_file_boundary() {
 struct EndSessionFailer;
 
 #[async_trait]
-impl SessionRuntime for EndSessionFailer {
+impl SessionRuns for EndSessionFailer {
     async fn run(
         &self,
         _agent: &str,
@@ -1819,13 +1819,13 @@ impl SessionRuntime for EndSessionFailer {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for EndSessionFailer);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for EndSessionFailer);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for EndSessionFailer);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for EndSessionFailer);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for EndSessionFailer);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for EndSessionFailer);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for EndSessionFailer);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for EndSessionFailer);
 
@@ -2025,7 +2025,7 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::ChildRunCoordination for EndSessionFailer {
     // Fixture rule P1: terminal tests inject end-session failures without prepared execution.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -2033,7 +2033,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -2342,7 +2342,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EndSessionF
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::ThreadReads for EndSessionFailer {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -2447,7 +2447,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionFailer {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::TerminalCleanup for EndSessionFailer {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -2513,7 +2513,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for EndSessionFailer {
+impl awaken_session_execution_contract::Outcomes for EndSessionFailer {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

@@ -39,7 +39,7 @@ struct ContinuationRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for ContinuationRuntime {
+impl SessionRuns for ContinuationRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -73,15 +73,15 @@ impl SessionRuntime for ContinuationRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for ContinuationRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for ContinuationRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for ContinuationRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for ContinuationRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for ContinuationRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for ContinuationRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for ContinuationRuntime);
 
@@ -431,7 +431,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntime {
+impl awaken_session_execution_contract::ThreadReads for ContinuationRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -536,7 +536,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ContinuationRuntim
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationRuntime {
+impl awaken_session_execution_contract::TerminalCleanup for ContinuationRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -611,7 +611,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for ContinuationRuntime {
+impl awaken_session_execution_contract::Outcomes for ContinuationRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

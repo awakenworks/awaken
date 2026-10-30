@@ -4575,7 +4575,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
     runtime.set_generic_recovery_available(false);
     assert!(
-        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+        awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(
             runtime.as_ref(),
             &SessionId::from(session_id),
             &thread_id.0,

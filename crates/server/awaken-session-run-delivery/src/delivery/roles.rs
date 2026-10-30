@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{DelegatedRunSnapshot, RunResume, StepOutcome};
 use awaken_session_execution_contract::LiveInboxError;
 use awaken_session_execution_contract::{
-    AdmitSessionRun, AdmittedSessionRun, CoordinatedRunCommand, CoordinationRuntime,
+    AdmitSessionRun, AdmittedSessionRun, ChildRunCoordination, CoordinatedRunCommand,
     SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionRunActivation,
     SessionRunDelivery, SessionRunReservation, SessionThreadLiveSubscription,
     SessionThreadToolReplyDelivery,
@@ -71,7 +71,7 @@ impl WorkerPlacedSessions {
 }
 
 #[async_trait::async_trait]
-impl CoordinationRuntime for WorkerPlacedSessions {
+impl ChildRunCoordination for WorkerPlacedSessions {
     async fn run_prepared_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
@@ -204,7 +204,7 @@ impl CoordinationRuntime for WorkerPlacedSessions {
 /// The Coordinator owns no Run attempt, so no live inbox is ever active here:
 /// a message for a running Run is delivered as an ordinary Session event.
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::LiveInboxRuntime for WorkerPlacedSessions {
+impl awaken_session_execution_contract::LiveInboxAccess for WorkerPlacedSessions {
     async fn live_inbox_snapshot(
         &self,
         _thread: &str,
@@ -316,7 +316,7 @@ fn thread_run<'a>(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for WorkerPlacedSessions {
+impl awaken_session_execution_contract::SessionRuns for WorkerPlacedSessions {
     async fn run(
         &self,
         agent: &str,
@@ -359,7 +359,7 @@ impl awaken_session_execution_contract::SessionRuntime for WorkerPlacedSessions 
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for WorkerPlacedSessions {
+impl awaken_session_execution_contract::StreamingRuns for WorkerPlacedSessions {
     async fn run_attributed(
         &self,
         agent: &str,

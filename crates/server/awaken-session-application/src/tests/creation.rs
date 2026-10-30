@@ -20,7 +20,7 @@ pub(super) struct RecordingCreateRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingCreateRuntime {
+impl SessionRuns for RecordingCreateRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -54,21 +54,21 @@ impl SessionRuntime for RecordingCreateRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingCreateRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingCreateRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(ThreadReads for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for RecordingCreateRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingCreateRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingCreateRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingCreateRuntime);
 
@@ -290,7 +290,7 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingCreateRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingCreateRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

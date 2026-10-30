@@ -573,7 +573,7 @@ pub struct SessionCreationCommands {
     managed_list_prices: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     execution_placement: crate::SessionExecutionPlacement,
     default_model: String,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
 }
 

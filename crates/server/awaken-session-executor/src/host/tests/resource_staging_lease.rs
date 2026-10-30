@@ -1239,7 +1239,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
 
 #[tokio::test]
 async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or_http_control() {
-    // Local supervision decision table, through the actual SessionRuntime port:
+    // Local supervision decision table, through the actual SessionRuns port:
     // L1 exact owner/incarnation + due, no MCP -> renew; L2 same with MCP ->
     // renew; L3 foreign owner, L4 foreign incarnation, L5 closed, L6 not due ->
     // no Control call and no mutation. No HTTP client is installed on Host:
@@ -1715,7 +1715,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
         .install_session_realization_lease(SESSION, f.lease.clone())
         .unwrap();
     *gate.0.lock().unwrap() = false;
-    // A7 the public SessionRuntime renewal delivery entrance has the same root
+    // A7 the public SessionRuns renewal delivery entrance has the same root
     // guard. Unlike the scheduler it reports denial without owning revocation.
     let managed = f.host.clone();
     let mut renewed = f.lease.clone();

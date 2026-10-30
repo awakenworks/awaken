@@ -16,7 +16,7 @@ use awaken_session_contract::{
     SessionScanQuery,
 };
 use awaken_session_execution_contract::{
-    CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReadRuntime,
+    CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReads,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
@@ -54,7 +54,7 @@ mod projection_evidence;
 /// ```
 /// use awaken_session_application::SessionQueries;
 /// use awaken_session_contract::PersistedSession;
-/// use awaken_session_execution_contract::ThreadReadRuntime;
+/// use awaken_session_execution_contract::ThreadReads;
 /// use awaken_session_types::RunError;
 /// async fn frozen(q: &SessionQueries, s: &PersistedSession)
 ///     -> Result<awaken_session_realization_contract::FrozenSessionProjection, RunError> {
@@ -63,7 +63,7 @@ mod projection_evidence;
 /// async fn scoped(q: &SessionQueries) -> Result<Vec<awaken_agent_contract::Message>, RunError> {
 ///     q.session_transcript("w", "s").await
 /// }
-/// async fn original_raw(r: &dyn ThreadReadRuntime)
+/// async fn original_raw(r: &dyn ThreadReads)
 ///     -> Result<Vec<awaken_agent_contract::Message>, RunError> {
 ///     r.committed_messages("thread").await
 /// }
@@ -71,7 +71,7 @@ mod projection_evidence;
 pub struct SessionQueries {
     repository: Arc<dyn SessionRepositoryReads>,
     projection: Arc<dyn SessionProjectionSource>,
-    thread_reads: Arc<dyn ThreadReadRuntime>,
+    thread_reads: Arc<dyn ThreadReads>,
     capabilities: Arc<dyn CapabilityRuntime>,
     profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
 }

@@ -183,7 +183,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RunAssembly {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for RunAssembly {
+impl awaken_session_execution_contract::TerminalCleanup for RunAssembly {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,

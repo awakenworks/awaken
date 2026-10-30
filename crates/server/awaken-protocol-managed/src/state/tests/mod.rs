@@ -31,7 +31,7 @@ struct EndSessionRecorder {
 }
 
 #[async_trait]
-impl SessionRuntime for EndSessionRecorder {
+impl SessionRuns for EndSessionRecorder {
     async fn run(
         &self,
         _agent: &str,
@@ -63,11 +63,11 @@ impl SessionRuntime for EndSessionRecorder {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for EndSessionRecorder);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for EndSessionRecorder);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for EndSessionRecorder);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for EndSessionRecorder);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for EndSessionRecorder);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for EndSessionRecorder);
 
@@ -273,7 +273,7 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionRecorde
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for EndSessionRecorder {
+impl awaken_session_execution_contract::ChildRunCoordination for EndSessionRecorder {
     // Fixture rule P1: terminal tests record end-session effects without prepared execution.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -281,7 +281,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for EndSessionRecord
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -583,7 +583,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EndSessionR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for EndSessionRecorder {
+impl awaken_session_execution_contract::StreamingRuns for EndSessionRecorder {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -687,7 +687,7 @@ impl awaken_session_execution_contract::StreamingRunRuntime for EndSessionRecord
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionRecorder {
+impl awaken_session_execution_contract::ThreadReads for EndSessionRecorder {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -796,7 +796,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for EndSessionRecorder
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionRecorder {
+impl awaken_session_execution_contract::TerminalCleanup for EndSessionRecorder {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -866,7 +866,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionRec
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for EndSessionRecorder {
+impl awaken_session_execution_contract::Outcomes for EndSessionRecorder {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

@@ -2041,13 +2041,12 @@ async fn executor_components_supply_every_session_role() {
     let host = shared.clone();
     let roles = host.session_execution_roles();
     assert!(Arc::ptr_eq(
-        &(shared.thread_reads().clone()
-            as Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>),
+        &(shared.thread_reads().clone() as Arc<dyn awaken_session_execution_contract::ThreadReads>),
         &roles.thread_reads
     ));
     assert!(Arc::ptr_eq(
         &(shared.live_inboxes().clone()
-            as Arc<dyn awaken_session_execution_contract::LiveInboxRuntime>),
+            as Arc<dyn awaken_session_execution_contract::LiveInboxAccess>),
         &roles.live_inbox
     ));
     let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);

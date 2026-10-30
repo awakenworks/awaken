@@ -16,7 +16,7 @@ mod roles;
 use std::sync::Arc;
 
 /// Session coordination for one process. Consumers: the Session application's
-/// `CoordinationRuntime` role. Its read role selects the original shared Threads.
+/// `ChildRunCoordination` role. Its read role selects the original shared Threads.
 ///
 /// ```compile_fail,E0277
 /// use std::sync::Arc;

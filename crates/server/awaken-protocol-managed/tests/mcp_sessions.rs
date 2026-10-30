@@ -21,7 +21,7 @@ use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_application_contract::{LifecycleFactNotifier, StepOutcome};
 use awaken_session_configuration_contract::SessionInit;
 use awaken_session_contract::{PersistedSession, SessionExecutionState};
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_session_types::RunError;
 use axum::Router;
@@ -89,7 +89,7 @@ async fn lifecycle_test_state() -> (
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for PreparingFake {
+impl SessionRuns for PreparingFake {
     async fn run(
         &self,
         _a: &str,
@@ -120,17 +120,17 @@ impl SessionRuntime for PreparingFake {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for PreparingFake);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for PreparingFake);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for PreparingFake);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for PreparingFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for PreparingFake);
 
@@ -350,7 +350,7 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for PreparingFake {
+impl awaken_session_execution_contract::ThreadReads for PreparingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -446,7 +446,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for PreparingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake {
+impl awaken_session_execution_contract::TerminalCleanup for PreparingFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -512,7 +512,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for PreparingFake {
+impl awaken_session_execution_contract::Outcomes for PreparingFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -636,7 +636,7 @@ struct HotRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for HotRuntime {
+impl SessionRuns for HotRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -667,17 +667,17 @@ impl SessionRuntime for HotRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for HotRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for HotRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for HotRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for HotRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for HotRuntime);
 
@@ -834,7 +834,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for HotRuntime {
 awaken_session_execution_contract::neutral_role!(RealizationEffects for HotRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for HotRuntime {
+impl awaken_session_execution_contract::ThreadReads for HotRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -940,7 +940,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for HotRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for HotRuntime {
+impl awaken_session_execution_contract::Outcomes for HotRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -3301,7 +3301,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
 
     struct HauntedRuntime;
     #[async_trait::async_trait]
-    impl SessionRuntime for HauntedRuntime {
+    impl SessionRuns for HauntedRuntime {
         async fn run(
             &self,
             _agent: &str,
@@ -3332,19 +3332,19 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         }
     }
 
-    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(ChildRunCoordination for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(BudgetRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetAccounting for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRuns for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanup for HauntedRuntime);
 
-    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for HauntedRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxAccess for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(CapabilityRuntime for HauntedRuntime);
 
@@ -3426,7 +3426,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     awaken_session_execution_contract::neutral_role!(RealizationEffects for HauntedRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::ThreadReadRuntime for HauntedRuntime {
+    impl awaken_session_execution_contract::ThreadReads for HauntedRuntime {
         async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
             // A previous process persisted threads sesn_0 and sesn_1.
             Ok(thread == "sesn_0" || thread == "sesn_1")
@@ -3527,7 +3527,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_execution_contract::OutcomeRuntime for HauntedRuntime {
+    impl awaken_session_execution_contract::Outcomes for HauntedRuntime {
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.

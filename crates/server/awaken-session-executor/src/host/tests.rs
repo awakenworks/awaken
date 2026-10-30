@@ -228,7 +228,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
 }
 
 use awaken_sandbox_container::ContainerHandleCodec as _;
-use awaken_session_execution_contract::TerminalCleanupRuntime;
+use awaken_session_execution_contract::TerminalCleanup;
 use awaken_session_types::SessionId;
 mod claimed_dispatch;
 mod managed_root;

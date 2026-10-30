@@ -235,7 +235,7 @@ where
             )
             .await?;
         // A Control-synchronized projection is the same complete Managed
-        // Session authority as a co-located SessionRuntime installation. Mark
+        // Session authority as a co-located SessionRuns installation. Mark
         // that existing ownership only after every frozen fact is installed;
         // otherwise the later claimed resolver mistakes an empty compatibility
         // envelope for ordinary desired state and drains Control's active MCP

@@ -385,7 +385,7 @@ pub trait SessionResourceCommands: Send + Sync {
 /// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
-    /// Adapt the selected [`awaken_session_execution_contract::CoordinationRuntime::subscribe_session_thread_live`] result unchanged.
+    /// Adapt the selected [`awaken_session_execution_contract::ChildRunCoordination::subscribe_session_thread_live`] result unchanged.
     async fn subscribe_session_thread_live(
         &self,
         session_id: &SessionId,

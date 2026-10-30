@@ -305,7 +305,7 @@ struct ActivationOnlySessionRunRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for ActivationOnlySessionRunRuntime {
+impl awaken_session_execution_contract::SessionRuns for ActivationOnlySessionRunRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -339,17 +339,17 @@ impl awaken_session_execution_contract::SessionRuntime for ActivationOnlySession
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for ActivationOnlySessionRunRuntime);
 
 no_committed_threads!(ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(OutcomeRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(Outcomes for ActivationOnlySessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for ActivationOnlySessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for ActivationOnlySessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for ActivationOnlySessionRunRuntime);
 
@@ -438,7 +438,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ActivationOnlySes
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for ActivationOnlySessionRunRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for ActivationOnlySessionRunRuntime {
     async fn run_prepared_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
@@ -1465,7 +1465,7 @@ impl awaken_session_application_contract::RunApplication for ProtocolProjectionR
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRuntime for BlockingSessionRunRuntime {
+impl awaken_session_execution_contract::SessionRuns for BlockingSessionRunRuntime {
     async fn run(
         &self,
         _agent: &str,
@@ -1499,19 +1499,19 @@ impl awaken_session_execution_contract::SessionRuntime for BlockingSessionRunRun
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for BlockingSessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for BlockingSessionRunRuntime);
 
 no_committed_threads!(BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(OutcomeRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(Outcomes for BlockingSessionRunRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for BlockingSessionRunRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for BlockingSessionRunRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for BlockingSessionRunRuntime);
 
@@ -1586,7 +1586,7 @@ impl awaken_session_execution_contract::RealizationRuntime for BlockingSessionRu
 awaken_session_execution_contract::neutral_role!(RealizationEffects for BlockingSessionRunRuntime);
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionRunRuntime {
+impl awaken_session_execution_contract::ChildRunCoordination for BlockingSessionRunRuntime {
     // Fixture rule P1: the gate blocks ordinary foreground observation only.
     // A prepared command refuses before activity admission or fixture mutation.
     async fn run_prepared_session_run(
@@ -1594,7 +1594,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionR
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
     ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
-        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+        awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
             activity,
@@ -1919,7 +1919,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for BlockingSes
 async fn background_activation_uses_the_session_runtime_without_a_second_queue_port() {
     // Cause/effect graph: C1 admission returns a delivery, recovery-claimed, or
     // completed; C2 the caller wants asynchronous observation. Effects: E1 an
-    // exact delivery crosses the SessionRuntime activation port once; E2 closed
+    // exact delivery crosses the SessionRuns activation port once; E2 closed
     // recovery/terminal outcomes are projected without touching Runtime.
     // Constraint: SessionApplication exposes no dispatch repository or raw row.
     // Decision table: R1=C1.delivery+C2=>E1; R2=C1.recovery=>E2.RecoveryClaimed;

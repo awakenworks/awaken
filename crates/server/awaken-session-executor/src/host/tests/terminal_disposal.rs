@@ -5,7 +5,7 @@ use super::*;
 
 /// Terminal cleanup prepares every durability participant before the aggregate
 /// opens the one physical-disposal edge. The exact sandbox is reaped only by
-/// `SessionRuntime::dispose_terminal_cleanup_for_effect`: preparation leaves
+/// `SessionRuns::dispose_terminal_cleanup_for_effect`: preparation leaves
 /// its status `Ready`, while disposal flips it to `Terminated`. The process-local
 /// terminal projection remains until the aggregate acknowledges the disposal
 /// receipt, unlike evict-to-rebuild edges that retain the physical workspace.

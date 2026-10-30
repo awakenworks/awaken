@@ -293,7 +293,7 @@ pub(super) struct RecordingResourceRuntime {
 }
 
 #[async_trait::async_trait]
-impl SessionRuntime for RecordingResourceRuntime {
+impl SessionRuns for RecordingResourceRuntime {
     async fn run(
         &self,
         agent: &str,
@@ -329,19 +329,19 @@ impl SessionRuntime for RecordingResourceRuntime {
     }
 }
 
-awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(ChildRunCoordination for RecordingResourceRuntime);
 
 awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingResourceRuntime);
 
-awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(BudgetAccounting for RecordingResourceRuntime);
 
-awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(StreamingRuns for RecordingResourceRuntime);
 
 no_committed_threads!(RecordingResourceRuntime);
 
-awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(TerminalCleanup for RecordingResourceRuntime);
 
-awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingResourceRuntime);
+awaken_session_execution_contract::neutral_role!(LiveInboxAccess for RecordingResourceRuntime);
 
 awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingResourceRuntime);
 
@@ -582,7 +582,7 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingResource
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RecordingResourceRuntime {
+impl awaken_session_execution_contract::Outcomes for RecordingResourceRuntime {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

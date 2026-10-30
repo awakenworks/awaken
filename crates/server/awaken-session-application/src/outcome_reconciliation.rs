@@ -31,7 +31,7 @@ pub(crate) struct OutcomeReconciliation {
 pub struct SessionOutcomeReconciliation {
     mutations: Arc<crate::SessionMutations>,
     realizations: Arc<crate::SessionRealizations>,
-    outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+    outcomes: Arc<dyn awaken_session_execution_contract::Outcomes>,
     run_admissions: Arc<crate::SessionRunAdmissions>,
 }
 

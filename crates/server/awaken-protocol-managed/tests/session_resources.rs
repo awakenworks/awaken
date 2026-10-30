@@ -6357,7 +6357,7 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     // qualified public identity as ordinary Managed Events. Decision rules
     // R10a=C1=>E1, R10b=C1+C2+C3=>E2+E3, R2c=C4=>E4, and
     // R10c=C2+C5=>E5. The shared Runtime fake implements the existing
-    // SessionRuntime commit ports; this route adds no Event fallback, projector,
+    // SessionRuns commit ports; this route adds no Event fallback, projector,
     // transcript, identity codec, or status owner.
     let runtime = CoordinatedRuntimeFake::default();
     runtime.hold_next_user_run_activation();

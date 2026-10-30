@@ -354,7 +354,7 @@ pub struct SessionUpdateCommands {
     executable_projections: crate::ExecutableProjections,
     tool_configuration_compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
-    budget: Arc<dyn awaken_session_execution_contract::BudgetRuntime>,
+    budget: Arc<dyn awaken_session_execution_contract::BudgetAccounting>,
     projection: Arc<dyn awaken_session_execution_contract::SessionProjectionSource>,
 }
 

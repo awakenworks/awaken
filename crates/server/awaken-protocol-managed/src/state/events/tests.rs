@@ -10,7 +10,7 @@
 // @formal evidence tool_result.terminal_run_rejects_late_result
 // awaken-allow(file-limit-ceiling): 13018 (legacy oversized test file: split, never grow)
 use awaken_session_contract::{LifecycleOutbox as _, SessionRepositoryReads};
-use awaken_session_execution_contract::ThreadReadRuntime as _;
+use awaken_session_execution_contract::ThreadReads as _;
 use awaken_session_types::SessionId;
 mod activation_failure_time;
 mod admission_boundaries;
@@ -43,7 +43,7 @@ use awaken_managed_session_events::{
 };
 use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::OutcomeIteration;
-use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
+use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
 use axum::body::Body;
@@ -384,7 +384,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
         )
         .await
         .expect("IC1 Session");
-    SessionRuntime::run(
+    SessionRuns::run(
         &runtime,
         "coder",
         &session.id,

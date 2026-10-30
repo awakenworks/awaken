@@ -3,7 +3,7 @@
 //! This is the anti-corruption boundary between the public Anthropic Managed
 //! Agents wire and the neutral runtime. It owns the public DTOs, the projection
 //! from committed `Message`s to public events, and the axum router; it drives one
-//! [`SessionRuntime`](awaken_session_execution_contract::SessionRuntime) port and constructs no runtime itself. It is the only crate
+//! [`SessionRuns`](awaken_session_execution_contract::SessionRuns) port and constructs no runtime itself. It is the only crate
 //! permitted to name Anthropic protocol vocabulary (G16).
 //!
 //! Scope: `POST /v1/sessions` (advertising the runtime's provisioned tool/resource
@@ -17,7 +17,7 @@
 // - `project` — conversion/projection: neutral domain state → wire events.
 // - `routes`  — routing: axum handlers decode DTOs, call injected applications,
 //               and encode wire responses; no resource business state lives here.
-// `state` holds the `SessionRuntime` port and the session record store the routes
+// `state` holds the `SessionRuns` port and the session record store the routes
 // drive and the projection writes into; `session_repo` is its persistence port.
 /// Awaken's `/v1/awaken` extensions of this protocol.
 pub mod awaken_extensions;

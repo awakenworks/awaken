@@ -2,13 +2,13 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 
 use crate::rehydrate_fake::{RehydrateFake, scripted_read_failure};
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
+impl awaken_session_execution_contract::BudgetAccounting for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resume an exact `BudgetReached` ticket without injecting transcript
@@ -80,7 +80,7 @@ impl awaken_session_execution_contract::BudgetRuntime for RehydrateFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::StreamingRunRuntime for RehydrateFake {
+impl awaken_session_execution_contract::StreamingRuns for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -400,7 +400,7 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
+impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -788,7 +788,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake {
+impl awaken_session_execution_contract::TerminalCleanup for RehydrateFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
@@ -855,7 +855,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
 }
 
 #[async_trait::async_trait]
-impl awaken_session_execution_contract::OutcomeRuntime for RehydrateFake {
+impl awaken_session_execution_contract::Outcomes for RehydrateFake {
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.

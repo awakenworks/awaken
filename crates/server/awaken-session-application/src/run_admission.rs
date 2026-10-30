@@ -103,9 +103,9 @@ pub struct SessionRunAdmissions {
     work_assignments: Arc<crate::SessionWorkAssignments>,
     executable_projections: crate::ExecutableProjections,
     execution_admission: Arc<crate::SessionExecutionAdmission>,
-    coordination: Arc<dyn awaken_session_execution_contract::CoordinationRuntime>,
-    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReadRuntime>,
-    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRunRuntime>,
+    coordination: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
+    thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRuns>,
 }
 
 /// The collaborators one [`SessionRunAdmissions`] is built from.
