@@ -737,5 +737,9 @@ class DispatchObservationSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'independent Dispatch observation outcome'):
             self.verify(changed)
 
+# unittest discovers these imported policy cases in the native gate suite.
+from test_postgres_work_tiers import WorkGapAdmissionTests, WorkParitySelectionTests
+
+
 if __name__=="__main__":
     unittest.main(verbosity=2)

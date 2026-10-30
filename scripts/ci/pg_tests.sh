@@ -90,6 +90,11 @@ pg_required_test() {
   AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="$remaining" run_required_rust_tests "$@"
 }
 
+checked_backend_parity() {
+  python3 scripts/ci/_native_postgres_gap_policy.py --check || return "$?"
+  backend_parity
+}
+
 backend_parity() {
   # One selection owner for native and Docker fixtures. Every row requires its
   # concrete backend bindings in the inventory, then reconciles actual outcomes.
@@ -116,10 +121,25 @@ backend_parity() {
     --require-case=in_memory_captured_content_conforms --require-case=sqlite_captured_content_conforms \
     --require-case=postgres::postgres_captured_content_conforms \
     --require-case=postgres::postgres_fixture_absence_and_configured_failure_have_distinct_outcomes -- --test-threads=1 || record_failure "$?"
+  # Current backend laws are required; four ledger product-gap reproducers
+  # remain unaccepted and are validated by checked_backend_parity.
   pg_required_test -p awaken-work-store --features test-support --test work_queue_conformance \
-    --require-case=in_memory_backend_conforms --require-case=sqlite_backend_conforms \
-    --require-case=postgres_backend_conforms --require-case=fixture_absence_and_configured_failure_are_distinct \
-    -- --test-threads=1 || record_failure "$?"
+    --require-case=in_memory_backend_conforms \
+    --require-case=sqlite_backend_conforms \
+    --require-case=postgres_backend_conforms \
+    --require-case=fixture_absence_and_configured_failure_are_distinct \
+    --require-case=lease_acceptance::concurrent_takeover_admits_only_the_current_owner_on_volatile_and_file_sqlite \
+    --require-case=lease_acceptance::postgres_work_lease_acceptance \
+    --require-case=lease_acceptance::postgres_work_lease_acceptance_fixture_admission \
+    --require-case=lease_acceptance::session_and_healthcheck_leases_are_taken_over_independently \
+    --require-case=lease_acceptance::terminal_ack_retries_only_the_original_identity \
+    --require-case=work_fixture_cleanup_preserves_another_live_schema \
+    -- \
+    --skip lease_acceptance::retried_ack_replays_the_original_acknowledgement \
+    --skip lease_acceptance::retried_stop_after_lost_response_replays \
+    --skip lease_acceptance::stale_same_owner_claimer_is_refused_after_reclaim \
+    --skip lease_acceptance::ack_after_the_lease_lapsed_is_refused \
+    --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \
     --require-case=sqlite_backend_conforms --require-case=postgres_backend_conforms \
     --require-case=postgres_fixture_absence_and_configured_failure_are_distinct \
@@ -868,7 +888,7 @@ if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -
   elif [ "$work_store_only" -eq 1 ]; then
     work_store_evidence || record_failure "$?"
   else
-    backend_parity
+    checked_backend_parity || record_failure "$?"
   fi
   exit "$first_failure"
 fi
@@ -1102,7 +1122,7 @@ critical_durability_evidence
 # P15 live fixture + explicit ignored selector => measure the canonical shared
 # cap and closed-pool rejection, never a no-database/default-suite passing skip.
 # The Rust case owns adapter assertions; this runner owns fixture and deadlines.
-backend_parity
+checked_backend_parity || record_failure "$?"
 
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
 # replacement -> read the same durable object. Both transitions are mandatory.

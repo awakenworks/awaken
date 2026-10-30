@@ -3,6 +3,7 @@
 from collections import Counter
 from pathlib import Path
 from _postgres_phase_plan import read_phases
+from _native_postgres_gap_policy import WORK_CURRENT_CASES, WORK_PRODUCT_GAPS
 
 # Minimum required domains are independent policy. The executable selectors
 # still own exact argv; deriving those argv must not derive away an obligation.
@@ -75,6 +76,40 @@ def _require_session_extraction_phase(phases):
         raise ValueError('PostgreSQL selector changed independent Session extraction outcomes')
 
 
+
+def _require_work_parity_phase(phases, root):
+    work = [phase for phase in phases if phase.selector == 'backend_parity'
+            and phase.package == 'awaken-work-store']
+    if len(work) != 1:
+        raise ValueError('PostgreSQL selector changed independent Work parity domain')
+    arguments = work[0].arguments
+    frontend = arguments[:arguments.index('--')] if '--' in arguments else arguments
+    runtime = arguments[arguments.index('--') + 1:] if '--' in arguments else ()
+    expected_frontend = (
+        '-p', 'awaken-work-store', '--features', 'test-support',
+        '--test', 'work_queue_conformance',
+        *('--require-case=' + case for case in WORK_CURRENT_CASES),
+    )
+    expected_runtime = (
+        *(value for case in WORK_PRODUCT_GAPS for value in ('--skip', case)),
+        '--test-threads=1',
+    )
+    if frontend != expected_frontend or runtime != expected_runtime:
+        raise ValueError('PostgreSQL selector changed independent Work parity/current-product-gap policy')
+    source = (root / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+    definitions = source.split('checked_backend_parity() {\n')
+    wrapper = definitions[1].split('\n}', 1)[0] + '\n' if len(definitions) == 2 else None
+    expected_wrapper = (
+        '  python3 scripts/ci/_native_postgres_gap_policy.py --check || return "$?"\n'
+        '  backend_parity\n'
+    )
+    direct = [line for line in source.splitlines() if line.strip() == 'backend_parity']
+    checked = [line for line in source.splitlines()
+               if line.strip() == 'checked_backend_parity || record_failure "$?"']
+    if wrapper != expected_wrapper or len(direct) != 1 or len(checked) != 2:
+        raise ValueError('PostgreSQL Work parity must validate its exact product-gap ledger before execution')
+
+
 def postgres_phases(scope, root=None):
     if scope not in POSTGRES_SELECTORS:
         raise ValueError("unsupported native PostgreSQL scope")
@@ -84,6 +119,7 @@ def postgres_phases(scope, root=None):
     if scope == 'storage':
         _require_session_extraction_phase(phases)
     if scope == 'core':
+        _require_work_parity_phase(phases, root or Path(__file__).resolve().parents[2])
         dispatch = [phase for phase in phases if phase.package == 'awaken-dispatch']
         if len(dispatch) != 1:
             raise ValueError('PostgreSQL selector changed independent Dispatch observation phase')
