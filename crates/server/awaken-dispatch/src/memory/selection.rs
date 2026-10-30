@@ -14,18 +14,26 @@ use super::*;
 pub(super) fn select_where(
     state: &State,
     now_ms: u64,
+    worker: Option<&WorkerSnapshot>,
     mut compatible: impl FnMut(&Row) -> bool,
 ) -> Option<RunId> {
+    let mut compatible = |row: &Row| {
+        row.request
+            .worker_codec_admission(worker.map(|worker| &worker.manifest))
+            .is_ok()
+            && compatible(row)
+    };
     // An unconfirmed predecessor still needs recovery observation, but cannot
     // monopolize the recovery-priority band while unrelated work is runnable.
     // This changes selection only; exact claim, handoff and ACK remain fenced.
-    select_in_physical_band(state, now_ms, &mut compatible, false)
-        .or_else(|| select_in_physical_band(state, now_ms, &mut compatible, true))
+    select_in_physical_band(state, now_ms, worker, &mut compatible, false)
+        .or_else(|| select_in_physical_band(state, now_ms, worker, &mut compatible, true))
 }
 
 fn select_in_physical_band(
     state: &State,
     now_ms: u64,
+    worker: Option<&WorkerSnapshot>,
     compatible: &mut impl FnMut(&Row) -> bool,
     occupied: bool,
 ) -> Option<RunId> {
@@ -38,6 +46,10 @@ fn select_in_physical_band(
             && row.active_attempt.is_some() == occupied
             && classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                 == ExactClaimMode::ReservationRecovery
+            && row
+                .request
+                .worker_codec_admission(worker.map(|worker| &worker.manifest))
+                .is_ok()
             && retry_deadline_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, false)
         {

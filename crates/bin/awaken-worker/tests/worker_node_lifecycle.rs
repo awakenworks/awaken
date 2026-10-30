@@ -492,6 +492,15 @@ fn standard_manifest_is_derived_from_builder_topology() {
     .expect("standard manifest derives a valid worker topology");
 
     assert!(worker.manifest().capabilities.contains("native-runtime"));
+    // J-C2: the real standard Worker builder wires the same raw codec that
+    // emits Returned and KnownAborted; registered advertisement cannot depend
+    // on an optional application-provided extra-capability string.
+    assert!(
+        worker
+            .manifest()
+            .capabilities
+            .contains(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY),
+    );
     assert!(
         worker
             .manifest()

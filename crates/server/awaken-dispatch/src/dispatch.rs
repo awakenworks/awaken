@@ -862,6 +862,11 @@ pub(crate) fn decide_run_identity(
         StoredRunIdentity::Absent => return Ok(RunIdentityDecision::New),
         StoredRunIdentity::Live(existing) => existing.same_admission_dispatch(incoming),
         StoredRunIdentity::Completed(existing) => match incoming.identity_scope {
+            DispatchIdentityScope::PreparedSessionCommand => incoming
+                .session_command_fingerprint
+                .as_ref()
+                .filter(|fingerprint| fingerprint.is_current())
+                .is_some_and(|fingerprint| existing == Some(fingerprint.as_str())),
             DispatchIdentityScope::SessionCommand => {
                 let legacy = incoming.legacy_session_reservation_fingerprint();
                 completed_run_identity_replays(
@@ -944,6 +949,7 @@ pub(crate) fn validate_session_run_reservation_request(
     request: RunDispatch,
     reservation_ttl_ms: u64,
 ) -> Result<(RunDispatch, u64), DispatchError> {
+    validate_dispatch_worker_codecs(&request)?;
     if !request
         .session_command_fingerprint
         .as_ref()
@@ -964,7 +970,79 @@ pub(crate) fn validate_session_run_reservation_request(
             "Session Run reservation TTL must be nonzero".to_string(),
         ));
     }
-    Ok((request.with_session_command_identity(), reservation_ttl_ms))
+    let request = if request.identity_scope == DispatchIdentityScope::PreparedSessionCommand {
+        request
+    } else {
+        request.with_session_command_identity()
+    };
+    Ok((request, reservation_ttl_ms))
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+fn legacy_unbound_session_run(request: &RunDispatch) -> bool {
+    request.identity_scope == DispatchIdentityScope::FullDispatch
+        && request.session_thread_id.is_none()
+        && request.session_activity_epoch.is_none()
+        && request.session_command_fingerprint.is_none()
+}
+
+/// Validate only trusted adoption input before taking a backend transaction.
+/// The later locked classifier still rechecks every original stored fact.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_pending_session_run_adoption(
+    expected_original: &RunDispatch,
+    command_fingerprint: &awaken_session_types::SessionRunCommandFingerprint,
+    owner: &str,
+    lease_ms: u64,
+) -> Result<u64, DispatchError> {
+    if !legacy_unbound_session_run(expected_original) || !command_fingerprint.is_current() {
+        return Err(DispatchError::Rejected(
+            "Session Run adoption requires an original unbound FullDispatch and current fingerprint"
+                .to_string(),
+        ));
+    }
+    let lease_ms = crate::clock::normalize_millis(lease_ms);
+    if owner.trim().is_empty() || lease_ms == 0 {
+        return Err(DispatchError::Rejected(
+            "Session Run adoption requires an owner and nonzero lease TTL".to_string(),
+        ));
+    }
+    Ok(lease_ms)
+}
+
+/// One locked adoption decision shared by Memory, SQLite and PostgreSQL. The
+/// original full identity is strict: even the ordinary old-MCP comparison is
+/// unavailable here. Only admission metadata changes; all execution inputs
+/// remain the exact original request.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn pending_session_run_adoption(
+    stored: &RunDispatch,
+    expected_original: &RunDispatch,
+    current: awaken_dispatch_contract::DispatchTransition,
+    authority_empty: bool,
+    physical_slot: PhysicalAttemptSlot,
+    closing: bool,
+    command_fingerprint: awaken_session_types::SessionRunCommandFingerprint,
+) -> Result<Option<(RunDispatch, awaken_dispatch_contract::DispatchTransition)>, DispatchError> {
+    let next = current
+        .adopt_pending_reservation(
+            stored.same_original_dispatch(expected_original),
+            legacy_unbound_session_run(stored),
+            authority_empty,
+            physical_slot,
+            closing,
+        )
+        .map_err(crate::transition_error)?;
+    Ok(next.map(|next| {
+        (
+            stored
+                .clone()
+                .for_session(stored.thread_id().clone())
+                .with_session_command_fingerprint(command_fingerprint)
+                .with_prepared_session_command_identity(),
+            next,
+        )
+    }))
 }
 
 /// A Session replacement may cross only an already-settled Awaiting boundary.
@@ -998,6 +1076,22 @@ pub(crate) fn validate_session_run_replacement_candidates(
 pub(crate) fn validate_executable_dispatch_admission(
     request: &RunDispatch,
 ) -> Result<(), DispatchError> {
+    validate_dispatch_worker_codecs(request)?;
+    if request.identity_scope == DispatchIdentityScope::PreparedSessionCommand
+        && (!request
+            .session_command_fingerprint
+            .as_ref()
+            .is_some_and(awaken_session_types::SessionRunCommandFingerprint::is_current)
+            || !matches!(
+                request.admission_shape(),
+                DispatchAdmissionShape::SessionRootAwaitingActivity
+                    | DispatchAdmissionShape::SessionRootWithActivity
+            ))
+    {
+        return Err(DispatchError::Rejected(
+            "Prepared Session Run requires self-affinity and its current complete command fingerprint".to_string(),
+        ));
+    }
     match request.admission_shape() {
         DispatchAdmissionShape::SessionRootAwaitingActivity => Err(DispatchError::Rejected(
             "Session root awaiting an activity receipt must use Session Run reservation"
@@ -1009,6 +1103,99 @@ pub(crate) fn validate_executable_dispatch_admission(
         DispatchAdmissionShape::OrdinaryRoot
         | DispatchAdmissionShape::SessionRootWithActivity
         | DispatchAdmissionShape::SessionChild => Ok(()),
+    }
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+fn validate_dispatch_worker_codecs(request: &RunDispatch) -> Result<(), DispatchError> {
+    request
+        .validate_worker_codec_requirements()
+        .map_err(|error| {
+            DispatchError::Rejected(format!(
+                "dispatch omits a mandatory Worker codec: {error:?}"
+            ))
+        })
+}
+
+#[cfg(test)]
+mod codec_rollout_tests {
+    use super::*;
+
+    #[test]
+    fn historical_unmarked_pending_adoption_adds_only_intrinsic_codec_narrowing() {
+        use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
+        use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
+        // C1 retained pre-codec FullDispatch Pending has no raw/prepared
+        // capability metadata; C2 original full identity is exact and authority
+        // vacant. E1 the shared production reducer adds ONLY needed codec
+        // narrowing plus existing Session admission metadata/tenure; E2 original
+        // activation, environment, tools and all other frozen input stay exact.
+        // This is retained storage input, not a fresh enqueue that could bypass
+        // current admission. Three-backend conformance owns transaction use of
+        // this same reducer; neither test claims Thread/SQL refinement.
+        let original = RunDispatch::new(RunActivation::new(
+            RunId("historical-codec-run".into()),
+            ThreadId("historical-codec-thread".into()),
+            ExecutableAgentSnapshot::builder("worker")
+                .model(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "provider", "model", "native",
+                    )
+                    .unwrap(),
+                )
+                .build(),
+            Vec::new(),
+        ))
+        .with_placement(awaken_dispatch_contract::PlacementRequirements::remote_preferred());
+        let fingerprint =
+            awaken_session_types::SessionRunCommandFingerprint::from_sha256_hex(&"a".repeat(64))
+                .unwrap();
+        assert!(
+            original.placement.required_capabilities.is_empty(),
+            "C1 exact old metadata absence"
+        );
+        let (mut adopted, next) = pending_session_run_adoption(
+            &original,
+            &original,
+            awaken_dispatch_contract::DispatchTransition {
+                state: DispatchState::Pending,
+                lease_epoch: 0,
+                cancellation_requested: false,
+            },
+            true,
+            PhysicalAttemptSlot::Empty,
+            false,
+            fingerprint,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            next.state,
+            DispatchState::ReservationLeased,
+            "E1 admission only"
+        );
+        assert_eq!(
+            adopted.placement.location, original.placement.location,
+            "E1 local/remote topology unchanged"
+        );
+        assert_eq!(
+            adopted.placement.required_capabilities,
+            [
+                awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY.to_owned(),
+                awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_owned()
+            ]
+            .into_iter()
+            .collect(),
+            "E1 only intrinsic narrowing"
+        );
+        adopted.identity_scope = original.identity_scope;
+        adopted.session_thread_id = original.session_thread_id.clone();
+        adopted.session_command_fingerprint = original.session_command_fingerprint.clone();
+        adopted.placement.required_capabilities = original.placement.required_capabilities.clone();
+        assert_eq!(
+            adopted, original,
+            "E2 all original execution-bearing fields retained"
+        );
     }
 }
 

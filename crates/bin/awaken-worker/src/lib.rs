@@ -1542,6 +1542,7 @@ impl WorkerNode {
         let (dispatch, stream_publisher) = awaken_coordinator_client::worker_transports_with_upstream(
             &upstream,
             registration.snapshot.identity.clone(),
+            self.manifest.clone(),
         );
         // The capacity this incarnation just registered. It is read once, it has
         // no `Clone`, and the only thing that can be done with it is to move it

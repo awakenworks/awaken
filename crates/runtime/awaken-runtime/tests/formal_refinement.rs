@@ -58,7 +58,10 @@ use awaken_tool_contract::tool::{
     RawTool, ToolError, ToolOutput, ToolOutputSpiller, ToolRecoveryCapability, ToolRecoveryMode,
     ToolRecoveryPolicy, current_tool_operation_context,
 };
-use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase};
+use awaken_tool_contract::tool_batch::{
+    ActiveToolBatch, ResourceOriginRef, ToolBatch, ToolBatchPhase, ToolCallPhase,
+    ToolExecutionDomain,
+};
 use serde::Serialize;
 
 const RUN_ID: &str = "formal-run";
@@ -189,6 +192,7 @@ struct TraceTool {
     capability: ToolRecoveryCapability,
     invocations: Arc<AtomicUsize>,
     preparations: AtomicUsize,
+    execution_domain_override: Option<ToolExecutionDomain>,
 }
 
 #[async_trait::async_trait]
@@ -203,7 +207,7 @@ impl RawTool for TraceTool {
 
     fn execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain {
         self.preparations.fetch_add(1, Ordering::SeqCst);
-        Default::default()
+        self.execution_domain_override.clone().unwrap_or_default()
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
@@ -230,6 +234,7 @@ fn trace_tool_with_capability(
             capability,
             invocations: invocations.clone(),
             preparations: AtomicUsize::new(0),
+            execution_domain_override: None,
         }),
         invocations,
     )
@@ -665,6 +670,7 @@ enum TransitionId {
     StartParallelCalls,
     AwaitCall,
     ResumeExecuting,
+    RecordReturns,
     CompleteCall,
     CompleteAndFinalize,
     CompleteImmediate,
@@ -762,6 +768,17 @@ fn classify_transition(
     }
 
     let changed = changed_calls(calls, before, after);
+    if !changed.is_empty()
+        && changed.iter().all(|call| {
+            after.call_state[*call] == "Returned"
+                && matches!(
+                    before.call_state[*call].as_str(),
+                    "Requested" | "Executing" | "Awaiting"
+                )
+        })
+    {
+        return TransitionId::RecordReturns;
+    }
     if changed.len() > 1
         && changed.iter().all(|call| {
             before.call_state[*call] == "Requested"
@@ -782,7 +799,9 @@ fn classify_transition(
         let source = before.call_state[call].as_str();
         let target = after.call_state[call].as_str();
         if target == "Completed" {
-            return match (source == "Requested", after.batch_state == "Finalized") {
+            let immediate =
+                source == "Requested" || (source == "Returned" && before.attempts[call] == 0);
+            return match (immediate, after.batch_state == "Finalized") {
                 (true, true) => TransitionId::CompleteImmediateAndFinalize,
                 (true, false) => TransitionId::CompleteImmediate,
                 (false, true) => TransitionId::CompleteAndFinalize,
@@ -822,6 +841,8 @@ fn phase_name(phase: &ToolCallPhase) -> &'static str {
         ToolCallPhase::Requested => "Requested",
         ToolCallPhase::Executing { .. } => "Executing",
         ToolCallPhase::Awaiting { .. } => "Awaiting",
+        ToolCallPhase::Returned(_) => "Returned",
+        ToolCallPhase::KnownAborted { .. } => "KnownAborted",
         ToolCallPhase::Completed(_) => "Completed",
         ToolCallPhase::Indeterminate { .. } => "Indeterminate",
     }
@@ -1055,6 +1076,198 @@ async fn policy_blocked_batch_produces_immediate_completion_refinement_transitio
         .expect("policy-blocked trace runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     emit_trace("policy_blocked_batch", &trace);
+}
+
+#[tokio::test]
+async fn delegated_preparation_refusal_closes_zero_attempt_returned_relationships() {
+    // Cause/effect graph: C1 two published AgentDelegation calls and the exact
+    // installed child service; C2 metadata carries origin A while the request
+    // borrows origin B; C3 serial / compatible parallel dispatch. C1 stages each
+    // relationship before C2 refuses preparation, without admitting an executor.
+    // E1 the real commit projects Returned/Open/0; E2 ordered folding closes
+    // each relationship without a child-result envelope or invocation; E3 the
+    // same two error results publish once before NaturalEnd/Finalized.
+    // Decision table: R1 C1+C2+serial => each raw return is checkpointed; the
+    // first CompleteImmediate and final CompleteImmediateAndFinalize close Open.
+    // R2 C1+C2+parallel => one RecordReturns opens both calls atomically; the
+    // same two ordered folds close them. Existing parallel_child_runs owns the
+    // successful preparation control; its fixture/default domain is unchanged.
+    // The immutable activation, SDK surface, schema and transition IDs remain
+    // original. TracingCoordinator/project_trace observe production commits;
+    // no constructed trace grants missing relationships or execution attempts.
+    for parallel in [false, true] {
+        let trace = TracingCoordinator::default();
+        let calls = vec![
+            tool_call("refused_a", "agent_run"),
+            tool_call("refused_b", "agent_run"),
+        ];
+        let snapshot = snapshot(&["agent_run"]);
+        let (mut declaration, tool_invocations) =
+            trace_tool_with_capability("agent_run", &trace, ToolRecoveryCapability::DurableRequest);
+        Arc::get_mut(&mut declaration)
+            .expect("the declaration has not been shared")
+            .execution_domain_override = Some(ToolExecutionDomain::Worker {
+            resource_origin: Some(ResourceOriginRef::new("executor-origin").unwrap()),
+        });
+        let serial = Arc::new(AwaitingDelegation::new(trace.clone()));
+        let child_invocations = Arc::new(AtomicUsize::new(0));
+        let service: Arc<dyn RunDelegationService> = if parallel {
+            Arc::new(CompletingDelegation {
+                trace: trace.clone(),
+                invocations: child_invocations.clone(),
+                usage: ThreadUsage::default(),
+            })
+        } else {
+            serial.clone()
+        };
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(CallsThenText::new(calls)))
+            .with_tool(declaration.clone())
+            .with_run_delegation(service);
+        register_snapshot(&runtime, &snapshot);
+        let mut context = RuntimeRunContext::new()
+            .with_commit(Arc::new(trace.clone()))
+            .with_reader(Arc::new(trace.inner.clone()));
+        context.resource_origin = Some(ResourceOriginRef::new("borrowed-origin").unwrap());
+        assert_eq!(
+            runtime
+                .execute(activation(snapshot), context)
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::NaturalEnd),
+            "R1/R2 ordinary preparation refusal"
+        );
+        assert_eq!(declaration.preparations.load(Ordering::SeqCst), 2);
+        assert_eq!(tool_invocations.load(Ordering::SeqCst), 0);
+        assert_eq!(child_invocations.load(Ordering::SeqCst), 0);
+        assert!(serial.starts.lock().unwrap().is_empty());
+        assert!(serial.resumes.lock().unwrap().is_empty());
+
+        let name = if parallel {
+            "delegated_preparation_refusal_parallel"
+        } else {
+            "delegated_preparation_refusal_serial"
+        };
+        let document = project_trace(name, trace.commits());
+        assert_eq!(
+            document.agent_calls,
+            vec![String::from("refused_a"), String::from("refused_b")]
+        );
+        assert!(
+            document.states.iter().all(|state| {
+                state.attempts["refused_a"] == 0 && state.attempts["refused_b"] == 0
+            })
+        );
+        let raw = document
+            .states
+            .iter()
+            .find(|state| state.call_state["refused_a"] == "Returned")
+            .expect("E1 a real raw-return checkpoint precedes folding");
+        assert_eq!(raw.run_state, "Running");
+        assert_eq!(raw.batch_state, "Open");
+        assert_eq!(raw.ticket_kind, "None");
+        assert_eq!(raw.link_state["refused_a"], "Open");
+        assert_eq!(
+            raw.call_state["refused_b"],
+            if parallel { "Returned" } else { "Requested" }
+        );
+        assert_eq!(
+            raw.link_state["refused_b"],
+            if parallel { "Open" } else { "Absent" }
+        );
+        assert_eq!(
+            document
+                .transitions
+                .iter()
+                .filter(|transition| transition.id == TransitionId::RecordReturns)
+                .count(),
+            if parallel { 1 } else { 2 },
+            "R1/R2 actual raw-return commit grouping"
+        );
+        let folds = document
+            .transitions
+            .iter()
+            .filter(|transition| {
+                matches!(
+                    transition.id,
+                    TransitionId::CompleteImmediate | TransitionId::CompleteImmediateAndFinalize
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            folds
+                .iter()
+                .map(|transition| transition.id)
+                .collect::<Vec<_>>(),
+            [
+                TransitionId::CompleteImmediate,
+                TransitionId::CompleteImmediateAndFinalize
+            ]
+        );
+        for (call, fold) in ["refused_a", "refused_b"].into_iter().zip(folds) {
+            let before = &document.states[fold.from_version];
+            let after = &document.states[fold.to_version];
+            assert_eq!(before.call_state[call], "Returned", "E1 {call}");
+            assert_eq!(before.link_state[call], "Open", "E1 {call}");
+            assert_eq!(after.call_state[call], "Completed", "E2 {call}");
+            assert_eq!(after.link_state[call], "Completed", "E2 {call}");
+            assert_eq!(after.attempts[call], 0, "E2 no entry {call}");
+        }
+        let mut observed = Store::new();
+        for commit in trace.commits() {
+            for command in &commit.state {
+                observed.apply(command);
+            }
+            assert!(
+                PendingChildRunResults::load(&observed).unwrap().is_empty(),
+                "E2 no durable child envelope at any observed boundary"
+            );
+        }
+        let committed = trace.inner.committed();
+        let store = Store::rebuild(&committed.state);
+        assert!(PendingChildRunResults::load(&store).unwrap().is_empty());
+        let error =
+            "persisted tool batch is invalid: executor and borrowed resource origins differ";
+        let batch = ActiveToolBatch::load(&store).unwrap().unwrap();
+        assert_eq!(batch.phase(), ToolBatchPhase::Finalized);
+        for entry in batch.calls() {
+            assert_eq!(
+                entry.recovery_policy.mode(),
+                ToolRecoveryMode::DurableRequest
+            );
+            assert!(entry.execution_domain.is_none(), "E1 no executor entry");
+            let ToolCallPhase::Completed(output) = &entry.phase else {
+                panic!("E3 every refusal is completed");
+            };
+            assert!(output.is_error);
+            assert_eq!(output.text(), error);
+        }
+        let results = committed
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } => Some((tool_use_id.as_str(), *is_error)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results,
+            [("refused_a", true), ("refused_b", true)],
+            "E3 order and cardinality"
+        );
+        assert!(document.states.last().is_some_and(|state| {
+            state.run_state == "Ended"
+                && state.batch_state == "Finalized"
+                && state.link_state["refused_a"] == "Completed"
+                && state.link_state["refused_b"] == "Completed"
+        }));
+        emit_trace(name, &trace);
+    }
 }
 
 #[tokio::test]

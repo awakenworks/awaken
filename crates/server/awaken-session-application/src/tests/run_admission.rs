@@ -14,10 +14,282 @@ mod pre_activation;
 pub(super) mod response_loss_store;
 mod retry_identity;
 
+#[tokio::test]
+async fn prepared_worker_revision_and_ack_reuse_root_receipts_and_complete_activation() {
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+    use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
+    use awaken_session_execution_contract::PreparedSessionRunAdmission as _;
+    // Cause/effect graph: A1 new Worker/revision/ACK stable identity; A2 exact
+    // replay after settlement; F1 every prepared field is frozen by its caller.
+    // E1 reserve before one receipt per distinct Run; E2 A2 never reopens an
+    // epoch; E3 the selected runtime receives the entire activation unchanged.
+    // Rules A1a..c=>E1+E3, A2a..c=>E2+E3. The borrowed neutral
+    // admission role is used directly; only Execution adapts it to the SDK.
+    // This bounded adapter test does not certify real execution; delivery/backend/Controller tests own those cuts.
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = "prepared-outcome-root";
+    let mut session = persisted(id, false, "idle");
+    if let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut session.baseline
+    {
+        baseline.runtime_placement = SessionRuntimePlacement::Worker;
+    }
+    create(repository.as_ref(), session).await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    for (index, run) in [
+        "outcome/exact/worker/0",
+        "outcome/exact/worker/1",
+        "outcome/exact/ack",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let activation = RunActivation::new(
+            RunId(run.into()),
+            awaken_agent_contract::ThreadId(id.into()),
+            ExecutableAgentSnapshot::builder("agent")
+                .model(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "test", "model", "native",
+                    )
+                    .expect("valid native prepared activation fixture"),
+                )
+                .build(),
+            vec![Message::text(
+                MessageId(format!("prepared-input-{index}")),
+                Role::User,
+                "/must-not-expand frozen input",
+            )],
+        )
+        .with_model_ref_override(Some("caller-frozen-model".into()))
+        .with_data_subject(Some(awaken_runtime_contract::DataSubjectId(
+            "caller-subject".into(),
+        )))
+        .with_delegation_origin(
+            awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(
+                RunId("parent".into()),
+                "call",
+                "coordinator",
+            ),
+        )
+        .with_inherited_toolsets(Some(
+            awaken_agent_contract::toolset::InheritedToolsets::with_caller(Vec::new(), None),
+        ))
+        .without_tools();
+        let admission = app.run_admissions.outcome_run_admission(id);
+        assert_eq!(
+            admission.admit(activation.clone()).await.unwrap(),
+            RunState::Ended(EndCause::NaturalEnd)
+        );
+        assert_eq!(
+            runtime.prepared.lock().unwrap().last().unwrap().activation,
+            activation,
+            "F1 complete frozen input"
+        );
+        let delivery = runtime.deliveries.lock().unwrap().last().unwrap().clone();
+        app.lifecycle()
+            .settle_activity_observed(&delivery.session_id, delivery.session_activity_epoch, None)
+            .await
+            .unwrap();
+        let settled = repository.get(&SessionId::from(id)).await.unwrap();
+        assert!(
+            settled.active_activity_epochs.is_empty(),
+            "A1 exact settlement"
+        );
+        let before = serde_json::to_value(&settled).unwrap();
+        admission.admit(activation).await.unwrap();
+        assert_eq!(
+            runtime
+                .deliveries
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .session_activity_epoch,
+            delivery.session_activity_epoch,
+            "A2 same epoch"
+        );
+        assert_eq!(
+            serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),
+            before,
+            "A2 whole root stutter"
+        );
+    }
+    assert!(
+        runtime.reservations.lock().unwrap().is_empty(),
+        "F1 no lossy ordinary command"
+    );
+}
+
+#[tokio::test]
+async fn prepared_budget_preflight_defers_before_reservation_and_same_id_survives_a_raise() {
+    use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
+    use awaken_session_budget_contract::{ManagedListPriceSnapshot, SessionBudgetState};
+    use awaken_session_execution_contract::PreparedSessionRunAdmission as _;
+    // Causes B1 no prior receipt + already reached policy; B2 a canonical cap
+    // raise; B3 exact same complete activation. Effects E1 B1 creates no
+    // reservation/negative/activity and is typed Deferred; E2 B2+B3 admits that
+    // same stable Run exactly once. The existing rejection_races tests own
+    // durable negative/positive/CAS-outage ordering inside the shared CAS loop.
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = "prepared-budget-preflight";
+    let mut session = persisted(id, false, "idle");
+    if let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut session.baseline
+    {
+        baseline.runtime_placement = SessionRuntimePlacement::Worker;
+    }
+    session.budget = SessionBudgetState::Active {
+        max_list_cost_minor: 1,
+        consumed_numerator: 2
+            * SessionBudgetState::MICROS_PER_MINOR_USD
+            * SessionBudgetState::COST_DENOMINATOR,
+        usage_cursor: Default::default(),
+        snapshot: ManagedListPriceSnapshot {
+            snapshot_id: "prepared-budget-prices".into(),
+            version: 1,
+            effective_at_unix_ms: 1,
+            arithmetic_version: 1,
+            model_rates: Default::default(),
+            runtime_rates: Default::default(),
+            fingerprint: "prepared-budget-prices-fingerprint".into(),
+        },
+        reach_transitions: Vec::new(),
+    };
+    create(repository.as_ref(), session).await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let activation = RunActivation::new(
+        awaken_agent_contract::agent::run::Id("outcome/budget/worker/0".into()),
+        awaken_agent_contract::ThreadId(id.into()),
+        ExecutableAgentSnapshot::builder("agent")
+            .model(
+                awaken_runtime_contract::resolved::ModelBinding::parse("test", "model", "native")
+                    .expect("valid native prepared activation fixture"),
+            )
+            .build(),
+        vec![awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id("budget-input".into()),
+            awaken_agent_contract::agent::message::Role::User,
+            "frozen input",
+        )],
+    );
+    let before = serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap();
+    let error = app
+        .run_admissions
+        .outcome_run_admission(id)
+        .admit(activation.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        awaken_runtime_contract::diagnostic::run_admission_disposition(&error),
+        Some(awaken_runtime_contract::diagnostic::RunAdmissionDisposition::Deferred),
+        "B1/E1"
+    );
+    assert_eq!(
+        error.code(),
+        "session_budget_deferred",
+        "B1 not a closed negative"
+    );
+    assert!(
+        runtime.prepared.lock().unwrap().is_empty()
+            && runtime.deliveries.lock().unwrap().is_empty(),
+        "B1/E1 no reservation or activation"
+    );
+    assert_eq!(
+        serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),
+        before,
+        "B1 whole root stutter"
+    );
+    // B2 uses the original update-command owner and the same heap boundary as
+    // authority/budget_resume. The budget and its configuration-update fact
+    // must share the root CAS; B1's deferred admission has written neither.
+    // Observe the real command outcome before retrying the SAME activation.
+    let raised = Box::pin(app.update_commands.update_session(
+        &SessionId::from(id),
+        SessionUpdateCommand {
+            title: None,
+            metadata: None,
+            budget: Some(SessionFieldUpdate::Replace(3)),
+            tools: None,
+            mcp_update: None,
+            idempotency_key: Some("prepared-cap-raise".into()),
+            request_fingerprint: awaken_agent_contract::stable_fingerprint(&(
+                3_u64,
+                "prepared-cap-raise",
+            )),
+            if_match: None,
+        },
+    ))
+    .await
+    .unwrap();
+    assert!(
+        raised.command_applied,
+        "B2 canonical cap raise won its root CAS"
+    );
+    app.run_admissions
+        .outcome_run_admission(id)
+        .admit(activation.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.prepared.lock().unwrap().len(),
+        1,
+        "B2/E2 exactly one reservation"
+    );
+    assert_eq!(
+        runtime.prepared.lock().unwrap()[0].activation,
+        activation,
+        "B3 same complete activation"
+    );
+    // B4 negative control: the runtime can project the same existing code,
+    // while the canonical owner retains an accepted receipt. Text/code alone
+    // must never mint Closed or overwrite that positive activity.
+    runtime.prepared_budget_error.store(true, Ordering::SeqCst);
+    let accepted =
+        serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap();
+    let error = app
+        .run_admissions
+        .outcome_run_admission(id)
+        .admit(activation)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        awaken_runtime_contract::diagnostic::run_admission_disposition(&error),
+        Some(awaken_runtime_contract::diagnostic::RunAdmissionDisposition::Deferred),
+        "B4 code is not refusal evidence"
+    );
+    assert_eq!(
+        serde_json::to_value(repository.get(&SessionId::from(id)).await.unwrap()).unwrap(),
+        accepted,
+        "B4 accepted root retained"
+    );
+}
+
 struct ProtocolProjectionRuntime;
 
 #[derive(Default)]
 struct ActivationOnlySessionRunRuntime {
+    prepared: Mutex<Vec<awaken_session_execution_contract::AdmitPreparedSessionRun>>,
+    prepared_budget_error: AtomicBool,
     reservations: Mutex<Vec<AdmitSessionRun>>,
     deliveries: Mutex<Vec<SessionRunDelivery>>,
     restores: AtomicUsize,
@@ -167,6 +439,29 @@ impl awaken_session_execution_contract::RealizationRuntime for ActivationOnlySes
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for ActivationOnlySessionRunRuntime {
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError> {
+        self.events.lock().unwrap().push("prepared_reserve");
+        self.prepared.lock().unwrap().push(command);
+        if self.prepared_budget_error.load(Ordering::SeqCst) {
+            return Err(RunError::classified(
+                "budget_reached",
+                "same code without a canonical refusal",
+            ));
+        }
+        let admitted = activity
+            .admit(SessionRunReservation::Reserved, false, None)
+            .await?;
+        self.activate_session_run(admitted.delivery().unwrap().clone())
+            .await?;
+        Ok(awaken_agent_contract::agent::run::RunState::Ended(
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
+    }
+
     async fn archive_session_thread(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -1296,6 +1591,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Blocking
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for BlockingSessionRunRuntime {
+    // Fixture rule P1: the gate blocks ordinary foreground observation only.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn archive_session_thread(
         &self,
         session_id: &awaken_session_types::SessionId,

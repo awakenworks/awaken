@@ -41,6 +41,7 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
         )],
     ))
     .with_placement(PlacementRequirements::remote_preferred())
+    .with_worker_codec_requirements()
 }
 
 /// Attach the current Session command identity after the fixture has applied
@@ -179,9 +180,7 @@ fn credential_candidate(
 fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
     // Protocol support is a fixed precondition; each caller varies the actual
     // claim/credential/recovery cause under test.
-    let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    let manifest = worker_http::current_dispatch_codec_manifest();
     WorkerSnapshot {
         identity: WorkerIdentity::new(format!("{ns}-{suffix}-worker"), "boot", 1),
         capability_fingerprint: manifest

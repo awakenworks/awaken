@@ -432,7 +432,20 @@ pub async fn build_unmounted_dependencies(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> SessionExecutorBuilder {
-    build_unmounted_dependencies_with_deployment(llm, model_ref, scenario_deployment()).await
+    build_unmounted_platform(llm, model_ref).await.0
+}
+
+/// The unmounted Runtime and exact Resources owner selected by the canonical
+/// scenario assembly. Callers that compose a Session application retain both;
+/// builder-only callers project the same pair without creating another owner.
+pub async fn build_unmounted_platform(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> (
+    SessionExecutorBuilder,
+    awaken_resource_application::ResourcesApplication,
+) {
+    resource_host(llm, model_ref).await.into_dependencies()
 }
 
 /// The unmounted scenario composition with an explicit deployment. Resources
@@ -495,10 +508,11 @@ pub async fn build_unmounted_platform_with_agent_publications(
     SessionExecutorBuilder,
     awaken_resource_application::ResourcesApplication,
 ) {
-    resource_host(llm, model_ref)
-        .await
-        .map_dependencies(|dependencies| dependencies.with_agent_publications(publications))
-        .into_dependencies()
+    let (dependencies, resources) = build_unmounted_platform(llm, model_ref).await;
+    (
+        dependencies.with_agent_publications(publications),
+        resources,
+    )
 }
 
 async fn build_router_and_host_from(

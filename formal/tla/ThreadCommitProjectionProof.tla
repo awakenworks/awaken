@@ -59,6 +59,21 @@ BY Z3T(30) DEF ResumeExecuting, Bump, StateValue, Safety, TypeOK, TicketCoherenc
    RunStates, TicketKinds, CallStates, TerminalCallStates, BatchStates,
    LinkStates, KernelAssumptions
 
+\* Return decision table: R1 an unlinked immediate answer keeps its link absent;
+\* R2 a fresh Agent request staged before preparation refusal opens its link in
+\* the raw checkpoint, retaining attempt zero; R3 entered/waiting returns keep
+\* their existing links and attempts. R4 returning the ticketed call clears that
+\* ticket; every other call, link and attempt remains unchanged. An Open link
+\* records a relationship, not evidence that physical execution began.
+LEMMA RecordReturnsSafety ==
+    \A wave \in SUBSET Calls:
+      KernelAssumptions /\ Safety(state) /\
+        RecordReturns(state, state', wave) => Safety(state')
+BY Z3T(30) DEF RecordReturns, Bump, StateValue, Safety, TypeOK,
+   TicketCoherence, BatchCoherence, AttemptCoherence, DelegationCoherence,
+   EndedIsSealed, RunStates, TicketKinds, CallStates, TerminalCallStates,
+   BatchStates, LinkStates, KernelAssumptions
+
 LEMMA CompleteCallSafety ==
     \A c \in Calls:
       KernelAssumptions /\ Safety(state) /\ CompleteCall(state, state', c) =>
@@ -77,6 +92,11 @@ BY Z3T(30) DEF CompleteAndFinalize, Bump, StateValue, Safety, TypeOK,
    EndedIsSealed, RunStates, TicketKinds, CallStates, TerminalCallStates,
    BatchStates, LinkStates, KernelAssumptions
 
+\* Immediate-fold decision table: C1 Requested or Returned with zero attempts;
+\* C2 the call has no relationship or its staged relationship is Open. D1 the
+\* unlinked answer completes without adding a link; D2 the same completion fold
+\* closes Open to Completed, exactly as CompleteCall does. No executor entry
+\* or positive-attempt assumption is added to the legitimate refusal path.
 LEMMA CompleteImmediateSafety ==
     \A c \in Calls:
       KernelAssumptions /\ Safety(state) /\
@@ -86,6 +106,8 @@ BY Z3T(30) DEF CompleteImmediate, Bump, StateValue, Safety, TypeOK, TicketCohere
    RunStates, TicketKinds, CallStates, TerminalCallStates, BatchStates,
    LinkStates, KernelAssumptions
 
+\* C3 all other calls are terminal: the same D1/D2 relationship fold also
+\* finalizes this batch; no Open relationship can survive its completed call.
 LEMMA CompleteImmediateAndFinalizeSafety ==
     \A c \in Calls:
       KernelAssumptions /\ Safety(state) /\
@@ -123,7 +145,8 @@ BY Z3T(30) DEF EndRun, Bump, StateValue, Safety, TypeOK, TicketCoherence,
 LEMMA NextSafety == KernelAssumptions /\ Safety(state) /\ Next => Safety(state')
 BY PersistBatchSafety, CommitNoopSafety, StartOrRetrySafety,
    StartParallelCallsSafety, AwaitCallSafety,
-   ResumeExecutingSafety, CompleteCallSafety, CompleteAndFinalizeSafety,
+   ResumeExecutingSafety, RecordReturnsSafety,
+   CompleteCallSafety, CompleteAndFinalizeSafety,
    CompleteImmediateSafety, CompleteImmediateAndFinalizeSafety,
    MarkIndeterminateSafety, FinalizeBatchSafety, EndRunSafety DEF Next, NextState
 

@@ -122,7 +122,95 @@ pub(crate) struct SessionRunAdmissionCollaborators {
     pub(crate) runtime: crate::SessionExecutor,
 }
 
+struct RunActivityAdmission {
+    session_id: awaken_session_types::SessionId,
+    run_id: awaken_agent_contract::agent::run::Id,
+    projected_revision: SessionRevision,
+    existing_activity_epoch: Option<u64>,
+    prepared: bool,
+}
+
 impl SessionRunAdmissions {
+    /// One borrowed admission role for new Outcome Worker/ACK acquisitions. It owns
+    /// no Outcome state and is never retained by the Outcome runtime.
+    pub fn outcome_run_admission<'a>(
+        &'a self,
+        session: &'a str,
+    ) -> impl awaken_session_execution_contract::PreparedSessionRunAdmission + 'a {
+        SessionOutcomeRunAdmission {
+            admissions: self,
+            session,
+        }
+    }
+
+    async fn run_prepared_activation(
+        &self,
+        session: &str,
+        activation: awaken_runtime_contract::RunActivation,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError> {
+        use awaken_session_execution_contract::AdmitPreparedSessionRun;
+        if activation.thread_id.0 != session || activation.input.is_empty() {
+            return Err(RunError::bad_request(
+                "prepared Outcome Run does not match its Session",
+            ));
+        }
+        let session_id = awaken_session_types::SessionId::from(session);
+        let run_id = activation.run_id.clone();
+        let operation = session_run_activity_operation_id(&session_id, &run_id);
+        let command = AdmitPreparedSessionRun {
+            session_id: session_id.clone(),
+            operation_id: operation.clone(),
+            activation,
+            traceparent: None,
+        };
+        // Freeze identity before projection refresh, continuation or admission.
+        let _fingerprint = command.command_fingerprint();
+        let thread_id = awaken_agent_contract::ThreadId(session.to_owned());
+        let previous = self
+            .activities
+            .recover_activity_for_operation(&session_id, &operation, Some((&thread_id, &run_id)))
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
+        let root = self
+            .mutations
+            .session_aggregate(&session_id)
+            .await
+            .map_err(crate::session_repository_error)?;
+        if previous.is_none() && !root.budget.can_admit_model_request() {
+            // This is not a durable refusal. Reserving now would permanently
+            // close the stable ID instead of allowing a later cap raise.
+            return Err(RunError::unavailable_classified(
+                "session_budget_deferred",
+                "Session budget currently defers a new Outcome Run",
+            ));
+        }
+        let owner = self
+            .mutations
+            .owner(&session_id)
+            .await
+            .map_err(mutation_error)?;
+        let revision = self
+            .admit_run_session(
+                &owner,
+                session,
+                &command.activation.snapshot.root_agent_id.0,
+            )
+            .await?;
+        let revision = self
+            .activities
+            .prepare_run_activity_revision(&session_id, revision)
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
+        let activity = PreparedRunActivity {
+            admissions: self,
+            session_id,
+            run_id,
+            projected_revision: revision,
+        };
+        self.coordination
+            .run_prepared_session_run(command, &activity)
+            .await
+    }
     pub(crate) fn new(collaborators: SessionRunAdmissionCollaborators) -> Self {
         let SessionRunAdmissionCollaborators {
             mutations,
@@ -292,55 +380,102 @@ impl SessionRunAdmissions {
                 .admit_run_session(owner_scope, session_id.as_str(), &agent_id)
                 .await?;
             let reservation = coordination_runtime.reserve_session_run(command).await?;
-            let delivery = |session_activity_epoch| SessionRunDelivery {
-                session_id: session_id.clone(),
-                run_id: run_id.clone(),
-                session_activity_epoch,
-            };
+            self.finish_run_admission(
+                RunActivityAdmission {
+                    session_id,
+                    run_id,
+                    projected_revision,
+                    existing_activity_epoch,
+                    prepared: false,
+                },
+                reservation,
+                false,
+                None,
+            )
+            .await
+        })
+    }
 
-            match session_run_activity_receipt_plan(reservation, existing_activity_epoch) {
-                SessionRunActivityReceiptPlan::CommitActivity {
-                    reservation_replayed,
-                } => {
-                    let session_activity_epoch = self
-                        .activities
+    async fn finish_run_admission(
+        &self,
+        admission: RunActivityAdmission,
+        reservation: awaken_session_execution_contract::SessionRunReservation,
+        recover_only: bool,
+        admitted_after_cursor: Option<u64>,
+    ) -> Result<AdmittedSessionRun, RunError> {
+        let RunActivityAdmission {
+            session_id,
+            run_id,
+            projected_revision,
+            existing_activity_epoch,
+            prepared,
+        } = admission;
+        let thread_id = awaken_agent_contract::ThreadId(session_id.to_string());
+        let operation = session_run_activity_operation_id(&session_id, &run_id);
+        let delivery = |session_activity_epoch| SessionRunDelivery {
+            session_id: session_id.clone(),
+            run_id: run_id.clone(),
+            session_activity_epoch,
+        };
+
+        match session_run_activity_receipt_plan(reservation, existing_activity_epoch) {
+            SessionRunActivityReceiptPlan::CommitActivity {
+                reservation_replayed,
+            } => {
+                let session_activity_epoch = if recover_only {
+                    return Err(RunError::unavailable_classified(
+                        "session_run_admission_pending",
+                        "Run has no committed activity receipt",
+                    ));
+                } else if prepared {
+                    self.activities
+                        .commit_prepared_run_activity(
+                            &session_id,
+                            &operation,
+                            projected_revision,
+                            (&thread_id, &run_id),
+                            admitted_after_cursor,
+                        )
+                        .await?
+                } else {
+                    self.activities
                         .begin_run_activity_at_revision(
                             &session_id,
                             &operation,
                             projected_revision,
                             (&thread_id, &run_id),
                         )
-                        .await?;
-                    Ok(if reservation_replayed {
-                        AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
-                    } else {
-                        AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
-                    })
-                }
-                SessionRunActivityReceiptPlan::UseReceipt {
-                    session_activity_epoch,
-                    reservation_replayed,
-                } => Ok(if reservation_replayed {
+                        .await?
+                };
+                Ok(if reservation_replayed {
                     AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
                 } else {
                     AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
-                }),
-                SessionRunActivityReceiptPlan::UseActivatedReceipt {
-                    session_activity_epoch,
-                } => Ok(AdmittedSessionRun::AlreadyActivated(delivery(
-                    session_activity_epoch,
-                ))),
-                SessionRunActivityReceiptPlan::RecoveryClaimed => {
-                    Ok(AdmittedSessionRun::RecoveryClaimed { session_id, run_id })
-                }
-                SessionRunActivityReceiptPlan::Completed => {
-                    Ok(AdmittedSessionRun::Completed { session_id, run_id })
-                }
-                SessionRunActivityReceiptPlan::RejectInvalidReceipt => Err(RunError::internal(
-                    "reserved or activated Session Run has no activity epoch",
-                )),
+                })
             }
-        })
+            SessionRunActivityReceiptPlan::UseReceipt {
+                session_activity_epoch,
+                reservation_replayed,
+            } => Ok(if reservation_replayed {
+                AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
+            } else {
+                AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
+            }),
+            SessionRunActivityReceiptPlan::UseActivatedReceipt {
+                session_activity_epoch,
+            } => Ok(AdmittedSessionRun::AlreadyActivated(delivery(
+                session_activity_epoch,
+            ))),
+            SessionRunActivityReceiptPlan::RecoveryClaimed => {
+                Ok(AdmittedSessionRun::RecoveryClaimed { session_id, run_id })
+            }
+            SessionRunActivityReceiptPlan::Completed => {
+                Ok(AdmittedSessionRun::Completed { session_id, run_id })
+            }
+            SessionRunActivityReceiptPlan::RejectInvalidReceipt => Err(RunError::internal(
+                "reserved or activated Session Run has no activity epoch",
+            )),
+        }
     }
 
     /// Admit, register before activation, and observe one foreground Run for
@@ -590,6 +725,111 @@ impl SessionRunAdmissions {
             }
             Err(error) => Err(session_repository_error(error)),
         }
+    }
+}
+
+struct SessionOutcomeRunAdmission<'a> {
+    admissions: &'a SessionRunAdmissions,
+    session: &'a str,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::PreparedSessionRunAdmission
+    for SessionOutcomeRunAdmission<'_>
+{
+    async fn admit(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+    ) -> awaken_runtime_contract::diagnostic::Result<awaken_agent_contract::agent::run::RunState>
+    {
+        use awaken_runtime_contract::diagnostic::{
+            RunAdmissionDisposition, RunAdmissionFailure, RuntimeDiagnostic, RuntimeErrorKind,
+        };
+        let run_id = activation.run_id.clone();
+        match self
+            .admissions
+            .run_prepared_activation(self.session, activation)
+            .await
+        {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                let session_id = awaken_session_types::SessionId::from(self.session);
+                let thread_id = awaken_agent_contract::ThreadId(self.session.to_owned());
+                let operation = session_run_activity_operation_id(&session_id, &run_id);
+                // Codes are projection vocabulary, not proof of a closed
+                // decision. Only the original activity owner's typed replay
+                // of this exact canonical negative can mint Closed. An outage,
+                // corrupt hash or a positive receipt remains Deferred.
+                let closed = error.code == "budget_reached"
+                    && matches!(
+                        self.admissions
+                            .activities
+                            .recover_activity_for_operation(
+                                &session_id,
+                                &operation,
+                                Some((&thread_id, &run_id)),
+                            )
+                            .await,
+                        Err(crate::SessionActivityError::BudgetReached),
+                    );
+                let disposition = if closed {
+                    RunAdmissionDisposition::Closed
+                } else {
+                    RunAdmissionDisposition::Deferred
+                };
+                Err(RuntimeDiagnostic::new(
+                    RuntimeErrorKind::Unavailable,
+                    error.code.clone(),
+                    RunAdmissionFailure::new(disposition, error),
+                )
+                .into())
+            }
+        }
+    }
+}
+
+struct PreparedRunActivity<'a> {
+    admissions: &'a SessionRunAdmissions,
+    session_id: awaken_session_types::SessionId,
+    run_id: awaken_agent_contract::agent::run::Id,
+    projected_revision: SessionRevision,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionRunActivityAdmitter for PreparedRunActivity<'_> {
+    async fn admit(
+        &self,
+        reservation: awaken_session_execution_contract::SessionRunReservation,
+        recover_only: bool,
+        admitted_after_cursor: Option<u64>,
+    ) -> Result<AdmittedSessionRun, RunError> {
+        let thread = awaken_agent_contract::ThreadId(self.session_id.to_string());
+        let operation = session_run_activity_operation_id(&self.session_id, &self.run_id);
+        let epoch = self
+            .admissions
+            .activities
+            .recover_activity_for_operation(
+                &self.session_id,
+                &operation,
+                Some((&thread, &self.run_id)),
+            )
+            .await
+            .map_err(crate::SessionActivityError::run_error)?
+            .map(|(_, epoch)| epoch);
+        self.admissions
+            .finish_run_admission(
+                RunActivityAdmission {
+                    session_id: self.session_id.clone(),
+                    run_id: self.run_id.clone(),
+                    projected_revision: self.projected_revision,
+                    existing_activity_epoch: epoch,
+                    prepared: true,
+                },
+                reservation,
+                recover_only,
+                admitted_after_cursor,
+            )
+            .await
     }
 }
 

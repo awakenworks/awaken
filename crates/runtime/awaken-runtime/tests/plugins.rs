@@ -59,6 +59,8 @@ enum PhaseProbeMode {
     Return,
     Pending,
     Panic,
+    Error,
+    InputError,
 }
 
 #[derive(Clone)]
@@ -74,13 +76,43 @@ impl PhaseHook for PhaseProbe {
         self.point
     }
 
-    async fn on_phase(&self, _: &PhaseContext, _: &[Message], _: &Store) -> HookReaction {
+    async fn on_phase(
+        &self,
+        _: &PhaseContext,
+        _: &[Message],
+        _: &Store,
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         self.entered.notify_one();
-        match self.mode {
-            PhaseProbeMode::Return => HookReaction::default(),
+        Ok(match self.mode {
+            PhaseProbeMode::Return | PhaseProbeMode::InputError => HookReaction::default(),
             PhaseProbeMode::Pending => std::future::pending().await,
             PhaseProbeMode::Panic => panic!("injected phase failure"),
+            PhaseProbeMode::Error => {
+                return Err(awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+                    awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest,
+                    "phase_probe_failed",
+                    std::io::Error::other("typed phase fault"),
+                )
+                .into());
+            }
+        })
+    }
+    async fn on_model_input(
+        &self,
+        _: &PhaseContext,
+        _: &[awaken_runtime_contract::llm::ChatMessage],
+        _: &[Message],
+        _: &Store,
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
+        if matches!(self.mode, PhaseProbeMode::InputError) {
+            return Err(awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+                awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest,
+                "phase_input_failed",
+                std::io::Error::other("typed input observation fault"),
+            )
+            .into());
         }
+        Ok(HookReaction::default())
     }
 }
 
@@ -200,6 +232,9 @@ async fn every_entered_phase_hook_vetoes_ack_on_drop_or_unwind_but_not_return() 
                 }
                 PhaseProbeMode::Pending => assert!(result.unwrap_err().is_cancelled()),
                 PhaseProbeMode::Panic => assert!(result.unwrap_err().is_panic()),
+                PhaseProbeMode::Error | PhaseProbeMode::InputError => {
+                    unreachable!("covered by the typed fault table")
+                }
             }
             assert_eq!(
                 quiescence.can_acknowledge_return(),
@@ -1019,4 +1054,687 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
         vec!["m1"],
         "a pre-inference capability failure durably identifies its accepted input"
     );
+}
+
+struct JournalEcho {
+    calls: Arc<AtomicUsize>,
+    barrier: Option<Arc<tokio::sync::Barrier>>,
+    pending_second: bool,
+}
+
+#[async_trait::async_trait]
+impl RawTool for JournalEcho {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    fn concurrency(&self, _: &serde_json::Value) -> awaken_tool_contract::tool::ToolConcurrency {
+        awaken_tool_contract::tool::ToolConcurrency::Parallel
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(barrier) = &self.barrier {
+            barrier.wait().await;
+        }
+        if self.pending_second && call.call_id == "c2" {
+            std::future::pending::<()>().await;
+        }
+        Ok(
+            ToolOutput::ok(&call.call_id, format!("raw-{}", call.call_id)).with_state(vec![
+                awaken_agent_contract::agent::state::Command::set(
+                    Scope::Thread,
+                    awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                    format!("own-{}", call.call_id),
+                    serde_json::json!(call.call_id),
+                ),
+            ]),
+        )
+    }
+}
+
+struct JournalModel {
+    step: AtomicUsize,
+    count: usize,
+}
+#[async_trait::async_trait]
+impl LlmExecutor for JournalModel {
+    async fn infer(&self, _: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let output = if self.step.fetch_add(1, Ordering::SeqCst) == 0 {
+            AssistantOutput::from_tool_calls(
+                (1..=self.count)
+                    .map(|index| ToolCall {
+                        call_id: format!("c{index}"),
+                        tool_id: "echo".into(),
+                        arguments: serde_json::json!({}),
+                    })
+                    .collect(),
+            )
+        } else {
+            AssistantOutput::text("done")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn typed_after_tool_fault_preserves_exact_raw_and_recovery_never_reexecutes_it() {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_tool_contract::{ActiveToolBatch, ToolCallPhase};
+    // J1/J2/J5/J6/J9/J10: physical return + typed AfterTool error => ordinary
+    // attempt Err, exact raw content/error/state durable, no model result or
+    // tool-owned state publication. A later healthy hook folds only that known
+    // return; it must not invoke the physical tool again even under NeverReplay.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenTextLlm {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_plugin(Arc::new(PhaseProbe {
+            point: PhaseHookPoint::AfterTool,
+            entered: Arc::new(tokio::sync::Notify::new()),
+            mode: PhaseProbeMode::Error,
+        }))
+        .with_tool(Arc::new(JournalEcho {
+            calls: calls.clone(),
+            barrier: None,
+            pending_second: false,
+        }));
+    let ctx = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(commit.clone());
+    let latch = ctx.physical_quiescence.clone();
+    let error = runtime
+        .execute(activation(vec!["phase-probe".into()]), ctx)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        "phase_probe_failed",
+        "original typed error survives"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let committed = commit.committed();
+    assert!(
+        !committed
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+    );
+    let state = replay_state(&committed);
+    let batch = ActiveToolBatch::load(&state).unwrap().unwrap();
+    let ToolCallPhase::Returned(raw) = &batch.calls()[0].phase else {
+        panic!("known raw is explicit")
+    };
+    assert_eq!(raw.text(), "raw-c1");
+    assert!(!raw.is_error);
+    assert_eq!(raw.state.len(), 1);
+    assert!(
+        state.get(Scope::Thread, &Key("own-c1".into())).is_none(),
+        "raw state is not publication"
+    );
+    assert!(
+        latch.can_acknowledge_return(),
+        "normal Err clears no independent veto and invents none"
+    );
+    let recovered = Runtime::new()
+        .with_plugin(Arc::new(PhaseProbe {
+            point: PhaseHookPoint::AfterTool,
+            entered: Arc::new(tokio::sync::Notify::new()),
+            mode: PhaseProbeMode::Return,
+        }))
+        .with_llm(Arc::new(TextLlm))
+        .with_tool(Arc::new(JournalEcho {
+            calls: calls.clone(),
+            barrier: None,
+            pending_second: false,
+        }));
+    let mut input = activation(vec!["phase-probe".into()]);
+    input.input.clear();
+    assert_eq!(
+        recovered
+            .execute(
+                input,
+                RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_reader(commit.clone())
+            )
+            .await
+            .unwrap(),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "known return is never replayed physically"
+    );
+    let committed = commit.committed();
+    assert_eq!(
+        committed
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .count(),
+        1
+    );
+    assert!(
+        replay_state(&committed)
+            .get(Scope::Thread, &Key("own-c1".into()))
+            .is_some()
+    );
+}
+
+struct PauseRawCheckpoint {
+    inner: Arc<MemoryCommitCoordinator>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    once: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl awaken_agent_contract::thread::commit::coordinator::Coordinator for PauseRawCheckpoint {
+    async fn commit(
+        &self,
+        commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        use awaken_agent_contract::agent::state::StateKey;
+        use awaken_tool_contract::{ActiveToolBatch, ToolCallPhase};
+        let state = Store::rebuild(&commit.state);
+        if ActiveToolBatch::load(&state)
+            .ok()
+            .flatten()
+            .is_some_and(|batch| {
+                batch
+                    .calls()
+                    .iter()
+                    .any(|entry| matches!(entry.phase, ToolCallPhase::Returned(_)))
+            })
+            && self.once.swap(false, Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        awaken_agent_contract::thread::commit::coordinator::Coordinator::commit(
+            self.inner.as_ref(),
+            commit,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_partial_wave_drains_the_observed_raw_checkpoint_before_terminal() {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_tool_contract::{ActiveToolBatch, ToolCallPhase};
+    // J3/J4/J9: both physical peers entered; c1 returned and its checkpoint is
+    // awaiting ACK, c2 remains pending. Cancel cannot drop that started commit.
+    // After ACK, terminal sealing retains exact known raw as KnownAborted while
+    // the unreturned peer stays Indeterminate; neither creates a ToolResult or
+    // a physical-return ACK. This is cooperative cancel, not hard-abort proof.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let coordinator = Arc::new(PauseRawCheckpoint {
+        inner: commit.clone(),
+        entered: entered.clone(),
+        release: release.clone(),
+        once: std::sync::atomic::AtomicBool::new(true),
+    });
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let context = RuntimeRunContext::new()
+        .with_commit(coordinator)
+        .with_reader(commit.clone())
+        .with_cancellation(cancellation.clone());
+    let latch = context.physical_quiescence.clone();
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(JournalModel {
+            step: AtomicUsize::new(0),
+            count: 2,
+        }))
+        .with_tool(Arc::new(JournalEcho {
+            calls: calls.clone(),
+            barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+            pending_second: true,
+        }));
+    let task = tokio::spawn(async move { runtime.execute(activation(Vec::new()), context).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .expect("raw checkpoint started");
+    cancellation.cancel();
+    assert!(
+        !task.is_finished(),
+        "journal ACK owns cancellation sequencing"
+    );
+    release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        RunState::Ended(EndCause::Cancelled)
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "both original peers entered once"
+    );
+    let committed = commit.committed();
+    let batch = ActiveToolBatch::load(&replay_state(&committed))
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&batch.calls()[0].phase, ToolCallPhase::KnownAborted { output, .. }
+        if output.text() == "raw-c1" && output.state.len() == 1)
+    );
+    assert!(matches!(
+        &batch.calls()[1].phase,
+        ToolCallPhase::Indeterminate { .. }
+    ));
+    assert!(
+        !committed
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+    );
+    assert!(
+        !latch.can_acknowledge_return(),
+        "c2 drop keeps the physical veto"
+    );
+}
+
+struct RejectSpill {
+    calls: AtomicUsize,
+    at: usize,
+}
+#[async_trait::async_trait]
+impl awaken_tool_contract::tool::ToolOutputSpiller for RejectSpill {
+    async fn execution_domain(
+        &self,
+        _: &RunId,
+        _: &str,
+        _: &str,
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
+        Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::worker())
+    }
+    async fn spill(&self, _: &RunId, _: &str, content: String) -> Result<String, ToolError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == self.at {
+            Err(ToolError::UnavailableBeforeDispatch(
+                "injected materialization failure".into(),
+            ))
+        } else {
+            Ok(format!("preview:{content}"))
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_early_or_late_spill_fault_retains_the_whole_returned_wave_without_physical_replay() {
+    use awaken_tool_contract::{ActiveToolBatch, ToolCallPhase};
+    // J1/J2/J5/J6: two compatible physical peers have both returned. Spill
+    // fails on first/second model-order result. Every original raw output/state
+    // is already in the same durable batch history; no partial Tool transcript
+    // is visible. Recovery materializes pending raw only and never re-invokes
+    // either physical effect. Adjacent tests retain the fatal/unknown veto rows.
+    for at in [0, 1] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(JournalModel {
+                step: AtomicUsize::new(0),
+                count: 2,
+            }))
+            .with_tool(Arc::new(JournalEcho {
+                calls: calls.clone(),
+                barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+                pending_second: false,
+            }));
+        assert!(
+            runtime
+                .execute(
+                    activation(Vec::new()),
+                    RuntimeRunContext::new()
+                        .with_commit(commit.clone())
+                        .with_reader(commit.clone())
+                        .with_tool_output_spiller(Arc::new(RejectSpill {
+                            calls: AtomicUsize::new(0),
+                            at
+                        }))
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let committed = commit.committed();
+        assert!(
+            !committed
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool)
+        );
+        for id in ["c1", "c2"] {
+            assert!(ActiveToolBatch::recorded_batches(&committed.state, &RunId("run-1".into()))
+                .filter_map(Result::ok).filter_map(|(_, batch)| batch)
+                .any(|batch| batch.calls().iter().any(|entry|
+                    matches!(&entry.phase, ToolCallPhase::Returned(raw)
+                        if raw.call_id == id && raw.text() == format!("raw-{id}") && raw.state.len() == 1))),
+                "exact raw retained before spill {at}/{id}");
+        }
+        let recovered = Runtime::new()
+            .with_llm(Arc::new(TextLlm))
+            .with_tool(Arc::new(JournalEcho {
+                calls: calls.clone(),
+                barrier: None,
+                pending_second: false,
+            }));
+        let mut input = activation(Vec::new());
+        input.input.clear();
+        assert_eq!(
+            recovered
+                .execute(
+                    input,
+                    RuntimeRunContext::new()
+                        .with_commit(commit.clone())
+                        .with_reader(commit.clone())
+                )
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::NaturalEnd)
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "no known physical effect re-executes"
+        );
+        let ids: Vec<_> = commit
+            .committed()
+            .messages
+            .into_iter()
+            .flat_map(|message| message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            ["c1", "c2"],
+            "model order survives physical completion order and recovery"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_phase_and_model_input_propagates_ordinary_typed_attempt_faults() {
+    // J2/J5/J7: the complete five-point phase partition plus on_model_input.
+    // Error kind/code/source survive the boundary; the loop neither tolerates
+    // nor retries/fails over these faults as provider inference failures.
+    for (point, mode, code) in [
+        (
+            PhaseHookPoint::StepStart,
+            PhaseProbeMode::Error,
+            "phase_probe_failed",
+        ),
+        (
+            PhaseHookPoint::BeforeInference,
+            PhaseProbeMode::Error,
+            "phase_probe_failed",
+        ),
+        (
+            PhaseHookPoint::AfterInference,
+            PhaseProbeMode::Error,
+            "phase_probe_failed",
+        ),
+        (
+            PhaseHookPoint::AfterTool,
+            PhaseProbeMode::Error,
+            "phase_probe_failed",
+        ),
+        (
+            PhaseHookPoint::StepEnd,
+            PhaseProbeMode::Error,
+            "phase_probe_failed",
+        ),
+        (
+            PhaseHookPoint::AfterInference,
+            PhaseProbeMode::InputError,
+            "phase_input_failed",
+        ),
+    ] {
+        let runtime = phase_probe_runtime(PhaseProbe {
+            point,
+            mode,
+            entered: Arc::new(tokio::sync::Notify::new()),
+        });
+        let error = runtime
+            .execute(
+                activation(vec!["phase-probe".into()]),
+                RuntimeRunContext::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), code, "{point:?}");
+        assert_eq!(
+            error.kind(),
+            awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest
+        );
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "source retained/{point:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn approved_resume_hook_fault_keeps_receipt_atomic_and_publishes_context_with_result_once() {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+    use awaken_tool_contract::{ActiveToolBatch, ToolCallPhase};
+    // J3/J5/J7/J8: approval's original pre-effect receipt/Executing frame
+    // succeeds, then the common AfterTool fold fails. Raw remains durable and
+    // the consumed ticket never returns. Accepted System context stays nested
+    // until one later safe System->Tool publication frame; reclaim runs the
+    // healthy hook but never the already completed physical tool.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenTextLlm {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(JournalEcho {
+            calls: calls.clone(),
+            barrier: None,
+            pending_second: false,
+        }))
+        .with_plugin(Arc::new(PhaseProbe {
+            point: PhaseHookPoint::AfterTool,
+            mode: PhaseProbeMode::Error,
+            entered: Arc::new(tokio::sync::Notify::new()),
+        }))
+        .with_gate(Arc::new(ConfirmTool));
+    assert_eq!(
+        runtime
+            .execute(
+                activation(vec!["phase-probe".into()]),
+                RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_reader(commit.clone())
+            )
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    let ticket = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+    let mut command = ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 0);
+    command.operation_id = Some("approved-hook-fault".into());
+    command.context_messages.push(Message::text(
+        MessageId("accepted-context".into()),
+        Role::System,
+        "accepted",
+    ));
+    let error = runtime
+        .resume(
+            command,
+            commit.as_ref(),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "phase_probe_failed");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_none());
+    let prefix = commit.committed();
+    assert!(
+        !prefix
+            .messages
+            .iter()
+            .any(|message| message.id.0 == "accepted-context" || message.role == Role::Tool)
+    );
+    let batch = ActiveToolBatch::load(&replay_state(&prefix))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(batch.calls()[0].phase, ToolCallPhase::Returned(_)));
+    assert_eq!(batch.calls()[0].result_messages[0].id.0, "accepted-context");
+    assert_eq!(
+        prefix
+            .events
+            .iter()
+            .filter(|event| event.kind == awaken_agent_contract::audit::kind::Kind::ResumeApplied)
+            .count(),
+        1
+    );
+    let recovered = Runtime::new()
+        .with_llm(Arc::new(TextLlm))
+        .with_tool(Arc::new(JournalEcho {
+            calls: calls.clone(),
+            barrier: None,
+            pending_second: false,
+        }))
+        .with_plugin(Arc::new(PhaseProbe {
+            point: PhaseHookPoint::AfterTool,
+            mode: PhaseProbeMode::Return,
+            entered: Arc::new(tokio::sync::Notify::new()),
+        }));
+    let mut input = activation(vec!["phase-probe".into()]);
+    input.input.clear();
+    recovered
+        .execute(
+            input,
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let messages = commit.committed().messages;
+    let context = messages
+        .iter()
+        .position(|message| message.id.0 == "accepted-context")
+        .unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.id.0 == "accepted-context")
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages[context + 1].role,
+        Role::Tool,
+        "exact accepted prefix immediately precedes canonical result"
+    );
+}
+
+struct RejectSpillDomain {
+    unknown: bool,
+    spills: Arc<AtomicUsize>,
+}
+#[async_trait::async_trait]
+impl awaken_tool_contract::tool::ToolOutputSpiller for RejectSpillDomain {
+    async fn execution_domain(
+        &self,
+        _: &RunId,
+        _: &str,
+        _: &str,
+    ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
+        if self.unknown {
+            Err(ToolError::Indeterminate(
+                "unknown preparation effect".into(),
+            ))
+        } else {
+            Err(ToolError::UnavailableBeforeDispatch(
+                "preparation unavailable".into(),
+            ))
+        }
+    }
+    async fn spill(&self, _: &RunId, _: &str, text: String) -> Result<String, ToolError> {
+        self.spills.fetch_add(1, Ordering::SeqCst);
+        Ok(text)
+    }
+}
+
+#[tokio::test]
+async fn raw_knowledge_never_erases_spill_preparation_uncertainty() {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_tool_contract::{ActiveToolBatch, ToolCallPhase};
+    // J2/J6/J9: the tool returned exactly, then spill-domain preparation reports
+    // clean unavailability / explicit Indeterminate. Both retain raw and never
+    // enter spill; only the explicit unknown keeps the monotonic physical veto
+    // and existing genuine Indeterminate Run terminal. Raw alone is no grant.
+    for unknown in [false, true] {
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let spills = Arc::new(AtomicUsize::new(0));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(JournalModel {
+                step: AtomicUsize::new(0),
+                count: 1,
+            }))
+            .with_tool(Arc::new(JournalEcho {
+                calls: calls.clone(),
+                barrier: None,
+                pending_second: false,
+            }));
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone())
+            .with_tool_output_spiller(Arc::new(RejectSpillDomain {
+                unknown,
+                spills: spills.clone(),
+            }));
+        let latch = context.physical_quiescence.clone();
+        let result = runtime.execute(activation(Vec::new()), context).await;
+        if unknown {
+            assert_eq!(result.unwrap(), RunState::Ended(EndCause::Indeterminate));
+        } else {
+            assert!(result.is_err());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(spills.load(Ordering::SeqCst), 0);
+        assert_eq!(latch.can_acknowledge_return(), !unknown);
+        let committed = commit.committed();
+        assert!(
+            !committed
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool)
+        );
+        let batch = ActiveToolBatch::load(&replay_state(&committed))
+            .unwrap()
+            .unwrap();
+        assert!(match &batch.calls()[0].phase {
+            ToolCallPhase::KnownAborted { output, .. } if unknown => output.text() == "raw-c1",
+            ToolCallPhase::Returned(output) if !unknown => output.text() == "raw-c1",
+            _ => false,
+        });
+    }
 }

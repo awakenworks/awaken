@@ -525,6 +525,7 @@ mod tests {
                 for command in hook
                     .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
                     .await
+                    .expect("phase hook succeeds")
                     .state
                 {
                     state.apply(&command);
@@ -676,6 +677,7 @@ mod tests {
             for command in hook
                 .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
                 .await
+                .expect("phase hook succeeds")
                 .state
             {
                 state.apply(&command);
@@ -744,6 +746,7 @@ mod tests {
                 for command in hook
                     .on_model_input(&ctx, &observed_input(&conversation), &conversation, &state)
                     .await
+                    .expect("phase hook succeeds")
                     .state
                 {
                     state.apply(&command);

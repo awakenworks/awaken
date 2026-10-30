@@ -11,8 +11,8 @@ CONSTANTS Calls, AgentCalls, NoCall, MaxAttempts, MaxVersion
 
 RunStates == {"Running", "Awaiting", "Ended"}
 TicketKinds == {"None", "ToolPermission", "Delegation", "Scheduled", "External"}
-CallStates == {"Requested", "Executing", "Awaiting", "Completed", "Indeterminate"}
-TerminalCallStates == {"Completed", "Indeterminate"}
+CallStates == {"Requested", "Executing", "Awaiting", "Returned", "KnownAborted", "Completed", "Indeterminate"}
+TerminalCallStates == {"KnownAborted", "Completed", "Indeterminate"}
 BatchStates == {"Absent", "Open", "Finalized"}
 LinkStates == {"Absent", "Open", "Completed", "CancelRequested"}
 
@@ -81,7 +81,7 @@ DelegationCoherence(s) ==
         /\ s.linkState[c] = "CancelRequested" => s.runState = "Ended"
         /\ s.linkState[c] = "Open" =>
               /\ c \in AgentCalls
-              /\ s.callState[c] \in {"Executing", "Awaiting"}
+              /\ s.callState[c] \in {"Executing", "Awaiting", "Returned"}
 
 EndedIsSealed(s) ==
     s.runState = "Ended" =>
@@ -183,9 +183,36 @@ ResumeExecuting(s, t, c) ==
           s.version + 1)
     /\ Bump(s, t)
 
+\* One or more observed returns cross the existing batch checkpoint. This
+\* action grants neither physical quiescence nor payload correctness.
+\* A fresh delegated request can be staged before preparation refuses entry:
+\* that same raw checkpoint opens its relationship with attempts still zero.
+\* The empty opened set retains immediate answers that stage no relationship.
+RecordReturns(s, t, wave) ==
+    /\ wave \in SUBSET Calls
+    /\ wave # {}
+    /\ s.batchState = "Open"
+    /\ \A c \in wave: s.callState[c] \in {"Requested", "Executing", "Awaiting"}
+    /\ s.runState = "Running" \/ s.ticketCall \in wave
+    /\ \E opened \in SUBSET wave:
+          /\ \A c \in opened:
+               /\ c \in AgentCalls
+               /\ s.callState[c] = "Requested"
+               /\ s.linkState[c] = "Absent"
+          /\ t = StateValue(
+                IF s.ticketCall \in wave THEN "Running" ELSE s.runState,
+                IF s.ticketCall \in wave THEN "None" ELSE s.ticketKind,
+                IF s.ticketCall \in wave THEN NoCall ELSE s.ticketCall,
+                [c \in Calls |-> IF c \in wave THEN "Returned" ELSE s.callState[c]],
+                s.attempts, s.batchState,
+                [c \in Calls |-> IF c \in opened THEN "Open" ELSE s.linkState[c]],
+                s.version + 1)
+    /\ Bump(s, t)
+
 CompleteCall(s, t, c) ==
     /\ c \in Calls
-    /\ s.callState[c] \in {"Executing", "Awaiting"}
+    /\ s.callState[c] \in {"Executing", "Awaiting", "Returned"}
+    /\ (s.callState[c] = "Returned" => s.attempts[c] > 0)
     /\ (s.runState = "Running" \/ s.ticketCall = c)
     /\ t = StateValue(
           IF s.runState = "Awaiting" THEN "Running" ELSE s.runState,
@@ -200,7 +227,8 @@ CompleteCall(s, t, c) ==
 CompleteAndFinalize(s, t, c) ==
     /\ c \in Calls
     /\ s.batchState = "Open"
-    /\ s.callState[c] \in {"Executing", "Awaiting"}
+    /\ s.callState[c] \in {"Executing", "Awaiting", "Returned"}
+    /\ (s.callState[c] = "Returned" => s.attempts[c] > 0)
     /\ (s.runState = "Running" \/ s.ticketCall = c)
     /\ \A d \in Calls \ {c}: s.callState[d] \in TerminalCallStates
     /\ t = StateValue(
@@ -217,30 +245,36 @@ CompleteImmediate(s, t, c) ==
     /\ c \in Calls
     /\ s.runState = "Running"
     /\ s.batchState = "Open"
-    /\ s.callState[c] = "Requested"
+    /\ s.callState[c] \in {"Requested", "Returned"}
+    /\ s.attempts[c] = 0
     /\ t = StateValue(
           s.runState, s.ticketKind, s.ticketCall,
           [s.callState EXCEPT ![c] = "Completed"],
-          s.attempts, s.batchState, s.linkState, s.version + 1)
+          s.attempts, s.batchState,
+          [s.linkState EXCEPT ![c] = IF @ = "Open" THEN "Completed" ELSE @],
+          s.version + 1)
     /\ Bump(s, t)
 
 CompleteImmediateAndFinalize(s, t, c) ==
     /\ c \in Calls
     /\ s.runState = "Running"
     /\ s.batchState = "Open"
-    /\ s.callState[c] = "Requested"
+    /\ s.callState[c] \in {"Requested", "Returned"}
+    /\ s.attempts[c] = 0
     /\ \A d \in Calls \ {c}: s.callState[d] \in TerminalCallStates
     /\ t = StateValue(
           s.runState, s.ticketKind, s.ticketCall,
           [s.callState EXCEPT ![c] = "Completed"],
-          s.attempts, "Finalized", s.linkState, s.version + 1)
+          s.attempts, "Finalized",
+          [s.linkState EXCEPT ![c] = IF @ = "Open" THEN "Completed" ELSE @],
+          s.version + 1)
     /\ Bump(s, t)
 
 MarkIndeterminate(s, t, c) ==
     /\ c \in Calls
     /\ s.runState = "Running"
     /\ s.batchState = "Open"
-    /\ s.callState[c] \notin TerminalCallStates
+    /\ s.callState[c] \notin TerminalCallStates \cup {"Returned"}
     /\ s.linkState[c] # "Open"
     /\ t = StateValue(
           s.runState, s.ticketKind, s.ticketCall,
@@ -264,6 +298,7 @@ EndRun(s, t) ==
           IF s.batchState = "Absent" THEN s.callState
           ELSE [c \in Calls |->
             IF s.callState[c] \in TerminalCallStates THEN s.callState[c]
+            ELSE IF s.callState[c] = "Returned" THEN "KnownAborted"
             ELSE "Indeterminate"],
           s.attempts,
           IF s.batchState = "Absent" THEN "Absent" ELSE "Finalized",
@@ -279,7 +314,7 @@ EndRun(s, t) ==
 TransitionIds ==
     {"PersistBatch", "CommitNoop", "StartOrRetry",
      "StartParallelCalls", "AwaitCall", "ResumeExecuting",
-     "CompleteCall", "CompleteAndFinalize", "CompleteImmediate",
+     "RecordReturns", "CompleteCall", "CompleteAndFinalize", "CompleteImmediate",
      "CompleteImmediateAndFinalize", "MarkIndeterminate", "FinalizeBatch",
      "EndRun"}
 
@@ -294,6 +329,7 @@ TransitionById(id, s, t) ==
                AwaitCall(s, t, c, kind)
       [] id = "ResumeExecuting" ->
            \E c \in Calls: ResumeExecuting(s, t, c)
+      [] id = "RecordReturns" -> \E wave \in SUBSET Calls: RecordReturns(s, t, wave)
       [] id = "CompleteCall" -> \E c \in Calls: CompleteCall(s, t, c)
       [] id = "CompleteAndFinalize" ->
            \E c \in Calls: CompleteAndFinalize(s, t, c)
@@ -318,6 +354,7 @@ NextState(s, t) ==
     \/ \E c \in Calls, kind \in TicketKinds \ {"None"}:
            AwaitCall(s, t, c, kind)
     \/ \E c \in Calls: ResumeExecuting(s, t, c)
+    \/ \E wave \in SUBSET Calls: RecordReturns(s, t, wave)
     \/ \E c \in Calls: CompleteCall(s, t, c)
     \/ \E c \in Calls: CompleteAndFinalize(s, t, c)
     \/ \E c \in Calls: CompleteImmediate(s, t, c)

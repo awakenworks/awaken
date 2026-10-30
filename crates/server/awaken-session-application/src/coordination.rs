@@ -632,8 +632,114 @@ impl SessionCoordination {
     }
 }
 
+fn activity_admission_result(
+    admitted: Result<Option<u64>, RunError>,
+) -> Result<SessionRunActivityAdmission, RunError> {
+    match admitted {
+        Ok(None) => Ok(SessionRunActivityAdmission::Rejected),
+        Ok(Some(session_activity_epoch)) => Ok(SessionRunActivityAdmission::Admitted {
+            session_activity_epoch,
+        }),
+        Err(error)
+            if error.kind == awaken_session_types::RunErrorKind::BadRequest
+                || error.code == "budget_reached" =>
+        {
+            Ok(SessionRunActivityAdmission::Rejected)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionAgentCoordination for SessionCoordination {
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        agent_id: &str,
+        run_id: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, RunError> {
+        let operation = session_run_activity_operation_id(session_id, run_id);
+        let thread = ThreadId(session_id.to_string());
+        match self
+            .activities
+            .recover_activity_for_operation(session_id, &operation, Some((&thread, run_id)))
+            .await
+        {
+            Ok(Some(_)) | Err(crate::SessionActivityError::BudgetReached) => return Ok(None),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(crate::SessionActivities::activity_operation_error(
+                    &operation, error,
+                ));
+            }
+        }
+        if mode == SessionRunActivityAdmissionMode::RecoverOnly {
+            return Ok(None);
+        }
+        let owner = self
+            .mutations
+            .owner(session_id)
+            .await
+            .map_err(crate::SessionActivityError::mutation)
+            .map_err(|error| {
+                crate::SessionActivities::activity_operation_error(&operation, error)
+            })?;
+        let revision = self
+            .run_admissions
+            .admit_run_session(&owner, session_id.as_str(), agent_id)
+            .await?;
+        self.activities
+            .prepare_run_activity_revision(session_id, revision)
+            .await
+            .map(Some)
+            .map_err(|error| crate::SessionActivities::activity_operation_error(&operation, error))
+    }
+
+    async fn admit_prepared_session_run_activity(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+        preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+    ) -> Result<SessionRunActivityAdmission, RunError> {
+        let operation = session_run_activity_operation_id(session_id, run_id);
+        let thread = ThreadId(session_id.to_string());
+        let admitted = async {
+            if let Some((_, epoch)) = self
+                .activities
+                .recover_activity_for_operation(session_id, &operation, Some((&thread, run_id)))
+                .await
+                .map_err(|error| {
+                    crate::SessionActivities::activity_operation_error(&operation, error)
+                })?
+            {
+                return Ok(Some(epoch));
+            }
+            if mode == SessionRunActivityAdmissionMode::RecoverOnly {
+                return Ok(None);
+            }
+            let revision = preparation.projected_revision.ok_or_else(|| {
+                RunError::unavailable_classified(
+                    "session_run_admission_pending",
+                    "prepared activity has no current execution revision or receipt",
+                )
+            })?;
+            self.activities
+                .commit_prepared_run_activity(
+                    session_id,
+                    &operation,
+                    revision,
+                    (&thread, run_id),
+                    Some(preparation.admitted_after_cursor),
+                )
+                .await
+                .map(Some)
+        }
+        .await;
+        activity_admission_result(admitted)
+    }
+
     async fn admit_session_run_activity(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -665,19 +771,7 @@ impl SessionAgentCoordination for SessionCoordination {
                     crate::SessionActivities::activity_operation_error(&operation_id, error)
                 }),
         };
-        match admitted {
-            Ok(None) => Ok(SessionRunActivityAdmission::Rejected),
-            Ok(Some((_, session_activity_epoch))) => Ok(SessionRunActivityAdmission::Admitted {
-                session_activity_epoch,
-            }),
-            Err(error)
-                if error.kind == awaken_session_types::RunErrorKind::BadRequest
-                    || error.code == "budget_reached" =>
-            {
-                Ok(SessionRunActivityAdmission::Rejected)
-            }
-            Err(error) => Err(error),
-        }
+        activity_admission_result(admitted.map(|value| value.map(|(_, epoch)| epoch)))
     }
 
     async fn admit_session_model_request(

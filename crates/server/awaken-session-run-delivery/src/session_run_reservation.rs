@@ -108,11 +108,43 @@ where
         &mut request.placement,
         command.execution_requirements.required_worker_capabilities,
     );
-    let outcome = reservations
+    let outcome = reserve_session_run_request(request, reservations).await?;
+    session_run_reservation(outcome)
+}
+
+/// Prepared is the other input branch of the same reservation lowering. It
+/// freezes complete caller input before resolving envelopes, and never uses
+/// Skill expansion, current Agent/model replacement or ordinary legacy identity.
+pub(crate) fn prepared_session_run_request<'p>(
+    command: &awaken_session_execution_contract::AdmitPreparedSessionRun,
+    prepare: impl FnOnce(RunActivation) -> DispatchPreparation<'p>,
+) -> Result<awaken_dispatch_contract::RunDispatch, RunError> {
+    if command.activation.thread_id.0 != command.session_id.as_str()
+        || command.session_id.as_str().trim().is_empty()
+        || command.operation_id.trim().is_empty()
+        || command.activation.input.is_empty()
+        || command.activation.run_id.0.trim().is_empty()
+    {
+        return Err(RunError::bad_request(
+            "prepared Session Run reservation is incomplete",
+        ));
+    }
+    let fingerprint = command.command_fingerprint();
+    Ok(prepare(command.activation.clone())
+        .prepared(command.traceparent.clone())?
+        .with_session_command_fingerprint(fingerprint)
+        .with_prepared_session_command_identity())
+}
+
+/// One store submission and failure classification for both lowering branches.
+pub(crate) async fn reserve_session_run_request<R: SessionRunReservations + ?Sized>(
+    request: awaken_dispatch_contract::RunDispatch,
+    reservations: &R,
+) -> Result<SessionRunReservationOutcome, RunError> {
+    reservations
         .reserve_session_run(request, SESSION_RUN_RESERVATION_TTL_MS)
         .await
-        .map_err(|error| RunError::unavailable(error.to_string()))?;
-    session_run_reservation(outcome)
+        .map_err(|error| RunError::unavailable(error.to_string()))
 }
 
 /// Protocol-specific capabilities are implemented only by a registered
@@ -135,7 +167,7 @@ fn require_registered_worker(
 }
 
 /// The Session application's view of the store's reservation outcome.
-fn session_run_reservation(
+pub(crate) fn session_run_reservation(
     outcome: SessionRunReservationOutcome,
 ) -> Result<SessionRunReservation, RunError> {
     match outcome {
@@ -157,6 +189,142 @@ fn session_run_reservation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_lowering_preserves_absent_and_explicit_frozen_execution_inputs() {
+        use awaken_dispatch_execution::session_dispatch::{
+            DispatchAdmissionReads, InstalledDispatchInputs,
+        };
+        struct Inputs;
+        impl DispatchAdmissionReads for Inputs {
+            fn execution_workspace(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<String, awaken_dispatch_execution::AdmissionError> {
+                Ok("workspace".into())
+            }
+            fn registered_workspace(
+                &self,
+                _: &str,
+            ) -> Result<Option<String>, awaken_dispatch_execution::AdmissionError> {
+                Ok(Some("workspace".into()))
+            }
+            fn credential_realization(
+                &self,
+                _: &str,
+            ) -> Result<
+                Option<awaken_credential_contract::CredentialRealizationProfile>,
+                awaken_dispatch_execution::AdmissionError,
+            > {
+                Ok(None)
+            }
+            fn installed_dispatch_inputs(
+                &self,
+                _: &str,
+            ) -> Result<InstalledDispatchInputs, awaken_dispatch_execution::AdmissionError>
+            {
+                Ok(InstalledDispatchInputs {
+                    session_dispatch: true,
+                    ..Default::default()
+                })
+            }
+        }
+        // F1 causes: absent versus explicitly frozen inherited toolsets, and
+        // configured versus deny-all narrowing. F2 caller pins snapshot, input,
+        // delegation, model and subject. Effects: E1 every complete activation
+        // is byte-equivalent after lowering, including absence; E2 the new
+        // prepared identity kind/fingerprint cannot select ordinary legacy
+        // fallback. All four F1 rows cross F2. No Skill registry is consulted.
+        for inherited in [false, true] {
+            for deny in [false, true] {
+                let mut activation = RunActivation::new(
+                    awaken_agent_contract::agent::run::Id("prepared-run".into()),
+                    ThreadId("session".into()),
+                    ExecutableAgentSnapshot::builder("caller-worker")
+                        .model(
+                            awaken_runtime_contract::resolved::ModelBinding::parse(
+                                "provider", "model", "native",
+                            )
+                            .expect("complete fixture binding is admissible"),
+                        )
+                        .build(),
+                    vec![awaken_agent_contract::agent::message::Message::text(
+                        awaken_agent_contract::agent::message::Id("frozen-input".into()),
+                        awaken_agent_contract::agent::message::Role::User,
+                        "/review frozen caller input",
+                    )],
+                )
+                .with_model_ref_override(Some("model".into()))
+                .with_data_subject(Some(awaken_runtime_contract::DataSubjectId(
+                    "subject".into(),
+                )));
+                if inherited {
+                    activation = activation.with_inherited_toolsets(Some(
+                        awaken_agent_contract::toolset::InheritedToolsets::with_caller(
+                            Vec::new(),
+                            None,
+                        ),
+                    ));
+                }
+                if deny {
+                    activation = activation.without_tools();
+                }
+                // Leave delegation absent in the first partition as well: a
+                // fresh-root binder must not add inherited inputs to it.
+                if inherited {
+                    activation = activation.with_delegation_origin(
+                        awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(
+                            awaken_agent_contract::agent::run::Id("parent".into()),
+                            "call",
+                            "coordinator",
+                        ),
+                    );
+                }
+                let command = awaken_session_execution_contract::AdmitPreparedSessionRun {
+                    session_id: "session".into(),
+                    operation_id: "operation".into(),
+                    activation: activation.clone(),
+                    traceparent: None,
+                };
+                let request = prepared_session_run_request(&command, |activation| {
+                    DispatchPreparation::new(
+                        activation,
+                        Box::new(Inputs),
+                        "workspace",
+                        None,
+                        crate::RUN_PUBLICATIONS,
+                        true,
+                    )
+                })
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&request.activation).unwrap(),
+                    serde_json::to_value(&activation).unwrap(),
+                    "F1/F2 complete input"
+                );
+                assert_eq!(
+                    request.session_command_fingerprint,
+                    Some(command.command_fingerprint()),
+                    "E2 exact prepared fingerprint"
+                );
+                assert_eq!(
+                    request.identity_scope,
+                    awaken_dispatch_contract::DispatchIdentityScope::PreparedSessionCommand,
+                    "E2 prepared kind"
+                );
+                assert_eq!(
+                    request.session_thread_id,
+                    Some(ThreadId("session".into())),
+                    "E2 self-affinity before activity"
+                );
+                assert_eq!(
+                    request.session_activity_epoch, None,
+                    "E2 never pre-admitted"
+                );
+            }
+        }
+    }
 
     #[test]
     fn reservation_outcomes_and_placement_follow_their_decision_table() {

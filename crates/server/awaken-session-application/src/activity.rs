@@ -314,6 +314,11 @@ impl SessionActivityError {
     }
 }
 
+struct ActivityProjection {
+    revision: Option<SessionRevision>,
+    admitted_after_cursor: Option<u64>,
+}
+
 /// Durable activity fencing for overlapping Session Runs: open, transfer and
 /// recover one activity epoch per Run operation through the root CAS, after
 /// the Environment is Resident. It holds the CAS kernel, the clock, the Thread
@@ -815,7 +820,6 @@ impl SessionActivities {
         projected_revision: Option<SessionRevision>,
         source: Option<(&ThreadId, &RunId)>,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
-        let mutations = &self.mutations;
         if let Some(committed) = self
             .recover_activity_for_operation(session_id, operation_id, source)
             .await?
@@ -823,10 +827,77 @@ impl SessionActivities {
             return Ok(committed);
         }
 
-        let record = Self::activity_operation_record(session_id.as_str(), operation_id);
         let projected_revision = self
             .activity_revision_after_continuation(session_id, projected_revision)
             .await?;
+        self.commit_activity_for_operation(
+            session_id,
+            operation_id,
+            continue_committed_await,
+            prior_activity_epoch,
+            ActivityProjection {
+                revision: projected_revision,
+                admitted_after_cursor: None,
+            },
+            source,
+        )
+        .await
+    }
+
+    /// Prepare physical/continuation effects before a Dispatch admission guard
+    /// is acquired. The guarded callback may use only the shared receipt/CAS
+    /// loop below and a cursor from its authoritative Thread snapshot.
+    pub(crate) async fn prepare_run_activity_revision(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        projected_revision: SessionRevision,
+    ) -> Result<SessionRevision, SessionActivityError> {
+        self.activity_revision_after_continuation(session_id, Some(projected_revision))
+            .await?
+            .ok_or(SessionActivityError::Conflict)
+    }
+
+    pub(crate) async fn commit_prepared_run_activity(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        projected_revision: SessionRevision,
+        source: (&ThreadId, &RunId),
+        admitted_after_cursor: Option<u64>,
+    ) -> Result<u64, RunError> {
+        self.commit_activity_for_operation(
+            session_id,
+            operation_id,
+            false,
+            None,
+            ActivityProjection {
+                revision: Some(projected_revision),
+                admitted_after_cursor,
+            },
+            Some(source),
+        )
+        .await
+        .map(|(_, epoch)| epoch)
+        .map_err(|error| Self::activity_operation_error(operation_id, error))
+    }
+
+    /// The sole accepted/refused receipt and root-CAS loop. No projection,
+    /// continuation, Dispatch operation or synchronous publication runs here.
+    async fn commit_activity_for_operation(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        continue_committed_await: bool,
+        prior_activity_epoch: Option<u64>,
+        projection: ActivityProjection,
+        source: Option<(&ThreadId, &RunId)>,
+    ) -> Result<(PersistedSession, u64), SessionActivityError> {
+        let ActivityProjection {
+            revision: projected_revision,
+            admitted_after_cursor,
+        } = projection;
+        let mutations = &self.mutations;
+        let record = Self::activity_operation_record(session_id.as_str(), operation_id);
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             if let Some(committed) = self
                 .recover_activity_for_operation(session_id, operation_id, source)
@@ -864,7 +935,10 @@ impl SessionActivities {
                 .checked_add(1)
                 .ok_or(SessionActivityError::EpochExhausted)?;
             let external = session.requires_external_environment_owner();
-            let admitted_after = self.interval_admission_cursor(&session).await?;
+            let admitted_after = match admitted_after_cursor {
+                Some(cursor) => cursor,
+                None => self.interval_admission_cursor(&session).await?,
+            };
             if let Err(error) = Self::open_activity_on_snapshot(
                 &mut session,
                 Some(epoch),

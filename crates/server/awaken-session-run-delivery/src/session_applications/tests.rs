@@ -16,6 +16,26 @@ impl Drop for Port {
 }
 #[async_trait::async_trait]
 impl SessionAgentCoordination for Port {
+    // Ownership/acquisition tests never invoke admission. Requiring these
+    // callbacks preserves the complete-role boundary without granting activity.
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        _: &SessionId,
+        _: &str,
+        _: &RunId,
+        _: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, RunError> {
+        panic!("unused prepared coordination projection role was invoked")
+    }
+    async fn admit_prepared_session_run_activity(
+        &self,
+        _: &SessionId,
+        _: &RunId,
+        _: SessionRunActivityAdmissionMode,
+        _: PreparedSessionRunActivity,
+    ) -> Result<SessionRunActivityAdmission, RunError> {
+        panic!("unused prepared coordination activity role was invoked")
+    }
     async fn admit_session_run_activity(
         &self,
         _: &SessionId,

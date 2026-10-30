@@ -32,9 +32,10 @@ pub use awaken_credential_contract::{
 pub use fleet_readiness::{FleetReadiness, fleet_readiness};
 pub use manifest::{
     CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, FingerprintError,
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredCapacity, SESSION_RESOURCES_CAPABILITY,
-    SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,
+    HOST_EXECUTOR_CAPABILITY, PREPARED_SESSION_DISPATCH_CAPABILITY,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredCapacity,
+    SESSION_RESOURCES_CAPABILITY, SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY,
+    TOOL_RESULT_JOURNAL_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest, ZeroRegisteredCapacity,
 };
 #[cfg(any(test, kani))]
@@ -69,8 +70,9 @@ pub use relay_route::{
 #[cfg(any(test, kani))]
 pub(crate) use requirements::required_capability_is_admitted;
 pub use requirements::{
-    ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode, can_claim,
-    can_claim_locally, manifest_recovery_matches_installed, sandbox_tool_recovery_is_compatible,
+    ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode,
+    admit_required_capabilities, can_claim, can_claim_locally, manifest_recovery_matches_installed,
+    sandbox_tool_recovery_is_compatible,
 };
 pub use run_claim::RunClaim;
 pub use source_retention::WorkerSourceRetention;

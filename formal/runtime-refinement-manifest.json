@@ -47,7 +47,7 @@
   "erased_fields": [
     {
       "name": "message_and_output_payloads",
-      "reason": "The model proves commit ordering and lifecycle state, not content semantics."
+      "reason": "The model proves commit ordering and lifecycle state, not content semantics. Returned payloads and KnownAborted raw retention require real Runtime content tests; this projection grants no physical quiescence."
     },
     {
       "name": "tool_arguments_and_continuations",
@@ -98,6 +98,10 @@
     {
       "id": "ResumeExecuting",
       "operator": "ResumeExecuting"
+    },
+    {
+      "id": "RecordReturns",
+      "operator": "RecordReturns"
     },
     {
       "id": "CompleteCall",
@@ -253,7 +257,9 @@
         "model": "SessionRealizationMutex",
         "config": "SessionRealizationRenewal",
         "operator": "ReconciliationCapacityObservation",
-        "arguments": ["observation"],
+        "arguments": [
+          "observation"
+        ],
         "dependencies": []
       },
       "event-batch-retry": {
@@ -270,12 +276,25 @@
       "realization-capacity-cancellation": {
         "family": "realization-capacity",
         "source": "crates/server/awaken-session-realization-driver/src/control_deadline/composition_tests.rs",
-        "rules": ["ok", "error", "deadline", "cancel-request", "cancel-queued-request", "queued-deadline", "cancel-queued-completion", "cancel-held-completion"]
+        "rules": [
+          "ok",
+          "error",
+          "deadline",
+          "cancel-request",
+          "cancel-queued-request",
+          "queued-deadline",
+          "cancel-queued-completion",
+          "cancel-held-completion"
+        ]
       },
       "realization-capacity-mutex": {
         "family": "realization-capacity",
         "source": "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs",
-        "rules": ["finish-wait", "cancel-wait", "cancel-joined"]
+        "rules": [
+          "finish-wait",
+          "cancel-wait",
+          "cancel-joined"
+        ]
       },
       "binding-apply": {
         "family": "root",

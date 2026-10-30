@@ -421,11 +421,28 @@ impl HostDispatchSettlementObserver {
 
 #[async_trait::async_trait]
 impl awaken_dispatch_execution::SessionRunAdmissionObserver for HostDispatchSettlementObserver {
+    async fn prepare_session_run_activity(
+        &self,
+        dispatch: &RunDispatch,
+        claim: &RunClaim,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, DispatchSettlementError> {
+        match &self.endpoint {
+            CoordinationEndpoint::Local(application) => awaken_dispatch_execution::SessionRunAdmissionObserver::prepare_session_run_activity(
+                &Self::local_observer(application)?, dispatch, claim, mode,
+            ).await,
+            // The authenticated Coordinator prepares outside its own guard;
+            // a remote Worker can never supply a trusted root revision.
+            CoordinationEndpoint::Remote { .. } => Ok(None),
+        }
+    }
+
     async fn admit_session_run_activity(
         &self,
         dispatch: &RunDispatch,
         claim: &RunClaim,
         mode: SessionRunActivityAdmissionMode,
+        preparation: Option<awaken_session_execution_contract::PreparedSessionRunActivity>,
     ) -> Result<SessionRunActivityAdmission, DispatchSettlementError> {
         let Some(session) =
             awaken_session_run_delivery::SessionDispatchObserver::activity_session(dispatch, claim)
@@ -434,14 +451,14 @@ impl awaken_dispatch_execution::SessionRunAdmissionObserver for HostDispatchSett
         };
         match &self.endpoint {
             CoordinationEndpoint::Local(application) => {
-                Self::local_observer(application)?
-                    .admit_activity(
-                        &awaken_session_types::SessionId::from(&session.0),
-                        &dispatch.activation.snapshot.root_agent_id.0,
-                        dispatch.run_id(),
-                        mode,
-                    )
-                    .await
+                awaken_dispatch_execution::SessionRunAdmissionObserver::admit_session_run_activity(
+                    &Self::local_observer(application)?,
+                    dispatch,
+                    claim,
+                    mode,
+                    preparation,
+                )
+                .await
             }
             CoordinationEndpoint::Remote { control, .. } => control
                 .admit_session_run_activity(
@@ -550,6 +567,37 @@ impl Drop for AdmissionDropReceipt {
 #[cfg(test)]
 #[async_trait::async_trait]
 impl SessionAgentCoordination for RecordingSessionAgentCoordination {
+    // Fixture rule P1: the recorder observes child boundaries without admitting root activity.
+    // Prepared preparation refuses without changing any recorded effect.
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        _session: &awaken_session_types::SessionId,
+        _agent: &str,
+        _run: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, awaken_session_types::RunError> {
+        Err(awaken_session_types::RunError::unavailable(
+            "the recorder observes child boundaries without admitting root activity",
+        ))
+    }
+
+    // Fixture rule P1: the recorder observes child boundaries without admitting root activity.
+    // Prepared admission refuses without changing any recorded effect.
+    async fn admit_prepared_session_run_activity(
+        &self,
+        _session: &awaken_session_types::SessionId,
+        _run: &awaken_agent_contract::agent::run::Id,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+        _preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivityAdmission,
+        awaken_session_types::RunError,
+    > {
+        Err(awaken_session_types::RunError::unavailable(
+            "the recorder observes child boundaries without admitting root activity",
+        ))
+    }
+
     async fn admit_session_run_activity(
         &self,
         _session_id: &awaken_session_types::SessionId,

@@ -19,6 +19,9 @@ use awaken_session_types::RunError;
 #[must_use]
 pub fn outcome_controller_error(error: ControllerError) -> RunError {
     match error {
+        ControllerError::Admission(source) => {
+            RunError::unavailable_classified(source.code(), source.to_string())
+        }
         ControllerError::Busy { .. } | ControllerError::WorkerRunning { .. } => {
             RunError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
         }

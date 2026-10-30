@@ -27,6 +27,7 @@ awaken-session-types.workspace = true
 awaken-outbound-http = { workspace = true }
 awaken-observability.workspace = true
 awaken-worker-transport-security.workspace = true
+awaken-worker-contract.workspace = true
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true

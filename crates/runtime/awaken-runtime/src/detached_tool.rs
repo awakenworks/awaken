@@ -143,6 +143,7 @@ impl PreparedToolExecutor {
     ) -> Result<ToolOutput, DetachedToolError> {
         match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context)
             .await
+            .map_err(map_runtime_error)?
             .outcome
         {
             GateOutcome::Allow => {}
@@ -186,6 +187,7 @@ impl PreparedToolExecutor {
     ) -> Result<ToolTaskStart, DetachedToolError> {
         match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context)
             .await
+            .map_err(map_runtime_error)?
             .outcome
         {
             GateOutcome::Allow => {}

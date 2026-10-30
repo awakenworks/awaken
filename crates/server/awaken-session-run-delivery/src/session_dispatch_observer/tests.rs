@@ -9,6 +9,14 @@ use std::sync::Mutex;
 
 #[derive(Debug, PartialEq)]
 enum Observed {
+    Prepare(SessionId, String, RunId, SessionRunActivityAdmissionMode),
+    PreparedAdmit(
+        SessionId,
+        RunId,
+        SessionRunActivityAdmissionMode,
+        Option<u64>,
+        u64,
+    ),
     Admit(SessionId, String, RunId, SessionRunActivityAdmissionMode),
     Before(SessionAgentBoundaryCommand),
     After(SessionAgentBoundaryCommand),
@@ -32,6 +40,40 @@ impl RecordingApplication {
 
 #[async_trait::async_trait]
 impl SessionAgentCoordination for RecordingApplication {
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        session: &SessionId,
+        agent: &str,
+        run: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, RunError> {
+        self.record(
+            "prepare",
+            Observed::Prepare(session.clone(), agent.into(), run.clone(), mode),
+        )?;
+        Ok(Some(awaken_session_types::SessionRevision(9)))
+    }
+    async fn admit_prepared_session_run_activity(
+        &self,
+        session: &SessionId,
+        run: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+        preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+    ) -> Result<SessionRunActivityAdmission, RunError> {
+        self.record(
+            "prepared-admit",
+            Observed::PreparedAdmit(
+                session.clone(),
+                run.clone(),
+                mode,
+                preparation.projected_revision.map(|revision| revision.0),
+                preparation.admitted_after_cursor,
+            ),
+        )?;
+        Ok(SessionRunActivityAdmission::Admitted {
+            session_activity_epoch: 17,
+        })
+    }
     async fn admit_session_run_activity(
         &self,
         session: &SessionId,
@@ -90,6 +132,68 @@ impl SessionAgentCoordination for RecordingApplication {
     }
 }
 
+#[tokio::test]
+async fn shared_session_observer_prepares_then_admits_only_guarded_prepared_inputs() {
+    // K1 causes: prepared kind, exact affinity, prepared revision and original
+    // guarded Thread cursor; K2 missing preparation; K3 ordinary kind. Effects
+    // E1 K1 selects prepare then bounded prepared admission, never old generic
+    // projection/admission; E2 K2 fails closed; E3 K3 retains its original path
+    // (covered by the unchanged original observer table below). The Worker and
+    // authenticated HTTP tests own the real lock/release boundary.
+    let app = Arc::new(RecordingApplication::default());
+    let observer = SessionDispatchObserver::new(app.clone());
+    let request = dispatch("session", None).with_prepared_session_command_identity();
+    let exact = claim();
+    let mode = SessionRunActivityAdmissionMode::RecoverOrAdmit;
+    let revision = observer
+        .prepare_session_run_activity(&request, &exact, mode)
+        .await
+        .unwrap();
+    assert_eq!(
+        revision,
+        Some(awaken_session_types::SessionRevision(9)),
+        "K1 prepared outside guard"
+    );
+    assert!(
+        observer
+            .admit_session_run_activity(&request, &exact, mode, None)
+            .await
+            .is_err(),
+        "K2 no unprepared fallback"
+    );
+    assert_eq!(
+        observer
+            .admit_session_run_activity(
+                &request,
+                &exact,
+                mode,
+                Some(
+                    awaken_session_execution_contract::PreparedSessionRunActivity {
+                        projected_revision: revision,
+                        admitted_after_cursor: 23
+                    }
+                )
+            )
+            .await
+            .unwrap(),
+        SessionRunActivityAdmission::Admitted {
+            session_activity_epoch: 17
+        },
+        "K1 bounded admission"
+    );
+    let calls = app.calls.lock().unwrap();
+    assert!(
+        matches!(
+            &calls[..],
+            [
+                Observed::Prepare(..),
+                Observed::PreparedAdmit(_, _, _, Some(9), 23)
+            ]
+        ),
+        "K1 only prepared path"
+    );
+}
+
 fn dispatch(thread: &str, epoch: Option<u64>) -> RunDispatch {
     let mut request = RunDispatch::new(awaken_runtime_contract::RunActivation::new(
         RunId("source-run".into()),
@@ -142,7 +246,7 @@ async fn shared_session_observer_preserves_admission_order_and_owned_application
     ] {
         assert_eq!(
             admission
-                .admit_session_run_activity(&dispatch("session", None), &exact, mode)
+                .admit_session_run_activity(&dispatch("session", None), &exact, mode, None)
                 .await
                 .unwrap(),
             SessionRunActivityAdmission::Admitted {
@@ -176,7 +280,8 @@ async fn shared_session_observer_preserves_admission_order_and_owned_application
                 .admit_session_run_activity(
                     &request,
                     &requested_claim,
-                    SessionRunActivityAdmissionMode::RecoverOrAdmit
+                    SessionRunActivityAdmissionMode::RecoverOrAdmit,
+                    None
                 )
                 .await
                 .unwrap(),
@@ -248,6 +353,7 @@ async fn shared_session_observer_preserves_each_original_application_failure() {
                     &dispatch("session", None),
                     &exact,
                     SessionRunActivityAdmissionMode::RecoverOnly,
+                    None,
                 )
                 .await
                 .unwrap_err(),

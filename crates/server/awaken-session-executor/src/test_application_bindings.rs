@@ -18,6 +18,26 @@ pub(crate) fn retaining(host: Arc<crate::ExecutorComponents>) -> Arc<UnusedAppli
 }
 #[async_trait::async_trait]
 impl SessionAgentCoordination for UnusedApplications {
+    // This complete-startup fixture owns lifetimes only. B's prepared callbacks
+    // must remain strict unused roles, never fake a reservation/activity grant.
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        _: &SessionId,
+        _: &str,
+        _: &RunId,
+        _: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, RunError> {
+        panic!("unused prepared coordination projection role was invoked")
+    }
+    async fn admit_prepared_session_run_activity(
+        &self,
+        _: &SessionId,
+        _: &RunId,
+        _: SessionRunActivityAdmissionMode,
+        _: PreparedSessionRunActivity,
+    ) -> Result<SessionRunActivityAdmission, RunError> {
+        panic!("unused prepared coordination activity role was invoked")
+    }
     async fn admit_session_run_activity(
         &self,
         _: &SessionId,

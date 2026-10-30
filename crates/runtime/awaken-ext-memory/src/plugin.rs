@@ -578,20 +578,19 @@ impl PhaseHook for RecallHook {
         ctx: &PhaseContext,
         _conversation: &[Message],
         state: &Store,
-    ) -> HookReaction {
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         // Already computed this run (replayed across steps and a resumed run): the
         // kernel injects it from `ContextMessages`, so there is nothing to restage.
         if ContextMessages::load_or_default(state).contains_key(MEMORY_PLUGIN_ID) {
-            return HookReaction::default();
+            return Ok(HookReaction::default());
         }
         let PhaseKind::BeforeInference { run_input } = &ctx.kind else {
-            return HookReaction::default();
+            return Ok(HookReaction::default());
         };
         let block = self.compute(run_input).await;
-        HookReaction::state(vec![ContextMessages::write(&BTreeMap::from([(
-            MEMORY_PLUGIN_ID.to_string(),
-            block,
-        )]))])
+        Ok(HookReaction::state(vec![ContextMessages::write(
+            &BTreeMap::from([(MEMORY_PLUGIN_ID.to_string(), block)]),
+        )]))
     }
 }
 
@@ -692,7 +691,10 @@ mod tests {
             RecallBounds::default(),
         );
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &[], &Store::new())
+            .await
+            .expect("phase hook succeeds");
         let block = injected(&reaction);
         assert_eq!(block.len(), 1);
         assert!(block[0].text_content().contains("user likes tea"));
@@ -733,7 +735,10 @@ mod tests {
         )];
         let mut state = Store::new();
         let ctx = phase_ctx_with_input("which one?");
-        let reaction = hook.on_phase(&ctx, &historical_conversation, &state).await;
+        let reaction = hook
+            .on_phase(&ctx, &historical_conversation, &state)
+            .await
+            .expect("phase hook succeeds");
         // Only the selected memory is injected (into `ContextMessages` state); the
         // selector saw the user query.
         let block = injected(&reaction);
@@ -749,7 +754,10 @@ mod tests {
             state.apply(command);
         }
         *selector.seen_query.lock().unwrap() = String::new();
-        let replay = hook.on_phase(&ctx, &historical_conversation, &state).await;
+        let replay = hook
+            .on_phase(&ctx, &historical_conversation, &state)
+            .await
+            .expect("phase hook succeeds");
         assert!(replay.state.is_empty(), "a replay stages no new state");
         assert_eq!(
             *selector.seen_query.lock().unwrap(),
@@ -770,7 +778,10 @@ mod tests {
         };
         let plugin = MemoryPlugin::new(store, bounds);
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &[], &Store::new())
+            .await
+            .expect("phase hook succeeds");
         let block = injected(&reaction);
         assert_eq!(block.len(), 1);
         let text = block[0].text_content();
@@ -784,7 +795,10 @@ mod tests {
     async fn empty_store_injects_no_recall_block() {
         let plugin = MemoryPlugin::new(store_with(&[]), RecallBounds::default());
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &[], &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert!(injected(&reaction).is_empty());
     }
 
@@ -802,7 +816,10 @@ mod tests {
         });
         let plugin = MemoryPlugin::new(store, bounds).with_selector(selector);
         let hook = &plugin.resolve().phase_hooks[0];
-        let reaction = hook.on_phase(&phase_ctx(), &[], &Store::new()).await;
+        let reaction = hook
+            .on_phase(&phase_ctx(), &[], &Store::new())
+            .await
+            .expect("phase hook succeeds");
         assert!(injected(&reaction).is_empty());
     }
 

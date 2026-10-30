@@ -164,6 +164,14 @@ fn candidate_is_admissible(
         return Ok(false);
     }
     let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+    let worker_manifest = match &audience {
+        CandidateAudience::Local => None,
+        CandidateAudience::Compatible(worker) => Some(&worker.manifest),
+        CandidateAudience::Placed { requester, .. } => Some(&requester.manifest),
+    };
+    if request.worker_codec_admission(worker_manifest).is_err() {
+        return Ok(false);
+    }
     let status: String = row.try_get("status").map_err(store_error)?;
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
     let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
@@ -576,6 +584,12 @@ async fn claim_exact_transaction_with_mode(
         }
     }
     let terminal_resolution = mode.bypasses_execution_admission();
+    if request
+        .worker_codec_admission(worker.map(|worker| &worker.manifest))
+        .is_err()
+    {
+        return Ok(None);
+    }
     if !terminal_resolution
         && cancellation_requested == 0
         && match worker {

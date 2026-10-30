@@ -67,15 +67,26 @@ pub enum CommittedOutcome {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Error {
-    ActiveDefinitionConflict { outcome_id: Id },
-    Busy { outcome_id: Id },
-    WorkerRunning { run_id: RunId },
-    WorkerAwaiting { run_id: RunId },
+    ActiveDefinitionConflict {
+        outcome_id: Id,
+    },
+    Busy {
+        outcome_id: Id,
+    },
+    WorkerRunning {
+        run_id: RunId,
+    },
+    WorkerAwaiting {
+        run_id: RunId,
+    },
     Domain(String),
     Persistence(String),
     Execution(ExecutionFailure),
+    /// An undecided admission retains its typed original cause until the
+    /// application edge. It does not become a persisted Outcome failure.
+    Admission(std::sync::Arc<awaken_runtime_contract::execution::Error>),
     Serialization(String),
 }
 
@@ -105,6 +116,7 @@ impl std::fmt::Display for Error {
                 write!(formatter, "Outcome persistence failed: {message}")
             }
             Self::Execution(failure) => write!(formatter, "Outcome execution failed: {failure:?}"),
+            Self::Admission(error) => write!(formatter, "Outcome Run admission failed: {error}"),
             Self::Serialization(message) => {
                 write!(formatter, "Outcome serialization failed: {message}")
             }
@@ -112,7 +124,14 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Admission(source) => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 struct WorkerExecution {
     state: RunState,
@@ -126,7 +145,7 @@ pub struct Controller<'a> {
     thread_id: &'a ThreadId,
     reader: &'a dyn CommittedThreadView,
     state: ThreadOutcomeState<'a>,
-    executor: &'a dyn RunExecutor,
+    executor: Option<&'a dyn RunExecutor>,
     run_context: RuntimeRunContext,
     grader: &'a dyn Grader,
 }
@@ -146,8 +165,28 @@ impl<'a> Controller<'a> {
             thread_id,
             reader,
             state: ThreadOutcomeState::new(thread_id, recovery, coordinator),
-            executor,
+            executor: Some(executor),
             run_context,
+            grader,
+        }
+    }
+
+    /// Preparation has no execution capability. Its durable create/CAS path
+    /// uses the same controller and codec without manufacturing a Run adapter.
+    #[must_use]
+    pub fn preparation(
+        thread_id: &'a ThreadId,
+        reader: &'a dyn CommittedThreadView,
+        recovery: &'a dyn RunRecoverySource,
+        coordinator: &'a dyn CommitOperationCoordinator,
+        grader: &'a dyn Grader,
+    ) -> Self {
+        Self {
+            thread_id,
+            reader,
+            state: ThreadOutcomeState::new(thread_id, recovery, coordinator),
+            executor: None,
+            run_context: RuntimeRunContext::new(),
             grader,
         }
     }
@@ -310,9 +349,21 @@ impl<'a> Controller<'a> {
                     kind,
                 } => {
                     let expected = aggregate.state.version;
-                    let worker = self
+                    let worker = match self
                         .drive_worker(&aggregate, iteration, kind, run_id.clone())
-                        .await?;
+                        .await
+                    {
+                        Ok(worker) => worker,
+                        Err(error) if closed_admission(&error) => {
+                            aggregate
+                                .state
+                                .fail(ExecutionFailure::WorkerFailed(error.to_string()))
+                                .map_err(domain_error)?;
+                            self.commit(expected, &aggregate.state, None).await?;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     match worker.state {
                         RunState::Ended(EndCause::NaturalEnd) => {
                             let cursor = self.reader.committed_messages(self.thread_id).len();
@@ -395,10 +446,20 @@ impl<'a> Controller<'a> {
                 }
                 Phase::Acknowledging { run_id } => {
                     let expected = aggregate.state.version;
-                    match self
-                        .drive_acknowledgment(&aggregate, run_id.clone())
-                        .await?
-                    {
+                    let acknowledgment =
+                        match self.drive_acknowledgment(&aggregate, run_id.clone()).await {
+                            Ok(state) => state,
+                            Err(error) if closed_admission(&error) => {
+                                aggregate
+                                    .state
+                                    .fail(ExecutionFailure::WorkerFailed(error.to_string()))
+                                    .map_err(domain_error)?;
+                                self.commit(expected, &aggregate.state, None).await?;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                    match acknowledgment {
                         RunState::Ended(EndCause::NaturalEnd) => aggregate
                             .state
                             .acknowledgment_completed(&run_id)
@@ -464,9 +525,10 @@ impl<'a> Controller<'a> {
         );
         let state = self
             .executor
+            .ok_or_else(|| Error::Domain("Outcome preparation cannot execute a Run".into()))?
             .execute(activation, self.run_context.clone())
             .await
-            .map_err(|error| Error::Execution(ExecutionFailure::WorkerFailed(error.to_string())))?;
+            .map_err(worker_execution_error)?;
         Ok(WorkerExecution {
             state,
             message_start: before.saturating_add(1),
@@ -498,9 +560,10 @@ impl<'a> Controller<'a> {
             )],
         );
         self.executor
+            .ok_or_else(|| Error::Domain("Outcome preparation cannot execute a Run".into()))?
             .execute(activation, self.run_context.clone())
             .await
-            .map_err(|error| Error::Execution(ExecutionFailure::WorkerFailed(error.to_string())))
+            .map_err(worker_execution_error)
     }
 
     fn grading_input(
@@ -557,6 +620,20 @@ impl<'a> Controller<'a> {
         let transcript = self.reader.committed_messages(self.thread_id);
         report_from(aggregate, &transcript)
     }
+}
+
+fn worker_execution_error(error: awaken_runtime_contract::execution::Error) -> Error {
+    if awaken_runtime_contract::diagnostic::run_admission_disposition(&error).is_some() {
+        Error::Admission(std::sync::Arc::new(error))
+    } else {
+        // Provider/execution errors retain the historical active-head and
+        // lost-response recovery behavior; only typed admission is new here.
+        Error::Execution(ExecutionFailure::WorkerFailed(error.to_string()))
+    }
+}
+
+fn closed_admission(error: &Error) -> bool {
+    matches!(error, Error::Admission(source) if awaken_runtime_contract::diagnostic::run_admission_disposition(source) == Some(awaken_runtime_contract::diagnostic::RunAdmissionDisposition::Closed))
 }
 
 fn report_from(aggregate: &Aggregate, transcript: &[Message]) -> Result<Report, Error> {
@@ -1100,6 +1177,142 @@ mod tests {
                 .iter()
                 .any(|message| message.text_content() == "acknowledged")
         );
+    }
+
+    #[tokio::test]
+    async fn only_durable_closed_admission_fails_the_worker_owned_head() {
+        use awaken_runtime_contract::diagnostic::{
+            RunAdmissionDisposition, RunAdmissionFailure, RuntimeDiagnostic, RuntimeErrorKind,
+        };
+        struct AdmissionExecutor<'a> {
+            world: &'a World,
+            target: RunId,
+            disposition: Option<RunAdmissionDisposition>,
+        }
+        #[async_trait]
+        impl RunExecutor for AdmissionExecutor<'_> {
+            async fn execute(
+                &self,
+                activation: RunActivation,
+                context: RuntimeRunContext,
+            ) -> awaken_runtime_contract::execution::Result<RunState> {
+                if activation.run_id != self.target {
+                    return self.world.execute(activation, context).await;
+                }
+                let message = "Session list-cost budget has been reached";
+                match self.disposition {
+                    Some(disposition) => Err(RuntimeDiagnostic::new(
+                        RuntimeErrorKind::Unavailable,
+                        "budget_reached",
+                        RunAdmissionFailure::new(disposition, std::io::Error::other(message)),
+                    )
+                    .into()),
+                    None => Err(awaken_runtime_contract::execution::Error::Execution(
+                        message.into(),
+                    )),
+                }
+            }
+        }
+        // Cause/effect graph: C1 initial/revision/ACK acquisition; C2 typed
+        // durable Closed, typed Deferred, or same-text provider failure. E1
+        // only Closed commits existing Errored(WorkerFailed) and clears active;
+        // E2 Deferred/provider retain the exact active phase/version; E3 no
+        // target Run, grading or fake completion is authored by admission.
+        // Rules E1a..c x Closed=>E1+E3; E2a..c x Deferred/provider=>E2+E3.
+        // Original provider lost-ACK-response assertions remain in their test.
+        for phase in 0..3 {
+            for disposition in [
+                Some(RunAdmissionDisposition::Closed),
+                Some(RunAdmissionDisposition::Deferred),
+                None,
+            ] {
+                let world = World::new(&["draft"]);
+                let thread = ThreadId("admission-worker".into());
+                let id = Id("admission-outcome".into());
+                let target = match phase {
+                    0 => worker_run_id(&id, 0),
+                    1 => worker_run_id(&id, 1),
+                    _ => acknowledgment_run_id(&id),
+                };
+                let executor = AdmissionExecutor {
+                    world: &world,
+                    target: target.clone(),
+                    disposition,
+                };
+                let grader = RangeGrader;
+                let controller = Controller::new(
+                    &thread,
+                    &world,
+                    &world,
+                    &world,
+                    &executor,
+                    RuntimeRunContext::new(),
+                    &grader,
+                );
+                controller
+                    .prepare(
+                        id.clone(),
+                        Definition::new("ship", "FINAL", if phase == 2 { 1 } else { 3 }).unwrap(),
+                        binding(),
+                    )
+                    .await
+                    .unwrap();
+                let error = controller
+                    .resume_active()
+                    .await
+                    .expect_err("selected acquisition refuses");
+                let state = ThreadOutcomeState::new(&thread, &world, &world);
+                let aggregate = state.load(&id).await.unwrap();
+                let before_error_version = if phase == 0 { 1 } else { 3 };
+                if disposition == Some(RunAdmissionDisposition::Closed) {
+                    assert!(
+                        matches!(
+                            aggregate.state.phase,
+                            Phase::Errored {
+                                failure: ExecutionFailure::WorkerFailed(_)
+                            }
+                        ),
+                        "E1"
+                    );
+                    assert_eq!(
+                        aggregate.state.version,
+                        before_error_version + 1,
+                        "E1 one head CAS"
+                    );
+                    assert!(state.active().await.unwrap().is_none(), "E1 clears pointer");
+                    assert!(
+                        matches!(error, Error::Execution(ExecutionFailure::WorkerFailed(_))),
+                        "E1 stored failure vocabulary"
+                    );
+                } else {
+                    assert_eq!(
+                        aggregate.state.version, before_error_version,
+                        "E2 error is a head stutter"
+                    );
+                    assert!(
+                        state.active().await.unwrap().is_some(),
+                        "E2 retained active"
+                    );
+                    if disposition.is_some() {
+                        assert!(
+                            matches!(error, Error::Admission(_)),
+                            "E2 original typed source"
+                        );
+                    } else {
+                        assert!(
+                            matches!(error, Error::Execution(_)),
+                            "E2 provider mapping unchanged"
+                        );
+                    }
+                }
+                assert!(world.run_state(&target).is_none(), "E3 no fabricated Run");
+                assert_eq!(
+                    world.executions.load(Ordering::SeqCst),
+                    usize::from(phase != 0),
+                    "E3 prior Worker only"
+                );
+            }
+        }
     }
 
     #[test]

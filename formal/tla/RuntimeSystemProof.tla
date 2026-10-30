@@ -230,6 +230,20 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     TerminalToolCallStates, ToolDecisionStates, DelegatedChildStates,
     DelegationLinkStatuses, RuntimeAssumptions
 
+LEMMA RecordReturnPreservesSafety ==
+    \A c \in Calls:
+        RuntimeAssumptions /\ Safety /\ RecordReturn(c) => Safety'
+BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted,
+    ToolPermissionCannotBeBypassed, DeniedCallsNeverRun, RequestedCallsAreFresh,
+    DeniedCallsAreTerminal, PublicationBarrier,
+    DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
+    CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
+    RecordReturn, Committed, CoreRunStates, TicketKinds, DispatchStates,
+    ToolCallStates, TerminalToolCallStates, ToolDecisionStates,
+    DelegatedChildStates, DelegationLinkStatuses, RuntimeAssumptions
+
+
 LEMMA CompletePreservesSafety ==
     \A c \in Calls:
         RuntimeAssumptions /\ Safety /\ Complete(c) => Safety'
@@ -382,7 +396,7 @@ LEMMA NextPreservesSafety == RuntimeAssumptions /\ Safety /\ Next => Safety'
 BY ClaimPreservesSafety, ReclaimPreservesSafety,
    RequestToolPermissionPreservesSafety, ApprovePreservesSafety,
    DenyPreservesSafety, SupplyResultPreservesSafety,
-   DirectStartPreservesSafety, CompleteImmediatePreservesSafety,
+   DirectStartPreservesSafety, CompleteImmediatePreservesSafety, RecordReturnPreservesSafety,
    InvokePreservesSafety,
    CompletePreservesSafety, RecoverReplaySafePreservesSafety,
    RecoverIndeterminatePreservesSafety, StartChildPreservesSafety,

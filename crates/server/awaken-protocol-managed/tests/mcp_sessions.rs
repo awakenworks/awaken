@@ -537,6 +537,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for PreparingFake {
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -549,12 +550,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for PreparingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -964,6 +966,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for HotRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -976,12 +979,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for HotRuntime {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -3549,6 +3553,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
+            _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
         ) -> Result<OutcomeDrive, RunError> {
             unreachable!()
         }
@@ -3561,12 +3566,13 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         async fn continue_outcome(
             &self,
             thread: &str,
+            executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
         ) -> Result<
             Option<awaken_session_execution_contract::OutcomeDrive>,
             awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
-                .continue_outcome(thread)
+                .continue_outcome(thread, executor)
                 .await
         }
     }

@@ -134,6 +134,18 @@ impl awaken_dispatch_contract::SessionRunAdmissionReads for FlakyDispatchStore {
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::SessionRunReservations for FlakyDispatchStore {
+    async fn adopt_pending_session_run(
+        &self,
+        expected_original: awaken_dispatch::RunDispatch,
+        command_fingerprint: awaken_session_types::SessionRunCommandFingerprint,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<awaken_dispatch::RunClaim>, awaken_dispatch::DispatchError> {
+        self.inner
+            .adopt_pending_session_run(expected_original, command_fingerprint, owner, lease_ms)
+            .await
+    }
+
     async fn reserve_session_run(
         &self,
         request: awaken_dispatch::RunDispatch,

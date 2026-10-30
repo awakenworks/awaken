@@ -264,11 +264,11 @@ impl PhaseHook for StateMachineObserver {
         ctx: &PhaseContext,
         _conversation: &[Message],
         state: &Store,
-    ) -> HookReaction {
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         // `AfterTool` carries the executed call and its output; nothing to react
         // to at any other point.
         let PhaseKind::AfterTool(after) = &ctx.kind else {
-            return HookReaction::default();
+            return Ok(HookReaction::default());
         };
         let call = &after.call;
         let output = &after.output;
@@ -496,7 +496,7 @@ impl PhaseHook for StateMachineObserver {
         if let Some(context) = request_context {
             reaction.state.push(ContextMessages::write(&context));
         }
-        reaction
+        Ok(reaction)
     }
 }
 
@@ -536,13 +536,13 @@ impl PhaseHook for StateMachineEventObserver {
         ctx: &PhaseContext,
         _conversation: &[Message],
         state: &Store,
-    ) -> HookReaction {
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         let event_name = match ctx.kind {
             PhaseKind::StepStart => "step.started",
             PhaseKind::BeforeInference { .. } => "step.before_inference",
             PhaseKind::AfterInference => "step.after_inference",
             PhaseKind::StepEnd => "step.ended",
-            PhaseKind::AfterTool(_) => return HookReaction::default(),
+            PhaseKind::AfterTool(_) => return Ok(HookReaction::default()),
         };
         let event_data = json!({ "run_id": ctx.run_id.0, "step": ctx.step });
         let thread_base = ThreadInstances::load_or_default(state);
@@ -709,7 +709,7 @@ impl PhaseHook for StateMachineEventObserver {
         if throttle_dirty {
             reaction.state.push(EmitThrottleCell::write(&throttle));
         }
-        reaction
+        Ok(reaction)
     }
 }
 

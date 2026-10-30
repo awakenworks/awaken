@@ -9,10 +9,12 @@ ToolCallStates == {
     "Requested",
     "Executing",
     "AwaitingToolPermission",
+    "Returned",
+    "KnownAborted",
     "Completed",
     "Indeterminate"
 }
-TerminalToolCallStates == {"Completed", "Indeterminate"}
+TerminalToolCallStates == {"KnownAborted", "Completed", "Indeterminate"}
 ToolDecisionStates == {"None", "Approved", "Denied", "ResultSupplied"}
 
 DelegatedChildStates == {"Absent", "Running", "Awaiting", "Ended"}

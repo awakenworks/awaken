@@ -238,8 +238,8 @@ pub(super) async fn run_tool_calls(
         // later steps: its ToolOutput carries the Run-scoped state command committed
         // atomically with the result, so it
         // bypasses the gate and never reaches an executor.
-        let mut entered_executor = false;
         let mut delegation_started = false;
+        let mut returned_child = None;
         if let Some(disposition) = await_client_call(
             context,
             resolved,
@@ -270,7 +270,7 @@ pub(super) async fn run_tool_calls(
                 discovery,
             )
         } else {
-            let decision = gate_decision(runtime, &call, env, store, context).await;
+            let decision = gate_decision(runtime, &call, env, store, context).await?;
             ledger.audit.extend(decision.audit);
             match decision.outcome {
                 GateOutcome::Allow => {
@@ -313,33 +313,46 @@ pub(super) async fn run_tool_calls(
                                     .map_err(|error| Error::Execution(error.to_string()))?;
                                 persist_batch(&batch, ledger, store, context, thread_id, run_id)
                                     .await?;
-                                entered_executor = true;
-                                match run_delegation(
-                                    runtime,
-                                    resolved,
-                                    DelegationParent {
-                                        context,
-                                        origin: delegation_origin,
-                                        agent_id: &resolved.agent_id.0,
-                                        run_id,
-                                        thread_id,
-                                    },
-                                    &call,
-                                    store,
+                                match super::tool_execution::cancellable_tool_phase(
+                                    context,
+                                    invoke_delegation(
+                                        runtime,
+                                        resolved,
+                                        DelegationParent {
+                                            context,
+                                            origin: delegation_origin,
+                                            agent_id: &resolved.agent_id.0,
+                                            run_id,
+                                            thread_id,
+                                        },
+                                        &call,
+                                        store,
+                                    ),
                                 )
-                                .await
+                                .await?
                                 {
-                                    Some(Ok(DelegationStep::Ended { text, usage })) => {
+                                    Some(Ok(DelegationInvocation {
+                                        id,
+                                        step: DelegationStep::Ended { text, usage },
+                                    })) => {
+                                        returned_child = Some(ChildRunResult {
+                                            child_run_id: id.child_run_id(),
+                                            text: text.clone(),
+                                            usage,
+                                        });
                                         // Fold the delegate's token spend into this thread's running
                                         // tally, so a session's usage counts delegated work (the
                                         // child Run has already committed its own usage).
-                                        merge_thread_usage(store, &mut ledger.staged_state, &usage);
+
                                         ToolOutput::ok(&call.call_id, text)
                                     }
                                     // The child needs input: await the parent on a Delegation ticket;
                                     // its opaque execution reference stays in the relationship and
                                     // is resumed through the delegation executor.
-                                    Some(Ok(DelegationStep::Awaiting { continuation })) => {
+                                    Some(Ok(DelegationInvocation {
+                                        step: DelegationStep::Awaiting { continuation },
+                                        ..
+                                    })) => {
                                         stage_delegation_awaiting(
                                             runtime,
                                             run_id,
@@ -484,9 +497,10 @@ pub(super) async fn run_tool_calls(
             context,
             step,
             &call,
-            &reaction_call,
+            Some(&reaction_call),
             output,
-            entered_executor,
+            returned_child,
+            false,
             delegation_started,
             BatchPersistence::WhenIncomplete,
             &mut batch,
@@ -532,7 +546,7 @@ async fn run_concurrent_tool_calls(
 
         let mut gates = Vec::with_capacity(wave_calls.len());
         for call in wave_calls {
-            let decision = gate_decision(runtime, call, env, store, context).await;
+            let decision = gate_decision(runtime, call, env, store, context).await?;
             ledger.audit.extend(decision.audit);
             gates.push(decision.outcome);
         }
@@ -675,7 +689,9 @@ async fn run_concurrent_tool_calls(
         if entered_executor.iter().any(|entered| *entered) {
             persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
         }
-        let committed_view: &Store = store;
+        // Immutable admitted execution view; the sole mutable batch remains
+        // with this collector while futures borrow this committed snapshot.
+        let committed_view = store.clone();
         let parent = DelegationParent {
             context,
             origin: delegation_origin,
@@ -683,14 +699,23 @@ async fn run_concurrent_tool_calls(
             run_id,
             thread_id,
         };
-        let executing_batch = &batch;
-        let invocations = futures_util::future::join_all(
-            wave_calls
-                .iter()
-                .zip(&entered_executor)
-                .filter(|(_, entered)| **entered)
-                .map(|(call, _)| async move {
-                    if is_resolved_delegation_call(runtime, resolved, delegation_origin, call) {
+        let executing_batch = batch.clone();
+        use futures_util::StreamExt;
+        let mut invocations = wave_calls
+            .iter()
+            .zip(&entered_executor)
+            .enumerate()
+            .filter(|(_, (_, entered))| **entered)
+            .map(|(position, (call, _))| {
+                let committed_view = &committed_view;
+                let executing_batch = &executing_batch;
+                async move {
+                    let invocation = if is_resolved_delegation_call(
+                        runtime,
+                        resolved,
+                        delegation_origin,
+                        call,
+                    ) {
                         ConcurrentInvocation::Delegation(
                             invoke_delegation(runtime, resolved, parent, call, committed_view)
                                 .await,
@@ -716,92 +741,134 @@ async fn run_concurrent_tool_calls(
                             }
                             Err(error) => Err(error),
                         })
-                    }
-                }),
-        )
-        .await;
-        let mut invocations = invocations.into_iter();
+                    };
+                    (position, invocation)
+                }
+            })
+            .collect::<futures_util::stream::FuturesUnordered<_>>();
         let mut deferred_exit: Option<Result<Option<RunDisposition>>> = None;
-
-        // Consume results in model order. Hooks and state application therefore
-        // remain deterministic even when executor completion order differs.
-        // Every entered invocation already returned. A logical fatal result
-        // must not discard later siblings' known outcomes; record them through
-        // the same batch owner before returning the first disposition. Recorder
-        // persistence/fence failures still abort rather than invent a receipt.
-        for (position, call) in wave_calls.iter().enumerate() {
-            let output = if let Some(output) = immediate_outputs[position].take() {
-                output
-            } else {
-                match invocations
-                    .next()
-                    .expect("every entered call produced one invocation result")
-                {
-                    ConcurrentInvocation::Regular(Ok(output)) => output,
-                    ConcurrentInvocation::Regular(Err(error)) => {
-                        deferred_exit.get_or_insert(Err(error));
-                        continue;
-                    }
-                    ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
-                        id,
-                        step: DelegationStep::Ended { text, usage },
-                    }))) => {
-                        let result = persist_child_run_result(
-                            context,
-                            thread_id,
-                            RunDisposition::running(run_id.clone()),
-                            &id,
-                            store,
-                            ChildRunResult {
-                                child_run_id: id.child_run_id(),
-                                text,
-                                usage,
-                            },
-                        )
-                        .await
+        let mut first_exit_position = usize::MAX;
+        let mut defer = |position: usize, outcome: Result<Option<RunDisposition>>| {
+            if position < first_exit_position {
+                first_exit_position = position;
+                deferred_exit = Some(outcome);
+            }
+        };
+        // Immediate answers are known too; checkpoint them before any await.
+        for output in immediate_outputs.iter().flatten() {
+            batch
+                .record_returned(output.clone())
+                .map_err(|error| Error::Execution(error.to_string()))?;
+        }
+        if immediate_outputs.iter().any(Option::is_some) {
+            persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
+        }
+        while let Some((position, invocation)) =
+            super::tool_execution::cancellable_tool_phase(context, invocations.next()).await?
+        {
+            let call = &wave_calls[position];
+            let output = match invocation {
+                ConcurrentInvocation::Regular(Ok(output)) => output,
+                ConcurrentInvocation::Regular(Err(error)) => {
+                    defer(position, Err(error));
+                    continue;
+                }
+                ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
+                    id,
+                    step: DelegationStep::Ended { text, usage },
+                }))) => {
+                    let output = ToolOutput::ok(&call.call_id, text.clone());
+                    batch
+                        .record_returned(output.clone())
                         .map_err(|error| Error::Execution(error.to_string()))?;
-                        merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
-                        ToolOutput::ok(&call.call_id, result.text)
-                    }
-                    ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
-                        step: DelegationStep::Awaiting { continuation },
-                        ..
-                    }))) => {
-                        // Terminal-only capability was overstated. The child is
-                        // addressable, but several waits cannot be represented by
-                        // one parent ticket; end fail closed.
-                        stage_delegation_awaiting(
-                            runtime,
-                            run_id,
-                            call,
-                            &continuation,
-                            store,
-                            &mut ledger.staged_state,
-                        )?;
-                        stage_batch(&batch, ledger, store);
-                        deferred_exit.get_or_insert(Ok(Some(RunDisposition::ended(
-                            run_id.clone(),
-                            EndCause::Indeterminate,
-                        ))));
-                        continue;
-                    }
-                    ConcurrentInvocation::Delegation(Some(Err(error))) => {
-                        match delegation_error_output(resolved, call, error) {
-                            Ok(output) => output,
-                            Err(error) => {
-                                deferred_exit.get_or_insert(Err(error));
-                                continue;
-                            }
+                    match super::delegation::stage_child_run_result(
+                        &id,
+                        store,
+                        ChildRunResult {
+                            child_run_id: id.child_run_id(),
+                            text,
+                            usage,
+                        },
+                    ) {
+                        Ok((_, Some(command))) => {
+                            store.apply(&command);
+                            ledger.staged_state.push(command);
+                        }
+                        Ok((_, None)) => {}
+                        Err(error) => {
+                            persist_batch(&batch, ledger, store, context, thread_id, run_id)
+                                .await?;
+                            defer(position, Err(Error::Execution(error.to_string())));
                         }
                     }
-                    ConcurrentInvocation::Delegation(None) => {
-                        deferred_exit.get_or_insert(Err(Error::Execution(
-                            "concurrent delegation call was not handled by its executor"
-                                .to_string(),
-                        )));
-                        continue;
+                    output
+                }
+                ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
+                    step: DelegationStep::Awaiting { continuation },
+                    ..
+                }))) => {
+                    // Terminal-only capability was overstated. The child is
+                    // addressable, but several waits cannot be represented by
+                    // one parent ticket; end fail closed.
+                    stage_delegation_awaiting(
+                        runtime,
+                        run_id,
+                        call,
+                        &continuation,
+                        store,
+                        &mut ledger.staged_state,
+                    )?;
+                    stage_batch(&batch, ledger, store);
+                    defer(
+                        position,
+                        Ok(Some(RunDisposition::ended(
+                            run_id.clone(),
+                            EndCause::Indeterminate,
+                        ))),
+                    );
+                    continue;
+                }
+                ConcurrentInvocation::Delegation(Some(Err(error))) => {
+                    match delegation_error_output(resolved, call, error) {
+                        Ok(output) => output,
+                        Err(error) => {
+                            defer(position, Err(error));
+                            continue;
+                        }
                     }
                 }
+                ConcurrentInvocation::Delegation(None) => {
+                    defer(
+                        position,
+                        Err(Error::Execution(
+                            "concurrent delegation call was not handled by its executor"
+                                .to_string(),
+                        )),
+                    );
+                    continue;
+                }
+            };
+            batch
+                .record_returned(output)
+                .map_err(|error| Error::Execution(error.to_string()))?;
+            // This await is intentionally outside cancellation selection.
+            persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
+        }
+        super::tool_execution::check_tool_phase_cancellation(context)?;
+        // No fallible materialization/hook has run. Every observed physical
+        // return is now in this one durable aggregate, independent of completion
+        // order. Apply tool-owned state and hooks only in original model order.
+        for (position, call) in wave_calls.iter().enumerate() {
+            let Some(output) = batch
+                .calls()
+                .iter()
+                .find(|entry| entry.call.call_id == call.call_id)
+                .and_then(|entry| match &entry.phase {
+                    ToolCallPhase::Returned(output) => Some(output.clone()),
+                    _ => None,
+                })
+            else {
+                continue;
             };
             record_tool_output(
                 runtime,
@@ -811,9 +878,10 @@ async fn run_concurrent_tool_calls(
                 context,
                 step,
                 call,
-                call,
+                Some(call),
                 output,
-                entered_executor[position],
+                None,
+                true,
                 delegation_started[position],
                 BatchPersistence::WhenIncomplete,
                 &mut batch,
@@ -852,7 +920,7 @@ const RECOVERED_STEP: usize = 0;
 /// recovery legitimately differ, so it is a named argument of the one recorder
 /// rather than a reason to keep two copies of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BatchPersistence {
+pub(super) enum BatchPersistence {
     /// Fresh dispatch: the enclosing loop finalizes and persists a complete
     /// batch itself, so persisting here would write the same rows twice.
     WhenIncomplete,
@@ -872,7 +940,7 @@ enum BatchPersistence {
 /// paths really differ on — the step index a recovered attempt cannot
 /// reconstruct, and when the batch is persisted — are arguments.
 #[allow(clippy::too_many_arguments)]
-async fn record_tool_output(
+pub(super) async fn record_tool_output(
     runtime: &Runtime,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
@@ -880,26 +948,58 @@ async fn record_tool_output(
     context: &RuntimeRunContext,
     step: usize,
     call: &ToolCall,
-    reaction_call: &ToolCall,
+    reaction_call: Option<&ToolCall>,
     output: ToolOutput,
-    entered_executor: bool,
+    child_result: Option<ChildRunResult>,
+    raw_checkpointed: bool,
     delegation_started: bool,
     persistence: BatchPersistence,
     batch: &mut ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
 ) -> Result<()> {
+    // Raw state is retained as data, not applied in physical completion order.
+    batch
+        .record_returned(output.clone())
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    if let Some(result) = child_result {
+        let id = DelegationId::for_parent_call(run_id, &call.call_id);
+        match super::delegation::stage_child_run_result(&id, store, result) {
+            Ok((_, Some(command))) => {
+                store.apply(&command);
+                ledger.staged_state.push(command);
+            }
+            Ok((_, None)) => {}
+            Err(error) => {
+                // Retain the raw result even if delivery validation rejects it.
+                persist_batch(batch, ledger, store, context, thread_id, run_id).await?;
+                return Err(Error::Execution(error.to_string()));
+            }
+        }
+    }
+    if !raw_checkpointed {
+        persist_batch(batch, ledger, store, context, thread_id, run_id).await?;
+    }
+    super::tool_execution::check_tool_phase_cancellation(context)?;
     if let Some(spiller) = &context.tool_output_spiller
         && output
             .content
             .iter()
             .all(|block| matches!(block, ContentBlock::Text { .. }))
     {
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let domain = context
-            .physical_quiescence
-            .observe_return(spiller.execution_domain(run_id, &output.call_id, &output.text()))
-            .await
+        super::tool_execution::cancellable_tool_phase(
+            context,
+            verify_attempt_ownership(context.ownership.as_deref()),
+        )
+        .await??;
+        let observed = super::tool_execution::cancellable_tool_phase(
+            context,
+            context
+                .physical_quiescence
+                .observe_return(spiller.execution_domain(run_id, &output.call_id, &output.text())),
+        )
+        .await?;
+        let domain = super::tool_execution::tool_executor_result(context, call, observed)?
             .map_err(|error| Error::Execution(error.to_string()))?
             .bind_resource_origin(context.resource_origin.as_ref())
             .map_err(|error| Error::Execution(error.to_string()))?;
@@ -911,30 +1011,56 @@ async fn record_tool_output(
             persist_batch(batch, ledger, store, context, thread_id, run_id).await?;
         }
     }
-    let output = spill_tool_output(context, run_id, output).await?;
+    let output = super::tool_execution::cancellable_tool_phase(
+        context,
+        spill_tool_output(context, run_id, output),
+    )
+    .await??;
+    let bookkeeping_start = ledger.staged_state.len();
     if delegation_started {
+        let id = DelegationId::for_parent_call(run_id, &call.call_id);
+        if let Some(result) = PendingChildRunResults::load(store)
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .get(&id)
+        {
+            if !output.state.iter().any(|command| {
+                command.scope == ThreadUsageKey::SCOPE && command.key.0 == ThreadUsageKey::KEY
+            }) {
+                merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
+            }
+        }
         stage_delegation_completed(runtime, run_id, call, store, &mut ledger.staged_state)?;
     }
-    if entered_executor {
-        batch
-            .complete(output.clone())
-            .map_err(|error| Error::Execution(error.to_string()))?;
-    } else {
-        batch
-            .complete_immediate(output.clone())
-            .map_err(|error| Error::Execution(error.to_string()))?;
-    }
+    let mut work = store.clone();
     for command in &output.state {
+        work.apply(command);
+    }
+    let (reactions, reminders) = if let Some(reaction_call) = reaction_call {
+        super::tool_execution::cancellable_tool_phase(
+            context,
+            collect_tool_reactions(env, run_id, step, reaction_call, &output, &work, context),
+        )
+        .await??
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    batch
+        .complete_returned(output.clone())
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    for command in output.state.iter().chain(&reactions) {
         store.apply(command);
     }
-    let (reactions, reminders) =
-        collect_tool_reactions(env, run_id, step, reaction_call, &output, store, context).await;
-    for command in &reactions {
-        store.apply(command);
-    }
-    let mut result_state = output.state.clone();
+    let mut result_state = ledger.staged_state[bookkeeping_start..].to_vec();
+    result_state.extend(output.state.iter().cloned());
     result_state.extend(reactions);
-    let mut result_messages = vec![tool_result_message(batch, call, &output)?];
+    let mut result_messages = batch
+        .calls()
+        .iter()
+        .find(|entry| entry.call.call_id == call.call_id)
+        .expect("known returned call")
+        .result_messages
+        .clone();
+    result_messages.push(tool_result_message(batch, call, &output)?);
     result_messages.extend(reminders);
     batch
         .set_result_messages(&call.call_id, result_messages)
@@ -996,6 +1122,9 @@ pub(super) fn tool_execution_disposition(
     result: Result<Option<RunDisposition>>,
 ) -> Result<Option<RunDisposition>> {
     match result {
+        Err(error) if super::tool_execution::is_tool_phase_cancelled(&error) => Ok(Some(
+            RunDisposition::ended(run_id.clone(), EndCause::Cancelled),
+        )),
         Err(Error::StateConflict) => Ok(Some(RunDisposition::ended(
             run_id.clone(),
             EndCause::Error(Failure::StateConflict),
@@ -1035,7 +1164,31 @@ pub(super) async fn recover_tool_batch(
         let durable = batch.calls()[index].clone();
         let call = durable.call;
         match &durable.phase {
-            ToolCallPhase::Completed(_) | ToolCallPhase::Indeterminate { .. } => continue,
+            ToolCallPhase::Completed(_)
+            | ToolCallPhase::KnownAborted { .. }
+            | ToolCallPhase::Indeterminate { .. } => continue,
+            ToolCallPhase::Returned(output) => {
+                record_tool_output(
+                    runtime,
+                    env,
+                    run_id,
+                    thread_id,
+                    context,
+                    RECOVERED_STEP,
+                    &call,
+                    Some(&call),
+                    output.clone(),
+                    None,
+                    true,
+                    is_resolved_delegation_call(runtime, resolved, delegation_origin, &call),
+                    BatchPersistence::Always,
+                    &mut batch,
+                    ledger,
+                    store,
+                )
+                .await?;
+                continue;
+            }
             ToolCallPhase::Awaiting { wait } => {
                 // Awaiting and its ResumeTicket commit atomically. Seeing an open
                 // batch wait while the Run was reclaimed as Running means persisted
@@ -1090,7 +1243,7 @@ pub(super) async fn recover_tool_batch(
             && RuntimeToolOperation::classify(&call.tool_id)
                 != Some(RuntimeToolOperation::ToolSearch)
         {
-            let gate = gate_decision(runtime, &call, env, store, context).await;
+            let gate = gate_decision(runtime, &call, env, store, context).await?;
             ledger.audit.extend(gate.audit);
             match gate.outcome {
                 outcome @ (GateOutcome::Block { .. } | GateOutcome::SetResult(_)) => {
@@ -1109,8 +1262,9 @@ pub(super) async fn recover_tool_batch(
                         context,
                         RECOVERED_STEP,
                         &call,
-                        &call,
+                        Some(&call),
                         output,
+                        None,
                         false,
                         false,
                         BatchPersistence::Always,
@@ -1214,6 +1368,7 @@ pub(super) async fn recover_tool_batch(
         )?;
         persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
 
+        let mut returned_child = None;
         let reaction_call = call.clone();
         let output = if let Some(output) =
             reject_direct_detached_call(&executable_descriptors, &call)
@@ -1230,26 +1385,40 @@ pub(super) async fn recover_tool_batch(
                 discovery,
             )
         } else {
-            match run_delegation(
-                runtime,
-                resolved,
-                DelegationParent {
-                    context,
-                    origin: delegation_origin,
-                    agent_id: &resolved.agent_id.0,
-                    run_id,
-                    thread_id,
-                },
-                &call,
-                store,
+            match super::tool_execution::cancellable_tool_phase(
+                context,
+                invoke_delegation(
+                    runtime,
+                    resolved,
+                    DelegationParent {
+                        context,
+                        origin: delegation_origin,
+                        agent_id: &resolved.agent_id.0,
+                        run_id,
+                        thread_id,
+                    },
+                    &call,
+                    store,
+                ),
             )
-            .await
+            .await?
             {
-                Some(Ok(DelegationStep::Ended { text, usage })) => {
-                    merge_thread_usage(store, &mut ledger.staged_state, &usage);
+                Some(Ok(DelegationInvocation {
+                    id,
+                    step: DelegationStep::Ended { text, usage },
+                })) => {
+                    returned_child = Some(ChildRunResult {
+                        child_run_id: id.child_run_id(),
+                        text: text.clone(),
+                        usage,
+                    });
+
                     ToolOutput::ok(&call.call_id, text)
                 }
-                Some(Ok(DelegationStep::Awaiting { continuation })) => {
+                Some(Ok(DelegationInvocation {
+                    step: DelegationStep::Awaiting { continuation },
+                    ..
+                })) => {
                     stage_delegation_awaiting(
                         runtime,
                         run_id,
@@ -1297,9 +1466,10 @@ pub(super) async fn recover_tool_batch(
             context,
             RECOVERED_STEP,
             &call,
-            &reaction_call,
+            Some(&reaction_call),
             output,
-            true,
+            returned_child,
+            false,
             delegation_started,
             BatchPersistence::Always,
             &mut batch,
@@ -1477,13 +1647,21 @@ async fn persist_batch(
     thread_id: &ThreadId,
     run_id: &RunId,
 ) -> Result<()> {
+    let before = store.clone();
     stage_batch(batch, ledger, store);
     if context.commit.is_some() {
         if validate_batch(&ledger.staged_state).is_err() {
             ledger.rollback_state();
+            *store = before;
             return Err(Error::StateConflict);
         }
-        ledger.commit_delta(context, thread_id, run_id).await?;
+        if let Err(error) = ledger.commit_delta(context, thread_id, run_id).await {
+            // The unacknowledged write may already be durable. Do not advance
+            // local truth or let its draft ride a later terminal commit.
+            ledger.rollback_state();
+            *store = before;
+            return Err(error);
+        }
     }
     Ok(())
 }

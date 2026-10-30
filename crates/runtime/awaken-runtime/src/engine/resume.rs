@@ -124,12 +124,13 @@ pub(super) async fn drive_resumed(
     ticket: &ResumeTicket,
     result: ResumeResult,
     mut resume_commit: Option<ResumeCommit>,
-    fresh_context: Vec<Message>,
+    mut fresh_context: Vec<Message>,
     run_input: std::sync::Arc<[Message]>,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
     continuation: ResumeContinuation,
     resume_checkpoint: Option<StreamCheckpoint>,
+    mut returned_child: Option<ChildRunResult>,
     mut waiting_batch: Option<ToolBatch>,
     mut store: Store,
 ) -> Result<RunState> {
@@ -170,12 +171,6 @@ pub(super) async fn drive_resumed(
     };
     let mut decision_precommitted = false;
     let mut delegation_state = Vec::new();
-    if ticket.reason() == AwaitReason::Delegation
-        && matches!(&result, ResumeResult::ToolResult(_))
-        && let Some(call) = pending_call.as_ref()
-    {
-        stage_delegation_completed(runtime, run_id, call, &mut store, &mut delegation_state)?;
-    }
     // Approval is a lifecycle decision, not a chat message. For a batch-aware
     // ticket, commit Awaiting(Approval) -> Executing before entering the tool.
     // A failed/fenced commit therefore cannot leak an unrecorded side effect.
@@ -232,28 +227,40 @@ pub(super) async fn drive_resumed(
         decision_precommitted = true;
     }
     let result = if approved && let Some(call) = pending_call.as_ref() {
-        let delegation_started =
-            is_resolved_delegation_call(runtime, resolved, ticket.delegation_origin.as_ref(), call);
-        let result = match run_delegation(
-            runtime,
-            resolved,
-            DelegationParent {
-                context,
-                origin: ticket.delegation_origin.as_ref(),
-                agent_id: &resolved.agent_id.0,
-                run_id,
-                thread_id,
-            },
-            call,
-            &mut store,
+        let result = match super::tool_execution::cancellable_tool_phase(
+            context,
+            invoke_delegation(
+                runtime,
+                resolved,
+                DelegationParent {
+                    context,
+                    origin: ticket.delegation_origin.as_ref(),
+                    agent_id: &resolved.agent_id.0,
+                    run_id,
+                    thread_id,
+                },
+                call,
+                &mut store,
+            ),
         )
-        .await
+        .await?
         {
-            Some(Ok(DelegationStep::Ended { text, usage })) => {
-                merge_thread_usage(&mut store, &mut delegation_state, &usage);
+            Some(Ok(DelegationInvocation {
+                id,
+                step: DelegationStep::Ended { text, usage },
+            })) => {
+                returned_child = Some(ChildRunResult {
+                    child_run_id: id.child_run_id(),
+                    text: text.clone(),
+                    usage,
+                });
+
                 ResumeResult::ToolResult(ToolOutput::ok(&call.call_id, text))
             }
-            Some(Ok(DelegationStep::Awaiting { continuation })) => {
+            Some(Ok(DelegationInvocation {
+                step: DelegationStep::Awaiting { continuation },
+                ..
+            })) => {
                 stage_delegation_awaiting(
                     runtime,
                     run_id,
@@ -310,9 +317,6 @@ pub(super) async fn drive_resumed(
             }
             None => result,
         };
-        if delegation_started {
-            stage_delegation_completed(runtime, run_id, call, &mut store, &mut delegation_state)?;
-        }
         result
     } else {
         result
@@ -338,6 +342,10 @@ pub(super) async fn drive_resumed(
     } else {
         None
     };
+    let run_reactions = !matches!(
+        &result,
+        ResumeResult::Permission(PermissionDecision::Deny { .. })
+    );
     let (resumed, mut seed_state, resumed_output) = resume_into_messages(
         ResumeExecutionContext {
             runtime,
@@ -354,55 +362,85 @@ pub(super) async fn drive_resumed(
     )
     .await?;
     seed_state.splice(0..0, delegation_state);
-    let seed_audit = if decision_precommitted {
+    let mut seed_audit = if decision_precommitted {
         Vec::new()
     } else if let (Some(decision), Some(call)) = (permission_decision, pending_call.as_ref()) {
         vec![permission_confirmation(call, decision)]
     } else {
         Vec::new()
     };
-    // The resumed tool's own state is folded into the store so a later step in
-    // this resume observes the advanced state; it also seeds the attempt's batch
-    // (kept first) so step commits and conflict validation cover it too.
+    // Admission state stays outside the tool's raw output and retained envelope.
+    seed_state.extend(authority_state);
     for command in &seed_state {
         store.apply(command);
     }
-    // If this ticket belongs to an open tool batch, the resumed result satisfies
-    // that call but stays behind the batch publication barrier. Recovery of the
-    // batch below will finish any remaining calls and publish all results in the
-    // original model order. A no-tool pause/input keeps the historic direct path.
-    let resumed_new_messages = if let Some(mut batch) = waiting_batch.take() {
-        let call_id = waiting_call_id
-            .as_deref()
-            .expect("a validated waiting batch always has one ticket call");
-        let output = resumed_output.ok_or_else(|| {
-            Error::Execution("tool wait resumed without a tool output".to_string())
-        })?;
+    let mut new_messages = Vec::new();
+    if let Some(mut batch) = waiting_batch.take() {
+        let call_id = waiting_call_id.as_deref().expect("validated waiting call");
+        let output = resumed_output
+            .ok_or_else(|| Error::Execution("tool wait resumed without a tool output".into()))?;
         batch
-            .complete(output)
+            .record_returned(output.clone())
             .map_err(|error| Error::Execution(error.to_string()))?;
+        // Publication appends this exact accepted suffix once, before Tool.
+        // It must not already exist in the model transcript as a fresh copy.
+        transcript.truncate(transcript.len() - fresh_context.len());
         batch
-            .set_result_messages(call_id, resumed)
+            .set_returned_context(call_id, std::mem::take(&mut fresh_context))
             .map_err(|error| Error::Execution(error.to_string()))?;
-        batch
-            .set_result_state(call_id, seed_state.clone())
-            .map_err(|error| Error::Execution(error.to_string()))?;
-        let command = ActiveToolBatch::write(&Some(batch));
-        store.apply(&command);
-        seed_state = vec![command];
-        Vec::new()
+        let call = pending_call.as_ref().expect("validated pending call");
+        let mut ledger = StepLedger::new(transcript, Vec::new(), seed_state, seed_audit);
+        ledger.attach_resume(resume_commit.take());
+        let recorded = dispatch::record_tool_output(
+            runtime,
+            env,
+            run_id,
+            thread_id,
+            context,
+            resume_step_base,
+            call,
+            run_reactions.then_some(call),
+            output,
+            returned_child,
+            false,
+            approved || ticket.reason() == AwaitReason::Delegation,
+            dispatch::BatchPersistence::Always,
+            &mut batch,
+            &mut ledger,
+            &mut store,
+        )
+        .await;
+        if let Err(error) = recorded {
+            if super::tool_execution::is_tool_phase_cancelled(&error) {
+                ledger
+                    .staged_state
+                    .push(ActiveToolBatch::write(&Some(batch)));
+                return super::finalize::finish_with_reader(
+                    runtime,
+                    context,
+                    Some(reader),
+                    thread_id,
+                    run_id.clone(),
+                    ledger.into_step_result(RunDisposition::ended(
+                        run_id.clone(),
+                        EndCause::Cancelled,
+                    )),
+                )
+                .await;
+            }
+            return Err(error);
+        }
+        transcript = ledger.transcript.clone();
+        let tail = ledger.into_step_result(RunDisposition::running(run_id.clone()));
+        seed_state = tail.staged_state;
+        seed_audit = tail.audit;
+        resume_commit = tail.resume;
+        new_messages = tail.new_messages;
     } else {
         transcript.extend(resumed.iter().cloned());
-        resumed
-    };
-    let mut new_messages = fresh_context;
-    // An accepted restriction belongs to the Run admission, never to a tool's
-    // retained result envelope. Publish it beside the wrapped batch command.
-    for command in &authority_state {
-        store.apply(command);
+        new_messages.extend(fresh_context);
+        new_messages.extend(resumed);
     }
-    seed_state.extend(authority_state);
-    new_messages.extend(resumed_new_messages);
     if continuation == ResumeContinuation::ToolBatch {
         let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
         ledger.attach_resume(resume_commit);

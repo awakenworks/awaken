@@ -209,7 +209,7 @@ pub trait PhaseHook: Send + Sync {
         ctx: &PhaseContext,
         conversation: &[Message],
         state: &Store,
-    ) -> HookReaction;
+    ) -> crate::diagnostic::Result<HookReaction>;
 
     /// Optional factual observation for hooks subscribed to AfterInference.
     /// Called for each successful logical model request after context selection
@@ -221,8 +221,8 @@ pub trait PhaseHook: Send + Sync {
         _input: &[crate::llm::ChatMessage],
         _conversation: &[Message],
         _state: &Store,
-    ) -> HookReaction {
-        HookReaction::default()
+    ) -> crate::diagnostic::Result<HookReaction> {
+        Ok(HookReaction::default())
     }
 }
 

@@ -448,13 +448,20 @@ mod tests {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
+            _executor: &dyn crate::PreparedSessionRunAdmission,
         ) -> Result<OutcomeDrive, RunError> {
             unreachable!("not exercised by the default-method tests")
         }
 
         // Neutral role behaviour: forwarded to `NeutralRuntime` rather than scripted here.
-        async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-            crate::NeutralRuntime.continue_outcome(thread).await
+        async fn continue_outcome(
+            &self,
+            thread: &str,
+            executor: &dyn crate::PreparedSessionRunAdmission,
+        ) -> Result<Option<OutcomeDrive>, RunError> {
+            crate::NeutralRuntime
+                .continue_outcome(thread, executor)
+                .await
         }
     }
 

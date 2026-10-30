@@ -122,6 +122,15 @@ pub enum SessionRunActivityAdmissionMode {
     RecoverOnly,
 }
 
+/// Non-wire observations for one guarded prepared-reservation repair. The
+/// revision is prepared before the Dispatch guard; its cursor comes from the
+/// original Thread snapshot under that guard. Neither value grants execution.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedSessionRunActivity {
+    pub projected_revision: Option<awaken_session_types::SessionRevision>,
+    pub admitted_after_cursor: u64,
+}
+
 /// Stable activity-operation identity for a self-affine Session Run. The Run
 /// id is already the canonical dispatch identity, so exact crash recovery
 /// reuses one Session receipt without another registry or counter.
@@ -1352,6 +1361,26 @@ pub struct CoordinatedThreadLink {
 /// roster, budget, or concurrency policy.
 #[async_trait::async_trait]
 pub trait SessionAgentCoordination: Send + Sync {
+    /// Prepare the current Session projection outside the Dispatch reservation
+    /// lock. Admission below rechecks the exact reservation and root revision.
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        session: &crate::SessionId,
+        agent: &str,
+        run: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, crate::RunError>;
+
+    /// Recover the exact committed activity or admit it under the caller's
+    /// guarded reservation using the prepared revision and committed cursor.
+    async fn admit_prepared_session_run_activity(
+        &self,
+        session: &crate::SessionId,
+        run: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+        preparation: PreparedSessionRunActivity,
+    ) -> Result<SessionRunActivityAdmission, crate::RunError>;
+
     /// Admit the durable activity for one exact self-affine Session Run. Exact
     /// operation replay must return its committed epoch before evaluating fresh
     /// terminal, budget, or roster policy.

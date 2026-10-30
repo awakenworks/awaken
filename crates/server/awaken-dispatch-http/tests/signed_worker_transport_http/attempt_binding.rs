@@ -241,9 +241,9 @@ impl Drop for Fixture {
 impl Fixture {
     async fn new(configured: bool, request_budget_ms: u64) -> Self {
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
-        let mut manifest = WorkerManifest::default();
-        manifest.runtime_protocol.min = 1;
-        manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        // C0 codec support is fixed for compatible foreground claims;
+        // all source/provider/signature/epoch negatives below stay varied.
+        let manifest = support::current_dispatch_codec_manifest();
         let identity = directory
             .register(
                 WorkerRegistration {
@@ -286,7 +286,8 @@ impl Fixture {
         store
             .enqueue(
                 RunDispatch::new(support::activation("binding-http"))
-                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+                    .with_worker_codec_requirements(),
             )
             .await
             .unwrap();
@@ -424,9 +425,7 @@ async fn registration_retention_failure_retries_the_same_durable_identity_before
             f.clock.clone(),
         )));
     let control = awaken_coordinator_client::WorkerControlClient::new(upstream);
-    let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    let manifest = support::current_dispatch_codec_manifest();
     f.directory
         .deregister(f.upstream.worker_identity().unwrap())
         .await
@@ -862,7 +861,7 @@ use awaken_dispatch_contract::{
 /// The signed physical-attempt protocol family belongs beside its original
 /// binding/Registry tests; all P1-P5/U1-U4 assertions move intact from parent.
 pub(super) async fn verify_ordinary_return_compatibility(
-    queue: &awaken_coordinator_client::HttpDispatchQueue,
+    queue: &dyn awaken_dispatch_contract::DispatchExecution,
     upstream: &WorkerUpstream,
     directory: &TestWorkerDirectory,
     dispatch: &MemoryDispatchStore,

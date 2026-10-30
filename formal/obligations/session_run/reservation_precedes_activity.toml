@@ -17,6 +17,9 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
+text = '''The production DispatchTransition admission-only Pending adoption decision is included in the existing claim-epoch harness without changing its original phase/epoch/cancellation domain or assertions. Its additional original-identity, legacy-shape, vacancy, closing and physical-slot inputs are observations of the backend's locked row, not free assumptions that SQL derived them correctly. Three-backend conformance retains the original SessionCommand legacy fixture and separately exercises the real unbound FullDispatch Pending upgrade cut. Prepared commands do not inherit the ordinary reduced legacy or completion-tuple identity fallback. The unchanged SessionRunProtocol initial state does not contain historical unreceipted Pending execution; it is not an upgrade-window proof. Authoritative Thread absence, guard/connection release, root CAS, cancellation and crash ordering still require the source-bound native/database cases and do not gain a Rust-to-SQL or unbounded-liveness claim.'''
+
+[[bounds]]
 text = '''Kani exhausts the production reservation-to-activity plan over all five SessionRunReservation variants, optional prior receipt presence and every u64 receipt value. A fresh or replayed durable reservation with no receipt is the only class that requests one activity commit; a nonzero receipt is reused exactly, zero fails closed, and RecoveryClaimed or Completed never opens an activity. The application calls this reducer only after DispatchQueue::reserve_session_run returns.'''
 
 [[bounds]]

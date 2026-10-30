@@ -154,10 +154,16 @@ impl PhaseHook for ReconcileBackgroundTasks {
         _ctx: &PhaseContext,
         _conversation: &[awaken_agent_contract::agent::message::Message],
         state: &awaken_agent_contract::agent::state::Store,
-    ) -> HookReaction {
-        let Ok(tasks) = tasks_from_state(state) else {
-            return HookReaction::default();
-        };
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
+        // Decode the complete namespace before consulting the supervisor.
+        // Corrupt durable state is an attempt error, never an empty task list.
+        let tasks = tasks_from_state(state).map_err(|source| {
+            awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+                awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest,
+                "background_task_state_invalid",
+                source,
+            )
+        })?;
         let mut commands = Vec::new();
         let mut messages = Vec::new();
         for mut task in tasks {
@@ -251,6 +257,6 @@ impl PhaseHook for ReconcileBackgroundTasks {
         }
         let mut reaction = HookReaction::state(commands);
         reaction.messages = messages;
-        reaction
+        Ok(reaction)
     }
 }

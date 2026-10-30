@@ -19,7 +19,7 @@ CONSTANTS
 
 OpKinds == {
     "Claim", "Reclaim", "RequestToolPermission", "Approve", "Deny", "SupplyResult",
-    "DirectStart", "CompleteImmediate", "Complete", "RecoverReplaySafe",
+    "DirectStart", "CompleteImmediate", "RecordReturn", "Complete", "RecoverReplaySafe",
     "RecoverIndeterminate", "StartChild", "AwaitChild", "ResumeChild",
     "FinishChild", "DuplicateChildCompletion",
     "QueueMessage", "ConsumeMessage", "FinalizeBatch", "EndRun",
@@ -28,7 +28,7 @@ OpKinds == {
 
 CallOps == {
     "RequestToolPermission", "Approve", "Deny", "SupplyResult", "DirectStart",
-    "CompleteImmediate", "Complete",
+    "CompleteImmediate", "RecordReturn", "Complete",
     "RecoverReplaySafe", "RecoverIndeterminate"
 }
 OwnerOps == {
@@ -196,6 +196,11 @@ Invoke(call) ==
     /\ ABS!Invoke(call)
     /\ UNCHANGED <<pc, pendingOp, pendingCall, pendingOwner, pendingEpoch>>
 
+ApplyRecordReturn ==
+    /\ Prepared("RecordReturn")
+    /\ ABS!RecordReturn(pendingCall)
+    /\ ClearPrepared
+
 ApplyComplete ==
     /\ Prepared("Complete")
     /\ ABS!Complete(pendingCall)
@@ -282,6 +287,7 @@ Next ==
     \/ ApplyDirectStart
     \/ ApplyCompleteImmediate
     \/ \E call \in Calls: Invoke(call)
+    \/ ApplyRecordReturn
     \/ ApplyComplete
     \/ ApplyRecoverReplaySafe
     \/ ApplyRecoverIndeterminate

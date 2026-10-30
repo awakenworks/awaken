@@ -284,6 +284,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -296,12 +297,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

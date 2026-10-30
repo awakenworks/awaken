@@ -10,6 +10,55 @@ use awaken_tool_contract::tool::{
 };
 use std::sync::Arc;
 
+/// Private cancellation signal consumed by the existing dispatch disposition
+/// boundary. It is not a serialized Run failure or Session admission marker.
+#[derive(Debug, thiserror::Error)]
+#[error("tool phase cancelled")]
+struct ToolPhaseCancelled;
+
+pub(super) fn is_tool_phase_cancelled(error: &Error) -> bool {
+    use std::error::Error as _;
+    matches!(error, Error::Diagnostic(diagnostic)
+        if diagnostic.source().is_some_and(|source| source.is::<ToolPhaseCancelled>()))
+}
+
+fn tool_phase_cancelled(context: &RuntimeRunContext) -> Error {
+    context.physical_quiescence.mark_uncertain();
+    awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+        awaken_runtime_contract::diagnostic::RuntimeErrorKind::Unavailable,
+        "tool_phase_cancelled",
+        ToolPhaseCancelled,
+    )
+    .into()
+}
+
+pub(super) fn check_tool_phase_cancellation(context: &RuntimeRunContext) -> Result<()> {
+    if context.is_cancelled() {
+        Err(tool_phase_cancelled(context))
+    } else {
+        Ok(())
+    }
+}
+
+/// Cancel only an effect/hook/materialization wait. Journal commits deliberately
+/// do not enter this wrapper: their enclosing owner drains ACK/error first.
+pub(super) async fn cancellable_tool_phase<T>(
+    context: &RuntimeRunContext,
+    operation: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    check_tool_phase_cancellation(context)?;
+    match &context.cancellation {
+        None => Ok(operation.await),
+        Some(token) => tokio::select! {
+            biased;
+            result = operation => Ok(result),
+            _ = token.cancelled() => {
+                Err(tool_phase_cancelled(context))
+            },
+        },
+    }
+}
+
 /// Runtime-owned operations are classified once at the model boundary. The
 /// closed enum prevents dispatch, recovery and concurrency policy from growing
 /// independent string-matching tables.
@@ -225,17 +274,12 @@ pub(super) async fn resume_into_messages(
     match result {
         ResumeResult::Continue => Ok((Vec::new(), Vec::new(), None)),
         ResumeResult::ToolResult(output) => {
-            let call_id = ticket.call_id().ok_or_else(|| {
+            ticket.call_id().ok_or_else(|| {
                 Error::Execution("tool result resumed a ticket without a tool call".to_string())
             })?;
-            let output = spill_tool_output(context, run_id, output).await?;
-            let batch = batch.ok_or_else(|| {
-                Error::Execution("resumed tool result has no committed tool batch".to_string())
-            })?;
-            let call = pending_call.cloned();
-            let (messages, state) =
-                fold_resume_tool_output(env, batch, call_id, call, &output, store, context).await?;
-            Ok((messages, state, Some(output)))
+            // The caller journals this exact raw value before materialization.
+            // Fresh, recovered and resumed calls share dispatch's sole recorder.
+            Ok((Vec::new(), Vec::new(), Some(output)))
         }
         ResumeResult::Permission(decision) => {
             let (call_id, _) = ticket.tool_call().ok_or_else(|| {
@@ -270,22 +314,7 @@ pub(super) async fn resume_into_messages(
                     store,
                 )
                 .await?;
-                let output = spill_tool_output(context, run_id, output).await?;
-                let (messages, state) = fold_resume_tool_output(
-                    env,
-                    batch.ok_or_else(|| {
-                        Error::Execution(
-                            "approved tool result has no committed tool batch".to_string(),
-                        )
-                    })?,
-                    call_id,
-                    Some(call),
-                    &output,
-                    store,
-                    context,
-                )
-                .await?;
-                return Ok((messages, state, Some(output)));
+                return Ok((Vec::new(), Vec::new(), Some(output)));
             }
             let reason = match decision {
                 PermissionDecision::Allow { .. } => "no pending operation".to_string(),
@@ -294,16 +323,7 @@ pub(super) async fn resume_into_messages(
                 }
             };
             let output = ToolOutput::error(call_id, format!("blocked: {reason}"));
-            let output = spill_tool_output(context, run_id, output).await?;
-            let messages = vec![tool_result_message_from(
-                batch.ok_or_else(|| {
-                    Error::Execution("denied tool result has no committed tool batch".to_string())
-                })?,
-                call_id,
-                &output.content,
-                output.is_error,
-            )?];
-            Ok((messages, Vec::new(), Some(output)))
+            Ok((Vec::new(), Vec::new(), Some(output)))
         }
         ResumeResult::Input(text) => Ok((
             vec![Message::text(
@@ -379,12 +399,12 @@ pub(crate) async fn gate_decision(
     env: &ResolvedExecutionEnv,
     state: &Store,
     context: &RuntimeRunContext,
-) -> GatedCall {
+) -> Result<GatedCall> {
     // Gates may await independent work. They enter the same participant barrier
     // as executors; cancelling a pending gate cannot masquerade as full return.
-    context
-        .physical_quiescence
-        .observe_return(async {
+    cancellable_tool_phase(
+        context,
+        context.physical_quiescence.observe_return(async {
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
             let audited = runtime.gate().is_some()
                 || context.tool_permission_policy.is_some()
@@ -437,43 +457,9 @@ pub(crate) async fn gate_decision(
                     audit: None,
                 },
             }
-        })
-        .await
-}
-
-/// Fold a resumed tool result into `(messages, state)` off a throwaway store copy
-/// (the resume paths return staged effects rather than mutating the live store).
-/// The result message is minted from the committed ToolBatch; when a `call` is present (the
-/// replayed call the hooks advance on) its output state is applied to a `work`
-/// clone and the `AfterTool` reactions/reminders are folded in. The one home for
-/// the resume arms' outcome folding (`ToolResult` and an allowed `Decision`).
-pub(super) async fn fold_resume_tool_output(
-    env: &ResolvedExecutionEnv,
-    batch: &ToolBatch,
-    call_id: &str,
-    call: Option<ToolCall>,
-    output: &ToolOutput,
-    store: &Store,
-    context: &RuntimeRunContext,
-) -> Result<(Vec<Message>, Vec<StateCommand>)> {
-    let mut state = output.state.clone();
-    let mut messages = vec![tool_result_message_from(
-        batch,
-        call_id,
-        &output.content,
-        output.is_error,
-    )?];
-    if let Some(call) = call {
-        let mut work = store.clone();
-        for command in &output.state {
-            work.apply(command);
-        }
-        let (reactions, reminders) =
-            collect_tool_reactions(env, batch.run_id(), 0, &call, output, &work, context).await;
-        state.extend(reactions);
-        messages.extend(reminders);
-    }
-    Ok((messages, state))
+        }),
+    )
+    .await
 }
 
 /// Consult the `AfterTool` phase hooks for one executed call (ADR-0055 folds the
@@ -490,10 +476,7 @@ pub(crate) async fn collect_tool_reactions(
     output: &ToolOutput,
     state: &Store,
     context: &RuntimeRunContext,
-) -> (Vec<StateCommand>, Vec<Message>) {
-    let mut work = state.clone();
-    let mut commands: Vec<StateCommand> = Vec::new();
-    let mut messages: Vec<Message> = Vec::new();
+) -> Result<(Vec<StateCommand>, Vec<Message>)> {
     let ctx = PhaseContext {
         run_id: run_id.clone(),
         step,
@@ -502,20 +485,9 @@ pub(crate) async fn collect_tool_reactions(
             output: output.clone(),
         }),
     };
-    for hook in env.hooks_for(PhaseHookPoint::AfterTool) {
-        // Fresh and resumed AfterTool share the same participant observer as
-        // every other phase point; a returned tool does not cover this hook.
-        let reaction = context
-            .physical_quiescence
-            .observe_return(hook.on_phase(&ctx, &[], &work))
-            .await;
-        for command in &reaction.state {
-            work.apply(command);
-            commands.push(command.clone());
-        }
-        messages.extend(reaction.messages);
-    }
-    (commands, messages)
+    let reaction =
+        super::run_loop::collect_phase_reactions(env, context, &ctx, &[], state, None).await?;
+    Ok((reaction.state, reaction.messages))
 }
 
 /// Invoke an authorized tool, turning a missing tool or a tool error into a
@@ -693,7 +665,7 @@ async fn execute_tool_action(
 
 /// Preserve fatal executor evidence at both metadata and invocation boundaries.
 /// Ordinary pre-entry errors remain values for the batch's one result recorder.
-fn tool_executor_result<T>(
+pub(super) fn tool_executor_result<T>(
     context: &RuntimeRunContext,
     call: &ToolCall,
     outcome: std::result::Result<T, ToolError>,
@@ -735,17 +707,20 @@ pub(crate) async fn execute_tool(
     state: &Store,
 ) -> Result<ToolOutput> {
     let span = tracing::Span::current();
-    let output = match execute_tool_action(
-        runtime,
-        env,
-        resolved,
-        call,
+    let output = match cancellable_tool_phase(
         context,
-        origin,
-        state,
-        ToolExecutorAction::Invoke,
+        execute_tool_action(
+            runtime,
+            env,
+            resolved,
+            call,
+            context,
+            origin,
+            state,
+            ToolExecutorAction::Invoke,
+        ),
     )
-    .await?
+    .await??
     {
         Ok(ToolExecutorOutcome::Output(output)) => output,
         Ok(_) => unreachable!("invoke action returns only ToolExecutorOutcome::Output"),
@@ -979,7 +954,11 @@ pub(super) async fn prepare_tool_domain(
     call: &ToolCall,
 ) -> Result<std::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolOutput>>
 {
-    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    cancellable_tool_phase(
+        context,
+        verify_attempt_ownership(context.ownership.as_deref()),
+    )
+    .await??;
     if !context.physical_quiescence.permits_execution() {
         return Err(Error::Indeterminate);
     }
@@ -987,14 +966,15 @@ pub(super) async fn prepare_tool_domain(
         runtime,
         env: Some(env),
     };
-    let result = context
-        .physical_quiescence
-        .observe_return(
+    let result = cancellable_tool_phase(
+        context,
+        context.physical_quiescence.observe_return(
             local
                 .routed_executor(context, &call.tool_id)
                 .execution_domain(call),
-        )
-        .await;
+        ),
+    )
+    .await?;
     Ok(tool_executor_result(context, call, result)?
         .map_err(|error| ToolOutput::error(&call.call_id, error.to_string()))
         .and_then(|domain| {

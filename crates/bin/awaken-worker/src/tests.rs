@@ -726,6 +726,21 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
     });
 
     assert!(manifest.capabilities.contains("native-runtime"));
+    assert!(
+        manifest
+            .capabilities
+            .contains(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY),
+        "M1 compiled Claimed.request decoder is advertised independently of execution backend"
+    );
+    // J-C1: this standard composition includes the actual raw-result codec,
+    // therefore its immutable manifest must advertise exactly that capability.
+    // A B-only/old Worker omitting it is covered by Dispatch's hard subset and
+    // intrinsic-omission cases; Native presence alone must not imply support.
+    assert!(
+        manifest
+            .capabilities
+            .contains(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY),
+    );
     assert_eq!(
         manifest.sandbox_tool_recovery,
         deployment

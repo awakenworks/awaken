@@ -166,6 +166,15 @@ pub trait CoordinationRuntime: Send + Sync {
         command: crate::AdmitSessionRun,
     ) -> Result<crate::SessionRunReservation, RunError>;
 
+    /// Execute a trusted prepared root Run through the same reservation,
+    /// activity and completion owners. The activity callback is borrowed for
+    /// this call only; implementations must never retain an application binding.
+    async fn run_prepared_session_run(
+        &self,
+        command: crate::AdmitPreparedSessionRun,
+        activity: &dyn crate::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError>;
+
     /// Publish one exact reservation only after the Session root committed its
     /// activity epoch. Ordinary Worker claim/execution remains the sole runner.
     async fn activate_session_run(
@@ -630,19 +639,26 @@ pub trait OutcomeRuntime: Send + Sync {
         max_iterations: u32,
     ) -> Result<u64, RunError>;
 
-    /// Convenience composition over the canonical prepare/continue phases.
+    /// Convenience composition over prepare/continue using the caller's
+    /// borrowed prepared Run admission; preparation itself executes nothing.
     async fn define_outcome(
         &self,
         thread: &str,
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        admission: &dyn crate::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError>;
 
     /// Continue the active Outcome after the ordinary Run resume has committed.
-    /// `None` proves there is no active aggregate; implementations must rebuild
-    /// continuation exclusively from the Thread-owned Outcome state.
-    async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError>;
+    /// The admission role is borrowed for this drive only. `None` can also mean a
+    /// live Worker owns progress; active truth stays exclusively in the Thread
+    /// aggregate and is never inferred from this no-progress projection.
+    async fn continue_outcome(
+        &self,
+        thread: &str,
+        admission: &dyn crate::PreparedSessionRunAdmission,
+    ) -> Result<Option<OutcomeDrive>, RunError>;
 }
 
 /// Live inbox mutation and snapshot for a running thread.

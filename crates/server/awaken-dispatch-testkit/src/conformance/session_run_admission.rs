@@ -606,6 +606,21 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         },
         "L1/LE1"
     );
+    // P1 a prepared command never borrows the historical reduced Session
+    // identity, even when the old fixture above proves ordinary compatibility.
+    assert_eq!(
+        store
+            .reserve_session_run(
+                legacy_current
+                    .clone()
+                    .with_prepared_session_command_identity(),
+                RESERVATION_TTL_MS
+            )
+            .await
+            .expect("P1 live legacy refusal"),
+        SessionRunReservationOutcome::Conflict,
+        "P1 prepared cannot use a live legacy subset",
+    );
     clock.set(70_002);
     let legacy_claim = store
         .claim_run(
@@ -639,11 +654,22 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     }
     assert_eq!(
         store
-            .reserve_session_run(legacy_current, RESERVATION_TTL_MS)
+            .reserve_session_run(legacy_current.clone(), RESERVATION_TTL_MS)
             .await
             .expect("L2 legacy completion replay"),
         SessionRunReservationOutcome::Completed,
         "L2/LE1"
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(
+                legacy_current.with_prepared_session_command_identity(),
+                RESERVATION_TTL_MS
+            )
+            .await
+            .expect("P1 completed legacy refusal"),
+        SessionRunReservationOutcome::Conflict,
+        "P1 prepared cannot use an old completion tuple",
     );
 
     let unknown_session = thread_id(ns, "reservation-unknown-stored-session");
@@ -1371,4 +1397,603 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationActivation::MissingOrRejected,
         "SR6/E7"
     );
+    legacy_pending_session_run_adoption(store, ns, clock).await;
+}
+
+/// Causes/effects for the real old Outcome crash cut, separate from the
+/// pre-fingerprint SessionCommand fixture above. A1 ordinary unbound
+/// FullDispatch Pending + exact original + vacant authority -> one admission
+/// tenure, no execution. A2 any changed frozen activation/envelope axis -> no
+/// tenure and a full state stutter. A3 invalid input/TTL -> error before mutation.
+/// A4 current/stale tenure and Retry/Admitted/Rejected -> the existing fenced
+/// reservation resolution only. A5 completion/current prepared replay is exact;
+/// it cannot reopen the old original or use a legacy tuple. The application
+/// separately proves authoritative no-Run observation and Session receipt CAS.
+async fn legacy_pending_session_run_adoption(
+    store: &dyn ConformanceDispatch,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
+    // C1 this is an explicit current-v5 Worker but its codec predates the
+    // prepared identity. C2 recovery/execution/cancel may bypass other
+    // placement axes. E1 all modes still refuse this Worker; local original
+    // assertions below remain intact, and a supported Worker cancels normally.
+    let mut old_codec = ready_dispatch_worker(ns, "old-prepared-codec");
+    old_codec
+        .manifest
+        .capabilities
+        .remove(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY);
+    old_codec.capability_fingerprint = old_codec.manifest.fingerprint().unwrap();
+    let original = dispatch(ns, "outcome-old-pending", "outcome-old-pending-thread");
+    let fingerprint = SessionRunCommandFingerprint::from_sha256_hex(&"a".repeat(64)).unwrap();
+    let incoming = original
+        .clone()
+        .for_session(original.thread_id().clone())
+        .with_session_command_fingerprint(fingerprint.clone())
+        .with_prepared_session_command_identity();
+    store
+        .enqueue(original.clone())
+        .await
+        .expect("A1 original ordinary enqueue");
+    assert_eq!(
+        store
+            .reserve_session_run(incoming.clone(), LEASE_MS)
+            .await
+            .unwrap(),
+        SessionRunReservationOutcome::Conflict,
+        "A1 ordinary reservation cannot claim old Pending"
+    );
+    let before = store.list_dispatches().await.unwrap();
+    let completions_before = store.completion_events_after(0, usize::MAX).await.unwrap();
+    let mut changed = Vec::new();
+    let mut candidate = original.clone();
+    candidate.activation.run_id = run_id(ns, "outcome-other-run");
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation.thread_id = thread_id(ns, "outcome-other-thread");
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate
+        .activation
+        .snapshot
+        .resolved_spec
+        .instructions
+        .push_str(" changed");
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation.input[0] =
+        Message::text(MessageId("changed-input".into()), Role::User, "different");
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation.delegation_origin = Some(DelegationOrigin::root_for_agent(
+        RunId("parent".into()),
+        "call",
+        "agent",
+    ));
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation.model_ref_override = Some("another-model".into());
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation.data_subject_id =
+        Some(awaken_runtime_contract::DataSubjectId("subject".into()));
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation = candidate.activation.without_tools();
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.activation = candidate.activation.with_inherited_toolsets(Some(
+        awaken_agent_contract::toolset::InheritedToolsets::V1(Vec::new()),
+    ));
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate
+        .placement
+        .required_capabilities
+        .insert("different-capability".into());
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.placement.session_mcp_credentials = Some(Vec::new());
+    assert!(
+        original.same_canonical_dispatch(&candidate),
+        "A2 precondition: ordinary old-MCP replay has a fallback"
+    );
+    assert!(
+        !original.same_original_dispatch(&candidate),
+        "A2 adoption does not borrow even that ordinary fallback"
+    );
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.session_runtime = Some(SessionRuntimeEnvelope::new("different-runtime"));
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.session_resources =
+        Some(awaken_dispatch_contract::SessionResourceEnvelope::at_revision(ns, 1, "{}"));
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.execution_scope =
+        Some(serde_json::from_value(serde_json::json!("different-scope")).unwrap());
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate
+        .agent_publications
+        .push(candidate.activation.snapshot.clone());
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.preferred_environment_shape =
+        Some(serde_json::from_value(serde_json::json!("different-shape")).unwrap());
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.inference_plaintext_holder = Some(PlaintextHolder::new(
+        PlaintextBoundary::Worker,
+        "different-holder",
+    ));
+    changed.push(candidate);
+    let mut candidate = original.clone();
+    candidate.session_run_replacement = SessionRunReplacement::SupersedePrior;
+    changed.push(candidate);
+    for candidate in changed {
+        assert!(
+            store
+                .adopt_pending_session_run(
+                    candidate,
+                    fingerprint.clone(),
+                    "adoption-owner",
+                    LEASE_MS
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "A2 strict original full identity"
+        );
+        assert_eq!(
+            store.list_dispatches().await.unwrap(),
+            before,
+            "A2 state stutter"
+        );
+    }
+    for (candidate, fp, owner, ttl) in [
+        (original.clone(), fingerprint.clone(), "adoption-owner", 0),
+        (original.clone(), fingerprint.clone(), "", LEASE_MS),
+        (
+            incoming.clone(),
+            fingerprint.clone(),
+            "adoption-owner",
+            LEASE_MS,
+        ),
+        (
+            original.clone(),
+            serde_json::from_value(serde_json::json!("session-command-v2:sha256:future")).unwrap(),
+            "adoption-owner",
+            LEASE_MS,
+        ),
+    ] {
+        assert!(
+            store
+                .adopt_pending_session_run(candidate, fp, owner, ttl)
+                .await
+                .is_err(),
+            "A3 invalid adoption input"
+        );
+        assert_eq!(
+            store.list_dispatches().await.unwrap(),
+            before,
+            "A3 no partial mutation"
+        );
+    }
+    let claim = store
+        .adopt_pending_session_run(
+            // Trace is attempt identity, not full execution identity. This
+            // retry may be retraced but must retain the first stored request.
+            original.clone().with_traceparent(Some(
+                "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into(),
+            )),
+            fingerprint.clone(),
+            "adoption-owner",
+            LEASE_MS,
+        )
+        .await
+        .unwrap()
+        .expect("A1 admission tenure");
+    let row = store
+        .list_dispatches()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.run_id == *original.run_id())
+        .unwrap();
+    assert_eq!(
+        row.state,
+        DispatchState::ReservationLeased,
+        "A1 admission only"
+    );
+    assert_eq!(row.session_activity_epoch, None, "A1 no invented receipt");
+    assert_eq!(row.attempt_count, 0, "A1 no execution attempt spent");
+    assert!(!row.physical_attempt_active, "A1 no physical effect");
+    assert_eq!(
+        store
+            .observe_session_run_admission(original.run_id())
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(incoming.clone())),
+        "A1 all original frozen execution inputs retained"
+    );
+    assert_eq!(
+        store.completion_events_after(0, usize::MAX).await.unwrap(),
+        completions_before,
+        "A1 no completion fabricated"
+    );
+    assert!(
+        store.lock_commit_epoch(&claim).await.unwrap().is_none(),
+        "A1 no execution commit authority"
+    );
+    let guard = store
+        .lock_session_run_reservation_epoch(&claim)
+        .await
+        .unwrap()
+        .expect("A4 admission guard");
+    assert_eq!(guard.request(), &incoming, "A4 locked original payload");
+    assert!(guard.is_live_at(guard.expires_ms() - 1), "A4 live lease");
+    assert!(
+        !guard.is_live_at(guard.expires_ms()),
+        "A4 exact expiry boundary"
+    );
+    guard
+        .release()
+        .await
+        .expect("A4 explicit release before second Dispatch operation");
+    assert_eq!(
+        store
+            .reserve_session_run(incoming.clone(), LEASE_MS)
+            .await
+            .unwrap(),
+        SessionRunReservationOutcome::RecoveryClaimed,
+        "A4 replay is observation, not authority"
+    );
+    assert!(
+        store
+            .adopt_pending_session_run(
+                original.clone(),
+                fingerprint.clone(),
+                "other-owner",
+                LEASE_MS
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "A4 no duplicate tenure"
+    );
+    assert_eq!(
+        store
+            .resolve_claimed_session_run_reservation(
+                &claim,
+                SessionRunReservationResolution::Retry {
+                    reservation_ttl_ms: 1
+                }
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "A4 Retry remains unclaimable"
+    );
+    assert!(
+        store
+            .lock_session_run_reservation_epoch(&claim)
+            .await
+            .unwrap()
+            .is_none(),
+        "A4 old claim fenced after Retry"
+    );
+    let row = store
+        .list_dispatches()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.run_id == *original.run_id())
+        .unwrap();
+    assert_eq!(row.state, DispatchState::Reserved, "A4 Retry");
+    assert!(
+        store
+            .adopt_pending_session_run(
+                original.clone(),
+                fingerprint.clone(),
+                "other-owner",
+                LEASE_MS
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "A4 Reserved cannot acquire another adoption"
+    );
+    clock
+        .advance_past(row.reservation_deadline_ms.expect("A4 store deadline"))
+        .await;
+    assert!(
+        store
+            .claim_run_compatible(original.run_id(), &old_codec, LEASE_MS)
+            .await
+            .unwrap()
+            .is_none(),
+        "C1/C2 prepared recovery cannot bypass codec admission"
+    );
+    let repair = store
+        .claim_run(
+            original.run_id(),
+            "adoption-repair",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("A4 canonical repair claim");
+    assert!(
+        repair.session_activity_admission_required,
+        "A4 repair still never executes"
+    );
+    let repair_claim = RunClaim::from(&repair.lease);
+    assert!(repair_claim.epoch > claim.epoch, "A4 epoch advances");
+    assert_eq!(
+        store
+            .resolve_claimed_session_run_reservation(
+                &claim,
+                SessionRunReservationResolution::Rejected
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced,
+        "A4 stale rejection stutters"
+    );
+    let guard = store
+        .lock_session_run_reservation_epoch(&repair_claim)
+        .await
+        .unwrap()
+        .expect("A4 repair guard");
+    guard.release().await.unwrap();
+    assert_eq!(
+        store
+            .resolve_claimed_session_run_reservation(
+                &repair_claim,
+                SessionRunReservationResolution::Admitted {
+                    session_activity_epoch: 4_001
+                }
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "A4 only canonical admitted resolution publishes Pending"
+    );
+    assert!(
+        store
+            .claim_run_compatible(original.run_id(), &old_codec, LEASE_MS)
+            .await
+            .unwrap()
+            .is_none(),
+        "C1/C2 ordinary prepared execution cannot bypass codec admission"
+    );
+    let execution = store
+        .claim_run(
+            original.run_id(),
+            "adoption-executor",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("A4 ordinary execution claim after admission");
+    assert!(
+        !execution.session_activity_admission_required,
+        "A4 ordinary claim owns execution"
+    );
+    assert_eq!(
+        execution.request.session_activity_epoch,
+        Some(4_001),
+        "A4 exact receipt"
+    );
+    settle_done(store, &execution).await;
+
+    assert_eq!(
+        store.reserve_session_run(incoming, LEASE_MS).await.unwrap(),
+        SessionRunReservationOutcome::Completed,
+        "A5 exact prepared completion"
+    );
+    assert!(
+        store
+            .adopt_pending_session_run(original, fingerprint.clone(), "later", LEASE_MS)
+            .await
+            .unwrap()
+            .is_none(),
+        "A5 cannot resurrect completion"
+    );
+
+    let refused = dispatch(
+        ns,
+        "outcome-old-pending-refused",
+        "outcome-old-pending-refused-thread",
+    );
+    store.enqueue(refused.clone()).await.unwrap();
+    let claim = store
+        .adopt_pending_session_run(refused.clone(), fingerprint, "refusal-owner", LEASE_MS)
+        .await
+        .unwrap()
+        .unwrap();
+    let guard = store
+        .lock_session_run_reservation_epoch(&claim)
+        .await
+        .unwrap()
+        .unwrap();
+    guard.release().await.unwrap();
+    assert_eq!(
+        store
+            .resolve_claimed_session_run_reservation(
+                &claim,
+                SessionRunReservationResolution::Rejected
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "A4 canonical negative removes only the unstarted intent"
+    );
+    assert_eq!(
+        store
+            .observe_session_run_admission(refused.run_id())
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Missing,
+        "A4 refusal invents no completion"
+    );
+
+    // A6 a real ordinary execution claim is not admission-only authority.
+    // Its complete state stutters on an adoption attempt, both while leased
+    // and after Awaiting; the existing cancellation path owns later cleanup.
+    let leased = dispatch(ns, "outcome-old-leased", "outcome-old-leased-thread");
+    store.enqueue(leased.clone()).await.unwrap();
+    let execution = store
+        .claim_run(
+            leased.run_id(),
+            "existing-executor",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    for awaiting in [false, true] {
+        if awaiting {
+            assert_eq!(
+                store
+                    .settle(
+                        leased.run_id(),
+                        execution.lease.epoch(),
+                        DispatchOutcome::Awaiting,
+                        &[]
+                    )
+                    .await
+                    .unwrap(),
+                SettleOutcome::Applied,
+                "A6 existing Awaiting boundary"
+            );
+        }
+        let before = store.list_dispatches().await.unwrap();
+        let fp = SessionRunCommandFingerprint::from_sha256_hex(&"b".repeat(64)).unwrap();
+        assert!(
+            store
+                .adopt_pending_session_run(leased.clone(), fp, "adoption-cannot-execute", LEASE_MS)
+                .await
+                .unwrap()
+                .is_none(),
+            "A6 execution or Awaiting authority wins"
+        );
+        assert_eq!(
+            store.list_dispatches().await.unwrap(),
+            before,
+            "A6 full state stutter"
+        );
+    }
+    store.cancel(leased.run_id()).await.unwrap();
+    let cancellation = store
+        .claim_run(
+            leased.run_id(),
+            "existing-cancellation",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    settle_done(store, &cancellation).await;
+
+    // A7 cancellation can return a real claimed row to Pending while its old
+    // physical owner remains inside an effect. Pending alone is insufficient:
+    // adoption must retain that exact slot and the original request unchanged.
+    let occupied = dispatch(ns, "outcome-old-occupied", "outcome-old-occupied-thread");
+    store.enqueue(occupied.clone()).await.unwrap();
+    let execution = store
+        .claim_run(
+            occupied.run_id(),
+            "physical-predecessor",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let predecessor = RunClaim::from(&execution.lease);
+    assert_eq!(
+        store.begin_attempt(&predecessor, None).await.unwrap(),
+        AttemptAdmission::Applied,
+        "A7 original physical owner"
+    );
+    store.cancel(occupied.run_id()).await.unwrap();
+    let before = store.list_dispatches().await.unwrap();
+    let pending = before
+        .iter()
+        .find(|row| row.run_id == *occupied.run_id())
+        .unwrap();
+    assert_eq!(
+        pending.state,
+        DispatchState::Pending,
+        "A7 actual Pending cut"
+    );
+    assert!(
+        pending.physical_attempt_active,
+        "A7 retained physical authority"
+    );
+    let fp = SessionRunCommandFingerprint::from_sha256_hex(&"c".repeat(64)).unwrap();
+    assert!(
+        store
+            .adopt_pending_session_run(occupied.clone(), fp, "blocked-admission", LEASE_MS)
+            .await
+            .unwrap()
+            .is_none(),
+        "A7 no adoption over a physical owner"
+    );
+    assert_eq!(
+        store.list_dispatches().await.unwrap(),
+        before,
+        "A7 retained complete row"
+    );
+    assert_eq!(
+        store.finish_attempt(&predecessor, None).await.unwrap(),
+        SettleOutcome::Applied,
+        "A7 only original return clears physical owner"
+    );
+    let cancellation = store
+        .claim_run(
+            occupied.run_id(),
+            "physical-cancellation",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    settle_done(store, &cancellation).await;
+    let cancel_session = thread_id(ns, "prepared-codec-cancel-thread");
+    let cancelled = current_session_command(
+        dispatch(ns, "prepared-codec-cancel", "prepared-codec-cancel-thread")
+            .for_session(cancel_session),
+    )
+    .with_prepared_session_command_identity()
+    .with_session_activity_epoch(7);
+    store.enqueue(cancelled.clone()).await.unwrap();
+    store.cancel(cancelled.run_id()).await.unwrap();
+    assert!(
+        store
+            .claim_run_compatible(cancelled.run_id(), &old_codec, LEASE_MS)
+            .await
+            .unwrap()
+            .is_none(),
+        "C1/C2 cancellation cannot bypass prepared codec admission"
+    );
+    let supported = ready_dispatch_worker(ns, "new-prepared-codec");
+    let cancellation = store
+        .claim_run_compatible(cancelled.run_id(), &supported, LEASE_MS)
+        .await
+        .unwrap()
+        .expect("C3 supported declared codec claims cancellation");
+    assert!(
+        cancellation.cancellation_requested,
+        "C3 original cancellation intent"
+    );
+    settle_done(store, &cancellation).await;
 }

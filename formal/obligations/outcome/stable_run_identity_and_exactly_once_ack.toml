@@ -17,6 +17,9 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
+text = '''New/no-Run Worker, revision Worker and acknowledgment acquisition borrows the Session application's existing admission executor. The complete prepared activation has a separate command digest domain and prepared dispatch identity kind. A transient typed admission cause distinguishes the Session owner's durable refusal from undecided admission before controller display projection: only the durable refusal commits existing Errored(WorkerFailed) through the existing head CAS. The native controller table crosses the three acquisition phases with closed, deferred and same-text ordinary executor errors. This statement names executable source, not a receipt that those tests ran. Historical committed-Run reuse and the Grader's separate fresh Thread remain unchanged and do not acquire retroactive root-activity evidence. The abstract OutcomeLifecycle model does not model those receipts, Rust diagnostics, Dispatch transactions or SQL refinement.'''
+
+[[bounds]]
 text = '''OutcomeLifecycle checks MaxIterations=3 with finite phase/result/grade domains. StableRunIdentity constrains abstract Worker, Grader and evaluated iteration sets, while AcknowledgmentExactlyOnce constrains the capped acknowledgment phase and count to zero before acknowledgment and one at max_iterations_reached. ReplayOrStaleVersion is an abstract stutter. The model does not contain Rust identifiers, commit payloads, stores, executor responses or a Rust-to-model refinement.'''
 
 [[bounds]]

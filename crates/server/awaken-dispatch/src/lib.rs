@@ -207,7 +207,7 @@ fn dispatch_state_db(state: DispatchState) -> &'static str {
     }
 }
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
 fn transition_error(error: awaken_dispatch_contract::DispatchTransitionError) -> DispatchError {
     match error {
         awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted => {

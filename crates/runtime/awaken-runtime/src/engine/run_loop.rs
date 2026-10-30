@@ -464,7 +464,7 @@ async fn infer_step(
         }
         match observed.result {
             Ok(response) => {
-                run_phase_hooks(
+                if let Err(error) = run_phase_hooks(
                     env,
                     context,
                     run_id,
@@ -474,7 +474,10 @@ async fn infer_step(
                     ledger,
                     Some(&observed_input),
                 )
-                .await;
+                .await
+                {
+                    break Ok(InferStepOutcome::PhaseFailed(error));
+                }
                 if response.stop_reason.is_some_and(|reason| {
                     reason.admits_continuation(
                         !response.output.tool_calls().is_empty(),
@@ -538,6 +541,7 @@ async fn infer_step(
 }
 
 enum InferStepOutcome {
+    PhaseFailed(Error),
     EvidenceUnavailable(String),
     Indeterminate,
     Response {
@@ -717,7 +721,7 @@ pub(super) async fn drive(
             &mut store,
             &mut ledger,
         )
-        .await;
+        .await?;
         // Request-only context the `BeforeInference` hooks wrote to state: the
         // kernel reads it here (single chokepoint) and prepends the flattened
         // per-producer blocks to this inference, never committing them (ADR-0055).
@@ -772,6 +776,7 @@ pub(super) async fn drive(
             break;
         };
         let (response, response_model_ref) = match inference {
+            Ok(InferStepOutcome::PhaseFailed(error)) => return Err(error),
             Ok(InferStepOutcome::EvidenceUnavailable(error)) => {
                 // Neither provider failover nor failure-streak tolerance may
                 // turn an unknown durable write into another invocation.
@@ -842,7 +847,7 @@ pub(super) async fn drive(
             &mut ledger,
             None,
         )
-        .await;
+        .await?;
 
         // A cancel may have landed while inference was in flight; observe it at
         // this step boundary and discard the model output.
@@ -1011,31 +1016,9 @@ pub(super) async fn drive(
             &mut store,
             &mut discovery,
         );
-        // Cancellation must also preempt an executing tool. Waiting until the
-        // next step boundary leaves a hung shell, package download, or nested
-        // container alive after the durable Run has already ended Cancelled.
-        // Dropping this future propagates through the tool SPI; process-backed
-        // tools use that drop to terminate their complete process group.
-        let tool_execution = match &context.cancellation {
-            Some(token) => {
-                tokio::select! {
-                    biased;
-                    _ = token.cancelled() => {
-                        // Drop cancels local polling, not an opaque remote effect.
-                        // Keep durable physical admission fenced after this
-                        // logical cancellation unless actual termination is known.
-                        context.physical_quiescence.mark_uncertain();
-                        None
-                    },
-                    result = tool_execution => Some(result),
-                }
-            }
-            None => Some(tool_execution.await),
-        };
-        let Some(tool_execution) = tool_execution else {
-            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
-            break;
-        };
+        // Physical/hook waits observe cancellation inside dispatch. Keep this
+        // owner alive until any started raw-result checkpoint ACK/error settles.
+        let tool_execution = tool_execution.await;
         match dispatch::tool_execution_disposition(run_id, tool_execution) {
             Ok(Some(reached)) => {
                 disposition = Some(reached);
@@ -1056,12 +1039,30 @@ pub(super) async fn drive(
             &mut ledger,
             None,
         )
-        .await;
+        .await?;
     }
 
     // No early end means the loop exhausted its step ceiling.
     let disposition =
         disposition.unwrap_or_else(|| RunDisposition::ended(run_id.clone(), EndCause::MaxSteps));
+    if matches!(disposition.state(), RunState::Ended(_)) {
+        if let Some(batch) = ActiveToolBatch::load(&store)
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .filter(|batch| {
+                batch.run_id() == run_id
+                    && batch
+                        .calls()
+                        .iter()
+                        .any(|call| matches!(&call.phase, ToolCallPhase::Returned(_)))
+            })
+        {
+            // Direct SDK callers may have a commit port without a reader. Carry
+            // the known batch into the existing terminal sealing frame too.
+            ledger
+                .staged_state
+                .push(ActiveToolBatch::write(&Some(batch)));
+        }
+    }
     Ok(ledger.into_step_result(disposition))
 }
 
@@ -1075,15 +1076,16 @@ async fn prepare_step_hooks(
     run_input: &std::sync::Arc<[Message]>,
     store: &mut Store,
     ledger: &mut StepLedger,
-) {
+) -> Result<()> {
     for kind in [
         PhaseKind::StepStart,
         PhaseKind::BeforeInference {
             run_input: run_input.clone(),
         },
     ] {
-        run_phase_hooks(env, context, run_id, step, kind, store, ledger, None).await;
+        run_phase_hooks(env, context, run_id, step, kind, store, ledger, None).await?;
     }
+    Ok(())
 }
 
 /// Apply each phase reaction to the one Step ledger. Both state and durable
@@ -1098,41 +1100,78 @@ async fn run_phase_hooks(
     kind: PhaseKind,
     store: &mut Store,
     ledger: &mut StepLedger,
-    observed_input: Option<&[ChatMessage]>,
-) {
-    for hook in env.hooks_for(kind.point()) {
-        let ctx = PhaseContext {
-            run_id: run_id.clone(),
-            step,
-            kind: kind.clone(),
+    observed_input: Option<&[awaken_runtime_contract::llm::ChatMessage]>,
+) -> Result<()> {
+    let ctx = PhaseContext {
+        run_id: run_id.clone(),
+        step,
+        kind,
+    };
+    let reaction = collect_phase_reactions(
+        env,
+        context,
+        &ctx,
+        &ledger.transcript,
+        store,
+        observed_input,
+    )
+    .await?;
+    for command in &reaction.state {
+        store.apply(command);
+    }
+    ledger.staged_state.extend(reaction.state);
+    for message in reaction.messages {
+        ledger.push_message(message);
+    }
+    Ok(())
+}
+
+/// One transactional fold for ordinary, observed-input and AfterTool hooks.
+/// Err abandons the entire local tail, including FSM instances/metrics/reminders;
+/// it is an attempt error, never a synthetic provider or Run failure category.
+pub(super) async fn collect_phase_reactions(
+    env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
+    ctx: &PhaseContext,
+    conversation: &[Message],
+    state: &Store,
+    observed_input: Option<&[awaken_runtime_contract::llm::ChatMessage]>,
+) -> Result<awaken_runtime_contract::plugin::HookReaction> {
+    let mut work = state.clone();
+    let mut transcript = conversation.to_vec();
+    let mut combined = awaken_runtime_contract::plugin::HookReaction::default();
+    for hook in env.hooks_for(ctx.kind.point()) {
+        let visible = if matches!(&ctx.kind, PhaseKind::AfterTool(_)) {
+            conversation
+        } else {
+            &transcript
         };
-        // Hooks can await independent work just like model/tool executors.
-        // Normal return cannot erase a nested veto; drop/unwind cannot ACK it.
         let reaction = if let Some(input) = observed_input {
             context
                 .physical_quiescence
-                .observe_return(hook.on_model_input(&ctx, input, &ledger.transcript, store))
+                .observe_return(hook.on_model_input(ctx, input, visible, &work))
                 .await
         } else {
             context
                 .physical_quiescence
-                .observe_return(hook.on_phase(&ctx, &ledger.transcript, store))
+                .observe_return(hook.on_phase(ctx, visible, &work))
                 .await
         };
-        // Apply the reaction's state to the live store before the next hook, so a
-        // once-per-run hook that gates on its own run-scoped key sees its own
-        // earlier write and replays instead of recomputing (ADR-0055) — the same
-        // apply-then-stage discipline the tool-outcome path uses. Request-only
-        // context is written to `ContextMessages` here; the kernel reads it at
-        // request assembly (a phase hook never returns request-only messages).
+        let reaction = match reaction {
+            Err(Error::Indeterminate) => {
+                context.physical_quiescence.mark_uncertain();
+                return Err(Error::Indeterminate);
+            }
+            outcome => outcome?,
+        };
         for command in &reaction.state {
-            store.apply(command);
+            work.apply(command);
         }
-        ledger.staged_state.extend(reaction.state);
-        for message in reaction.messages {
-            ledger.push_message(message);
-        }
+        transcript.extend(reaction.messages.iter().cloned());
+        combined.state.extend(reaction.state);
+        combined.messages.extend(reaction.messages);
     }
+    Ok(combined)
 }
 
 /// The runtime's view of a run-end consultation, folding the registered guards'

@@ -404,7 +404,8 @@ async fn explicit_claim_controls_continue_after_original_installed_sessions_drop
             .admit_session_run_activity(
                 &admission,
                 &exact,
-                SessionRunActivityAdmissionMode::RecoverOnly
+                SessionRunActivityAdmissionMode::RecoverOnly,
+                None
             )
             .await
             .unwrap(),

@@ -465,6 +465,19 @@ impl SessionRunAdmissionReads for AnyCoordinatorDispatch {
 
 #[async_trait]
 impl SessionRunReservations for AnyCoordinatorDispatch {
+    async fn adopt_pending_session_run(
+        &self,
+        expected_original: RunDispatch,
+        command_fingerprint: awaken_session_types::SessionRunCommandFingerprint,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<RunClaim>, DispatchError> {
+        delegate_owner!(
+            self,
+            adopt_pending_session_run(expected_original, command_fingerprint, owner, lease_ms)
+        )
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

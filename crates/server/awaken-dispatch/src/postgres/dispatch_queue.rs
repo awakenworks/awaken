@@ -1522,6 +1522,110 @@ impl awaken_dispatch_contract::SessionRunAdmissionReads for PostgresDispatchStor
 
 #[async_trait]
 impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore {
+    async fn adopt_pending_session_run(
+        &self,
+        expected_original: RunDispatch,
+        command_fingerprint: awaken_session_types::SessionRunCommandFingerprint,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<RunClaim>, DispatchError> {
+        let lease_ms = crate::dispatch::validate_pending_session_run_adoption(
+            &expected_original,
+            &command_fingerprint,
+            owner,
+            lease_ms,
+        )?;
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        lock_run_identity(&mut tx, &expected_original.run_id().0).await?;
+        let row = sqlx::query(&format!(
+            "SELECT request, status, lease_epoch, lease_owner, lease_until, cancel_requested, \
+             worker_assignment, credential_bindings, credential_receipts, \
+             active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&expected_original.run_id().0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(row) = row else {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(None);
+        };
+        let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        let status: String = row.try_get("status").map_err(store_error)?;
+        let epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
+        let cancelled: i64 = row.try_get("cancel_requested").map_err(store_error)?;
+        let lease_owner: Option<String> = row.try_get("lease_owner").map_err(store_error)?;
+        let lease_until: Option<i64> = row.try_get("lease_until").map_err(store_error)?;
+        let assignment: Option<serde_json::Value> =
+            row.try_get("worker_assignment").map_err(store_error)?;
+        let bindings: Option<Json<Vec<AttemptCredentialBinding>>> =
+            row.try_get("credential_bindings").map_err(store_error)?;
+        let receipts: Option<Json<Vec<CredentialRealizationReceipt>>> =
+            row.try_get("credential_receipts").map_err(store_error)?;
+        let physical_owner: Option<String> =
+            row.try_get("active_attempt_owner").map_err(store_error)?;
+        let physical_epoch: Option<i64> =
+            row.try_get("active_attempt_epoch").map_err(store_error)?;
+        let physical_binding: Option<serde_json::Value> =
+            row.try_get("active_attempt_binding").map_err(store_error)?;
+        let closing: i64 = row.try_get("active_attempt_closing").map_err(store_error)?;
+        crate::dispatch::observed_physical_attempt_is_present(
+            physical_owner.is_some(),
+            physical_epoch.is_some(),
+            physical_binding.is_some(),
+            closing != 0,
+        )?;
+        let adopted = crate::dispatch::pending_session_run_adoption(
+            &stored,
+            &expected_original,
+            crate::persisted_dispatch_transition(&status, epoch, cancelled != 0)?,
+            lease_owner.is_none()
+                && lease_until.is_none()
+                && assignment.is_none()
+                && bindings
+                    .as_ref()
+                    .is_none_or(|bindings| bindings.0.is_empty())
+                && receipts
+                    .as_ref()
+                    .is_none_or(|receipts| receipts.0.is_empty()),
+            PhysicalAttemptSlot::from_facts(
+                physical_owner.is_some(),
+                physical_epoch.is_some(),
+                false,
+                false,
+            ),
+            closing != 0,
+            command_fingerprint,
+        )?;
+        let Some((request, next)) = adopted else {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(None);
+        };
+        let epoch = durable_i64("dispatch lease epoch", next.lease_epoch)?;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+        let deadline = crate::clock::deadline_millis(now_ms, lease_ms);
+        sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET request = $1, status = 'reservation_running', \
+             lease_owner = $2, lease_until = $3, lease_epoch = $4 WHERE run_id = $5"
+        ))
+        .bind(Json(&request))
+        .bind(owner)
+        .bind(crate::clock::db_millis(deadline))
+        .bind(epoch)
+        .bind(&request.run_id().0)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(Some(RunClaim {
+            run_id: request.run_id().clone(),
+            owner: owner.to_string(),
+            epoch: next.lease_epoch,
+        }))
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

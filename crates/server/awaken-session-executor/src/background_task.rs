@@ -1321,9 +1321,10 @@ mod tests {
             _ctx: &awaken_runtime_contract::plugin::PhaseContext,
             _conversation: &[awaken_agent_contract::agent::message::Message],
             _state: &Store,
-        ) -> awaken_runtime_contract::plugin::HookReaction {
+        ) -> awaken_runtime_contract::execution::Result<awaken_runtime_contract::plugin::HookReaction>
+        {
             self.0.fetch_add(1, Ordering::SeqCst);
-            awaken_runtime_contract::plugin::HookReaction::default()
+            Ok(awaken_runtime_contract::plugin::HookReaction::default())
         }
     }
 

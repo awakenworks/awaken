@@ -55,6 +55,170 @@ struct BlockingCommit {
 }
 
 #[tokio::test]
+async fn pending_adoption_guard_releases_the_shared_pool_before_resolution() {
+    use awaken_dispatch_contract::{
+        SessionReservationAuthority as _, SessionRunReservationResolution,
+        SessionRunReservations as _, SettleOutcome,
+    };
+    use awaken_session_types::SessionRunCommandFingerprint;
+
+    // Cause/effect table: P1 Dispatch and Thread truth share one pool with one
+    // connection; its admission guard retains that connection. A Thread read
+    // therefore reports bounded unavailability, not absent/nonexecution. P2
+    // explicit guard.release completes before the second Dispatch operation;
+    // the exact claim can then Retry. P3 the same composition with two
+    // connections reads authoritative absence while guarded, then resolves
+    // only after release. No branch grants execution or joint-store CAS.
+    let schema = "t_pg_pending_adoption_pool";
+    let Some(pool) = harness::schema_pool(schema).await else {
+        return;
+    };
+    let _commit = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let _store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let one = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_millis(100))
+        .after_connect(move |conn, _| {
+            Box::pin(async move {
+                conn.execute("SET search_path=t_pg_pending_adoption_pool")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&harness::database_url())
+        .await
+        .unwrap();
+    let store = PostgresDispatchStore::with_existing_pool(one.clone())
+        .await
+        .unwrap();
+    let commit = PostgresCommitCoordinator::with_existing_pool(one.clone())
+        .await
+        .unwrap();
+    let original = RunDispatch::new(activation_on(
+        "pending-adoption-one",
+        "pending-adoption-one-thread",
+    ));
+    store.enqueue(original.clone()).await.unwrap();
+    let fingerprint = SessionRunCommandFingerprint::from_sha256_hex(&"a".repeat(64)).unwrap();
+    let claim = store
+        .adopt_pending_session_run(
+            original.clone(),
+            fingerprint.clone(),
+            "admission-one",
+            60_000,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let guard = store
+        .lock_session_run_reservation_epoch(&claim)
+        .await
+        .unwrap()
+        .unwrap();
+    let unavailable = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        commit.authoritative_run_record(original.run_id()),
+    )
+    .await
+    .expect("P1 read bounded by the pool timeout");
+    assert!(
+        unavailable.is_err(),
+        "P1 no false absent Run on pool exhaustion"
+    );
+    guard
+        .release()
+        .await
+        .expect("P2 explicit transaction release");
+    assert!(
+        commit
+            .authoritative_run_record(original.run_id())
+            .await
+            .unwrap()
+            .is_none(),
+        "P2 actual authoritative absence after release"
+    );
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.resolve_claimed_session_run_reservation(
+                &claim,
+                SessionRunReservationResolution::Retry {
+                    reservation_ttl_ms: 60_000
+                }
+            )
+        )
+        .await
+        .expect("P2 resolution cannot retain its own row lock")
+        .unwrap(),
+        SettleOutcome::Applied,
+        "P2 receipt-recoverable reservation retained"
+    );
+    one.close().await;
+
+    let two = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(move |conn, _| {
+            Box::pin(async move {
+                conn.execute("SET search_path=t_pg_pending_adoption_pool")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&harness::database_url())
+        .await
+        .unwrap();
+    let store = PostgresDispatchStore::with_existing_pool(two.clone())
+        .await
+        .unwrap();
+    let commit = PostgresCommitCoordinator::with_existing_pool(two.clone())
+        .await
+        .unwrap();
+    let original = RunDispatch::new(activation_on(
+        "pending-adoption-two",
+        "pending-adoption-two-thread",
+    ));
+    store.enqueue(original.clone()).await.unwrap();
+    let claim = store
+        .adopt_pending_session_run(original.clone(), fingerprint, "admission-two", 60_000)
+        .await
+        .unwrap()
+        .unwrap();
+    let guard = store
+        .lock_session_run_reservation_epoch(&claim)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        commit
+            .authoritative_run_record(original.run_id())
+            .await
+            .unwrap()
+            .is_none(),
+        "P3 same pool reads authoritative absence under admission tenure"
+    );
+    guard.release().await.unwrap();
+    assert_eq!(
+        store
+            .resolve_claimed_session_run_reservation(
+                &claim,
+                SessionRunReservationResolution::Rejected
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "P3 existing rejection after explicit release"
+    );
+    two.close().await;
+}
+
+#[tokio::test]
 async fn postgres_operational_feed_waits_for_the_complete_committed_prefix() {
     // C1 lower sequence A was inserted but its transaction is unresolved;
     // C2 later B committed; C3 A commits/rolls back. R1 C1+C2 -> a page must

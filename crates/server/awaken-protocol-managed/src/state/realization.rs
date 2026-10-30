@@ -209,6 +209,7 @@ mod tests {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
+            _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
         ) -> Result<OutcomeDrive, RunError> {
             unreachable!()
         }
@@ -221,12 +222,13 @@ mod tests {
         async fn continue_outcome(
             &self,
             thread: &str,
+            executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
         ) -> Result<
             Option<awaken_session_execution_contract::OutcomeDrive>,
             awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
-                .continue_outcome(thread)
+                .continue_outcome(thread, executor)
                 .await
         }
     }

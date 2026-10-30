@@ -900,3 +900,125 @@ async fn emit_survives_a_await_and_is_in_the_resumed_request() {
         "the emit must survive the await and appear in the resumed request: {resumed:?}"
     );
 }
+
+struct RejectAfterMachine {
+    commit: Arc<MemoryCommitCoordinator>,
+    observed: Arc<Mutex<Option<awaken_agent_contract::agent::state::Store>>>,
+}
+#[async_trait::async_trait]
+impl awaken_runtime_contract::plugin::PhaseHook for RejectAfterMachine {
+    fn point(&self) -> awaken_runtime_contract::plugin::PhaseHookPoint {
+        awaken_runtime_contract::plugin::PhaseHookPoint::AfterTool
+    }
+    async fn on_phase(
+        &self,
+        _: &awaken_runtime_contract::plugin::PhaseContext,
+        _: &[Message],
+        work: &awaken_agent_contract::agent::state::Store,
+    ) -> awaken_runtime_contract::execution::Result<awaken_runtime_contract::plugin::HookReaction>
+    {
+        let durable = replay_state(&self.commit.committed());
+        assert_ne!(
+            ThreadInstances::load_or_default(work),
+            ThreadInstances::load_or_default(&durable),
+            "real FSM transition is visible to the next hook"
+        );
+        assert_ne!(
+            Metrics::load_or_default(work),
+            Metrics::load_or_default(&durable),
+            "real FSM metric shares the same speculative bundle"
+        );
+        *self.observed.lock().unwrap() = Some(durable);
+        Err(awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+            awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest,
+            "after_machine_failed",
+            std::io::Error::other("reject full hook tail"),
+        )
+        .into())
+    }
+}
+impl awaken_runtime_contract::plugin::Plugin for RejectAfterMachine {
+    fn manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest {
+        awaken_runtime_contract::plugin::PluginManifest {
+            id: "after-machine-failure".into(),
+            requires: vec!["state_machine".into()],
+            config_sections: Vec::new(),
+            bound: awaken_runtime_contract::plugin::CapabilityBound {
+                phase_hooks: vec![awaken_runtime_contract::plugin::PhaseHookPoint::AfterTool],
+                ..Default::default()
+            },
+        }
+    }
+    fn resolve(&self) -> awaken_runtime_contract::plugin::Contributions {
+        let mut contributions =
+            awaken_runtime_contract::plugin::Contributions::new("after-machine-failure");
+        contributions.register_hook(Arc::new(Self {
+            commit: self.commit.clone(),
+            observed: self.observed.clone(),
+        }));
+        contributions
+    }
+}
+
+#[tokio::test]
+async fn a_later_hook_fault_discards_the_real_state_machine_reaction_as_one_whole_bundle() {
+    // J7: the real StateMachineObserver stages a transition + metric and the
+    // dependency-ordered next hook observes them then fails. The entire Store
+    // remains exactly its pre-hook committed snapshot; no selected FSM key or
+    // reminder is salvaged. Raw tool return is retained, while the following
+    // model/tool step never runs. Existing seam tests own every FSM emit/update
+    // member; Store equality here covers all members actually produced together.
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let observed = Arc::new(Mutex::new(None));
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        AssistantOutput::from_tool_calls(vec![tool_call("read", "Read", "a.rs")]),
+        AssistantOutput::from_tool_calls(vec![tool_call("write", "Write", "a.rs")]),
+    ]));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let machine = StateMachinePlugin::from_config(
+        StateMachineConfig::from_json_str(READ_BEFORE_WRITE).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(OkTool("Read")))
+        .with_tool(Arc::new(CountingTool {
+            id: "Write",
+            calls: writes.clone(),
+        }))
+        .with_plugin(Arc::new(machine))
+        .with_plugin(Arc::new(RejectAfterMachine {
+            commit: commit.clone(),
+            observed: observed.clone(),
+        }));
+    let mut input = activation();
+    input
+        .snapshot
+        .resolved_spec
+        .plugin_ids
+        .push("after-machine-failure".into());
+    let error = runtime
+        .execute(
+            input,
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "after_machine_failed");
+    assert_eq!(llm.step.load(Ordering::SeqCst), 1);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+    let committed = commit.committed();
+    assert_eq!(
+        replay_state(&committed),
+        observed.lock().unwrap().clone().unwrap(),
+        "every uncommitted FSM state/message effect was discarded together"
+    );
+    assert!(
+        !committed
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+    );
+}

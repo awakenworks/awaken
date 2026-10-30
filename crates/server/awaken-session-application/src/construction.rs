@@ -488,6 +488,7 @@ impl SessionAssembly {
         let outcome_reconciliation = Arc::new(crate::SessionOutcomeReconciliation::new(
             kernel.mutations.clone(),
             lease.realizations.clone(),
+            run_admissions.clone(),
             &self.runtime,
         ));
         let recovery = Arc::new(crate::SessionRecovery::new(

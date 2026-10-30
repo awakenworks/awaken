@@ -25,6 +25,34 @@ use super::WorkerPlacedSessions;
 use super::dispatched_runs::DispatchedRuns;
 use crate::{outcome_controller_error, outcome_report};
 
+/// The Execution-owned SDK adapter for a Session application's borrowed
+/// prepared admission. Both local and Worker delivery use this same bridge;
+/// it stores no application binding and preserves typed diagnostic evidence.
+pub struct OutcomeRunExecutor<'a> {
+    admission: &'a dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+}
+
+impl<'a> OutcomeRunExecutor<'a> {
+    #[must_use]
+    pub fn new(
+        admission: &'a dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+    ) -> Self {
+        Self { admission }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for OutcomeRunExecutor<'_> {
+    async fn execute(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+        _context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
+    {
+        self.admission.admit(activation).await
+    }
+}
+
 /// The Grader of a Worker-placed Session's Outcome: each grading is a Run of
 /// the round's own grader Thread, in the Session's Workspace.
 struct DispatchedGrader<'a> {
@@ -85,6 +113,7 @@ impl WorkerPlacedSessions {
         &self,
         thread: &str,
         command: OutcomeCommand<'_>,
+        executor: Option<&dyn awaken_runtime_contract::execution::RunExecutor>,
     ) -> Result<OutcomeCommandResult, RunError> {
         let projection = self.ports.projections.installed(thread)?;
         let worker = self.ports.projections.primary_snapshot(thread)?;
@@ -102,23 +131,24 @@ impl WorkerPlacedSessions {
             sessions: self,
             workspace: projection.workspace().to_owned(),
         };
-        let runs = DispatchedRuns::new(
-            self.ports.projections.as_ref(),
-            self.ports.owner.as_ref(),
-            &self.ports.completion,
-            thread_id.clone(),
-            commit.clone(),
-            true,
-        );
-        let controller = Controller::new(
-            &thread_id,
-            commit.as_ref(),
-            commit.as_ref(),
-            commit.as_ref(),
-            &runs,
-            RuntimeRunContext::new(),
-            &grader,
-        );
+        let controller = match executor {
+            Some(executor) => Controller::new(
+                &thread_id,
+                commit.as_ref(),
+                commit.as_ref(),
+                commit.as_ref(),
+                executor,
+                RuntimeRunContext::new(),
+                &grader,
+            ),
+            None => Controller::preparation(
+                &thread_id,
+                commit.as_ref(),
+                commit.as_ref(),
+                commit.as_ref(),
+                &grader,
+            ),
+        };
         let lock = self.outcome_command(thread)?;
         let _command = lock.lock().await;
         match command {
@@ -164,6 +194,7 @@ impl WorkerPlacedSessions {
                     outcome_id,
                     definition,
                 },
+                None,
             )
             .await?
         {
@@ -178,9 +209,10 @@ impl WorkerPlacedSessions {
     async fn continue_session_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_runtime_contract::execution::RunExecutor,
     ) -> Result<Option<OutcomeDrive>, RunError> {
         match self
-            .execute_outcome_command(thread, OutcomeCommand::Resume)
+            .execute_outcome_command(thread, OutcomeCommand::Resume, Some(executor))
             .await?
         {
             OutcomeCommandResult::Driven(progress) => Ok(progress),
@@ -211,6 +243,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for WorkerPlacedSessions 
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
             thread,
@@ -220,12 +253,107 @@ impl awaken_session_execution_contract::OutcomeRuntime for WorkerPlacedSessions 
         );
         self.prepare_session_outcome(thread, &outcome_id, description, rubric, max_iterations)
             .await?;
-        self.continue_session_outcome(thread)
+        self.continue_session_outcome(thread, &OutcomeRunExecutor::new(admission))
             .await?
             .ok_or_else(|| RunError::internal("defined Outcome aggregate was not persisted"))
     }
 
-    async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-        self.continue_session_outcome(thread).await
+    async fn continue_outcome(
+        &self,
+        thread: &str,
+        admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+    ) -> Result<Option<OutcomeDrive>, RunError> {
+        self.continue_session_outcome(thread, &OutcomeRunExecutor::new(admission))
+            .await
+    }
+}
+
+#[cfg(test)]
+mod admission_adapter_tests {
+    use super::OutcomeRunExecutor;
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
+    use awaken_runtime_contract::diagnostic::{
+        RunAdmissionDisposition, RunAdmissionFailure, RuntimeDiagnostic, RuntimeErrorKind,
+        run_admission_disposition,
+    };
+    use awaken_runtime_contract::execution::RunExecutor as _;
+    use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation, RuntimeRunContext};
+    use std::sync::Mutex;
+
+    struct Admission {
+        seen: Mutex<Option<RunActivation>>,
+        refusal: Option<RunAdmissionDisposition>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_execution_contract::PreparedSessionRunAdmission for Admission {
+        async fn admit(
+            &self,
+            activation: RunActivation,
+        ) -> awaken_runtime_contract::diagnostic::Result<RunState> {
+            *self.seen.lock().unwrap() = Some(activation);
+            match self.refusal {
+                None => Ok(RunState::Ended(EndCause::NaturalEnd)),
+                Some(disposition) => Err(RuntimeDiagnostic::new(
+                    RuntimeErrorKind::Unavailable,
+                    "owner_admission",
+                    RunAdmissionFailure::new(
+                        disposition,
+                        awaken_session_types::RunError::unavailable("owner evidence"),
+                    ),
+                )
+                .into()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sdk_bridge_preserves_complete_activation_and_owner_disposition() {
+        // Cause/effect graph: C1 complete prepared activation; C2 owner accepts,
+        // defers or durably closes it. E1 the neutral owner receives C1 unchanged;
+        // E2 acceptance returns its state; E3 refusal retains its typed cause/code.
+        // Rules C2=accepted => E1+E2; C2=Deferred/Closed => E1+E3. Constraint:
+        // this bridge does not classify text, execute, or create another admission.
+        let activation = RunActivation::new(
+            awaken_agent_contract::agent::run::Id("outcome/bridge/worker/0".into()),
+            awaken_agent_contract::ThreadId("session".into()),
+            ExecutableAgentSnapshot::builder("frozen-worker")
+                .model(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "test", "model", "native",
+                    )
+                    .expect("valid native prepared activation fixture"),
+                )
+                .build(),
+            Vec::new(),
+        )
+        .with_model_ref_override(Some("frozen-model".into()))
+        .without_tools();
+        for refusal in [
+            None,
+            Some(RunAdmissionDisposition::Deferred),
+            Some(RunAdmissionDisposition::Closed),
+        ] {
+            let admission = Admission {
+                seen: Mutex::new(None),
+                refusal,
+            };
+            let result = OutcomeRunExecutor::new(&admission)
+                .execute(activation.clone(), RuntimeRunContext::new())
+                .await;
+            assert_eq!(
+                admission.seen.lock().unwrap().as_ref(),
+                Some(&activation),
+                "E1"
+            );
+            match refusal {
+                None => assert_eq!(result.unwrap(), RunState::Ended(EndCause::NaturalEnd), "E2"),
+                Some(disposition) => {
+                    let error = result.unwrap_err();
+                    assert_eq!(run_admission_disposition(&error), Some(disposition), "E3");
+                    assert_eq!(error.code(), "owner_admission", "E3");
+                }
+            }
+        }
     }
 }

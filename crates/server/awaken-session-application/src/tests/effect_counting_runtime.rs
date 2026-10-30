@@ -224,6 +224,21 @@ impl awaken_session_execution_contract::RealizationRuntime for EffectCountingRun
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for EffectCountingRuntime {
+    // Fixture rule P1: effect counts cover ordinary admission, without a prepared executor.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,

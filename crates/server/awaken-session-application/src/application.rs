@@ -405,9 +405,9 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_execution_contract::OutcomeRuntime;
-/// async fn existing_role(outcomes: &dyn OutcomeRuntime) {
-///     let _ = outcomes.define_outcome("thread", "goal", "rubric", 3).await;
-///     let _ = outcomes.continue_outcome("thread").await;
+/// async fn existing_role(outcomes: &dyn OutcomeRuntime, executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission) {
+///     let _ = outcomes.define_outcome("thread", "goal", "rubric", 3, executor).await;
+///     let _ = outcomes.continue_outcome("thread", executor).await;
 /// }
 /// ```
 ///

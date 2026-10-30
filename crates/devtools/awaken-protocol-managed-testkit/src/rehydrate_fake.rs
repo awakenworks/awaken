@@ -421,6 +421,21 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
+    // Fixture rule P1: rehydration observes projections without running a prepared command.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn archive_session_thread(
         &self,
         session_id: &awaken_session_types::SessionId,

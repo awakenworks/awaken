@@ -204,6 +204,12 @@ pub(super) async fn claim_exact_transaction_with_mode(
         return Ok(None);
     }
     let terminal_resolution = mode.bypasses_execution_admission();
+    if request
+        .worker_codec_admission(worker.map(|worker| &worker.manifest))
+        .is_err()
+    {
+        return Ok(None);
+    }
     if !terminal_resolution
         && cancellation_requested == 0
         && match worker {

@@ -29,16 +29,16 @@ impl PhaseHook for MarkHook {
         ctx: &PhaseContext,
         _conversation: &[Message],
         _state: &Store,
-    ) -> HookReaction {
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
         let awaken_runtime_contract::plugin::PhaseKind::BeforeInference { run_input } = &ctx.kind
         else {
             unreachable!("MarkHook is registered only at BeforeInference")
         };
         if let Some(inputs) = &self.inputs {
             inputs.lock().unwrap().push(run_input.to_vec());
-            return HookReaction::default();
+            return Ok(HookReaction::default());
         }
-        HookReaction::state(vec![StateCommand::set(
+        Ok(HookReaction::state(vec![StateCommand::set(
             Scope::Run,
             MergePolicy::Disjoint,
             "phase",
@@ -46,7 +46,7 @@ impl PhaseHook for MarkHook {
                 "phase": format!("{:?}@{}", ctx.kind.point(), ctx.step),
                 "run_input": run_input.iter().map(Message::text_content).collect::<Vec<_>>(),
             }),
-        )])
+        )]))
     }
 }
 

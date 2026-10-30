@@ -16,6 +16,30 @@ use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for ChildRunCoordination {
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError> {
+        let commit = self
+            .thread_reads
+            .commit_for_read(command.session_id.as_str())
+            .await?;
+        awaken_session_run_delivery::run_prepared_session_run(
+            command,
+            |activation| self.run_assembly.prepare_dispatch(activation),
+            awaken_session_run_delivery::PreparedSessionRunDelivery {
+                owner: self.coordinator_dispatch().map_err(to_run_error)?,
+                publication: self.session_runs.threads.publication(),
+                completion: &self.session_runs.completion,
+                commit,
+                clock: self.session_runs.clock.as_ref(),
+            },
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,

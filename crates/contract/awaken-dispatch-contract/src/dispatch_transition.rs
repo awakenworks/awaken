@@ -21,6 +21,8 @@
 //! Storage adapters remain responsible for atomic compare-and-set and durable
 //! persistence. This kernel defines the state/epoch decision they must apply.
 
+use awaken_lease_contract::fence::Epoch;
+
 /// The authority-bearing portion of one durable dispatch row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchTransition {
@@ -369,6 +371,45 @@ pub fn retry_exhaustion_eligible(
 }
 
 impl DispatchTransition {
+    /// Persisted zero is the legacy never-claimed sentinel, not a grant.
+    /// Every minted successor uses the lease kernel's non-wrapping epoch law.
+    fn next_lease_epoch(self) -> Result<u64, DispatchTransitionError> {
+        let next = match Epoch::from_persisted(self.lease_epoch) {
+            Some(epoch) => epoch.next(),
+            None => Some(Epoch::FIRST),
+        };
+        next.map(Epoch::get)
+            .ok_or(DispatchTransitionError::LeaseEpochExhausted)
+    }
+
+    /// Acquire admission-only tenure over an exact unbound legacy Pending row.
+    /// These observations come from the same locked row as this transition;
+    /// ordinary claiming remains the sole execution-authority transition.
+    pub fn adopt_pending_reservation(
+        self,
+        original_exact: bool,
+        legacy_unbound: bool,
+        authority_empty: bool,
+        physical_slot: PhysicalAttemptSlot,
+        closing: bool,
+    ) -> Result<Option<Self>, DispatchTransitionError> {
+        if self.state != crate::DispatchState::Pending
+            || !original_exact
+            || !legacy_unbound
+            || !authority_empty
+            || physical_slot != PhysicalAttemptSlot::Empty
+            || closing
+        {
+            return Ok(None);
+        }
+        let lease_epoch = self.next_lease_epoch()?;
+        Ok(Some(Self {
+            state: crate::DispatchState::ReservationLeased,
+            lease_epoch,
+            cancellation_requested: self.cancellation_requested,
+        }))
+    }
+
     /// Mint exactly one newer claim epoch after the caller has established that
     /// this pending, awaiting, or recovery row is runnable.
     pub fn claim(self) -> Result<Option<Self>, DispatchTransitionError> {
@@ -380,10 +421,7 @@ impl DispatchTransition {
         ) {
             return Ok(None);
         }
-        let lease_epoch = self
-            .lease_epoch
-            .checked_add(1)
-            .ok_or(DispatchTransitionError::LeaseEpochExhausted)?;
+        let lease_epoch = self.next_lease_epoch()?;
         Ok(Some(Self {
             state: crate::DispatchState::Leased,
             lease_epoch,
@@ -454,10 +492,7 @@ impl DispatchTransition {
         ) {
             return Ok(None);
         }
-        let lease_epoch = self
-            .lease_epoch
-            .checked_add(1)
-            .ok_or(DispatchTransitionError::LeaseEpochExhausted)?;
+        let lease_epoch = self.next_lease_epoch()?;
         Ok(Some(Self {
             state: crate::DispatchState::ReservationLeased,
             lease_epoch,
@@ -570,10 +605,7 @@ impl DispatchTransition {
                 clear_retry_deadline: !self.cancellation_requested,
             }),
             crate::DispatchState::ReservationLeased | crate::DispatchState::Leased => {
-                let lease_epoch = self
-                    .lease_epoch
-                    .checked_add(1)
-                    .ok_or(DispatchTransitionError::LeaseEpochExhausted)?;
+                let lease_epoch = self.next_lease_epoch()?;
                 Ok(CancelTransition::Applied {
                     state: Self {
                         state: if self.state == crate::DispatchState::ReservationLeased {
@@ -1028,6 +1060,83 @@ mod tests {
             lease_epoch: 4,
             cancellation_requested: false,
         };
+        // A1: the new adoption is admission-only, not an alternate ordinary
+        // claim selector. Causes are exact original identity, unbound legacy
+        // shape, no lease/assignment/credential authority, empty physical slot,
+        // no closing residue, Pending phase, and an incrementable epoch. A2:
+        // any failed cause stutters; A3: an otherwise eligible MAX epoch errors;
+        // A4: the legacy never-claimed zero sentinel mints the first grant.
+        // The full Boolean/phase/slot cross-product below covers interacting
+        // refusals, including cancelled rows (whose intent must be retained).
+        for phase in [
+            crate::DispatchState::Reserved,
+            crate::DispatchState::ReservationLeased,
+            crate::DispatchState::Pending,
+            crate::DispatchState::Leased,
+            crate::DispatchState::Awaiting,
+            crate::DispatchState::DeadLetter,
+            crate::DispatchState::Superseded,
+        ] {
+            for bits in 0..32_u8 {
+                for slot in [
+                    PhysicalAttemptSlot::Empty,
+                    PhysicalAttemptSlot::ExactClaim,
+                    PhysicalAttemptSlot::OtherClaim,
+                    PhysicalAttemptSlot::Corrupt,
+                ] {
+                    let original_exact = bits & 1 != 0;
+                    let legacy_unbound = bits & 2 != 0;
+                    let authority_empty = bits & 4 != 0;
+                    let closing = bits & 8 != 0;
+                    let cancelled = bits & 16 != 0;
+                    for (epoch, successor) in [
+                        (0, Some(1)),
+                        (1, Some(2)),
+                        (4, Some(5)),
+                        (u64::MAX - 1, Some(u64::MAX)),
+                        (u64::MAX, None),
+                    ] {
+                        let original = DispatchTransition {
+                            state: phase,
+                            lease_epoch: epoch,
+                            cancellation_requested: cancelled,
+                        };
+                        let adopted = original.adopt_pending_reservation(
+                            original_exact,
+                            legacy_unbound,
+                            authority_empty,
+                            slot,
+                            closing,
+                        );
+                        let eligible = phase == crate::DispatchState::Pending
+                            && original_exact
+                            && legacy_unbound
+                            && authority_empty
+                            && slot == PhysicalAttemptSlot::Empty
+                            && !closing;
+                        if !eligible {
+                            assert_eq!(adopted, Ok(None), "A2");
+                        } else if epoch == u64::MAX {
+                            assert_eq!(
+                                adopted,
+                                Err(DispatchTransitionError::LeaseEpochExhausted),
+                                "A3"
+                            );
+                        } else {
+                            assert_eq!(
+                                adopted,
+                                Ok(Some(DispatchTransition {
+                                    state: crate::DispatchState::ReservationLeased,
+                                    lease_epoch: successor.expect("A1/A4 incrementable epoch"),
+                                    cancellation_requested: cancelled,
+                                })),
+                                "A1"
+                            );
+                        }
+                    }
+                }
+            }
+        }
         assert!(reserved.claim().unwrap().is_none(), "R1/E1");
         let activated = reserved.activate_reservation().expect("R2/E2");
         assert_eq!(activated.state, crate::DispatchState::Pending, "R2/E2");
@@ -1801,6 +1910,46 @@ mod proofs {
                 Ok(Some(DispatchTransition {
                     state: crate::DispatchState::Leased,
                     lease_epoch: state.lease_epoch + 1,
+                    cancellation_requested: state.cancellation_requested,
+                }))
+            );
+        }
+        // A1-A3 exhaust the production admission-only adoption decision over
+        // the original arbitrary phase/epoch/cancellation domain plus all
+        // equality, legacy-shape, vacancy and closing observations. No derived
+        // authority is assumed: SQL/identity refinement remains native evidence.
+        // The ordinary-claim proof above already owns the exact successor law
+        // over the full u64 domain, including zero and MAX. Adoption must use
+        // that same generation while entering only ReservationLeased.
+        let original_exact = kani::any();
+        let legacy_unbound = kani::any();
+        let authority_empty = kani::any();
+        let slot = arbitrary_physical_slot();
+        let closing = kani::any();
+        let adopted = state.adopt_pending_reservation(
+            original_exact,
+            legacy_unbound,
+            authority_empty,
+            slot,
+            closing,
+        );
+        let eligible = state.state == crate::DispatchState::Pending
+            && original_exact
+            && legacy_unbound
+            && authority_empty
+            && slot == PhysicalAttemptSlot::Empty
+            && !closing;
+        if !eligible {
+            assert_eq!(adopted, Ok(None));
+        } else if state.lease_epoch == u64::MAX {
+            assert_eq!(adopted, Err(DispatchTransitionError::LeaseEpochExhausted));
+        } else {
+            let ordinary = state.claim().unwrap().unwrap();
+            assert_eq!(
+                adopted,
+                Ok(Some(DispatchTransition {
+                    state: crate::DispatchState::ReservationLeased,
+                    lease_epoch: ordinary.lease_epoch,
                     cancellation_requested: state.cancellation_requested,
                 }))
             );

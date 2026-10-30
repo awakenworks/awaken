@@ -17,12 +17,12 @@ use awaken_dispatch::{
     AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
     ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt, PostgresDispatchStore, RunClaim,
     RunDispatch, SqliteDispatchStore, WorkerDirectory, WorkerExecutionStopSource, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerProcessExit, WorkerProcessStopStatus, WorkerRegistration,
-    WorkerState, has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
+    WorkerIdentity, WorkerProcessExit, WorkerProcessStopStatus, WorkerRegistration, WorkerState,
+    has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
     stop_expired_predecessor,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_dispatch_testkit::worker_http::activation;
+use awaken_dispatch_testkit::worker_http::{activation, current_dispatch_codec_manifest};
 use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
@@ -246,7 +246,9 @@ async fn register(
     now: u64,
     ttl: u64,
 ) -> WorkerIdentity {
-    let mut manifest = WorkerManifest::default();
+    // C0 current foreground codec support is fixed; exact protocol/identity,
+    // provider closure and epoch causes below retain their original domains.
+    let mut manifest = current_dispatch_codec_manifest();
     manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let identity = directory
@@ -337,7 +339,8 @@ impl Fixture {
         let old_worker = register(directory.as_ref(), &format!("{tag}-old"), 100, old_ttl).await;
         let worker = register(directory.as_ref(), &format!("{tag}-next"), 200, 10_000).await;
         let request = RunDispatch::new(activation(&tag))
-            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+            .with_worker_codec_requirements();
         let run_id = request.run_id().clone();
         store.enqueue(request).await.unwrap();
         let mut old_snapshot = directory
@@ -1209,7 +1212,8 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
         .await;
         let snapshot = directory.current(&tag).await.unwrap().unwrap().snapshot;
         let request = RunDispatch::new(activation(&tag))
-            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+            .with_worker_codec_requirements();
         let run_id = request.run_id().clone();
         store.enqueue(request).await.unwrap();
         let claim = RunClaim::from(
