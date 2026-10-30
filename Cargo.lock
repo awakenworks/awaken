@@ -1593,9 +1593,11 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-time",
  "awaken-tool-contract",
+ "cap-std",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
