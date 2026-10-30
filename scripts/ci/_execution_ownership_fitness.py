@@ -324,17 +324,24 @@ def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
     return errors
 
 
+def retired_execution_path_violations(relative: Path, text: str) -> list[str]:
+    # A necessary literal match avoids repeated regex scans of unrelated large
+    # sources. The original case-sensitive Unicode word boundary remains the
+    # authority, including comments and string literals in the raw Rust source.
+    return [
+        f"{relative}: retired execution path {symbol!r}; {owner}"
+        for symbol, owner in RETIRED_EXECUTION_PATHS.items()
+        if symbol in text and re.search(rf"\b{re.escape(symbol)}\b", text)
+    ]
+
+
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     rust_sources: dict[str, str] = {}
     for path in sorted((repo_root / "crates").glob("**/src/**/*.rs")):
         text = path.read_text(encoding="utf-8")
         rust_sources[_crate_boundary_workspace.repository_path(path, repo_root)] = text
-        for symbol, owner in RETIRED_EXECUTION_PATHS.items():
-            if re.search(rf"\b{re.escape(symbol)}\b", text):
-                errors.append(
-                    f"{path.relative_to(repo_root)}: retired execution path {symbol!r}; {owner}"
-                )
+        errors.extend(retired_execution_path_violations(path.relative_to(repo_root), text))
     errors.extend(duplicate_tool_registry_violations(rust_sources))
     errors.extend(runtime_host_boundary_violations(rust_sources))
     errors.extend(repository_git_boundary_violations(rust_sources))
@@ -381,6 +388,61 @@ def check_all(repo_root: Path) -> list[str]:
 
 
 def selftest() -> None:
+    # Literal presence is necessary but insufficient: preserve raw-source
+    # scope, Unicode/underscore word boundaries, one result per catalog entry,
+    # native path spelling and catalog order. These witnesses also reject
+    # substring-only and empty-result mutants by actually executing them.
+    relative = Path("crates") / "example/src/body.rs"
+
+    def reference(source):
+        return [
+            f"{relative}: retired execution path {symbol!r}; {owner}"
+            for symbol, owner in RETIRED_EXECUTION_PATHS.items()
+            if re.search(rf"\b{re.escape(symbol)}\b", source)
+        ]
+
+    def witnesses(scan):
+        boundaries = [("", ""), (" ", "\n"), ("Z_", "_Z"), ("α", "β"), ("-", "."), ("(", ")")]
+        for symbol in RETIRED_EXECUTION_PATHS:
+            for prefix, suffix in boundaries:
+                source = prefix + symbol + suffix
+                assert scan(source) == reference(source), repr(source)
+            for source in [symbol + " " + symbol, "// " + symbol,
+                           'let text = "' + symbol + '";', symbol.swapcase()]:
+                assert scan(source) == reference(source), repr(source)
+        source = " ".join(reversed(RETIRED_EXECUTION_PATHS))
+        assert scan(source) == reference(source), "catalog diagnostic order"
+        assert scan("ordinary Rust source") == []
+
+    witnesses(lambda source: retired_execution_path_violations(relative, source))
+    # Exercise the actual repository scan as well, so a disconnected helper
+    # cannot pass only its own unit witnesses. Other missing fixture owners
+    # remain unrelated diagnostics; the seeded raw-source violation must exist.
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory(prefix="retired-scan-") as temporary:
+        root = Path(temporary)
+        source = root / relative
+        source.parent.mkdir(parents=True)
+        symbol = next(iter(RETIRED_EXECUTION_PATHS))
+        source.write_text("// " + symbol, encoding="utf-8")
+        expected = reference("// " + symbol)
+        observed = check_all(root)
+        assert expected and all(error in observed for error in expected)
+    mutants = [
+        lambda source: [],
+        lambda source: [
+            f"{relative}: retired execution path {symbol!r}; {owner}"
+            for symbol, owner in RETIRED_EXECUTION_PATHS.items() if symbol in source
+        ],
+    ]
+    for mutant in mutants:
+        try:
+            witnesses(mutant)
+        except AssertionError:
+            continue
+        raise AssertionError("weakened retired-symbol checker escaped its witnesses")
+
     # Cause/effect graph: C1=path parameter spelling differs; C2=method differs;
     # C3=inline cfg(test) route; C4=same key from a different owner. Effects:
     # E1 C1 normalizes to one owner key; E2 C2 remains distinct; E3 C3 is not
