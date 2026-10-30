@@ -1,0 +1,528 @@
+[
+  {
+    "id": "E-DOL-RUST-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-RUST-20261031/receipt.json",
+    "receipt_sha256": "b9b06723cd09055d89a6b4204ee05e71e36410dc09205f75c550883d13c256b3",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Rust component, file SQLite and PostgreSQL 16.15 (required) clause tests with real child-process kills, loopback servers and native Windows path/process/lock rows (nextest, package-scoped)",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--no-fail-fast",
+      "-p",
+      "awaken-session-application",
+      "-p",
+      "awaken-control",
+      "-p",
+      "awaken-protocol-managed",
+      "-p",
+      "awaken-protocol-ag-ui",
+      "-p",
+      "awaken-protocol-ai-sdk",
+      "-p",
+      "awaken-runtime",
+      "-p",
+      "awaken-dispatch-http",
+      "-p",
+      "awaken-protocol-mcp",
+      "-p",
+      "awaken-run-executor-acp",
+      "-p",
+      "awaken-tool-relay",
+      "-p",
+      "awaken-execution-composition",
+      "-p",
+      "awaken-sandbox-memoryd",
+      "-p",
+      "awaken-sandbox-local",
+      "-p",
+      "awaken-fs-durability",
+      "-p",
+      "awaken-local-process",
+      "-p",
+      "awaken-ext-builtin-tools",
+      "--features",
+      "awaken-tool-relay/test-support,awaken-fs-durability/native-fs",
+      "-E",
+      "(package(=awaken-session-application) & test(/budget_tightening|replacement_crash/)) | (package(=awaken-control) & test(/memory_redaction_tests/)) | (package(=awaken-protocol-managed) & binary(=memory_version_ownership)) | (package(=awaken-protocol-ag-ui) & binary(=stop_receipt)) | (package(=awaken-protocol-ai-sdk) & binary(=disconnect_policy)) | binary(/cross_adapter_fault/) | (package(=awaken-run-executor-acp) & test(/failure_projection/)) | (package(=awaken-execution-composition) & test(/tier_refusal_tests/)) | (package(=awaken-sandbox-memoryd) & binary(=live_mode_refusal)) | (package(=awaken-sandbox-local) & (binary(=create_response_loss) | test(/workdir_windows/))) | (package(=awaken-fs-durability) & test(/windows_/)) | (package(=awaken-local-process) & test(/windows_job|windows_operator/)) | (package(=awaken-ext-builtin-tools) & binary(=hand) & test(/windows_process/) & not test(/dropping_the_session_stops_ready_background_descendants/))"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 391.7,
+    "executed_count": 52,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916",
+    "historical": false,
+    "entry_sha256": "8929aec5e768aa6b2ba77d619b4c5d379e86d472fec96b2757bbb250730e50cd"
+  },
+  {
+    "id": "E-DOL-GAPS-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-GAPS-20261031/receipt.json",
+    "receipt_sha256": "78de143cffab288fd924ad27dafa28b04c53e5c671264047818aa2e8767f672e",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": false,
+    "files_changed_during_run": [],
+    "scope": "Ignored product-gap reproducers run with --run-ignored only; every one fails on its oracle (expected failures, never execution evidence)",
+    "argv": [
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--no-fail-fast",
+      "--run-ignored",
+      "only",
+      "-p",
+      "awaken-session-application",
+      "-p",
+      "awaken-control",
+      "-p",
+      "awaken-protocol-managed",
+      "-p",
+      "awaken-protocol-ag-ui",
+      "-p",
+      "awaken-protocol-ai-sdk",
+      "-p",
+      "awaken-runtime",
+      "-p",
+      "awaken-dispatch-http",
+      "-p",
+      "awaken-protocol-mcp",
+      "-p",
+      "awaken-run-executor-acp",
+      "-p",
+      "awaken-tool-relay",
+      "-p",
+      "awaken-execution-composition",
+      "-p",
+      "awaken-sandbox-memoryd",
+      "-p",
+      "awaken-sandbox-local",
+      "-p",
+      "awaken-fs-durability",
+      "-p",
+      "awaken-local-process",
+      "-p",
+      "awaken-ext-builtin-tools",
+      "--features",
+      "awaken-tool-relay/test-support,awaken-fs-durability/native-fs",
+      "-E",
+      "(package(=awaken-session-application) & test(/budget_tightening/)) | (package(=awaken-control) & test(/memory_redaction_tests/)) | (package(=awaken-protocol-ag-ui) & binary(=stop_receipt)) | (package(=awaken-protocol-ai-sdk) & binary(=disconnect_policy)) | binary(/cross_adapter_fault/) | (package(=awaken-run-executor-acp) & test(/failure_projection/))"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "PYTHONUTF8"
+    ],
+    "exit": 100,
+    "seconds": 3.8,
+    "executed_count": 0,
+    "failed_count": 10,
+    "skipped_count": 0,
+    "log_sha256": "35d51f8c17f4f13e0367d13d020b07350e8c299067f91eae9c195f44df8aeb34",
+    "historical": false,
+    "expected_failure": true,
+    "entry_sha256": "d4bdc58082b8de014f2ccf826691bed55fb2085afce077fa936b4ae825ed813b"
+  },
+  {
+    "id": "E-DOL-SDK-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-SDK-20261031/receipt.json",
+    "receipt_sha256": "a28336c0fccb34a68e28bd326c259d16efa5c36f262323f05dada59346aff2c9",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Independent SDK consumer acceptance target (own workspace, public deps only), libtest",
+    "argv": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "examples/sdk-consumer/Cargo.toml",
+      "--locked",
+      "--test",
+      "acceptance",
+      "--",
+      "--test-threads=1"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 19.4,
+    "executed_count": 12,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082",
+    "historical": false,
+    "entry_sha256": "f65f721b7ffeb4d543d0b348126f374bf53bfdf4134ea3eae56d8f374b9f391b"
+  },
+  {
+    "id": "E-DOL-SDKPY-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-SDKPY-20261031/receipt.json",
+    "receipt_sha256": "215803c6c6402f85d22093e2e388c28fb6879c201c8861cdf08f5486e7224ead",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "SDK consumer task-evidence, compile_fail pin and public-API snapshot checks (unittest); the two product-gap reproducers are skipped here",
+    "argv": [
+      "python",
+      "-m",
+      "unittest",
+      "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+      "-v"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 69.0,
+    "executed_count": 4,
+    "failed_count": 0,
+    "skipped_count": 2,
+    "log_sha256": "0380125b018378d3335f8b73527c152817185006bfe8fcc2cb9e3ed03a48e732",
+    "historical": false,
+    "entry_sha256": "045976d643643b3112c8204f5a8170e40e9ff327b7483af870b5fb50cabe470f"
+  },
+  {
+    "id": "E-DOL-SDKPYGAP-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-SDKPYGAP-20261031/receipt.json",
+    "receipt_sha256": "688af179efa263bf5bcec89bc5b01af596636bd7583588cfdb88cbb53eeb6358",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": false,
+    "files_changed_during_run": [],
+    "scope": "SDK consumer compile_fail pin reproducers with AWAKEN_RUN_IGNORED=1 (expected failures, never execution evidence)",
+    "argv": [
+      "python",
+      "-m",
+      "unittest",
+      "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+      "-v",
+      "-k",
+      "test_d2",
+      "-k",
+      "test_d3"
+    ],
+    "environment_names": [
+      "AWAKEN_RUN_IGNORED",
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "PYTHONUTF8"
+    ],
+    "exit": 1,
+    "seconds": 62.7,
+    "executed_count": 0,
+    "failed_count": 2,
+    "skipped_count": 0,
+    "log_sha256": "c25425f0c421fd4753fe22094be9d3151d3dcc98b4fee31ec67be31f495d242c",
+    "historical": false,
+    "expected_failure": true,
+    "entry_sha256": "3fac14f81c06ffd0a93dddd1ef3e0b0dcdc7d17246eed70a2c7bfce69a071e57"
+  },
+  {
+    "id": "E-DOL-E2E-MEMORY-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-MEMORY-20261031/receipt.json",
+    "receipt_sha256": "0a5afd45aa15ba1dab8ad8e0887b72d267208511a478a74cbed3ce9beab45fa2",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Production awaken process, real HTTP: Memory version ownership across workspaces and a restart",
+    "argv": [
+      "node",
+      "e2e/managed_memory_version_ownership_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 192.1,
+    "executed_count": 1,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "2841e684196f318e616c553ead42386d039f2269ffe5b7c0b4a15745b37bc8e3",
+    "historical": false,
+    "entry_sha256": "1e5b5a0e6fb8512426044f4cb7c060cebac690bf1caef0d43eb7589b318c6839"
+  },
+  {
+    "id": "E-DOL-E2E-STREAM-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-STREAM-20261031/receipt.json",
+    "receipt_sha256": "f43e3caf73a8527b6e0f9d925f962fa09ca9722d469f93fa0c872f9543615c66",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Production awaken process, real sockets: Managed stream disconnect detaches; explicit cancel has its own receipt",
+    "argv": [
+      "node",
+      "e2e/managed_stream_disconnect_policy_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 4.9,
+    "executed_count": 4,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "cb27107a138f79f3793f6d86f2ef1551bff5953c54a57a4620d744b2599204f7",
+    "historical": false,
+    "entry_sha256": "b4c39ab2146652bc6d3f800319ff2a0ff978f28ead531d1585e299c8e1b8de1d"
+  },
+  {
+    "id": "E-DOL-E2E-PAGING-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-PAGING-20261031/receipt.json",
+    "receipt_sha256": "a689e1f6078e6c53d0fa53b9c7a1f13524d64040751911426b7d5702e9c24b39",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Production awaken process: event paging interleaved with previews, terminals and a real process restart",
+    "argv": [
+      "node",
+      "e2e/managed_history_pagination_interleave_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 33.7,
+    "executed_count": 3,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "80dc637c73adf8f4106fdd19f628e86deecfc4d2b5c66782b510181b817ef850",
+    "historical": false,
+    "entry_sha256": "6dae194c7f679650922282864532372954863fd62c6db1be9b2ec58795a7b214"
+  },
+  {
+    "id": "E-DOL-E2E-SDKDIFF-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-SDKDIFF-20261031/receipt.json",
+    "receipt_sha256": "ce1589c34d306c3dd28d13f56d7a72844f040c4892eeba3699537d51a25e68b2",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Locked official TS and Python SDKs against one production awaken process (fresh venv)",
+    "argv": [
+      "node",
+      "e2e/sdk_differential_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 25.6,
+    "executed_count": 3,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "f90879eae5d014959b872e702c2b67d5ab78627ddd047e234f3d7bad76d02dea",
+    "historical": false,
+    "entry_sha256": "f59281002d2ad6cbd893f39cd0b20101104acc5d7bb73ee76d8faf73d0b0dc72"
+  },
+  {
+    "id": "E-DOL-E2E-SDKRECOVERY-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-SDKRECOVERY-20261031/receipt.json",
+    "receipt_sha256": "b391f4f5144148043605030b21150404a55c21b5c0c5dee459e31c0efd5c7a4c",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Official TS SDK against the production process: lost responses, dropped stream, hard kill and respawn",
+    "argv": [
+      "node",
+      "e2e/sdk_interruption_recovery_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 4.7,
+    "executed_count": 3,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "8b1fc3a10243df1696706f6b99fadded5163f10e1edc071d5653717c11fb0c9c",
+    "historical": false,
+    "entry_sha256": "70dd7e286a92404b5964f0335bddf0b0423a00baf1cb44586fe2a4810a765fce"
+  },
+  {
+    "id": "E-DOL-E2E-MULTIPROC-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-MULTIPROC-20261031/receipt.json",
+    "receipt_sha256": "7ccce05ed5e2790c875c07ccf93edb604cbb7a83949debce353a426296b99812",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Two awaken all-in-one OS processes over one PostgreSQL 16.15 database, hard kill mid-projection",
+    "argv": [
+      "node",
+      "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 7.4,
+    "executed_count": 5,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "7f75adef606fe640dc6ced11575ef20d41e9fe8011a304ed82535b69d7974b73",
+    "historical": false,
+    "entry_sha256": "0fdf4c46f835a61741117737469e166fa059a1a7ab35e90df257b8ebd67d6713"
+  },
+  {
+    "id": "E-DOL-E2E-MULTIPROCGAP-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-MULTIPROCGAP-20261031/receipt.json",
+    "receipt_sha256": "247b8ff922e555fa4b8a267ee21d66687f762c45ef110bdd7d785ad1e163cdb1",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": false,
+    "files_changed_during_run": [],
+    "scope": "The same multi-process run with AWAKEN_E2E_RUN_PRODUCT_GAPS=1: the takeover reproducer fails (expected failure)",
+    "argv": [
+      "node",
+      "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_E2E_RUN_PRODUCT_GAPS",
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 1,
+    "seconds": 67.5,
+    "executed_count": 4,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "d543fe6c42dc4a4a09803454528f4d5ede33d0c5a844d5e13d712a542a81854a",
+    "historical": false,
+    "expected_failure": true,
+    "entry_sha256": "1f94b10b8a8722f598d70dec2e74aa4ae01c2c38f0a499a671e84f50dd2c2522"
+  },
+  {
+    "id": "E-DOL-E2E-CTRLCOORD-20261031",
+    "receipt": "target/session-acceptance-evidence/E-DOL-E2E-CTRLCOORD-20261031/receipt.json",
+    "receipt_sha256": "c24239cf1b580841b3b14dabec50c7bdf5fbb56ab362574977d290c44a968ed6",
+    "source": {
+      "head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+      "dirty_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "platform": "native-Windows x86_64-pc-windows-msvc",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "Split Control and Coordinator processes on PostgreSQL 16.15 behind a fault-injecting proxy, official TS SDK",
+    "argv": [
+      "node",
+      "e2e/control_coordinator_disconnect_postgres_e2e.mjs"
+    ],
+    "environment_names": [
+      "AWAKEN_TEST_DATABASE_URL",
+      "AWAKEN_TEST_REQUIRE_POSTGRES",
+      "CARGO_BUILD_JOBS",
+      "CARGO_INCREMENTAL",
+      "E2E_PORT",
+      "PYTHONUTF8"
+    ],
+    "exit": 0,
+    "seconds": 152.7,
+    "executed_count": 3,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "82d297533f82f74bdd7e470977b9d3b3176aeb42fbdf007955ce06c4f7a1c9d1",
+    "historical": false,
+    "entry_sha256": "ebe2c53f7bafe5dc90ee3e4c373f64c9276ed361392de288b4c9c79d56295a93"
+  }
+]

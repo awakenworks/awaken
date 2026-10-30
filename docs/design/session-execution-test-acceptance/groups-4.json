@@ -155,8 +155,11 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-20",
+          "B-DOL-21"
+        ],
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -166,7 +169,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; production awaken coordinator and split Control as separate OS processes on PostgreSQL 16.15; fault-injecting TCP proxy; official TS SDK"
+          ],
+          "unaccepted": [
+            "the pinned Session executing a Run after the archive (needs a Worker-role process)",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -643,7 +655,7 @@
           "scope": "本次 Windows 任务不执行；只可未验收或有能力拒绝证明的不适用"
         },
         "binding_ids": [],
-        "evidence_state": "design_only",
+        "evidence_state": "platform_pending",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -653,7 +665,8 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "platform_pending_reason": "Requires a native Linux kernel FUSE mount with open file descriptors across rename/replace; Linux validation is outside this task's authorized scope and Windows has no kernel FUSE."
       }
     ],
     "risk": "P0",
@@ -695,8 +708,13 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-22",
+          "B-DOL-23",
+          "B-DOL-24",
+          "B-DOL-55"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -706,7 +724,22 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; real memory_stores_router; production awaken process over HTTP with a restart"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "redacting a memory version needs only workspace.write, the same action as a content write; there is no separate redact permission",
+          "follow_up": "awaken-control authz: a distinct memory version redact action (S)",
+          "reproducers": [
+            "redacting_a_version_requires_more_than_content_write"
+          ]
+        }
       },
       {
         "id": "T25-C02",
@@ -1066,8 +1099,10 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-25"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -1077,7 +1112,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; native Local workdir provider; owned child killed after the physical create; fresh provider object over the same base; nextest"
+          ],
+          "unaccepted": [
+            "container, Kubernetes and Linux namespace providers",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",

@@ -1,0 +1,838 @@
+[
+  {
+    "id": "B-DOL-16",
+    "name": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "line": 160,
+        "file_sha256": "f8f3b7377fd8eac02748193ca1ddae810082bffed6d23aa6c40bfa2341a5cd97"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "line": 170
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "line": 171
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "line": 178
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "line": 179
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-session-application tests::authority::budget_tightening::tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
+        "package": "awaken-session-application",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T13-C02": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": "Idle root at a live Run boundary only; tightening a Running root is the product gap. L1 component gate, not the L3 native executor."
+  },
+  {
+    "id": "B-DOL-17",
+    "name": "frozen_pins_survive_a_moved_price_catalog_through_later_commands",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "line": 61,
+        "file_sha256": "d33b8bd8ea0c2af7adf374ed222a8652a239c4e5c51dd4606cb525fc7cd632c9"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "line": 71
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "line": 76
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "line": 83
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "line": 87
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-session-application tests::authority::budget_tightening::frozen_versus_current::frozen_pins_survive_a_moved_price_catalog_through_later_commands",
+        "package": "awaken-session-application",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T13-C02": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-18",
+    "name": "t14_c03_sqlite_replacement_replay_after_projection_crash",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 355,
+        "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 260
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 270
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 287
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 291
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 306
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 307
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-session-application tests::realization::replacement_crash::t14_c03_sqlite_replacement_replay_after_projection_crash",
+        "package": "awaken-session-application",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T14-C03": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "An owned child commits the desired root and is killed inside the Resource projection; a rebuilt service over a reopened file SQLite handle replays the original command. The current-head substitution is executed and refused; the checker rejects re-prepare and rollback mutants.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-19",
+    "name": "t14_c03_postgres_replacement_replay_after_projection_crash",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 372,
+        "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 260
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 270
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 287
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 291
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 306
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "line": 307
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-session-application tests::realization::replacement_crash::t14_c03_postgres_replacement_replay_after_projection_crash",
+        "package": "awaken-session-application",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T14-C03": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Same table on PostgreSQL 16.15 through independent pools (fixture required).",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-20",
+    "name": "T21-C04 Control/Coordinator disconnect on PostgreSQL",
+    "source_locations": [
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 336,
+        "file_sha256": "3f179a63b5069aa04a9486068f42340c45ee073a749d4f09e6cdbbfcd39ec82b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 274
+      },
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 291
+      },
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 306
+      },
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 308
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-CTRLCOORD-20261031",
+        "case": "T21-C04: lost ack and Coordinator restart keep one healthcheck; archive withdraws it ({\"controlPid\":13444,\"coordinatorPid\":178056,\"registerRequests\":5,\"droppedAcks\":1,\"durableHealthchecks\":1})",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "82d297533f82f74bdd7e470977b9d3b3176aeb42fbdf007955ce06c4f7a1c9d1"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T21-C04": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": "The pinned Session is observed, not executed, after the archive: split Control/Coordinator own no claim pool and no Worker-role process runs."
+  },
+  {
+    "id": "B-DOL-21",
+    "name": "T21-C04 NC: an in-process registrar stub observation is rejected",
+    "source_locations": [
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 331,
+        "file_sha256": "3f179a63b5069aa04a9486068f42340c45ee073a749d4f09e6cdbbfcd39ec82b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
+        "line": 329
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-CTRLCOORD-20261031",
+        "case": "T21-C04 NC: an in-process registrar stub observation is rejected",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "82d297533f82f74bdd7e470977b9d3b3176aeb42fbdf007955ce06c4f7a1c9d1"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T21-C04": {
+        "oracles": [],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-22",
+    "name": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 253,
+        "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 258
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 274
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 279
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 280
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-protocol-managed::memory_version_ownership foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
+        "package": "awaken-protocol-managed",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T25-C01": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-23",
+    "name": "store_unscoped_version_lookup_is_detected",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 380,
+        "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 410
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 413
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 416
+      },
+      {
+        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "line": 423
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-protocol-managed::memory_version_ownership store_unscoped_version_lookup_is_detected",
+        "package": "awaken-protocol-managed",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T25-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-24",
+    "name": "production memory version ownership",
+    "source_locations": [
+      {
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
+        "line": 176,
+        "file_sha256": "65fafade3b8ed1aa2ad7b6eeda821bc01e4eb5945d528eeef149565abbcb3161"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
+        "line": 145
+      },
+      {
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
+        "line": 147
+      },
+      {
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
+        "line": 158
+      },
+      {
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
+        "line": 168
+      },
+      {
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
+        "line": 169
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-MEMORY-20261031",
+        "case": "T25-C01 production memory version ownership (tenant B store: 200)",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "2841e684196f318e616c553ead42386d039f2269ffe5b7c0b4a15745b37bc8e3"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T25-C01": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-25",
+    "name": "t27_c03_create_response_loss_recovers_the_original_instance",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 198,
+        "file_sha256": "1a66dd8f16059f41e9640e46364553a9966c51f71c06aed31bd20aaeb2da9d38"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 203
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 212
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 214
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 218
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 234
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 235
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 240
+      },
+      {
+        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "line": 242
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-sandbox-local::create_response_loss t27_c03_create_response_loss_recovers_the_original_instance",
+        "package": "awaken-sandbox-local",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T27-C03": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Native Local provider: an owned child creates under one effect fence and is killed before reporting; a new provider replays the same fence onto the same instance, adoption agrees, another operation is refused and the base gains no entry. A fresh-wrapper instance is executed and rejected by the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-26",
+    "name": "T30-C02 TypeScript and Python SDKs against one real service",
+    "source_locations": [
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 260,
+        "file_sha256": "fdc4825d197356c2cd5eb48e57144fc86bf751b54e7b3c8d300e7dbc6c87a524"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 215
+      },
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 216
+      },
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 220
+      },
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 221
+      },
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 230
+      },
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 231
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-SDKDIFF-20261031",
+        "case": "T30-C02: TS 0.132.1 and Python 1.12.1 agree on one production server",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "f90879eae5d014959b872e702c2b67d5ab78627ddd047e234f3d7bad76d02dea"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T30-C02": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-27",
+    "name": "T30-C02 NC: an intercepted fetch is not counted as the real service",
+    "source_locations": [
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 255,
+        "file_sha256": "fdc4825d197356c2cd5eb48e57144fc86bf751b54e7b3c8d300e7dbc6c87a524"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 253
+      },
+      {
+        "path": "e2e/sdk_differential_e2e.mjs",
+        "line": 254
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-SDKDIFF-20261031",
+        "case": "T30-C02 NC: an intercepted fetch is not counted as the real service",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "f90879eae5d014959b872e702c2b67d5ab78627ddd047e234f3d7bad76d02dea"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T30-C02": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-28",
+    "name": "T30-C03 interruption recovery on the production service",
+    "source_locations": [
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 223,
+        "file_sha256": "853bba7611b5eef0403338de5abf349c960b37332285ff1fdb898183cdbf0362"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 143
+      },
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 155
+      },
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 177
+      },
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 181
+      },
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 193
+      },
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 195
+      },
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 197
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-SDKRECOVERY-20261031",
+        "case": "T30-C03: lost responses, a dropped stream and a hard restart keep identities, receipts and cursors",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "8b1fc3a10243df1696706f6b99fadded5163f10e1edc071d5653717c11fb0c9c"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T30-C03": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-29",
+    "name": "T30-C03 NC: the checker detects a retry that does not continue the original ticket",
+    "source_locations": [
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 218,
+        "file_sha256": "853bba7611b5eef0403338de5abf349c960b37332285ff1fdb898183cdbf0362"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
+        "line": 141
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-SDKRECOVERY-20261031",
+        "case": "T30-C03 NC: the checker detects a retry that does not continue the original ticket",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "8b1fc3a10243df1696706f6b99fadded5163f10e1edc071d5653717c11fb0c9c"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T30-C03": {
+        "oracles": [],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-30",
+    "name": "T31-C03 O0 and negative controls (NC-process, NC-checker)",
+    "source_locations": [
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 588,
+        "file_sha256": "94145ca86eb45ea2a0e2fa1c844f16bf937063a1e6dea2e1bbe2c10f1faf3bbc"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 134
+      },
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 145
+      },
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 149
+      },
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 164
+      },
+      {
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
+        "line": 202
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-MULTIPROC-20261031",
+        "case": "T31-C03 O0 and negative controls (NC-process, NC-checker) on two OS processes over one PostgreSQL database; O1 takeover continuation is a known product gap, run it with AWAKEN_E2E_RUN_PRODUCT_GAPS=1",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "7f75adef606fe640dc6ced11575ef20d41e9fe8011a304ed82535b69d7974b73"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T31-C03": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  }
+]

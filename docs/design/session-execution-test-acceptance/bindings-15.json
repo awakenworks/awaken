@@ -1,0 +1,773 @@
+[
+  {
+    "id": "B-DOL-01",
+    "name": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 67,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 79
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 84
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 85
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 88
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-02",
+    "name": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 100,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 111
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 112
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 116
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 117
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-03",
+    "name": "t02_c01_normal_dependency_closure_holds_only_sdk_crates",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 242,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 245
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 259
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 264
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t02_c01_normal_dependency_closure_holds_only_sdk_crates",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C01": {
+        "oracles": [
+          0,
+          2
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Reads the real cargo metadata of the independent consumer and asserts its normal closure; awaken-runtime declares no [features], so minimal equals default.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-04",
+    "name": "t02_c01_nc_a_copy_with_a_server_session_dependency_fails_the_closure_check",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 304,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 307
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 320
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t02_c01_nc_a_copy_with_a_server_session_dependency_fails_the_closure_check",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C01": {
+        "oracles": [
+          0,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Executed negative control: a copy of the consumer with a server Session dependency fails the same closure check.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-05",
+    "name": "test_e1_compile_only_output_is_refused_by_the_task_validator",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 66,
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 69
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 71
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 72
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDKPY-20261031",
+        "case": "examples.sdk-consumer.tests.sdk_acceptance_test.TaskEvidenceTests.test_e1_compile_only_output_is_refused_by_the_task_validator",
+        "package": "sdk-consumer",
+        "target": "unittest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "0380125b018378d3335f8b73527c152817185006bfe8fcc2cb9e3ed03a48e732"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C01": {
+        "oracles": [],
+        "negative_control": true
+      }
+    },
+    "review": "Executed negative control: real cargo check output of the consumer is refused by the gate's own task validator.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-06",
+    "name": "test_a1_a2_removing_one_reexport_is_reported_as_drift",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 204,
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 205
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 214
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 217
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 218
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDKPY-20261031",
+        "case": "examples.sdk-consumer.tests.sdk_acceptance_test.PublicApiSnapshotTests.test_a1_a2_removing_one_reexport_is_reported_as_drift",
+        "package": "sdk-consumer",
+        "target": "unittest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "0380125b018378d3335f8b73527c152817185006bfe8fcc2cb9e3ed03a48e732"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Real cargo public-api surface equals the committed snapshot; removing one capability is reported as exactly that drift.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-07",
+    "name": "test_d1_pinned_codes_detect_unrelated_import_mutants_with_code_checking",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 156,
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 159
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 161
+      },
+      {
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
+        "line": 162
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDKPY-20261031",
+        "case": "examples.sdk-consumer.tests.sdk_acceptance_test.CompileFailPinTests.test_d1_pinned_codes_detect_unrelated_import_mutants_with_code_checking",
+        "package": "sdk-consumer",
+        "target": "unittest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "0380125b018378d3335f8b73527c152817185006bfe8fcc2cb9e3ed03a48e732"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T02-C03": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "With E-code checking on, the C3 compile_fail doctest passes and the unrelated-import mutants are caught only because the code is pinned.",
+    "limitation": "Normal stable-rustdoc gate does not check the pins (see the product gap)."
+  },
+  {
+    "id": "B-DOL-08",
+    "name": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 524,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 526
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 528
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 529
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 531
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-09",
+    "name": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 544,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 546
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 548
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 549
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 550
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-10",
+    "name": "t03_c01_nc_a_call_that_blocks_for_the_decision_fails_the_first_return_oracle",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 554,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 556
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 560
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c01_nc_a_call_that_blocks_for_the_decision_fails_the_first_return_oracle",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-11",
+    "name": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 566,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 582
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 585
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 586
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 587
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C03": {
+        "oracles": [
+          0
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-12",
+    "name": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 602,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 627
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 632
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 633
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 638
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-13",
+    "name": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 646,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 665
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 668
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 671
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 672
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-14",
+    "name": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 816,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 819
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 820
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 824
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 826
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-15",
+    "name": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model",
+    "source_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 849,
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 852
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 856
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 861
+      },
+      {
+        "path": "examples/sdk-consumer/tests/acceptance.rs",
+        "line": 865
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-SDK-20261031",
+        "case": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model",
+        "package": "awaken-sdk-consumer",
+        "target": "libtest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "a32f5b5c8a8d12459630b51738c05e710c9cfb288a58274b6033a1f555da7082"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T03-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  }
+]

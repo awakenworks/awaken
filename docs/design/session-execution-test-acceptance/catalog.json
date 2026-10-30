@@ -30,13 +30,15 @@
     "existing_assertion_scopes_verified": 5,
     "fully_accepted_scenarios": 0,
     "case_evidence_states": {
-      "design_only": 20,
-      "current_subset": 48,
+      "design_only": 0,
+      "current_subset": 51,
       "source_binding_only": 6,
       "historical_subset": 12,
       "aggregate_subset_only": 1,
-      "current_clause_complete": 30,
-      "product_gap": 10
+      "current_clause_complete": 38,
+      "product_gap": 16,
+      "platform_pending": 2,
+      "not_applicable": 1
     }
   },
   "scope_rules": {
@@ -159,6 +161,10 @@
       "file": "evidence-registry.json"
     },
     {
+      "key": "evidence_registry",
+      "file": "evidence-registry-2.json"
+    },
+    {
       "key": "bindings",
       "file": "bindings-1.json",
       "range": [
@@ -268,6 +274,46 @@
       "range": [
         250,
         264
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-15.json",
+      "range": [
+        264,
+        279
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-16.json",
+      "range": [
+        279,
+        294
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-17.json",
+      "range": [
+        294,
+        309
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-18.json",
+      "range": [
+        309,
+        324
+      ]
+    },
+    {
+      "key": "bindings",
+      "file": "bindings-19.json",
+      "range": [
+        324,
+        328
       ]
     },
     {
