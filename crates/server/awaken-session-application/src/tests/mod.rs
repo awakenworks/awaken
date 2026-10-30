@@ -4496,6 +4496,7 @@ pub(crate) struct RecordingEnvironmentSource {
     awakened: Mutex<BTreeSet<String>>,
     retired: Mutex<Vec<String>>,
     failures: Mutex<BTreeSet<String>>,
+    released_leases: Mutex<Vec<awaken_session_types::SessionWorkLease>>,
 }
 
 #[derive(Default)]
@@ -4743,8 +4744,9 @@ impl awaken_session_application_contract::SessionWorkerLeases for RecordingEnvir
 
     async fn release_session(
         &self,
-        _lease: &awaken_session_types::SessionWorkLease,
+        lease: &awaken_session_types::SessionWorkLease,
     ) -> Result<bool, awaken_session_types::RunError> {
+        self.released_leases.lock().unwrap().push(lease.clone());
         Ok(false)
     }
     async fn release_owner(

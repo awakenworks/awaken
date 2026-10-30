@@ -303,7 +303,7 @@
 - 必须断言：不得互用 epoch 或 lease；旧领取者拒绝；healthcheck 可独立完成。
 - 反向控制：仅测试单侧 lease 或用同一个 epoch 变量不能证明本项。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：`session_and_healthcheck_leases_are_taken_over_independently`、`dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `work_and_dispatch_epochs_are_distinct_types`（忽略，不计证据；E17 为预期失败）：Work 与 Dispatch epoch 都是裸 u64，可被互换。完整场景：待验收。
+- 绑定及状态：`session_and_healthcheck_leases_are_taken_over_independently`、`dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite`（E16 本机 Windows 执行通过，覆盖已成立部分）；`work_and_dispatch_epochs_are_distinct_types` 已启用，受控 `SessionWorkerLeaseAuthority` 的返回值使用 `WorkLeaseEpoch`，中立 DTO 及 Session access 保留兼容表示；真实 `DispatchSettlement::settle` 消费者的编译拒绝与 Dispatch 正向消费者、原数字序列化回归分别验证。类型名称比较不代替消费者编译；E17 保留原失败源码与日志。完整场景：待验收。
 
 ## T09 租约边界与竞争
 
@@ -327,7 +327,7 @@
 - 必须断言：仅当前 owner 可提交；stale receipt 拒绝；失败不扩权。
 - 反向控制：测试内串行锁掩盖数据库竞争必须拒绝。
 - 层级与基质：L1/L2；Volatile logical model；file SQLite for persistence clauses；live PostgreSQL for supported SQL clauses。只覆盖该操作真实支持的 backend；不凭空要求 Volatile 持久性。
-- 绑定及状态：保留 E16/E17 的原始源码与执行身份。`ack_after_the_lease_lapsed_is_refused` 已启用，覆盖首次 ACK 的精确过期边界；增加两个独立客户端的并发确认、数据库写入等待和原事务快照回归。`stale_same_owner_claimer_is_refused_after_reclaim` 仍为忽略的产品缺口：旧协议仅携带 worker id，不能推断同名旧 incarnation 的 epoch；补齐方案还必须证明新持有者能够成功。跨领域 epoch 类型隔离继续由 T08-C03 跟踪。完整场景：待验收。
+- 绑定及状态：保留 E16/E17 的原始源码与执行身份。`ack_after_the_lease_lapsed_is_refused` 已启用，覆盖首次 ACK 的精确过期边界；增加两个独立客户端的并发确认、数据库写入等待和原事务快照回归。原 `stale_same_owner_claimer_is_refused_after_reclaim` 的前提经校准：旧请求标识凭据 principal，同一凭据的两次相同请求无法区分进程代际；原失败保留在 E17。替换为 `owner_only_reclaim_preserves_the_credential_principal_boundary` 与 `same_credential_session_reclaim_fences_the_exact_generation`，分别验证凭据边界和精确 epoch 下的新持有者成功、旧证明拒绝、撤权及失败不扩权。旧协议的进程代际保障仍需要客户端或凭据生命周期参与，未宣称已实现；Work/Dispatch 类型边界另由 T08-C03 的真实消费者编译验证。完整场景：待验收。
 
 ### T09-C03 身份跨重建
 

@@ -13,12 +13,12 @@
 use std::sync::Arc;
 
 use awaken_session_application_contract::{
-    SessionWorkAcquisition, SessionWorkOwnership, SessionWorkerAssignment, SessionWorkerLeases,
-    WorkDispatchFailure, WorkDispatchReconciliation,
+    SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership, SessionWorkerAssignment,
+    SessionWorkerLeases, WorkDispatchFailure, WorkDispatchReconciliation,
 };
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_state_contract::{PersistedSession, SessionRepositoryError};
-use awaken_session_types::{RunError, SessionId, SessionWorkLease};
+use awaken_session_types::{RunError, SessionId};
 use awaken_time::WallClockExt as _;
 
 use crate::SessionPreparationError;
@@ -223,6 +223,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
             acquired.is_some(),
         ) {
             return Ok(acquired
+                .map(SessionWorkGrant::from_transfer)
                 .map(SessionWorkOwnership::Leased)
                 .unwrap_or(SessionWorkOwnership::Unowned));
         }
@@ -238,11 +239,12 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
             .leases
             .acquire_session(&environment_id, session_id, worker_owner, now_ms)
             .await?
+            .map(SessionWorkGrant::from_transfer)
             .map(SessionWorkOwnership::Leased)
             .unwrap_or(SessionWorkOwnership::Unowned))
     }
 
-    async fn release_session_work(&self, lease: &SessionWorkLease) -> Result<bool, RunError> {
+    async fn release_session_work(&self, lease: &SessionWorkGrant) -> Result<bool, RunError> {
         let Some((environment_id, _terminal)) = self
             .self_hosted_work_environment(lease.session_id())
             .await?
@@ -252,7 +254,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
         if lease.environment_id() != environment_id {
             return Ok(false);
         }
-        self.leases.release_session(lease).await
+        self.leases.release_session(&lease.to_transfer()).await
     }
 
     async fn release_worker_session_work(&self, worker_owner: &str) -> Result<usize, RunError> {

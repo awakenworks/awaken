@@ -771,6 +771,7 @@ use awaken_dispatch_http::WorkerDispatchAuthority;
 mod environment_renewal {
     use super::*;
 
+    use awaken_session_application_contract::SessionWorkGrant;
     use awaken_session_application_contract::SessionWorkerLeaseAuthority;
     use awaken_session_application_contract::{SessionWorkAcquisition, SessionWorkOwnership};
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
@@ -780,7 +781,6 @@ mod environment_renewal {
         SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
         SessionEnvironmentState,
     };
-    use awaken_session_types::SessionWorkLease;
     use {
         awaken_session_configuration_contract::{
             EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
@@ -806,7 +806,7 @@ mod environment_renewal {
         }
         async fn release_session_work(
             &self,
-            _lease: &SessionWorkLease,
+            _lease: &SessionWorkGrant,
         ) -> Result<bool, awaken_session_types::RunError> {
             Ok(false)
         }
@@ -965,7 +965,7 @@ mod environment_renewal {
                     clock.clone(),
                 ),
             );
-            let work = SessionWorkLease::from_persisted(
+            let work = awaken_session_types::SessionWorkLease::from_persisted(
                 format!("work:{session_id}"),
                 "environment-renewal",
                 session_id.clone().into(),
@@ -977,6 +977,7 @@ mod environment_renewal {
                 (awaken_lease_contract::fence::Epoch::FIRST).get(),
                 1_000,
             )
+            .map(SessionWorkGrant::from_transfer)
             .expect("canonical grant has a nonzero epoch");
             let service = WorkerDispatchService::new(
                 Arc::new(MemoryDispatchStore::new(clock.clone()))

@@ -304,7 +304,9 @@ def baseline_cli(
     if args.tighten or args.write_baseline:
         if document != previous or not exists:
             text = encode(document) if encode else json.dumps(document, indent=2) + "\n"
-            baseline_path.write_text(text, encoding="utf-8")
+            # The codecs produce canonical LF, including the TXT coverage floor.
+            # Preserve held bytes on no-op; write the same format on every host.
+            baseline_path.write_text(text, encoding="utf-8", newline="\n")
             print(f"wrote {baseline_path.name}")
             if args.tighten and getattr(args, "stage", False):
                 stage()

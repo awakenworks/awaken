@@ -268,7 +268,7 @@
           "B216",
           "B249"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -284,14 +284,8 @@
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
-          ]
-        },
-        "product_gap": {
-          "reason": "Work 与 Dispatch epoch 都是裸 u64，可被互换",
-          "follow_up": "work-store 与 run-ingress 契约（M）",
-          "reproducers": [
-            "work_and_dispatch_epochs_are_distinct_types"
+            "T35 platform gate open (Linux not run by policy)",
+            "Work/Dispatch compiler isolation and numeric wire are distinct from complete two-sided lifecycle/platform qualification."
           ]
         }
       }
@@ -380,9 +374,10 @@
           "B216",
           "B217",
           "B250",
-          "B251"
+          "B251",
+          "B262"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "current_subset",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -398,16 +393,11 @@
             "native Windows x86_64-pc-windows-msvc; file SQLite with independent handles and reopen; PostgreSQL 16.15 task-owned fixture with independent pools (required, not skippable); nextest canonical workspace features"
           ],
           "unaccepted": [
-            "T35 platform gate open (Linux not run by policy)"
+            "T35 platform gate open (Linux not run by policy)",
+            "Legacy owner-only requests do not carry process incarnation or epoch; same-credential process fencing requires supported client/credential participation. Current-holder-positive and exact Session generation tests do not qualify that absent identity."
           ]
         },
-        "product_gap": {
-          "reason": "普通 ack/heartbeat/stop 的协议请求不携带 epoch，不能区分重用同一 worker id 的旧 incarnation；ACK 过期和回执代际隔离已有独立回归",
-          "follow_up": "明确 legacy owner-only 能力边界；持有 generation 的调用使用已有 exact-epoch 接口；补齐当前持有者成功的正向对照",
-          "reproducers": [
-            "stale_same_owner_claimer_is_refused_after_reclaim"
-          ]
-        }
+        "calibration_note": "E17 preserves the original same-owner-process oracle failure. The compatibility tuple identifies a credential principal; this calibration replaces an impossible distinction with separately tested credential and exact-generation contracts. It does not claim that a legacy security guarantee was implemented."
       },
       {
         "id": "T09-C03",

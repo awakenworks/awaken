@@ -311,6 +311,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Record
                     self.epoch.load(Ordering::SeqCst).max(1),
                     now_ms + 60_000,
                 )
+                .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .expect("nonzero epoch"),
             ),
         )
@@ -318,7 +319,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Record
 
     async fn release_session_work(
         &self,
-        _lease: &awaken_session_types::SessionWorkLease,
+        _lease: &awaken_session_application_contract::SessionWorkGrant,
     ) -> Result<bool, awaken_session_types::RunError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
         let mut mode = self.mode.lock().unwrap();

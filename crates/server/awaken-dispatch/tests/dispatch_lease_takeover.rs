@@ -399,7 +399,6 @@ fn postgres_dispatch_takeover_fixture_admission() {
 }
 
 #[test]
-#[ignore = "product gap: Work and Dispatch lease epochs are both exposed as raw u64, so one domain's epoch type-checks as the other's"]
 fn work_and_dispatch_epochs_are_distinct_types() {
     let dispatch = awaken_dispatch_contract::DispatchLease::from_persisted(
         RunId("run".into()),
@@ -416,6 +415,7 @@ fn work_and_dispatch_epochs_are_distinct_types() {
         3,
         0,
     )
+    .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
     .unwrap();
     // `DispatchSettlement::settle` takes this same type as its fence.
     assert_ne!(

@@ -417,6 +417,25 @@ pub trait DispatchCommitAuthority: Send + Sync {
 }
 
 /// Exact-epoch settlement after committed Run truth is observed.
+///
+/// Use the Dispatch grant's generation:
+/// ```
+/// use awaken_dispatch_contract::{DispatchLease, DispatchOutcome, DispatchSettlement};
+/// fn settle_with_dispatch_epoch(dispatch: &dyn DispatchSettlement, lease: &DispatchLease) {
+///     let pending = dispatch.settle(lease.run_id(), lease.epoch(), DispatchOutcome::Done, &[]);
+///     drop(pending);
+/// }
+/// ```
+/// An Environment Work grant cannot accidentally settle that Dispatch:
+/// ```compile_fail,E0308
+/// use awaken_agent_contract::RunId;
+/// use awaken_dispatch_contract::{DispatchOutcome, DispatchSettlement};
+/// use awaken_session_application_contract::SessionWorkGrant;
+/// fn work_epoch_cannot_settle_dispatch(dispatch: &dyn DispatchSettlement, run: &RunId, work: &SessionWorkGrant) {
+///     let pending = dispatch.settle(run, work.epoch(), DispatchOutcome::Done, &[]);
+///     drop(pending);
+/// }
+/// ```
 #[async_trait]
 pub trait DispatchSettlement: Send + Sync {
     /// Settle a claimed dispatch, fenced by the lease `epoch` the caller holds (from

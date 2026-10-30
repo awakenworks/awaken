@@ -673,30 +673,10 @@ async fn gap_backends(row: &str, scenario: impl AsyncFn(&Pair) -> bool) {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: plain ack/heartbeat/stop are owner-only, so a stale claimer reusing the same worker id is not fenced after reclaim"]
-async fn stale_same_owner_claimer_is_refused_after_reclaim() {
-    gap_backends("stale incarnation ack accepted", async |pair: &Pair| {
-        let hc = pair.a.enqueue_healthcheck("same-owner").await.unwrap();
-        pair.a
-            .claim("same-owner", "worker", 0)
-            .await
-            .unwrap()
-            .unwrap();
-        // The worker restarts under the same id and reclaims the expired lease.
-        pair.b
-            .claim("same-owner", "worker", LEASE_TTL_MS)
-            .await
-            .unwrap()
-            .unwrap();
-        // The previous incarnation's delayed ack must not act on the new lease.
-        matches!(
-            pair.a.ack("same-owner", &hc, "worker").await.unwrap(),
-            WorkMutationResult::PreconditionFailed
-        )
-    })
-    .await;
-}
+// The historical same-owner/process reproducer expected two identical
+// owner-only requests to be distinguishable. E17 retains that original
+// failed source. The credential_generation module tests the actual credential
+// boundary and the exact Session generation with current-holder controls.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ack_after_the_lease_lapsed_is_refused() {
@@ -1115,3 +1095,6 @@ mod stop_replay;
 async fn retried_stop_after_lost_response_replays() {
     stop_replay::retry_matrix().await;
 }
+
+#[path = "lease_acceptance/credential_generation.rs"]
+mod credential_generation;

@@ -11,7 +11,7 @@ use super::*;
 #[derive(Default)]
 struct LostReleaseWork {
     acquisitions: AtomicUsize,
-    released: Mutex<Vec<awaken_session_types::SessionWorkLease>>,
+    released: Mutex<Vec<awaken_session_application_contract::SessionWorkGrant>>,
     retired: AtomicBool,
 }
 
@@ -41,6 +41,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
                     7,
                     now_ms + 60_000,
                 )
+                .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .expect("nonzero epoch"),
             ),
         )
@@ -48,7 +49,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
 
     async fn release_session_work(
         &self,
-        lease: &awaken_session_types::SessionWorkLease,
+        lease: &awaken_session_application_contract::SessionWorkGrant,
     ) -> Result<bool, awaken_session_types::RunError> {
         self.released.lock().unwrap().push(lease.clone());
         if self.retired.swap(true, Ordering::SeqCst) {
@@ -188,7 +189,7 @@ async fn terminal_run_work_ack_loss_retries_only_the_original_identity() {
     let released = work.released.lock().unwrap().clone();
     assert_eq!(released.len(), 1, "A2 one physical Work release");
     assert_eq!(
-        (released[0].owner(), released[0].epoch()),
+        (released[0].owner(), released[0].epoch().get()),
         (claim.owner.as_str(), 7),
         "A2 the original claim owner and Work epoch"
     );
