@@ -7,7 +7,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_lease_contract::fence::{Epoch, Tenure, TenureScope};
+use awaken_lease_contract::fence::{Epoch, Tenure, TenureScope, fence_is_live_at};
 use awaken_tool_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
@@ -78,6 +78,26 @@ pub enum TaskClaim {
     Acquired(TaskTenure),
     EndedIndeterminate,
     EndedAttemptsExhausted,
+}
+
+/// What a fixed-target heartbeat did to the current attempt.
+///
+/// Acknowledgement records only that this exact tenure already reached the
+/// target. It grants no execution authority, including after lease expiry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskHeartbeatCheckpointOutcome {
+    Acknowledged,
+    Applied,
+}
+
+/// Checkpoint-only refusal without widening the existing aggregate error API.
+/// Lease expiry is a negative result, never an execution permit or a renewal.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TaskHeartbeatCheckpointError {
+    #[error(transparent)]
+    Task(#[from] BackgroundTaskError),
+    #[error("background task lease expired before the heartbeat checkpoint applied")]
+    LeaseExpired,
 }
 
 /// The lease family of a background task: the task (subject) held by one
@@ -232,11 +252,15 @@ const fn cancellation_wins_completion(phase: TaskPhase, indeterminate: bool) -> 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FencedMutationRequest {
     Heartbeat { now_ms: u64, lease_ms: u64 },
+    HeartbeatCheckpoint { target_ms: u64, now_ms: u64 },
     Finish { indeterminate: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FencedMutationPlan {
+    HeartbeatAcknowledged,
+    /// Negative checkpoint decision: no successor and no execution authority.
+    CheckpointLeaseExpired,
     Heartbeat {
         lease_expires_at_ms: u64,
         revision: u64,
@@ -247,11 +271,32 @@ enum FencedMutationPlan {
     },
 }
 
+/// The one strict heartbeat successor: both entrypoints retain this target
+/// unchanged and use the same revision-overflow boundary.
+fn heartbeat_target_plan(
+    attempt: &TaskAttempt,
+    revision: u64,
+    target_ms: u64,
+) -> Result<FencedMutationPlan, BackgroundTaskError> {
+    if target_ms <= attempt.lease_expires_at_ms {
+        return Err(BackgroundTaskError::NonMonotonicLease);
+    }
+    let revision = revision
+        .checked_add(1)
+        .ok_or(BackgroundTaskError::RevisionOverflow)?;
+    Ok(FencedMutationPlan::Heartbeat {
+        lease_expires_at_ms: target_ms,
+        revision,
+    })
+}
+
 /// Sole admission and scalar successor plan for fenced heartbeat and finish.
 ///
 /// Exact owner+epoch rejection intentionally precedes command-specific input,
 /// clock, lease and revision checks. The caller applies a returned plan once;
-/// every error therefore leaves the complete aggregate unchanged.
+/// every error therefore leaves the complete aggregate unchanged. The explicit
+/// checkpoint-expiry refusal has no successor and only the checkpoint entry
+/// projects it into its own error; legacy requests cannot produce that value.
 fn fenced_mutation_plan(
     phase: TaskPhase,
     attempt: Option<&TaskAttempt>,
@@ -265,22 +310,29 @@ fn fenced_mutation_plan(
         .ok_or(BackgroundTaskError::StaleFence)?;
     match request {
         FencedMutationRequest::Heartbeat { now_ms, lease_ms } => {
+            // Preserve local relative-heartbeat admission and error order;
+            // live-only application belongs to the fixed-target checkpoint.
             if lease_ms == 0 {
                 return Err(BackgroundTaskError::InvalidClaim);
             }
             let lease_expires_at_ms = now_ms
                 .checked_add(lease_ms)
                 .ok_or(BackgroundTaskError::ClockOverflow)?;
-            if lease_expires_at_ms <= attempt.lease_expires_at_ms {
-                return Err(BackgroundTaskError::NonMonotonicLease);
+            heartbeat_target_plan(attempt, revision, lease_expires_at_ms)
+        }
+        FencedMutationRequest::HeartbeatCheckpoint { target_ms, now_ms } => {
+            if target_ms == 0 {
+                return Err(BackgroundTaskError::InvalidClaim);
             }
-            let revision = revision
-                .checked_add(1)
-                .ok_or(BackgroundTaskError::RevisionOverflow)?;
-            Ok(FencedMutationPlan::Heartbeat {
-                lease_expires_at_ms,
-                revision,
-            })
+            // A lost acknowledgement is historical satisfaction, even if the
+            // deadline has since passed or the revision cannot advance again.
+            if target_ms <= attempt.lease_expires_at_ms {
+                return Ok(FencedMutationPlan::HeartbeatAcknowledged);
+            }
+            if !fence_is_live_at(attempt.lease_expires_at_ms, now_ms) {
+                return Ok(FencedMutationPlan::CheckpointLeaseExpired);
+            }
+            heartbeat_target_plan(attempt, revision, target_ms)
         }
         FencedMutationRequest::Finish { indeterminate } => {
             let revision = revision
@@ -674,6 +726,51 @@ impl BackgroundTask {
         else {
             unreachable!("heartbeat request returns a heartbeat plan")
         };
+        self.apply_heartbeat(lease_expires_at_ms, revision);
+        Ok(())
+    }
+
+    /// Reach one immutable positive heartbeat target under the current tenure.
+    ///
+    /// Unlike the local relative-TTL heartbeat, an unapplied checkpoint needs a
+    /// live lease at the caller's authoritative commit time. Replays keep the
+    /// original target; an ACK is read-only and cannot revive expired authority.
+    pub fn heartbeat_checkpoint(
+        &mut self,
+        fence: &TaskTenure,
+        target_ms: u64,
+        now_ms: u64,
+    ) -> Result<TaskHeartbeatCheckpointOutcome, TaskHeartbeatCheckpointError> {
+        match fenced_mutation_plan(
+            self.lifecycle.phase(),
+            self.lifecycle.attempt(),
+            &self.id,
+            fence,
+            self.revision,
+            FencedMutationRequest::HeartbeatCheckpoint { target_ms, now_ms },
+        )? {
+            FencedMutationPlan::HeartbeatAcknowledged => {
+                Ok(TaskHeartbeatCheckpointOutcome::Acknowledged)
+            }
+            FencedMutationPlan::CheckpointLeaseExpired => {
+                Err(TaskHeartbeatCheckpointError::LeaseExpired)
+            }
+            FencedMutationPlan::Heartbeat {
+                lease_expires_at_ms,
+                revision,
+            } => {
+                self.apply_heartbeat(lease_expires_at_ms, revision);
+                Ok(TaskHeartbeatCheckpointOutcome::Applied)
+            }
+            FencedMutationPlan::Finish { .. } => {
+                unreachable!("checkpoint request returns only heartbeat plans")
+            }
+        }
+    }
+
+    /// Apply the same planned deadline/revision without changing phase, wait
+    /// coordinates, policy or tenure. Both heartbeat entrypoints use this path.
+    fn apply_heartbeat(&mut self, lease_expires_at_ms: u64, revision: u64) {
         let lifecycle = match &self.lifecycle {
             BackgroundTaskLifecycle::Running { attempt } => {
                 let mut attempt = attempt.clone();
@@ -701,7 +798,6 @@ impl BackgroundTask {
             }
         };
         self.apply_planned_lifecycle(lifecycle, revision);
-        Ok(())
     }
 
     pub fn wait(
@@ -973,10 +1069,11 @@ fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
 fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
     // Cause/effect decision table over the sole production mutation plan:
     // C1 all five lifecycle phases; C2 owner mismatch or epoch mismatch; C3
-    // heartbeat or finish; C4 all u64 epochs, revisions, clock values and lease
-    // values plus both finish outcomes. R1 either mismatch returns StaleFence;
+    // heartbeat, checkpoint or finish; C4 all u64 epochs, revisions, clock,
+    // relative lease and fixed-target values plus both finish outcomes.
+    // R1 either mismatch returns StaleFence;
     // R2 rejection precedes every command-specific validation, so no successor
-    // plan exists for either production caller to apply. Fixed distinct worker
+    // plan exists for any production caller to apply. Fixed distinct worker
     // strings exercise Rust's actual String equality; heap allocation and the
     // later durable Thread commit are outside this scalar safety proof.
     let phase_raw: u8 = kani::any();
@@ -1001,15 +1098,18 @@ fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
             concurrency: ToolConcurrency::Parallel,
         },
     };
-    let request = if kani::any() {
-        FencedMutationRequest::Heartbeat {
+    let request = match kani::any::<u8>() {
+        0 => FencedMutationRequest::Heartbeat {
             now_ms: kani::any(),
             lease_ms: kani::any(),
-        }
-    } else {
-        FencedMutationRequest::Finish {
+        },
+        1 => FencedMutationRequest::HeartbeatCheckpoint {
+            target_ms: kani::any(),
+            now_ms: kani::any(),
+        },
+        _ => FencedMutationRequest::Finish {
             indeterminate: kani::any(),
-        }
+        },
     };
     let revision: u64 = kani::any();
     let owner_mismatch = Tenure::granted(task.clone(), "stale-worker".into(), epoch);
@@ -1029,6 +1129,115 @@ fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
             fenced_mutation_plan(phase, Some(&attempt), &task, stale, revision, request),
             Err(BackgroundTaskError::StaleFence)
         );
+    }
+}
+
+#[cfg(kani)]
+/// @obligation background_task.stale_fence_never_finishes_or_heartbeats
+/// @kani profile=solver-z3-v1
+#[kani::proof]
+fn fixed_target_heartbeat_acknowledges_or_extends_only_a_live_current_tenure() {
+    // Symbolic production-kernel graph: exact tenure plus attempt presence,
+    // all five phases and u64 deadlines/targets/times/revisions. ACK implies a
+    // positive target already reached; Apply implies a live predecessor, exact immutable
+    // target and revision+1; zero/expired/overflow inputs produce no successor.
+    // A replay of the planned successor ACKs for every later observation time.
+    // Aggregate field preservation and durable commit races remain native/TCB.
+    let phase_raw: u8 = kani::any();
+    kani::assume(phase_raw < 5);
+    let phase = match phase_raw {
+        0 => TaskPhase::Requested,
+        1 => TaskPhase::Running,
+        2 => TaskPhase::Waiting,
+        3 => TaskPhase::Cancelling,
+        _ => TaskPhase::Ended,
+    };
+    let epoch = Epoch::from_persisted(kani::any());
+    kani::assume(epoch.is_some());
+    let epoch = epoch.unwrap();
+    let task = BackgroundTaskId::new("task").unwrap();
+    let attempt = TaskAttempt {
+        worker_id: "current-worker".into(),
+        epoch,
+        lease_expires_at_ms: kani::any(),
+        policy: TaskExecutionPolicy {
+            recovery: ToolRecoveryPolicy::replay_safe(),
+            concurrency: ToolConcurrency::Parallel,
+        },
+    };
+    let current_deadline_ms = attempt.lease_expires_at_ms;
+    let fence = attempt.tenure(&task);
+    let target_ms: u64 = kani::any();
+    let now_ms: u64 = kani::any();
+    let revision: u64 = kani::any();
+    let has_attempt: bool = kani::any();
+    let plan = fenced_mutation_plan(
+        phase,
+        has_attempt.then_some(&attempt),
+        &task,
+        &fence,
+        revision,
+        FencedMutationRequest::HeartbeatCheckpoint { target_ms, now_ms },
+    );
+    match &plan {
+        Ok(FencedMutationPlan::HeartbeatAcknowledged) => {
+            assert!(target_ms > 0 && target_ms <= current_deadline_ms);
+            if !fence_is_live_at(current_deadline_ms, now_ms) {
+                assert!(!execution_is_admitted(
+                    phase,
+                    phase,
+                    true,
+                    current_deadline_ms,
+                    now_ms,
+                    true,
+                ));
+            }
+        }
+        Ok(FencedMutationPlan::Heartbeat {
+            lease_expires_at_ms,
+            revision: next_revision,
+        }) => {
+            assert_eq!(*lease_expires_at_ms, target_ms);
+            assert!(target_ms > current_deadline_ms);
+            assert!(fence_is_live_at(current_deadline_ms, now_ms));
+            assert!(revision < u64::MAX);
+            assert_eq!(*next_revision, revision + 1);
+            let successor = TaskAttempt {
+                lease_expires_at_ms: *lease_expires_at_ms,
+                ..attempt
+            };
+            assert_eq!(
+                fenced_mutation_plan(
+                    phase,
+                    Some(&successor),
+                    &task,
+                    &fence,
+                    *next_revision,
+                    FencedMutationRequest::HeartbeatCheckpoint {
+                        target_ms,
+                        now_ms: kani::any(),
+                    },
+                ),
+                Ok(FencedMutationPlan::HeartbeatAcknowledged)
+            );
+        }
+        Err(BackgroundTaskError::InvalidClaim) => assert_eq!(target_ms, 0),
+        Ok(FencedMutationPlan::CheckpointLeaseExpired) => {
+            assert!(target_ms > current_deadline_ms);
+            assert!(!fence_is_live_at(current_deadline_ms, now_ms));
+        }
+        Err(BackgroundTaskError::RevisionOverflow) => {
+            assert!(target_ms > current_deadline_ms);
+            assert!(fence_is_live_at(current_deadline_ms, now_ms));
+            assert_eq!(revision, u64::MAX);
+        }
+        Err(BackgroundTaskError::StaleFence) => assert!(!has_attempt),
+        _ => panic!("checkpoint has only ACK, apply, lost, invalid, expired or overflow outcomes"),
+    }
+    if !has_attempt {
+        assert_eq!(plan, Err(BackgroundTaskError::StaleFence));
+    } else if target_ms > 0 && target_ms <= current_deadline_ms {
+        assert_eq!(plan, Ok(FencedMutationPlan::HeartbeatAcknowledged));
     }
 }
 

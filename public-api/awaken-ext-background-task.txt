@@ -43,6 +43,12 @@ pub enum awaken_ext_background_task::TaskClaim
 pub awaken_ext_background_task::TaskClaim::Acquired(awaken_ext_background_task::TaskTenure)
 pub awaken_ext_background_task::TaskClaim::EndedAttemptsExhausted
 pub awaken_ext_background_task::TaskClaim::EndedIndeterminate
+pub enum awaken_ext_background_task::TaskHeartbeatCheckpointError
+pub awaken_ext_background_task::TaskHeartbeatCheckpointError::LeaseExpired
+pub awaken_ext_background_task::TaskHeartbeatCheckpointError::Task(awaken_ext_background_task::BackgroundTaskError)
+pub enum awaken_ext_background_task::TaskHeartbeatCheckpointOutcome
+pub awaken_ext_background_task::TaskHeartbeatCheckpointOutcome::Acknowledged
+pub awaken_ext_background_task::TaskHeartbeatCheckpointOutcome::Applied
 pub enum awaken_ext_background_task::TaskNotificationEvent
 pub awaken_ext_background_task::TaskNotificationEvent::Cancelled
 pub awaken_ext_background_task::TaskNotificationEvent::Completed
@@ -65,6 +71,7 @@ pub fn awaken_ext_background_task::BackgroundTask::admits_execution_of(&self, &S
 pub fn awaken_ext_background_task::BackgroundTask::attempt(&self) -> core::option::Option<&awaken_ext_background_task::TaskAttempt>
 pub fn awaken_ext_background_task::BackgroundTask::finish(&mut self, &awaken_ext_background_task::TaskTenure, awaken_ext_background_task::BackgroundTaskEnd) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::heartbeat(&mut self, &awaken_ext_background_task::TaskTenure, u64, u64) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::heartbeat_checkpoint(&mut self, &awaken_ext_background_task::TaskTenure, u64, u64) -> core::result::Result<awaken_ext_background_task::TaskHeartbeatCheckpointOutcome, awaken_ext_background_task::TaskHeartbeatCheckpointError>
 pub fn awaken_ext_background_task::BackgroundTask::reclaim(&mut self, impl core::convert::Into<alloc::string::String>, u64, u64) -> core::result::Result<awaken_ext_background_task::TaskClaim, awaken_ext_background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::request_cancel(&mut self) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::requested(awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskOrigin, awaken_ext_background_task::BackgroundInvocation) -> Self
