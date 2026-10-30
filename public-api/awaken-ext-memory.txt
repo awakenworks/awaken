@@ -189,6 +189,7 @@ pub struct awaken_ext_memory::localfs::MemoryDir
 impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn awaken_ext_memory::localfs::MemoryDir::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
 pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
 impl awaken_ext_memory::localfs::MemoryStoreHandle for awaken_ext_memory::localfs::MemoryDir
@@ -350,6 +351,7 @@ pub struct awaken_ext_memory::MemoryDir
 impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn awaken_ext_memory::localfs::MemoryDir::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
 pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
 impl awaken_ext_memory::localfs::MemoryStoreHandle for awaken_ext_memory::localfs::MemoryDir

@@ -42,7 +42,7 @@ fuzz_target!(|data: &[u8]| {
         let finalized = batch.phase() == ToolBatchPhase::Finalized;
         let id = ["a", "b", "missing"][usize::from(command / 16) % 3];
         let output = || ToolOutput::ok(id, "result");
-        let result = match command % 10 {
+        let result = match command % 12 {
             0 => batch.mark_executing(id).map(|_| ()),
             1 => batch.mark_awaiting(id, ToolWaitKind::ToolPermission, "ticket"),
             2 => batch
@@ -56,6 +56,8 @@ fuzz_target!(|data: &[u8]| {
             6 => batch.mark_indeterminate(id, "unknown"),
             7 => batch.finalize(),
             8 => batch.set_result_messages(id, Vec::new()),
+            9 => batch.record_returned(output()),
+            10 => batch.complete_returned(output()),
             _ => {
                 batch.seal_on_run_end("ended");
                 Ok(())

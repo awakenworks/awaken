@@ -1060,6 +1060,21 @@ impl awaken_session_execution_contract::RealizationEffects for EchoFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for EchoFake {
+    // Fixture rule P1: protocol echo evidence is committed through ordinary User Run activation.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -1649,6 +1664,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for EchoFake {
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
@@ -1661,12 +1677,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for EchoFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -2330,6 +2347,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for CapableFake {
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -2342,12 +2360,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for CapableFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -2813,6 +2832,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for ToolAwai
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for ToolAwaitingFake {
+    // Fixture rule P1: the pending-tool script owns only its ordinary User Run.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -3884,6 +3918,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for OutcomeFake {
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
     {
         let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
@@ -3895,7 +3930,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for OutcomeFake {
         let _ = self
             .prepare_outcome(thread, &outcome_id, description, rubric, max_iterations)
             .await?;
-        self.continue_outcome(thread)
+        self.continue_outcome(thread, executor)
             .await?
             .ok_or_else(|| RunError::internal("prepared Outcome is not active"))
     }
@@ -3908,12 +3943,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for OutcomeFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -4759,6 +4795,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Recordin
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for RecordingFake {
+    // Fixture rule P1: data-subject recording wraps the same ordinary echo fixture.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &self.committed,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -5271,6 +5322,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingFake {
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -5283,12 +5335,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingFake {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }
@@ -5691,6 +5744,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for Interrup
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for InterruptRedirectFake {
+    // Fixture rule P1: redirect ordering wraps the same ordinary echo fixture.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &self.committed,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -6213,6 +6281,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for InterruptRedirectFake
         _d: &str,
         _r: &str,
         _m: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -6225,12 +6294,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for InterruptRedirectFake
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

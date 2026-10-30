@@ -953,7 +953,25 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .settlement_observer
                 .as_ref()
                 .is_some_and(|observer| observer.owns_dispatch_fence());
-            let local_guard = self
+            let prepared_kind = claimed.request.identity_scope
+                == awaken_dispatch_contract::DispatchIdentityScope::PreparedSessionCommand;
+            let preparation = match observer {
+                Some(observer) if prepared_kind && !observer_owns_fence => {
+                    observer
+                        .prepare_session_run_activity(
+                            &claimed.request,
+                            &claim,
+                            if claimed.cancellation_requested {
+                                SessionRunActivityAdmissionMode::RecoverOnly
+                            } else {
+                                SessionRunActivityAdmissionMode::RecoverOrAdmit
+                            },
+                        )
+                        .await
+                }
+                _ => Ok(None),
+            };
+            let mut local_guard = self
                 .ports
                 .reservation_guard(&claim, observer.is_some() && !observer_owns_fence)
                 .await?;
@@ -967,23 +985,113 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             } else {
                 SessionRunActivityAdmissionMode::RecoverOrAdmit
             };
-            let has_local_guard = local_guard.is_some();
-            let resolution = match observer {
-                Some(observer) if observer_owns_fence || has_local_guard => {
-                    observer
-                        .admit_session_run_activity(&claimed.request, &claim, mode)
-                        .await
+            let resolution = if prepared_kind && !observer_owns_fence {
+                match local_guard.take() {
+                    Some(guard) => {
+                        let (projected_revision, recovery) = match preparation {
+                            Ok(revision) => {
+                                let recovery = if revision.is_some() {
+                                    self.recovery_source.as_deref().map(Some).ok_or_else(|| {
+                                        awaken_dispatch_contract::DispatchSettlementError(
+                                            "prepared reservation requires its guarded original recovery source".into(),
+                                        )
+                                    })
+                                } else {
+                                    Ok(None)
+                                };
+                                (revision, recovery)
+                            }
+                            Err(error) => (None, Err(error)),
+                        };
+                        let recovery = recovery.and_then(|source| {
+                            if guard.request().same_original_dispatch(&claimed.request) {
+                                Ok(source)
+                            } else {
+                                Err(awaken_dispatch_contract::DispatchSettlementError(
+                                    "prepared reservation changed during preparation".into(),
+                                ))
+                            }
+                        });
+                        let dispatch = &claimed.request;
+                        let admission_claim = &claim;
+                        guard
+                            .admit_prepared_session_run(
+                                clock.as_ref(),
+                                recovery,
+                                |cursor, cancelled| async move {
+                                    match observer {
+                                        Some(observer) => observer
+                                            .admit_session_run_activity(
+                                                dispatch,
+                                                admission_claim,
+                                                if cancelled {
+                                                    SessionRunActivityAdmissionMode::RecoverOnly
+                                                } else {
+                                                    SessionRunActivityAdmissionMode::RecoverOrAdmit
+                                                },
+                                                Some(awaken_session_execution_contract::PreparedSessionRunActivity {
+                                                    projected_revision,
+                                                    admitted_after_cursor: cursor,
+                                                }),
+                                            )
+                                            .await,
+                                        None => Err(awaken_dispatch_contract::DispatchSettlementError(
+                                            "Session Run activity admission observer is not installed".into(),
+                                        )),
+                                    }
+                                },
+                                awaken_dispatch_contract::DispatchSettlementError,
+                            )
+                            .await
+                            .map_err(|error| crate::Error::Dispatch(crate::DispatchError::unavailable(error)))?
+                    }
+                    None => match preparation {
+                        Err(error) => Err(error),
+                        Ok(_) => Err(awaken_dispatch_contract::DispatchSettlementError(
+                            if observer.is_some() {
+                                "Session Run reservation claim is stale"
+                            } else {
+                                "Session Run activity admission observer is not installed"
+                            }
+                            .into(),
+                        )),
+                    },
                 }
-                Some(_) => Err(awaken_dispatch_contract::DispatchSettlementError(
-                    "Session Run reservation claim is stale".to_string(),
-                )),
-                None => Err(awaken_dispatch_contract::DispatchSettlementError(
-                    "Session Run activity admission observer is not installed".to_string(),
-                )),
+            } else {
+                match (preparation, observer) {
+                    (Err(error), _) => Err(error),
+                    (Ok(projected_revision), Some(observer))
+                        if observer_owns_fence || local_guard.is_some() =>
+                    {
+                        observer
+                            .admit_session_run_activity(
+                                &claimed.request,
+                                &claim,
+                                mode,
+                                prepared_kind.then_some(
+                                    awaken_session_execution_contract::PreparedSessionRunActivity {
+                                        projected_revision,
+                                        admitted_after_cursor: 0,
+                                    },
+                                ),
+                            )
+                            .await
+                    }
+                    (Ok(_), Some(_)) => Err(awaken_dispatch_contract::DispatchSettlementError(
+                        "Session Run reservation claim is stale".into(),
+                    )),
+                    (Ok(_), None) => Err(awaken_dispatch_contract::DispatchSettlementError(
+                        "Session Run activity admission observer is not installed".into(),
+                    )),
+                }
             };
-            // The guard spans only the Session CAS. Queue resolution acquires
-            // its own claim-fenced transaction after this lock is released.
-            drop(local_guard);
+            // The common prepared composition has already released its guard.
+            // Ordinary/local repair retains the original explicit boundary.
+            if let Some(guard) = local_guard {
+                guard.release().await.map_err(|error| {
+                    crate::Error::Dispatch(crate::DispatchError::unavailable(error))
+                })?;
+            }
             match resolution {
                 Ok(SessionRunActivityAdmission::Admitted {
                     session_activity_epoch,

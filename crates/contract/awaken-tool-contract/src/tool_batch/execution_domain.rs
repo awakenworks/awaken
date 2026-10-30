@@ -273,9 +273,12 @@ fn history_entry_anchor(
     let allowed = match phase {
         CallPhaseView::Requested => false,
         CallPhaseView::Awaiting(_) => permits_await_transition(old, false),
+        CallPhaseView::Returned => permits_call_transition(old, CallTransition::RecordReturn),
+        CallPhaseView::KnownAborted => matches!(old, CallPhaseView::Returned),
         CallPhaseView::Completed => {
             permits_call_transition(old, CallTransition::CompleteImmediate)
                 || permits_call_transition(old, CallTransition::CompleteFromExecutionOrWait)
+                || permits_call_transition(old, CallTransition::MaterializeReturn)
         }
         CallPhaseView::Indeterminate => {
             permits_call_transition(old, CallTransition::MarkIndeterminate)
@@ -292,6 +295,11 @@ pub struct ToolExecutionDomainFootprint {
     pub recorded: Vec<ToolExecutionDomain>,
     pub outstanding: Vec<ToolExecutionDomain>,
 }
+
+/// One entered invocation: batch id, call id and the log position of its entry.
+type EnteredCallKey = (String, String, usize);
+/// The entered call, its recovery policy and the output it completed with.
+type EnteredCall = (ToolCall, ToolRecoveryPolicy, Option<ToolOutput>);
 
 impl ActiveToolBatch {
     /// Transient history fold over the canonical cell. Each (batch, call,
@@ -313,7 +321,8 @@ impl ActiveToolBatch {
     ) -> Result<ToolExecutionDomainFootprint, ToolBatchError> {
         let mut domains = std::collections::BTreeMap::new();
         let mut returned = std::collections::BTreeSet::new();
-        let mut entered_calls = std::collections::BTreeMap::new();
+        let mut entered_calls: std::collections::BTreeMap<EnteredCallKey, EnteredCall> =
+            std::collections::BTreeMap::new();
         // The original log position identifies an entry, not a fabricated epoch.
         // Resume legally returns to attempt 1, so attempt alone cannot key it.
         let mut entries = std::collections::BTreeMap::new();
@@ -331,8 +340,20 @@ impl ActiveToolBatch {
                     call.recovery_policy.max_attempts(),
                 )?;
                 let entry_key = (key.0.clone(), key.1.clone(), anchor);
-                if let Some((original, policy)) = entered_calls.get(&entry_key)
-                    && (original != &call.call || policy != &call.recovery_policy)
+                let raw = match &call.phase {
+                    ToolCallPhase::Returned(output)
+                    | ToolCallPhase::KnownAborted { output, .. } => Some(output),
+                    _ => None,
+                };
+                if let Some((original, policy, known)) = entered_calls.get(&entry_key)
+                    && (original != &call.call
+                        || policy != &call.recovery_policy
+                        || known.as_ref().zip(raw).is_some_and(|(old, raw)| old != raw)
+                        || known.as_ref().is_some_and(|old| {
+                            matches!(&call.phase,
+                            ToolCallPhase::Completed(output) if old.state != output.state
+                                || old.is_error != output.is_error)
+                        }))
                 {
                     return Err(ToolBatchError::InvalidPersistedState(
                         "entered tool changed its original call or recovery policy".into(),
@@ -340,10 +361,14 @@ impl ActiveToolBatch {
                 }
                 if matches!(phase, CallPhaseView::Executing(_))
                     || call.materialization_domain.is_some()
+                    || raw.is_some()
                 {
-                    entered_calls
+                    let (_, _, known) = entered_calls
                         .entry(entry_key)
-                        .or_insert_with(|| (call.call.clone(), call.recovery_policy.clone()));
+                        .or_insert_with(|| (call.call.clone(), call.recovery_policy.clone(), None));
+                    if known.is_none() {
+                        *known = raw.cloned();
+                    }
                 }
                 if previous.is_none() && phase != CallPhaseView::Requested {
                     // An isolated tail cannot establish all earlier entries.
@@ -390,15 +415,23 @@ impl ActiveToolBatch {
                     && let ToolCallPhase::Completed(output) = &call.phase
                     && let Ok(expected) = batch.result_message_id(&call.call.call_id)
                 {
-                    let published = call.result_messages.first().is_some_and(|message| {
-                        use awaken_agent_contract::agent::{content::ContentBlock, message::Role};
-                        message.id == expected
-                            && message.role == Role::Tool
-                            && matches!(message.content.as_slice(), [ContentBlock::ToolResult {
+                    let published = call
+                        .result_messages
+                        .iter()
+                        .find(|message| {
+                            message.role != awaken_agent_contract::agent::message::Role::System
+                        })
+                        .is_some_and(|message| {
+                            use awaken_agent_contract::agent::{
+                                content::ContentBlock, message::Role,
+                            };
+                            message.id == expected
+                                && message.role == Role::Tool
+                                && matches!(message.content.as_slice(), [ContentBlock::ToolResult {
                                     tool_use_id, content, is_error, ..
                                 }] if tool_use_id == &call.call.call_id
                                     && content == &output.content && *is_error == output.is_error)
-                    });
+                        });
                     if published {
                         // Only this exact entry is returned. Earlier retries,
                         // waits and missing-prefix sentinels remain retained.
@@ -530,6 +563,78 @@ mod tests {
                 "R3/{row}"
             );
             assert_eq!(state, before, "read-only/{row}");
+        }
+    }
+
+    #[test]
+    fn only_a_leading_system_prefix_may_precede_the_exact_first_tool_result() {
+        use awaken_agent_contract::agent::{
+            content::ContentBlock,
+            message::{Id, Message, Role},
+        };
+        // J8: 0/1/2 leading Systems × exact first non-System / wrong Tool /
+        // User / Assistant / prefix-only. Only the exact first non-System
+        // releases this invocation; later matching results never rescue a wrong
+        // first message. Existing domain and missing-prefix rows stay unchanged.
+        let run = RunId("r".into());
+        for prefix in 0..=2 {
+            for wrong in [
+                None,
+                Some(Role::Tool),
+                Some(Role::User),
+                Some(Role::Assistant),
+            ] {
+                for has_result in [false, true] {
+                    let mut candidate = batch();
+                    let write = |batch: &ToolBatch| {
+                        let mut command = ActiveToolBatch::write(&Some(batch.clone()));
+                        command.bind_run(&run);
+                        command
+                    };
+                    let requested = write(&candidate);
+                    candidate
+                        .mark_executing_in_domain("c", Some(ToolExecutionDomain::worker()))
+                        .unwrap();
+                    let entered = write(&candidate);
+                    let output = ToolOutput::ok("c", "done");
+                    candidate.complete(output.clone()).unwrap();
+                    let mut messages = (0..prefix)
+                        .map(|index| {
+                            Message::text(Id(format!("context-{index}")), Role::System, "accepted")
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(role) = wrong {
+                        messages.push(Message::text(
+                            Id("wrong-first".into()),
+                            role,
+                            "not a receipt",
+                        ));
+                    }
+                    if has_result {
+                        messages.push(Message::new(
+                            candidate.result_message_id("c").unwrap(),
+                            Role::Tool,
+                            vec![ContentBlock::tool_result_with_error(
+                                "c",
+                                output.content,
+                                false,
+                            )],
+                        ));
+                    }
+                    candidate.set_result_messages("c", messages).unwrap();
+                    candidate.finalize().unwrap();
+                    let footprint = ActiveToolBatch::execution_domain_footprint(
+                        &[requested, entered, write(&candidate)],
+                        &run,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        footprint.outstanding.is_empty(),
+                        wrong.is_none() && has_result,
+                        "prefix={prefix}, wrong={wrong:?}, result={has_result}"
+                    );
+                }
+            }
         }
     }
 

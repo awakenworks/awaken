@@ -218,12 +218,12 @@ async fn request_context_is_model_visible_but_never_committed() {
             _: &PhaseContext,
             history: &[Message],
             _: &awaken_agent_contract::agent::state::Store,
-        ) -> HookReaction {
+        ) -> awaken_runtime_contract::execution::Result<HookReaction> {
             self.0
                 .lock()
                 .unwrap()
                 .push(history.iter().map(Message::text_content).collect());
-            HookReaction::default()
+            Ok(HookReaction::default())
         }
     }
     impl Plugin for ContextProbe {

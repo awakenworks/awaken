@@ -49,7 +49,21 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
     let mut task = tokio::spawn(async move {
         driver
             .outcomes
-            .define_outcome("t1", "finish", "FINAL", 5)
+            .define_outcome(
+                "t1",
+                "finish",
+                "FINAL",
+                5,
+                &crate::run_exec::BoundRunExecutor::new(
+                    &driver.session_runs,
+                    driver
+                        .run_assembly
+                        .ctx_for("t1", None)
+                        .await
+                        .expect("embedded Session context"),
+                )
+                .for_thread_extension(),
+            )
             .await
     });
 
@@ -101,7 +115,21 @@ async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
     let mut task = tokio::spawn(async move {
         driver
             .outcomes
-            .define_outcome("ack-interrupt", "finish", "FINAL", 1)
+            .define_outcome(
+                "ack-interrupt",
+                "finish",
+                "FINAL",
+                1,
+                &crate::run_exec::BoundRunExecutor::new(
+                    &driver.session_runs,
+                    driver
+                        .run_assembly
+                        .ctx_for("ack-interrupt", None)
+                        .await
+                        .expect("embedded Session context"),
+                )
+                .for_thread_extension(),
+            )
             .await
     });
 
@@ -143,7 +171,21 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     let mut task = tokio::spawn(async move {
         driver
             .outcomes
-            .define_outcome("authority-loss-active", "finish", "FINAL", 5)
+            .define_outcome(
+                "authority-loss-active",
+                "finish",
+                "FINAL",
+                5,
+                &crate::run_exec::BoundRunExecutor::new(
+                    &driver.session_runs,
+                    driver
+                        .run_assembly
+                        .ctx_for("authority-loss-active", None)
+                        .await
+                        .expect("embedded Session context"),
+                )
+                .for_thread_extension(),
+            )
             .await
     });
 

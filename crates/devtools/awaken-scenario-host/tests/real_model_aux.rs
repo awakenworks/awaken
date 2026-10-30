@@ -26,7 +26,11 @@ use awaken_resource_contract::{
 use awaken_session_executor::ExecutorComponents;
 use awaken_session_executor::HostOutcomeDrive;
 
-async fn live_dependencies() -> Option<(awaken_session_executor::SessionExecutorBuilder, String)> {
+async fn live_platform() -> Option<(
+    awaken_session_executor::SessionExecutorBuilder,
+    awaken_resource_application::ResourcesApplication,
+    String,
+)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
@@ -37,10 +41,15 @@ async fn live_dependencies() -> Option<(awaken_session_executor::SessionExecutor
         key,
     )
     .expect("explicit client construction");
-    Some((
-        awaken_scenario_host::build_unmounted_dependencies(Arc::new(executor), model.clone()).await,
-        model,
-    ))
+    let (dependencies, resources) =
+        awaken_scenario_host::build_unmounted_platform(Arc::new(executor), model.clone()).await;
+    Some((dependencies, resources, model))
+}
+
+async fn live_dependencies() -> Option<(awaken_session_executor::SessionExecutorBuilder, String)> {
+    live_platform()
+        .await
+        .map(|(dependencies, _resources, model)| (dependencies, model))
 }
 
 async fn live_host() -> Option<(Arc<ExecutorComponents>, String)> {
@@ -295,16 +304,30 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
-    let (dependencies, _model) = live_dependencies()
+    // Cause/effect rule J1: one live provider and its exact Resources owner feed
+    // canonical local Managed composition; existing profiled creation freezes
+    // this Session before a borrowed admission reaches the Outcome controller.
+    // Effects: the configured judge, original BANANA Worker prompt/rubric and
+    // max=3 still produce the committed satisfied report asserted below.
+    // Constraint: no test-local executor may discard prepared activation fields.
+    let (dependencies, resources, _model) = live_platform()
         .await
         .expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.
-    let host = (dependencies
-        .with_judge("judge")
-        .expect("live host model reference is an executable binding"))
-    .build()
-    .expect("validated Host dependencies");
-
+    let managed = awaken_scenario_host::local_managed_state(
+        dependencies
+            .with_judge("judge")
+            .expect("live host model reference is an executable binding"),
+        resources.authorities().resource_registry(),
+    )
+    .await;
+    let host = managed.host;
+    let admissions = managed.state.sessions.run_admissions();
+    admissions
+        .admit_run_session(host.local_workspace(), "goal-e2e", "assistant")
+        .await
+        .expect("create the canonical profiled Session");
+    let admission = admissions.outcome_run_admission("goal-e2e");
     let progress = host
         .outcomes()
         .define_outcome(
@@ -312,6 +335,7 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
             "Reply with exactly the single word BANANA and nothing else.",
             "the reply contains the word BANANA",
             3,
+            &awaken_session_run_delivery::OutcomeRunExecutor::new(&admission),
         )
         .await
         .expect("define_outcome");

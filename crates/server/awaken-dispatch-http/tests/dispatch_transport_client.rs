@@ -5,6 +5,7 @@
 //! (installs a one-shot injected dispatch store).
 
 use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
+use awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -130,7 +131,7 @@ fn credential_dispatch_with_expiry(
             },
         )
         .expect("coherent credential dispatch candidate");
-    let mut dispatch = RunDispatch::new(activation);
+    let mut dispatch = RunDispatch::new(activation).with_worker_codec_requirements();
     dispatch.inference_plaintext_holder = Some(holder.clone());
     (
         dispatch,
@@ -249,6 +250,10 @@ impl AttemptCredentialDeliverySource for FreshClaimDelivery {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
+    // Fixed codec precondition C0: the current compiled Native/ACP row uses
+    // the intrinsic marker compiler and the client freezes the same shared
+    // offered manifest. Missing-row/manifest/each-capability remain refusals;
+    // vary only the original claim/credential/recovery causes below.
     /* Mid-issuance race table. C1 the exact claim is live at the first binding
      * read; C2 the independent signer is still producing the carrier; C3 the
      * Dispatch lease expires before the second binding read; C4 either test
@@ -282,10 +287,13 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
             .await
             .unwrap();
     });
-    let queue = Arc::new(HttpDispatchQueue::new(
-        format!("http://{addr}"),
-        WorkerIdentity::new("worker-1", "boot-1", 1),
-    ));
+    let queue = Arc::new(
+        HttpDispatchQueue::new(
+            format!("http://{addr}"),
+            WorkerIdentity::new("worker-1", "boot-1", 1),
+        )
+        .with_worker_manifest(current_dispatch_codec_manifest()),
+    );
     queue.enqueue(dispatch).await.unwrap();
     let claimed = queue
         .claim("ignored", 30_000, &Default::default())
@@ -322,6 +330,10 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_http_claim() {
+    // Fixed codec precondition C0: the current compiled Native/ACP row uses
+    // the intrinsic marker compiler and the client freezes the same shared
+    // offered manifest. Missing-row/manifest/each-capability remain refusals;
+    // vary only the original claim/credential/recovery causes below.
     // Claim redelivery cause/effect table: C1 immutable publication envelope is
     // expired; C2 exact claim selects holder/credential/epoch; C3 trusted source
     // returns the same authority with a fresh envelope. R1 C1+C2+C3 => claim is
@@ -358,10 +370,13 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
                 .await
                 .unwrap();
         });
-        let queue = Arc::new(HttpDispatchQueue::new(
-            format!("http://{addr}"),
-            WorkerIdentity::new("worker-1", "boot-1", 1),
-        ));
+        let queue = Arc::new(
+            HttpDispatchQueue::new(
+                format!("http://{addr}"),
+                WorkerIdentity::new("worker-1", "boot-1", 1),
+            )
+            .with_worker_manifest(current_dispatch_codec_manifest()),
+        );
         queue.enqueue(dispatch).await.unwrap();
         let result = queue.claim("ignored", 30_000, &Default::default()).await;
         if fail {
@@ -449,6 +464,10 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_special_claim_uses_control_side_retry_policy_without_quarantining() {
+    // Fixed codec precondition C0: the current compiled Native/ACP row uses
+    // the intrinsic marker compiler and the client freezes the same shared
+    // offered manifest. Missing-row/manifest/each-capability remain refusals;
+    // vary only the original claim/credential/recovery causes below.
     // Cause/effect decision table: R1 fresh or below-threshold -> special claim
     // returns None and ordinary execution may claim; R2 threshold reached but
     // lease live (one instant before expiry) -> None; R3 threshold reached and
@@ -479,9 +498,10 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     let queue = HttpDispatchQueue::new(
         format!("http://{addr}"),
         WorkerIdentity::new("worker-1", "boot-1", 1),
-    );
+    )
+    .with_worker_manifest(current_dispatch_codec_manifest());
     queue
-        .enqueue(RunDispatch::new(activation("poison", "thread")))
+        .enqueue(RunDispatch::new(activation("poison", "thread")).with_worker_codec_requirements())
         .await
         .unwrap();
 
@@ -567,6 +587,10 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
 
 #[tokio::test(flavor = "multi_thread")]
 async fn db_less_worker_drives_runs_over_real_http() {
+    // Fixed codec precondition C0: the current compiled Native/ACP row uses
+    // the intrinsic marker compiler and the client freezes the same shared
+    // offered manifest. Missing-row/manifest/each-capability remain refusals;
+    // vary only the original claim/credential/recovery causes below.
     // Optional outer-fence cause/effect graph: C1 the generic transport has a
     // current Run claim; C2 no Session Work authority is configured; C3 settle
     // carries the current epoch. R1 C1+C2+C3 => settle the Run through the one
@@ -617,16 +641,22 @@ async fn db_less_worker_drives_runs_over_real_http() {
     });
 
     // The worker holds only this HTTP client — no store handle.
-    let queue = Arc::new(HttpDispatchQueue::new(
-        format!("http://{addr}"),
-        WorkerIdentity::new("worker-1", "boot-1", 1),
-    ));
-    let recovery_queue = Arc::new(HttpDispatchQueue::new(
-        format!("http://{addr}"),
-        WorkerIdentity::new("worker-2", "boot-2", 1),
-    ));
+    let queue = Arc::new(
+        HttpDispatchQueue::new(
+            format!("http://{addr}"),
+            WorkerIdentity::new("worker-1", "boot-1", 1),
+        )
+        .with_worker_manifest(current_dispatch_codec_manifest()),
+    );
+    let recovery_queue = Arc::new(
+        HttpDispatchQueue::new(
+            format!("http://{addr}"),
+            WorkerIdentity::new("worker-2", "boot-2", 1),
+        )
+        .with_worker_manifest(current_dispatch_codec_manifest()),
+    );
     queue
-        .enqueue(RunDispatch::new(activation("run-A", "t1")))
+        .enqueue(RunDispatch::new(activation("run-A", "t1")).with_worker_codec_requirements())
         .await
         .expect("enqueue over http");
 
@@ -847,7 +877,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     dispatch_clock.set(70_000);
     let child = queue
         .claim_new_run(
-            RunDispatch::new(activation("run-B", "child-thread")),
+            RunDispatch::new(activation("run-B", "child-thread")).with_worker_codec_requirements(),
             "worker-1",
             30_000,
             &Default::default(),
@@ -915,6 +945,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
 /// | R3 | old owner | stale | exact | fenced |
 #[tokio::test(flavor = "multi_thread")]
 async fn credential_receipt_is_verified_and_fenced_over_real_http() {
+    // Fixed codec precondition C0: the current compiled Native/ACP row uses
+    // the intrinsic marker compiler and the client freezes the same shared
+    // offered manifest. Missing-row/manifest/each-capability remain refusals;
+    // vary only the original claim/credential/recovery causes below.
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
@@ -939,11 +973,13 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     let first_worker = HttpDispatchQueue::new(
         format!("http://{addr}"),
         WorkerIdentity::new("worker-1", "boot-1", 1),
-    );
+    )
+    .with_worker_manifest(current_dispatch_codec_manifest());
     let recovery_worker = HttpDispatchQueue::new(
         format!("http://{addr}"),
         WorkerIdentity::new("worker-2", "boot-2", 1),
-    );
+    )
+    .with_worker_manifest(current_dispatch_codec_manifest());
     first_worker.enqueue(dispatch).await.unwrap();
     let first = first_worker
         .claim("ignored", 30_000, &Default::default())

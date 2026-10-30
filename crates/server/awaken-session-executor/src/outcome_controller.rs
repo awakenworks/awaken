@@ -12,7 +12,6 @@ use crate::SessionExecutionError;
 use crate::host::HostOutcomeDrive;
 use crate::judge::HostAgentGrader;
 use crate::outcome_report::{controller_error, project_report};
-use crate::run_exec::BoundRunExecutor;
 
 enum OutcomeCommand<'a> {
     Prepare {
@@ -39,6 +38,7 @@ impl crate::Outcomes {
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        executor: &dyn awaken_runtime_contract::execution::RunExecutor,
     ) -> Result<HostOutcomeDrive, SessionExecutionError> {
         self.prepare_outcome(
             thread,
@@ -53,9 +53,11 @@ impl crate::Outcomes {
             max_iterations,
         )
         .await?;
-        self.continue_outcome(thread).await?.ok_or_else(|| {
-            SessionExecutionError::internal("defined Outcome aggregate was not persisted")
-        })
+        self.continue_outcome(thread, executor)
+            .await?
+            .ok_or_else(|| {
+                SessionExecutionError::internal("defined Outcome aggregate was not persisted")
+            })
     }
 
     /// Persist only the extension-owned Outcome aggregate. No Worker or Grader
@@ -77,6 +79,7 @@ impl crate::Outcomes {
                     rubric,
                     max_iterations,
                 },
+                None,
             )
             .await?
         {
@@ -91,9 +94,10 @@ impl crate::Outcomes {
     pub async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_runtime_contract::execution::RunExecutor,
     ) -> Result<Option<HostOutcomeDrive>, SessionExecutionError> {
         match self
-            .execute_outcome_command(thread, OutcomeCommand::Resume)
+            .execute_outcome_command(thread, OutcomeCommand::Resume, Some(executor))
             .await?
         {
             OutcomeCommandResult::Driven(progress) => Ok(progress),
@@ -107,6 +111,7 @@ impl crate::Outcomes {
         &self,
         thread: &str,
         command: OutcomeCommand<'_>,
+        executor: Option<&dyn awaken_runtime_contract::execution::RunExecutor>,
     ) -> Result<OutcomeCommandResult, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let definition = match &command {
@@ -150,20 +155,24 @@ impl crate::Outcomes {
             host: &self.session_runs,
             session_foreground: ctx.foreground.clone(),
         };
-        // Outcome owns ordinary Worker Runs on the shared Thread. They reuse
-        // the Session's frozen execution inputs but are not a second public
-        // Session Run admission or Session activity owner.
-        let executor =
-            BoundRunExecutor::new(&self.session_runs, ctx.clone()).for_thread_extension();
-        let controller = Controller::new(
-            &ctx.thread_id,
-            ctx.commit.as_ref(),
-            ctx.commit.as_ref(),
-            ctx.commit.as_ref(),
-            &executor,
-            awaken_runtime_contract::RuntimeRunContext::new(),
-            &host_grader,
-        );
+        let controller = match executor {
+            Some(executor) => Controller::new(
+                &ctx.thread_id,
+                ctx.commit.as_ref(),
+                ctx.commit.as_ref(),
+                ctx.commit.as_ref(),
+                executor,
+                awaken_runtime_contract::RuntimeRunContext::new(),
+                &host_grader,
+            ),
+            None => Controller::preparation(
+                &ctx.thread_id,
+                ctx.commit.as_ref(),
+                ctx.commit.as_ref(),
+                ctx.commit.as_ref(),
+                &host_grader,
+            ),
+        };
         match command {
             OutcomeCommand::Prepare { outcome_id, .. } => {
                 let _outcome = ctx.outcome.lock().await;
@@ -326,7 +335,20 @@ mod tests {
         let host = outcome_test_host(model.clone()).await;
         let report = completed(
             host.outcomes
-                .define_outcome("satisfied", "finish", "FINAL", 3)
+                .define_outcome(
+                    "satisfied",
+                    "finish",
+                    "FINAL",
+                    3,
+                    &crate::run_exec::BoundRunExecutor::new(
+                        &host.session_runs,
+                        host.run_assembly
+                            .ctx_for("satisfied", None)
+                            .await
+                            .expect("embedded Session context"),
+                    )
+                    .for_thread_extension(),
+                )
                 .await
                 .unwrap(),
         );
@@ -365,7 +387,17 @@ mod tests {
 
         let report = completed(
             host.outcomes
-                .continue_outcome("prepared")
+                .continue_outcome(
+                    "prepared",
+                    &crate::run_exec::BoundRunExecutor::new(
+                        &host.session_runs,
+                        host.run_assembly
+                            .ctx_for("prepared", None)
+                            .await
+                            .expect("embedded Session context"),
+                    )
+                    .for_thread_extension(),
+                )
                 .await
                 .expect("H3 continue")
                 .expect("H3 active"),
@@ -420,7 +452,20 @@ mod tests {
         let host = outcome_test_host(model.clone()).await;
         let report = completed(
             host.outcomes
-                .define_outcome("revision", "finish", "FINAL", 3)
+                .define_outcome(
+                    "revision",
+                    "finish",
+                    "FINAL",
+                    3,
+                    &crate::run_exec::BoundRunExecutor::new(
+                        &host.session_runs,
+                        host.run_assembly
+                            .ctx_for("revision", None)
+                            .await
+                            .expect("embedded Session context"),
+                    )
+                    .for_thread_extension(),
+                )
                 .await
                 .unwrap(),
         );
@@ -445,7 +490,20 @@ mod tests {
         let host = outcome_test_host(model.clone()).await;
         let report = completed(
             host.outcomes
-                .define_outcome("max", "finish", "FINAL", 1)
+                .define_outcome(
+                    "max",
+                    "finish",
+                    "FINAL",
+                    1,
+                    &crate::run_exec::BoundRunExecutor::new(
+                        &host.session_runs,
+                        host.run_assembly
+                            .ctx_for("max", None)
+                            .await
+                            .expect("embedded Session context"),
+                    )
+                    .for_thread_extension(),
+                )
                 .await
                 .unwrap(),
         );

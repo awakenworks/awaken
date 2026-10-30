@@ -11,6 +11,12 @@
 /// One read-only discovery order shared by local, compatible, and placed claims.
 /// The exact transaction below remains the only mutation/eligibility authority.
 const CANDIDATE_PAGE_SIZE: i64 = 128;
+/// The same page size as a length, for counting decoded rows.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the candidate page size is the constant 128"
+)]
+const CANDIDATE_PAGE_LEN: usize = CANDIDATE_PAGE_SIZE as usize;
 
 #[derive(Clone, Copy)]
 enum CandidateAudience<'a> {
@@ -164,6 +170,14 @@ fn candidate_is_admissible(
         return Ok(false);
     }
     let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+    let worker_manifest = match &audience {
+        CandidateAudience::Local => None,
+        CandidateAudience::Compatible(worker) => Some(&worker.manifest),
+        CandidateAudience::Placed { requester, .. } => Some(&requester.manifest),
+    };
+    if request.worker_codec_admission(worker_manifest).is_err() {
+        return Ok(false);
+    }
     let status: String = row.try_get("status").map_err(store_error)?;
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
     let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
@@ -273,7 +287,7 @@ impl PostgresDispatchStore {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(store_error)?;
-            let exhausted = first.len() < CANDIDATE_PAGE_SIZE as usize;
+            let exhausted = first.len() < CANDIDATE_PAGE_LEN;
             let mut position: Option<CandidatePosition> = None;
             // The fast page has already released its connection. Preserve
             // ordinary early admission without decoding every request first.
@@ -310,7 +324,7 @@ impl PostgresDispatchStore {
                     .bind(lower.as_ref().map(|p| p.created_at))
                     .bind(lower.as_ref().map(|p| p.run_id.as_str()))
                     .fetch(&self.pool);
-                let mut candidates = Vec::with_capacity(CANDIDATE_PAGE_SIZE as usize);
+                let mut candidates = Vec::with_capacity(CANDIDATE_PAGE_LEN);
                 let mut exhausted = true;
                 let mut inspected = 0_usize;
                 let mut after_first_candidate = 0_usize;
@@ -342,13 +356,13 @@ impl PostgresDispatchStore {
                     position = Some(next);
                     if !candidates.is_empty() {
                         after_first_candidate += 1;
-                        if after_first_candidate == CANDIDATE_PAGE_SIZE as usize {
+                        if after_first_candidate == CANDIDATE_PAGE_LEN {
                             exhausted = false;
                             break;
                         }
                     }
                     inspected += 1;
-                    if inspected.is_multiple_of(CANDIDATE_PAGE_SIZE as usize) {
+                    if inspected.is_multiple_of(CANDIDATE_PAGE_LEN) {
                         tokio::task::yield_now().await;
                     }
                 }
@@ -576,6 +590,12 @@ async fn claim_exact_transaction_with_mode(
         }
     }
     let terminal_resolution = mode.bypasses_execution_admission();
+    if request
+        .worker_codec_admission(worker.map(|worker| &worker.manifest))
+        .is_err()
+    {
+        return Ok(None);
+    }
     if !terminal_resolution
         && cancellation_requested == 0
         && match worker {

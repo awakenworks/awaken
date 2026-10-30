@@ -32,6 +32,7 @@ pub struct SessionOutcomeReconciliation {
     mutations: Arc<crate::SessionMutations>,
     realizations: Arc<crate::SessionRealizations>,
     outcomes: Arc<dyn awaken_session_execution_contract::OutcomeRuntime>,
+    run_admissions: Arc<crate::SessionRunAdmissions>,
 }
 
 #[cfg(test)]
@@ -64,11 +65,13 @@ impl SessionOutcomeReconciliation {
     pub(crate) fn new(
         mutations: Arc<crate::SessionMutations>,
         realizations: Arc<crate::SessionRealizations>,
+        run_admissions: Arc<crate::SessionRunAdmissions>,
         runtime: &crate::SessionExecutor,
     ) -> Self {
         Self {
             mutations,
             realizations,
+            run_admissions,
             outcomes: runtime.outcomes.clone(),
         }
     }
@@ -124,13 +127,19 @@ impl SessionOutcomeReconciliation {
                     .push((String::from(session_id), error.to_string()));
                 continue;
             }
-            match outcome_runtime.continue_outcome(session_id.as_str()).await {
+            let admission = self
+                .run_admissions
+                .outcome_run_admission(session_id.as_str());
+            match outcome_runtime
+                .continue_outcome(session_id.as_str(), &admission)
+                .await
+            {
                 Ok(Some(OutcomeDrive::Completed(_))) => report.settled += 1,
                 Ok(Some(OutcomeDrive::Awaiting)) => report.pending += 1,
                 Ok(None) => {}
                 Err(error) => report
                     .failures
-                    .push((String::from(session_id), error.to_string())),
+                    .push((session_id.to_string(), error.to_string())),
             }
         }
         report

@@ -98,8 +98,8 @@ impl PhaseHook for NoopHook {
         _ctx: &PhaseContext,
         _conversation: &[Message],
         _state: &Store,
-    ) -> HookReaction {
-        HookReaction::default()
+    ) -> awaken_runtime_contract::execution::Result<HookReaction> {
+        Ok(HookReaction::default())
     }
 }
 

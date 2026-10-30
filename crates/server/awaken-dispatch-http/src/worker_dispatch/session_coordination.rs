@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_dispatch::{RunClaim, WorkerIdentity};
+use awaken_time::WallClockExt as _;
 use awaken_worker_transport_security::VerifiedWorkerContext;
 
 use super::{
@@ -248,51 +249,138 @@ pub(super) async fn session_run_activity_admit(
                 "authenticated Worker does not own the Session reservation claim",
             )));
         }
-        let guard = service
-            .dispatch
-            .lock_session_run_reservation_epoch(&request.claim)
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))
-            .map_err(RealizationHttpError::from)?
-            .ok_or_else(|| {
-                RealizationHttpError::from(ApplicationError::invalid(
-                    "Session Run reservation claim is stale",
-                ))
-            })?;
-        let dispatch = guard.request();
-        let expected_mode = if guard.cancellation_requested() {
-            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOnly
-        } else {
-            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
+        let acquire = || async {
+            service
+                .dispatch
+                .lock_session_run_reservation_epoch(&request.claim)
+                .await
+                .map_err(|error| {
+                    RealizationHttpError::from(ApplicationError::internal(error.to_string()))
+                })?
+                .ok_or_else(|| {
+                    RealizationHttpError::from(ApplicationError::invalid(
+                        "Session Run reservation claim is stale",
+                    ))
+                })
         };
-        if !guard.is_live_at(authority.now_ms)
-            || request.run_id != request.claim.run_id
-            || request.run_id != *dispatch.run_id()
-            || dispatch.thread_id() != dispatch.session_thread_id()
-            || dispatch.thread_id().0 != request.session_id
-            || dispatch.session_activity_epoch.is_some()
-            || dispatch.activation.snapshot.root_agent_id.0 != request.agent_id
-            || request.mode != expected_mode
-        {
-            return Err(RealizationHttpError::from(ApplicationError::invalid(
-                "Session Run activity admission does not match the claimed reservation",
-            )));
+        let validate = |guard: &awaken_dispatch_contract::CommitEpochGuard| {
+            let dispatch = guard.request();
+            let expected_mode = if guard.cancellation_requested() {
+                awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOnly
+            } else {
+                awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
+            };
+            if !guard.is_live_at(service.clock.now_ms())
+                || request.run_id != request.claim.run_id
+                || request.run_id != *dispatch.run_id()
+                || dispatch.thread_id() != dispatch.session_thread_id()
+                || dispatch.thread_id().0 != request.session_id
+                || dispatch.session_activity_epoch.is_some()
+                || dispatch.activation.snapshot.root_agent_id.0 != request.agent_id
+                || request.mode != expected_mode
+            {
+                Err(RealizationHttpError::from(ApplicationError::invalid(
+                    "Session Run activity admission does not match the claimed reservation",
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        let mut guard = acquire().await?;
+        let original = guard.request().clone();
+        let prepared = original.identity_scope
+            == awaken_dispatch_contract::DispatchIdentityScope::PreparedSessionCommand;
+        let projected_revision = if prepared {
+            let checked = validate(&guard);
+            guard
+                .release()
+                .await
+                .map_err(|error| RealizationHttpError::from(ApplicationError::internal(error)))?;
+            checked?;
+            // No Dispatch row lock or retained pool connection spans physical
+            // projection/continuation preparation. Re-lock the exact tenure
+            // afterwards; this observation is not execution authority.
+            let revision = session_coordination(&service)?
+                .prepare_prepared_session_run_activity(
+                    &awaken_session_types::SessionId::from(&request.session_id),
+                    &request.agent_id,
+                    &request.run_id,
+                    request.mode,
+                )
+                .await
+                .map_err(coordination_failure)?;
+            guard = acquire().await?;
+            revision
+        } else {
+            None
+        };
+        let checked = validate(&guard);
+        let frozen = guard.request().clone();
+        let exact = checked.and_then(|()| {
+            if frozen.same_original_dispatch(&original) {
+                Ok(())
+            } else {
+                Err(RealizationHttpError::from(ApplicationError::invalid(
+                    "prepared reservation changed during preparation",
+                )))
+            }
+        });
+        let session = awaken_session_types::SessionId::from(&request.session_id);
+        let admission = if prepared {
+            let recovery = exact.and_then(|()| {
+                if projected_revision.is_some() {
+                    service.recovery.as_deref().map(Some).ok_or_else(|| {
+                        RealizationHttpError::from(ApplicationError::internal(
+                            "prepared reservation recovery source is unavailable",
+                        ))
+                    })
+                } else {
+                    Ok(None)
+                }
+            });
+            let service_ref = service.as_ref();
+            let request_ref = &request;
+            let session_ref = &session;
+            guard
+                .admit_prepared_session_run(
+                    service.clock.as_ref(),
+                    recovery,
+                    |cursor, _cancelled| async move {
+                        session_coordination(service_ref)?
+                            .admit_prepared_session_run_activity(
+                                session_ref,
+                                &request_ref.run_id,
+                                request_ref.mode,
+                                awaken_session_execution_contract::PreparedSessionRunActivity {
+                                    projected_revision,
+                                    admitted_after_cursor: cursor,
+                                },
+                            )
+                            .await
+                            .map_err(coordination_failure)
+                            .map_err(RealizationHttpError::from)
+                    },
+                    |error| RealizationHttpError::from(ApplicationError::internal(error)),
+                )
+                .await
+        } else {
+            let admission = async {
+                exact?;
+                session_coordination(&service)?
+                    .admit_session_run_activity(
+                        &session,
+                        &request.agent_id,
+                        &request.run_id,
+                        request.mode,
+                    )
+                    .await
+                    .map_err(coordination_failure)
+                    .map_err(RealizationHttpError::from)
+            }
+            .await;
+            guard.release_after(admission).await
         }
-        // The exact Session operation is derived from the guarded Run identity.
-        // Keep this narrow reservation guard across the root CAS: cancellation
-        // cannot delete the row between a RecoverOrAdmit read and its receipt
-        // commit. The guard is released before the Worker's separate queue
-        // resolution transaction.
-        let admission = session_coordination(&service)?
-            .admit_session_run_activity(
-                &awaken_session_types::SessionId::from(request.session_id),
-                &request.agent_id,
-                &request.run_id,
-                request.mode,
-            )
-            .await
-            .map_err(coordination_failure)?;
-        drop(guard);
+        .map_err(|error| RealizationHttpError::from(ApplicationError::internal(error)))??;
         Ok(json!({ "admission": admission }))
     }
     .await;

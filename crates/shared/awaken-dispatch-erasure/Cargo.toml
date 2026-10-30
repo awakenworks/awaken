@@ -13,6 +13,7 @@ authority = "dispatch-role-erasure"
 
 [dependencies]
 awaken-session-application-contract.workspace = true
+awaken-session-types.workspace = true
 thiserror.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true

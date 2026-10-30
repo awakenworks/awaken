@@ -26,7 +26,7 @@ async fn after_tool(
     call: &ToolCall,
     output: &ToolOutput,
     store: &Store,
-) -> HookReaction {
+) -> awaken_runtime_contract::execution::Result<HookReaction> {
     let ctx = PhaseContext {
         run_id: RunId("r".into()),
         step: 0,
@@ -43,7 +43,7 @@ async fn phase(
     step: usize,
     kind: PhaseKind,
     store: &Store,
-) -> HookReaction {
+) -> awaken_runtime_contract::execution::Result<HookReaction> {
     hook.on_phase(
         &PhaseContext {
             run_id: RunId("r".into()),
@@ -336,7 +336,8 @@ async fn observer_advances_on_success_and_records_metric() {
         &output,
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     apply(&mut store, &reaction.state);
     assert_eq!(
         ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
@@ -359,7 +360,8 @@ async fn observer_does_not_advance_on_error() {
         &output,
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     apply(&mut store, &reaction.state);
     assert_eq!(
         ThreadInstances::load_or_default(&store).current("rbw", "a.rs"),
@@ -381,7 +383,8 @@ async fn observer_records_deny_metric_and_violation_on_blocked_write() {
         &output,
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     apply(&mut store, &reaction.state);
     assert_eq!(Metrics::load_or_default(&store).total.denied, 1);
     let log = ViolationLog::load_or_default(&store);
@@ -405,7 +408,8 @@ async fn observer_emits_warn_message_and_records() {
         &output,
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     apply(&mut store, &reaction.state);
     assert_eq!(reaction.messages.len(), 1);
     assert_eq!(reaction.messages[0].text_content(), "writing unread a.rs");
@@ -430,7 +434,8 @@ async fn observer_records_asked_on_approved_ask_call() {
         &ToolOutput::ok("call-1", "wrote"),
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     apply(&mut store, &reaction.state);
     assert_eq!(Metrics::load_or_default(&store).total.asked, 1);
 }
@@ -461,10 +466,13 @@ async fn emit_cooldown_throttles_repeat_reminders() {
             &ToolOutput::ok("call-1", "ok"),
             &store,
         )
-        .await;
+        .await
+        .expect("expected successful state-machine hook");
         emitted += reaction.messages.len();
         apply(&mut store, &reaction.state);
-        let tick = phase(after_inference, step, PhaseKind::AfterInference, &store).await;
+        let tick = phase(after_inference, step, PhaseKind::AfterInference, &store)
+            .await
+            .expect("expected successful state-machine hook");
         apply(&mut store, &tick.state);
     }
     assert_eq!(
@@ -488,7 +496,8 @@ async fn observer_emits_transition_message() {
         &ToolOutput::ok("call-1", "ok"),
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     apply(&mut store, &reaction.state);
     assert_eq!(reaction.messages.len(), 1);
     assert_eq!(reaction.messages[0].text_content(), "moved to b");
@@ -522,7 +531,8 @@ async fn emitted_role(target: &str, role_json: &str) -> Role {
         &ToolOutput::ok("call-1", "ok"),
         &store,
     )
-    .await;
+    .await
+    .expect("expected successful state-machine hook");
     assert_eq!(
         reaction.messages.len(),
         1,

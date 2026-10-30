@@ -21,10 +21,30 @@ use awaken_session_execution_contract::{
 /// reservation. Non-Session terminal observers do not implement this role.
 #[async_trait]
 pub trait SessionRunAdmissionObserver: Send + Sync {
+    /// Physical/projection preparation must run before acquiring reservation
+    /// authority. Ordinary reservations retain their existing callback.
+    async fn prepare_session_run_activity(
+        &self,
+        dispatch: &RunDispatch,
+        _claim: &RunClaim,
+        _mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, DispatchSettlementError> {
+        if dispatch.identity_scope
+            == awaken_dispatch_contract::DispatchIdentityScope::PreparedSessionCommand
+        {
+            Err(DispatchSettlementError(
+                "prepared activity preparation is unavailable".into(),
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn admit_session_run_activity(
         &self,
         dispatch: &RunDispatch,
         claim: &RunClaim,
         mode: SessionRunActivityAdmissionMode,
+        preparation: Option<awaken_session_execution_contract::PreparedSessionRunActivity>,
     ) -> Result<SessionRunActivityAdmission, DispatchSettlementError>;
 }

@@ -617,9 +617,10 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingResourceRunt
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, RunError> {
         NoopRuntime
-            .define_outcome(thread, description, rubric, max_iterations)
+            .define_outcome(thread, description, rubric, max_iterations, executor)
             .await
     }
 
@@ -631,12 +632,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for RecordingResourceRunt
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

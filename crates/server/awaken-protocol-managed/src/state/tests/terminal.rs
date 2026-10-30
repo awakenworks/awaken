@@ -2029,6 +2029,21 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for EndSessionFailer {
+    // Fixture rule P1: terminal tests inject end-session failures without prepared execution.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one complete self-affine Session Run as an unclaimable reservation.
@@ -2526,6 +2541,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for EndSessionFailer {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<OutcomeDrive, RunError> {
         unreachable!()
     }
@@ -2538,12 +2554,13 @@ impl awaken_session_execution_contract::OutcomeRuntime for EndSessionFailer {
     async fn continue_outcome(
         &self,
         thread: &str,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
-            .continue_outcome(thread)
+            .continue_outcome(thread, executor)
             .await
     }
 }

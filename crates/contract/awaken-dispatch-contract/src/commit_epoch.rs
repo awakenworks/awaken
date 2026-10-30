@@ -11,6 +11,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_time::WallClockExt as _;
+
 type ReleaseFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 
 /// Production-consumed typestate for the repository-owned part of a guarded
@@ -170,6 +173,71 @@ impl CommitEpochGuard {
         }
     }
 
+    /// The one guarded prepared-activity admission boundary. Callers prepare
+    /// projections before acquiring this guard, select the original recovery
+    /// authority, and supply only their Session root receipt/CAS operation.
+    /// `None` permits receipt recovery/refusal only, never evidence of
+    /// historical Run absence or permission to create a new activity.
+    /// Queue resolution and publication start only after the returned explicit
+    /// release result succeeds. This grants no Worker execution authority.
+    pub async fn admit_prepared_session_run<T, E, F: Future<Output = Result<T, E>>>(
+        self,
+        clock: &dyn awaken_time::WallClock,
+        recovery: Result<Option<&dyn RunRecoverySource>, E>,
+        admit: impl FnOnce(u64, bool) -> F,
+        failure: impl Fn(String) -> E,
+    ) -> Result<Result<T, E>, String> {
+        // Own observations before suspension: the opaque backend guard is
+        // Send, but its storage-specific held value need not be Sync.
+        let live = self.is_live_at(clock.now_ms()) && self.permits_settlement();
+        let cancelled = self.cancellation_requested();
+        let request = self.request().clone();
+        let mut admission = async {
+            let recovery = recovery?;
+            if !live {
+                return Err(failure(
+                    "prepared reservation requires a live claim and empty physical slot".into(),
+                ));
+            }
+            let cursor = match recovery {
+                Some(source) => {
+                    let snapshot = source
+                        .recovery_snapshot_in_session(
+                            request.session_thread_id(),
+                            request.thread_id(),
+                            request.run_id(),
+                        )
+                        .await
+                        .map_err(|error| failure(error.to_string()))?;
+                    if snapshot.thread_id != *request.thread_id()
+                        || snapshot.claimed_run_id != *request.run_id()
+                        || snapshot
+                            .run_record(request.run_id())
+                            .map_err(|error| failure(error.to_string()))?
+                            .is_some()
+                    {
+                        return Err(failure(
+                            "prepared reservation already has committed or conflicting Run truth; admission remains uncertain".into(),
+                        ));
+                    }
+                    snapshot.store_cursor
+                }
+                None => 0,
+            };
+            admit(cursor, cancelled).await
+        }
+        .await;
+        if !self.is_live_at(clock.now_ms()) {
+            // The root may have committed despite an expired claim or a lost
+            // acknowledgement. Only exact receipt recovery may publish it.
+            admission = Err(failure(
+                "prepared reservation expired during root admission; recover its exact receipt"
+                    .into(),
+            ));
+        }
+        self.release_after(admission).await
+    }
+
     /// The authoritative dispatch payload protected by this exact claim guard.
     /// Recovery uses it to select the Thread without trusting a caller-supplied
     /// Thread id.
@@ -277,6 +345,205 @@ fn commit_epoch_guard_admits_only_complete_exact_claim() {
 #[cfg(test)]
 mod commit_epoch_tests {
     use super::*;
+
+    struct AdmissionClock(std::sync::atomic::AtomicU64);
+
+    impl awaken_time::WallClock for AdmissionClock {
+        fn now(&self) -> awaken_time::UtcTime {
+            awaken_time::UtcTime::from_epoch_ms(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    struct AdmissionRecovery {
+        snapshot: awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        fail: bool,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl RunRecoverySource for AdmissionRecovery {
+        async fn recovery_snapshot(
+            &self,
+            _thread: &awaken_agent_contract::ThreadId,
+            _run: &awaken_agent_contract::agent::run::Id,
+        ) -> Result<
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+            awaken_agent_contract::thread::read::recovery::RecoveryError,
+        > {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                Err(
+                    awaken_agent_contract::thread::read::recovery::RecoveryError::Rejected(
+                        "source unavailable".into(),
+                    ),
+                )
+            } else {
+                Ok(self.snapshot.clone())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_admission_requires_exact_absence_and_observed_release() {
+        // Causes: C1 live/expired claim; C2 all four physical-slot states;
+        // C3 exact absent / foreign Thread / foreign Run / existing Run /
+        // duplicate Run / unavailable source / receipt replay / caller refusal;
+        // C4 cancellation; C5 root callback success/failure; C6 expiry during
+        // the callback; C7 asynchronous release success/failure.
+        // Effects: E1 only C1(live)+C2(empty)+C3(absent/replay) enters the root;
+        // E2 it receives exact cursor/cancellation; E3 callback error or expiry
+        // stays uncertain; E4 every path releases before any result escapes;
+        // E5 release failure suppresses either inner outcome.
+        // Rules: R1=!C1 or !C2=>no read/root; R2=C1+C2+bad C3=>no root;
+        // R3=C1+C2+good C3=>E1/E2; R4=R3+(!C5 or C6)=>E3;
+        // R5=any+C7(success)=>E4/exact inner result; R6=any+!C7=>E4/E5.
+        // Full product preserves interacting refusals. Receipt replay certifies
+        // no absence here; the supplied Session callback still owns that truth.
+        use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
+
+        for source_kind in 0..8 {
+            for now in [99, 100] {
+                for slot in [
+                    crate::PhysicalAttemptSlot::Empty,
+                    crate::PhysicalAttemptSlot::ExactClaim,
+                    crate::PhysicalAttemptSlot::OtherClaim,
+                    crate::PhysicalAttemptSlot::Corrupt,
+                ] {
+                    for cancelled in [false, true] {
+                        for inner_fails in [false, true] {
+                            for expire_inside in [false, true] {
+                                for release_fails in [false, true] {
+                                    let request = crate::dispatch::tests::a_request();
+                                    let record = awaken_agent_contract::agent::run::Record {
+                                        id: request.run_id().clone(),
+                                        thread_id: request.thread_id().clone(),
+                                        state: awaken_agent_contract::agent::run::RunState::Running,
+                                    };
+                                    let source = AdmissionRecovery {
+                                        snapshot: RunRecoverySnapshot {
+                                            thread_id: if source_kind == 1 {
+                                                awaken_agent_contract::ThreadId("foreign".into())
+                                            } else {
+                                                request.thread_id().clone()
+                                            },
+                                            claimed_run_id: if source_kind == 2 {
+                                                awaken_agent_contract::agent::run::Id(
+                                                    "foreign".into(),
+                                                )
+                                            } else {
+                                                request.run_id().clone()
+                                            },
+                                            runs: match source_kind {
+                                                3 => vec![record.clone()],
+                                                4 => vec![record.clone(), record],
+                                                _ => Vec::new(),
+                                            },
+                                            latest_run_id: None,
+                                            messages: Vec::new(),
+                                            message_commit_cursors: Vec::new(),
+                                            commit_timestamps: Default::default(),
+                                            state: Vec::new(),
+                                            state_commit_cursors: Vec::new(),
+                                            events: Vec::new(),
+                                            resume_tickets: Vec::new(),
+                                            thread_version: 0,
+                                            store_cursor: 37,
+                                            next_commit_ordinal: 0,
+                                        },
+                                        fail: source_kind == 5,
+                                        reads: AtomicUsize::new(0),
+                                    };
+                                    let clock = AdmissionClock(AtomicU64::new(now));
+                                    let released = std::sync::Arc::new(AtomicUsize::new(0));
+                                    let calls = AtomicUsize::new(0);
+                                    let guard = CommitEpochGuard::new_releasing(
+                                        {
+                                            let released = released.clone();
+                                            async move {
+                                                released.fetch_add(1, SeqCst);
+                                                if release_fails {
+                                                    Err("release failed".into())
+                                                } else {
+                                                    Ok(())
+                                                }
+                                            }
+                                        },
+                                        request,
+                                        100,
+                                        cancelled,
+                                        slot,
+                                    );
+                                    let recovery = match source_kind {
+                                        6 => Ok(None),
+                                        7 => Err("caller refused".to_string()),
+                                        _ => Ok(Some(&source as &dyn RunRecoverySource)),
+                                    };
+                                    let operation = guard.admit_prepared_session_run(
+                                        &clock,
+                                        recovery,
+                                        |cursor, observed_cancelled| {
+                                            calls.fetch_add(1, SeqCst);
+                                            assert_eq!(
+                                                released.load(SeqCst),
+                                                0,
+                                                "E4 root precedes release"
+                                            );
+                                            assert_eq!(
+                                                cursor,
+                                                if source_kind == 6 { 0 } else { 37 },
+                                                "E2 cursor"
+                                            );
+                                            assert_eq!(
+                                                observed_cancelled, cancelled,
+                                                "E2 cancellation"
+                                            );
+                                            if expire_inside {
+                                                clock.0.store(100, SeqCst);
+                                            }
+                                            std::future::ready(if inner_fails {
+                                                Err("root failed".to_string())
+                                            } else {
+                                                Ok(7_u8)
+                                            })
+                                        },
+                                        std::convert::identity,
+                                    );
+                                    fn require_send<F: Send>(future: F) -> F {
+                                        future
+                                    }
+                                    let result = require_send(operation).await;
+                                    let live_empty =
+                                        now == 99 && slot == crate::PhysicalAttemptSlot::Empty;
+                                    let entered = live_empty && matches!(source_kind, 0 | 6);
+                                    assert_eq!(calls.load(SeqCst), usize::from(entered), "R1-R3");
+                                    assert_eq!(
+                                        source.reads.load(SeqCst),
+                                        usize::from(live_empty && source_kind < 6),
+                                        "R1/R2 exact read"
+                                    );
+                                    assert_eq!(released.load(SeqCst), 1, "R5/R6");
+                                    if release_fails {
+                                        assert_eq!(result, Err("release failed".into()), "R6");
+                                    } else if entered && !inner_fails && !expire_inside {
+                                        assert_eq!(result, Ok(Ok(7)), "R3/R5");
+                                    } else if entered && inner_fails && !expire_inside {
+                                        assert_eq!(
+                                            result,
+                                            Ok(Err("root failed".into())),
+                                            "R4/R5 exact callback error"
+                                        );
+                                    } else {
+                                        assert!(result.unwrap().is_err(), "R1/R2/R4/R5");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn settled_result_is_hidden_until_exact_release_completes() {

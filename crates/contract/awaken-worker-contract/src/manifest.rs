@@ -13,6 +13,13 @@ pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
 /// Terminal preparation decodes and enforces Control's source-I/O admission.
 pub const SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY: &str =
     "session-terminal-source-admission/v1";
+/// Worker decodes the prepared Session dispatch identity carried by every
+/// claimed request, independently of its Native, ACP or A2A executor backend.
+/// This is codec support, not permission to execute or replay a Run.
+pub const PREPARED_SESSION_DISPATCH_CAPABILITY: &str = "prepared-session-dispatch/v1";
+/// Worker decodes and recovers the raw tool-result journal lifecycle. It
+/// grants neither replay permission nor quiescence evidence.
+pub const TOOL_RESULT_JOURNAL_CAPABILITY: &str = "tool-result-journal/v1";
 
 /// Worker has an explicitly installed in-process executor for a published Host
 /// candidate. This is a realization capability, not a snapshot wire scheme.

@@ -543,6 +543,21 @@ pub trait SessionRunReservations: SessionReservationAuthority + SessionRunAdmiss
         reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError>;
 
+    /// Exclusively adopt one exact legacy ordinary Pending request for Session
+    /// activity admission. This grants only a `ReservationLeased` epoch: the
+    /// caller must guard the authoritative no-Run read and Session receipt CAS,
+    /// release that guard, then use the existing reservation resolution. No
+    /// Worker assignment, credential/physical effect, or Run completion is made.
+    /// Another payload, state, existing authority, or missing row yields no
+    /// tenure. The original frozen execution inputs are never reconstructed.
+    async fn adopt_pending_session_run(
+        &self,
+        expected_original: RunDispatch,
+        command_fingerprint: awaken_session_types::SessionRunCommandFingerprint,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<RunClaim>, DispatchError>;
+
     /// Publish one still-unleased reservation after the Session root committed
     /// its exact nonzero activity epoch. The request and state update are one
     /// dispatch transaction; exact replay after activation is a no-op.

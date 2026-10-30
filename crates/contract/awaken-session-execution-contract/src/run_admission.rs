@@ -97,6 +97,56 @@ impl AdmitSessionRun {
     }
 }
 
+/// Trusted, non-wire input whose caller already froze the entire activation.
+/// No current Session Agent, Skill or model projection may replace its fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdmitPreparedSessionRun {
+    pub session_id: crate::SessionId,
+    pub operation_id: String,
+    pub activation: awaken_runtime_contract::RunActivation,
+    pub traceparent: Option<String>,
+}
+
+impl AdmitPreparedSessionRun {
+    #[must_use]
+    pub fn command_fingerprint(&self) -> SessionRunCommandFingerprint {
+        let digest = awaken_agent_contract::content_fingerprint(&(
+            "session-prepared-command-v1",
+            &self.session_id,
+            &self.operation_id,
+            &self.activation,
+        ))
+        .expect("prepared activation has no fallible serializable value");
+        SessionRunCommandFingerprint::from_sha256_hex(&digest)
+            .expect("content_fingerprint yields a lowercase SHA-256 hex digest")
+    }
+}
+
+/// Borrowed admission of a complete prepared root Run into its Session.
+/// The application owns admission and its durable refusal evidence; Execution
+/// adapts this neutral port to the SDK executor required by the Outcome controller.
+/// No caller may retain this borrow or substitute an activation field.
+#[async_trait::async_trait]
+pub trait PreparedSessionRunAdmission: Send + Sync {
+    async fn admit(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+    ) -> awaken_runtime_contract::diagnostic::Result<awaken_agent_contract::agent::run::RunState>;
+}
+
+/// Borrowed admission into the sole Session activity owner. Delivery calls
+/// this after reservation and, for legacy adoption, under admission tenure.
+/// Projection and continuation preparation must precede this callback.
+#[async_trait::async_trait]
+pub trait SessionRunActivityAdmitter: Send + Sync {
+    async fn admit(
+        &self,
+        reservation: SessionRunReservation,
+        recover_only: bool,
+        admitted_after_cursor: Option<u64>,
+    ) -> Result<AdmittedSessionRun, awaken_session_types::RunError>;
+}
+
 /// Closed result of reserving a dispatch row before root activity admission.
 /// No variant authorizes direct execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +407,116 @@ mod tests {
             },
             replacement: SessionRunReplacement::PreservePrior,
         }
+    }
+
+    #[test]
+    fn prepared_identity_preserves_all_activation_fields_without_changing_ordinary_identity() {
+        use super::AdmitPreparedSessionRun;
+        use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
+        // Cause/effect table: F1 each immutable prepared activation/operation
+        // coordinate differs => another digest; F2 trace alone differs => same
+        // digest; F3 ordinary input => the original literal v1 tuple/hash.
+        // Constraint: prepared input is non-wire; absent inherited sources are
+        // distinct from explicit sources and never expanded from current Skills.
+        let ordinary = command();
+        let expected_ordinary = awaken_agent_contract::content_fingerprint(&(
+            "session-command-v1",
+            &ordinary.session_id,
+            &ordinary.agent_id,
+            &ordinary.operation_id,
+            &ordinary.run_id,
+            &ordinary.messages,
+            &ordinary.data_subject_id,
+            ordinary.execution_requirements.tool_capability_narrowing,
+            &ordinary.execution_requirements.required_worker_capabilities,
+            ordinary.replacement,
+        ))
+        .unwrap();
+        assert_eq!(
+            ordinary.command_fingerprint(),
+            SessionRunCommandFingerprint::from_sha256_hex(&expected_ordinary).unwrap(),
+            "F3 old tuple unchanged"
+        );
+        let original = AdmitPreparedSessionRun {
+            session_id: ordinary.session_id.clone(),
+            operation_id: ordinary.operation_id.clone(),
+            activation: RunActivation::new(
+                ordinary.run_id,
+                awaken_agent_contract::ThreadId(ordinary.session_id.to_string()),
+                ExecutableAgentSnapshot::builder("frozen-worker")
+                    .model(
+                        awaken_runtime_contract::resolved::ModelBinding::parse(
+                            "test", "model", "native",
+                        )
+                        .expect("valid native immutable input fixture"),
+                    )
+                    .build(),
+                ordinary.messages,
+            ),
+            traceparent: ordinary.traceparent,
+        };
+        let mut changes = Vec::new();
+        let mut changed = original.clone();
+        changed.session_id = "other-session".into();
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.operation_id = "other-operation".into();
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.run_id.0.push('2');
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.thread_id.0.push('2');
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.snapshot = ExecutableAgentSnapshot::builder("other-worker")
+            .model(
+                awaken_runtime_contract::resolved::ModelBinding::parse("test", "model", "native")
+                    .expect("valid native immutable input fixture"),
+            )
+            .build();
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.input[0].id.0.push('2');
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.delegation_origin = Some(
+            awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(
+                RunId("parent".into()),
+                "call",
+                "coordinator",
+            ),
+        );
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.model_ref_override = Some("frozen-model".into());
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation.data_subject_id =
+            Some(awaken_runtime_contract::DataSubjectId("subject".into()));
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation = changed.activation.without_tools();
+        changes.push(changed);
+        let mut changed = original.clone();
+        changed.activation = changed.activation.with_inherited_toolsets(Some(
+            awaken_agent_contract::toolset::InheritedToolsets::with_caller(Vec::new(), None),
+        ));
+        changes.push(changed);
+        for changed in changes {
+            assert_ne!(
+                original.command_fingerprint(),
+                changed.command_fingerprint(),
+                "F1 full prepared coordinate"
+            );
+        }
+        let mut retraced = original.clone();
+        retraced.traceparent = None;
+        assert_eq!(
+            original.command_fingerprint(),
+            retraced.command_fingerprint(),
+            "F2 trace excluded"
+        );
     }
 
     #[test]

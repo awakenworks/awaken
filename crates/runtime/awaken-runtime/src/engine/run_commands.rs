@@ -279,6 +279,11 @@ pub(crate) async fn interrupt_awaiting_tools(
             ToolCallPhase::Executing { .. } | ToolCallPhase::Awaiting { .. } => batch
                 .complete(output.clone())
                 .map_err(|error| Error::Execution(error.to_string()))?,
+            ToolCallPhase::Returned(_) | ToolCallPhase::KnownAborted { .. } => {
+                return Err(Error::Execution(
+                    "awaiting interruption cannot replace a known unmaterialized result".into(),
+                ));
+            }
             ToolCallPhase::Completed(_) | ToolCallPhase::Indeterminate { .. } => continue,
         }
         let result_message = tool_result_message(&batch, &call, &output)?;
@@ -666,6 +671,7 @@ pub(crate) async fn resume_with_continuation(
         &context,
         continuation,
         resume_checkpoint,
+        None,
         waiting_batch,
         store,
     )

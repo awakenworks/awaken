@@ -18,6 +18,7 @@ mod durable_operations;
 mod inputs;
 mod memory;
 mod outcomes;
+pub use outcomes::OutcomeRunExecutor;
 mod roles;
 mod thread_runs;
 
@@ -1196,9 +1197,21 @@ mod tests {
         assert_eq!(cold.code, "session_projection_not_installed");
         install(&delivery, "session", Vec::new(), Vec::new());
         // No active Outcome: continuing drives nothing and dispatches no Run.
+        struct IdleAdmission;
+        #[async_trait::async_trait]
+        impl awaken_session_execution_contract::PreparedSessionRunAdmission for IdleAdmission {
+            async fn admit(
+                &self,
+                _: awaken_runtime_contract::RunActivation,
+            ) -> awaken_runtime_contract::diagnostic::Result<
+                awaken_agent_contract::agent::run::RunState,
+            > {
+                panic!("O2 idle continuation cannot execute a Run")
+            }
+        }
         assert!(
             delivery
-                .continue_outcome("session")
+                .continue_outcome("session", &IdleAdmission)
                 .await
                 .expect("idle continuation")
                 .is_none()

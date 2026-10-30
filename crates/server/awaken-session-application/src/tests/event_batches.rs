@@ -269,6 +269,21 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for EventBat
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntime {
+    // Fixture rule P1: public Event batches use ordinary reservations, not prepared Outcome inputs.
+    // A prepared command refuses before activity admission or fixture mutation.
+    async fn run_prepared_session_run(
+        &self,
+        command: awaken_session_execution_contract::AdmitPreparedSessionRun,
+        activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+        awaken_session_execution_contract::CoordinationRuntime::run_prepared_session_run(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+            activity,
+        )
+        .await
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_execution_contract::AdmitSessionRun,
@@ -1040,6 +1055,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for EventBatchRuntime {
         description: &str,
         rubric: &str,
         max_iterations: u32,
+        executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
     {
         let outcome_id = awaken_session_event_contract::session_outcome_convenience_id(
@@ -1051,12 +1067,16 @@ impl awaken_session_execution_contract::OutcomeRuntime for EventBatchRuntime {
         let _ = self
             .prepare_outcome(thread, &outcome_id, description, rubric, max_iterations)
             .await?;
-        self.continue_outcome(thread)
+        self.continue_outcome(thread, executor)
             .await?
             .ok_or_else(|| RunError::internal("prepared Outcome is not active"))
     }
 
-    async fn continue_outcome(&self, _thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
+    async fn continue_outcome(
+        &self,
+        _thread: &str,
+        _executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+    ) -> Result<Option<OutcomeDrive>, RunError> {
         self.outcome_continue_calls.fetch_add(1, Ordering::SeqCst);
         if !self.outcome_active.load(Ordering::SeqCst) {
             return Ok(None);

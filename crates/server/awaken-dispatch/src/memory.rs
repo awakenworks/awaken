@@ -480,6 +480,13 @@ fn claim_exact_with_mode(
     let terminal_resolution = mode.bypasses_execution_admission();
     let run_id = requested_run.clone();
     let row = state.rows.get(&run_id).expect("claimable row exists");
+    if row
+        .request
+        .worker_codec_admission(worker.map(|worker| &worker.manifest))
+        .is_err()
+    {
+        return Ok(None);
+    }
     if !terminal_resolution
         && worker.is_none()
         && !row.cancellation_requested
@@ -742,7 +749,7 @@ fn claim_next_local(
     now_ms: u64,
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
-    let Some(run_id) = select_where(state, now_ms, |row| {
+    let Some(run_id) = select_where(state, now_ms, None, |row| {
         (row.cancellation_requested || can_claim_locally(&row.request.placement))
             && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                 can_admit_claim_credentials(
@@ -1045,7 +1052,7 @@ impl awaken_dispatch_contract::DispatchClaims for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let capabilities = installed_worker_credential_capabilities(worker)?;
-        let Some(run_id) = select_where(&state, now_ms, |row| {
+        let Some(run_id) = select_where(&state, now_ms, Some(worker), |row| {
             if row.cancellation_requested {
                 return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                     can_admit_claim_credentials(
@@ -1536,6 +1543,62 @@ impl awaken_dispatch_contract::SessionRunAdmissionReads for MemoryDispatchStore 
 
 #[async_trait]
 impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
+    async fn adopt_pending_session_run(
+        &self,
+        expected_original: RunDispatch,
+        command_fingerprint: awaken_session_types::SessionRunCommandFingerprint,
+        owner: &str,
+        lease_ms: u64,
+    ) -> Result<Option<RunClaim>, DispatchError> {
+        let lease_ms = crate::dispatch::validate_pending_session_run_adoption(
+            &expected_original,
+            &command_fingerprint,
+            owner,
+            lease_ms,
+        )?;
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get(expected_original.run_id()) else {
+            return Ok(None);
+        };
+        let physical = row.physical_attempt()?;
+        let adopted = crate::dispatch::pending_session_run_adoption(
+            &row.request,
+            &expected_original,
+            row.transition(),
+            row.lease.is_none()
+                && row.assignment.is_none()
+                && row.credential_bindings.is_empty()
+                && row.credential_receipts.is_empty(),
+            if physical.is_none() {
+                PhysicalAttemptSlot::Empty
+            } else {
+                PhysicalAttemptSlot::OtherClaim
+            },
+            row.active_attempt_closing,
+            command_fingerprint,
+        )?;
+        let Some((request, next)) = adopted else {
+            return Ok(None);
+        };
+        let lease = DispatchLease::from_persisted(
+            request.run_id().clone(),
+            owner.to_string(),
+            crate::clock::deadline_millis(self.clock.now_ms(), lease_ms),
+            next.lease_epoch,
+        )?;
+        let claim = RunClaim::from(&lease);
+        let row = state
+            .rows
+            .get_mut(request.run_id())
+            .expect("the locked adoption row exists");
+        row.request = request;
+        row.apply_transition(next);
+        row.lease = Some(lease);
+        row.reservation_deadline_ms = None;
+        Ok(Some(claim))
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1679,7 +1742,7 @@ impl awaken_dispatch_contract::DispatchControlClaims for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let mut policy_error = None;
         let capabilities = installed_worker_credential_capabilities(requester)?;
-        let run_id = select_where(&state, now_ms, |row| {
+        let run_id = select_where(&state, now_ms, Some(requester), |row| {
             if row.cancellation_requested {
                 return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                     can_admit_claim_credentials(
