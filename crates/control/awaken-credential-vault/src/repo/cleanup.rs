@@ -8,8 +8,9 @@
 // @formal entrypoint credential.visible_row_always_has_material
 //! The owner of cleanup admission for both credential publication envelopes.
 //! Admission consumes snapshots held under one repository lock/transaction.
-//! Material IO runs outside that transaction; observed absence is not an atomic
-//! cross-store receipt or certification of an arbitrary SecretStore.
+//! Material IO runs outside that transaction. The material backend closes each
+//! exact reference against delayed puts; the repository still owns WAL completion.
+//! Observed absence is not a cross-store transaction or third-party certification.
 
 use super::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, PendingManagedCredentialMutation,
