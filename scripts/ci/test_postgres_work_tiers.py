@@ -12,10 +12,7 @@ from _native_postgres_scopes import postgres_phases
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_GAPS = (
-    ('B247', 'T08-C02', 'retried_ack_replays_the_original_acknowledgement'),
-    ('B248', 'T08-C02', 'retried_stop_after_lost_response_replays'),
     ('B250', 'T09-C02', 'stale_same_owner_claimer_is_refused_after_reclaim'),
-    ('B251', 'T09-C02', 'ack_after_the_lease_lapsed_is_refused'),
 )
 
 
@@ -40,12 +37,12 @@ class WorkParitySelectionTests(unittest.TestCase):
         self.assertNotEqual(original, changed)
         return self.source[:start] + changed + self.source[end:]
 
-    def test_all_current_cases_and_only_the_four_registered_gaps_are_declared(self):
+    def test_all_current_cases_and_only_the_remaining_gap_are_declared(self):
         phases = self.verify(self.source)
         self.assertEqual(len(phases), 18)
         work = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(work), 1)
-        self.assertEqual(len(WORK_CURRENT_CASES), 10)
+        self.assertEqual(len(WORK_CURRENT_CASES), 22)
         self.assertEqual(WORK_GAP_BINDINGS, EXPECTED_GAPS)
         self.assertEqual(WORK_PRODUCT_GAPS, tuple('lease_acceptance::' + row[2] for row in EXPECTED_GAPS))
         floors = [a.removeprefix('--require-case=') for a in work[0].arguments if a.startswith('--require-case=')]
@@ -58,6 +55,30 @@ class WorkParitySelectionTests(unittest.TestCase):
                 changed = self.changed_work(lambda text: text.replace('--require-case=' + case, replacement, 1))
                 with self.subTest(case=case, replacement=replacement), self.assertRaisesRegex(ValueError, 'independent Work'):
                     self.verify(changed)
+
+    def test_resolved_ack_and_stop_observations_cannot_be_excluded_again(self):
+        cases = (
+            'lease_acceptance::ack_after_the_lease_lapsed_is_refused',
+            'lease_acceptance::retried_ack_replays_the_original_acknowledgement',
+            'lease_acceptance::acknowledgement_receipts_do_not_cross_lease_generations',
+            'lease_acceptance::concurrent_acknowledgements_share_one_original_receipt',
+            'lease_acceptance::sqlite_ack_checks_expiry_after_waiting_for_its_write_transaction',
+            'lease_acceptance::postgres_ack_reply_belongs_to_its_committed_lease_snapshot',
+            'lease_acceptance::retried_stop_after_lost_response_replays',
+            'lease_acceptance::stop_replay::concurrent_stops_share_one_original_receipt',
+            'lease_acceptance::stop_replay::old_stop_receipts_never_authorize_a_woken_generation',
+            'lease_acceptance::stop_replay::sqlite_stop_receipt_survives_reopening_without_restoring_authority',
+            'lease_acceptance::stop_replay::postgres_stop_receipt_survives_a_new_pool_without_restoring_authority',
+            'lease_acceptance::stop_replay::postgres_stop_reply_belongs_to_its_committed_lease_snapshot',
+        )
+        for case in cases:
+            self.assertIn(case, WORK_CURRENT_CASES)
+            self.assertNotIn(case, WORK_PRODUCT_GAPS)
+            changed = self.changed_work(lambda text: text.replace('--test-threads=1',
+                '--skip ' + case + ' --test-threads=1', 1))
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'independent Work'):
+                self.verify(changed)
+
 
     def test_each_gap_exclusion_must_remain_exact_and_cannot_expand(self):
         for case in WORK_PRODUCT_GAPS:
@@ -131,7 +152,7 @@ class WorkGapAdmissionTests(unittest.TestCase):
                 'reason': 'unaccepted invariant', 'follow_up': 'separate protocol work',
                 'reproducers': [row[2] for row in EXPECTED_GAPS if row[1] == case_id],
             },
-        } for case_id in ('T08-C02', 'T09-C02')]
+        } for case_id in sorted({row[1] for row in EXPECTED_GAPS})]
         self.data = {'groups': [{'cases': cases}], 'bindings': bindings}
 
     def verify(self, data=None):
@@ -139,7 +160,7 @@ class WorkGapAdmissionTests(unittest.TestCase):
 
     def test_report_keeps_every_gap_unverified_without_an_execution_witness(self):
         report = self.verify()
-        self.assertEqual(len(report), 4)
+        self.assertEqual(len(report), 1)
         self.assertEqual([r['binding'] for r in report], [row[0] for row in EXPECTED_GAPS])
         self.assertTrue(all(r['status'] == 'unverified-product-gap' for r in report))
         self.assertTrue(all(r['reason'] and r['follow_up'] for r in report))
@@ -188,9 +209,9 @@ class WorkGapAdmissionTests(unittest.TestCase):
             elif mutation == 'case':
                 binding['covers'] = {'T00-C01': {}}
             elif mutation == 'oracle':
-                binding['covers']['T08-C02']['oracles'] = [0]
+                binding['covers'][EXPECTED_GAPS[0][1]]['oracles'] = [0]
             else:
-                data['groups'][0]['cases'][0]['binding_ids'].remove('B247')
+                data['groups'][0]['cases'][0]['binding_ids'].remove(EXPECTED_GAPS[0][0])
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.verify(data)
 
@@ -210,6 +231,76 @@ class WorkGapAdmissionTests(unittest.TestCase):
         self.path.unlink()
         with self.assertRaises((ValueError, FileNotFoundError)):
             self.verify()
+
+
+
+class WorkStoreSelectionTests(unittest.TestCase):
+    setUpClass = classmethod(WorkParitySelectionTests.setUpClass.__func__)
+    verify = WorkParitySelectionTests.verify
+
+    def changed_store(self, transform):
+        start = self.source.index('\nwork_store_evidence() {') + 1
+        end = self.source.index('\n}', start)
+        original = self.source[start:end]
+        changed = transform(original)
+        self.assertNotEqual(original, changed)
+        return self.source[:start] + changed + self.source[end:]
+
+    def test_native_targets_preserve_the_complete_union_without_repeating_conformance(self):
+        phases = self.verify(self.source)
+        store = [p for p in phases if p.selector == 'work_store_evidence']
+        self.assertEqual(len(store), 1)
+        args = store[0].arguments
+        targets = [args[i + 1] for i, value in enumerate(args) if value == '--test']
+        self.assertEqual(targets, ['archive', 'environment_revision', 'lease_book_properties', 'work_identity', 'work_queue_parity', 'work_queue_properties'])
+        self.assertIn('--lib', args)
+        self.assertNotIn('work_queue_conformance', args)
+        parity = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
+        self.assertEqual(len(parity), 1)
+        self.assertIn('work_queue_conformance', parity[0].arguments)
+        self.assertEqual(len(phases), 18)
+
+    def test_missing_targets_and_broad_all_package_or_conformance_selection_are_refused(self):
+        mutations = [lambda s: s.replace('--lib ', '', 1)]
+        for target in ('archive', 'environment_revision', 'lease_book_properties', 'work_identity', 'work_queue_parity', 'work_queue_properties'):
+            mutations.append(lambda s, target=target: s.replace('--test ' + target + ' ', '', 1))
+        for added in ('--tests', '--all-targets', '--test work_queue_conformance'):
+            mutations.append(lambda s, added=added: s.replace('--lib ', '--lib ' + added + ' ', 1))
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Work store'):
+                self.verify(self.changed_store(mutation))
+
+    def test_each_required_outcome_and_original_private_helper_policy_are_mandatory(self):
+        import re
+        source = self.source.split('\nwork_store_evidence() {', 1)[1].split('\n}', 1)[0]
+        floors = re.findall(r'--require-case=([^\s]+)', source)
+        self.assertEqual(len(floors), 13)
+        mutations = [lambda s, case=case: s.replace('--require-case=' + case, '', 1) for case in floors]
+        mutations += [
+            lambda s: s.replace('--include-ignored ', '', 1),
+            lambda s: s.replace('--skip environment_revision_restart_child', '--skip environment_revision', 1),
+            lambda s: s.replace('--skip restart::identity_restart_child', '--skip restart', 1),
+            lambda s: s.replace('--test-threads=1', '--ignored --test-threads=1', 1),
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Work store'):
+                self.verify(self.changed_store(mutation))
+
+
+    def test_all_live_work_callers_require_actual_metadata_and_propagate_failure(self):
+        marker = 'python3 scripts/ci/_native_work_target_coverage.py --check || return "$?"'
+        self.assertEqual(self.source.count(marker), 2)
+        mutations = [
+            self.source.replace(marker, 'true', 1),
+            self.source.rsplit(marker, 1)[0] + 'true' + self.source.rsplit(marker, 1)[1],
+            self.source.replace(marker, marker.replace('return "$?"', 'true'), 1),
+            self.source.replace('\nchecked_work_store_evidence || record_failure "$?"\n', '\nwork_store_evidence\n', 1),
+            self.source.replace('\nchecked_work_store_evidence || record_failure "$?"\n', '\nchecked_work_store_evidence\n', 1),
+        ]
+        for index, source in enumerate(mutations):
+            self.assertNotEqual(source, self.source)
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                self.verify(source)
 
 
 if __name__ == '__main__':

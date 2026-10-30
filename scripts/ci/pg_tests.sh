@@ -92,6 +92,7 @@ pg_required_test() {
 
 checked_backend_parity() {
   python3 scripts/ci/_native_postgres_gap_policy.py --check || return "$?"
+  python3 scripts/ci/_native_work_target_coverage.py --check || return "$?"
   backend_parity
 }
 
@@ -121,8 +122,8 @@ backend_parity() {
     --require-case=in_memory_captured_content_conforms --require-case=sqlite_captured_content_conforms \
     --require-case=postgres::postgres_captured_content_conforms \
     --require-case=postgres::postgres_fixture_absence_and_configured_failure_have_distinct_outcomes -- --test-threads=1 || record_failure "$?"
-  # Current backend laws are required; four ledger product-gap reproducers
-  # remain unaccepted and are validated by checked_backend_parity.
+  # Current backend laws and enabled ACK/stop regressions are required.
+  # The remaining legacy owner-only incarnation gap stays unaccepted and checked.
   pg_required_test -p awaken-work-store --features test-support --test work_queue_conformance \
     --require-case=in_memory_backend_conforms \
     --require-case=sqlite_backend_conforms \
@@ -134,11 +135,20 @@ backend_parity() {
     --require-case=lease_acceptance::session_and_healthcheck_leases_are_taken_over_independently \
     --require-case=lease_acceptance::terminal_ack_retries_only_the_original_identity \
     --require-case=work_fixture_cleanup_preserves_another_live_schema \
+    --require-case=lease_acceptance::ack_after_the_lease_lapsed_is_refused \
+    --require-case=lease_acceptance::retried_ack_replays_the_original_acknowledgement \
+    --require-case=lease_acceptance::acknowledgement_receipts_do_not_cross_lease_generations \
+    --require-case=lease_acceptance::concurrent_acknowledgements_share_one_original_receipt \
+    --require-case=lease_acceptance::sqlite_ack_checks_expiry_after_waiting_for_its_write_transaction \
+    --require-case=lease_acceptance::postgres_ack_reply_belongs_to_its_committed_lease_snapshot \
+    --require-case=lease_acceptance::retried_stop_after_lost_response_replays \
+    --require-case=lease_acceptance::stop_replay::concurrent_stops_share_one_original_receipt \
+    --require-case=lease_acceptance::stop_replay::old_stop_receipts_never_authorize_a_woken_generation \
+    --require-case=lease_acceptance::stop_replay::sqlite_stop_receipt_survives_reopening_without_restoring_authority \
+    --require-case=lease_acceptance::stop_replay::postgres_stop_receipt_survives_a_new_pool_without_restoring_authority \
+    --require-case=lease_acceptance::stop_replay::postgres_stop_reply_belongs_to_its_committed_lease_snapshot \
     -- \
-    --skip lease_acceptance::retried_ack_replays_the_original_acknowledgement \
-    --skip lease_acceptance::retried_stop_after_lost_response_replays \
     --skip lease_acceptance::stale_same_owner_claimer_is_refused_after_reclaim \
-    --skip lease_acceptance::ack_after_the_lease_lapsed_is_refused \
     --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \
     --require-case=sqlite_backend_conforms --require-case=postgres_backend_conforms \
@@ -171,14 +181,28 @@ backend_parity() {
     -- --exact --test-threads=1 || record_failure "$?"
 }
 
+checked_work_store_evidence() {
+  python3 scripts/ci/_native_work_target_coverage.py --check || return "$?"
+  work_store_evidence
+}
+
 work_store_evidence() {
   # These physical database cases stay out of the substrate-free workspace
   # lane. The live lane must list and execute every named outcome, including
   # ignored cases, with the existing required-runner receipt and deadline.
   # Restart helpers receive private fixtures from their parent tests and must
   # not be launched independently by this package-wide selection.
+  # Backend parity owns work_queue_conformance and its explicit gap policy.
+  # This phase owns the remaining native targets and their restart parents.
   pg_required_test -p awaken-work-store --features test-support \
+    --lib --test archive --test environment_revision --test lease_book_properties --test work_identity --test work_queue_parity --test work_queue_properties \
     --require-case=schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
+    --require-case=schema::ack_upgrade_tests::sqlite_both_published_histories_add_only_known_ack_generations \
+    --require-case=schema::ack_upgrade_tests::postgres_both_published_histories_add_only_known_ack_generations \
+    --require-case=schema::stop_upgrade_tests::sqlite_both_published_histories_preserve_unknown_old_stop_subjects \
+    --require-case=schema::stop_upgrade_tests::postgres_both_published_histories_preserve_unknown_old_stop_subjects \
+    --require-case=mutation::tests::stop_receipts_preserve_absence_and_reject_incomplete_or_ungranted_subjects \
+    --require-case=mutation::tests::stop_receipt_replay_requires_original_owner_and_current_generation \
     --require-case=postgres_archive_keeps_existing_session_authority_after_reconnect \
     --require-case=durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
     --require-case=durable::postgres_independent_pools_allocate_concurrently_without_reset \
@@ -692,12 +716,12 @@ self_test() {
   # P11 the full gate and the focused Work gate share one required selection,
   # including every named identity/archive witness and test-support. The exact
   # unindented call below belongs to the full gate, not its focused branch.
-  grep -Fxq 'work_store_evidence || record_failure "$?"' "$0" || {
+  grep -Fxq 'checked_work_store_evidence || record_failure "$?"' "$0" || {
     echo "Postgres gate must run the required complete Work suite" >&2
     return 1
   }
-  # W1 a selected Work database suite includes ignored cases and all seven
-  # physical evidence floors. W2 the existing runner's failure/refusal status
+  # W1 a selected Work database suite includes ignored cases and all thirteen
+  # physical, migration and receipt-decoder outcome floors. W2 the existing runner's failure/refusal status
   # propagates unchanged; no success is minted by the selection wrapper.
   if ! (
     local expected_status observed_status arguments required_case
@@ -708,6 +732,12 @@ self_test() {
       [[ "$arguments" == *' --skip environment_revision_restart_child --skip restart::identity_restart_child '* ]] || return 2
       for required_case in \
         schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
+        schema::ack_upgrade_tests::sqlite_both_published_histories_add_only_known_ack_generations \
+        schema::ack_upgrade_tests::postgres_both_published_histories_add_only_known_ack_generations \
+        schema::stop_upgrade_tests::sqlite_both_published_histories_preserve_unknown_old_stop_subjects \
+        schema::stop_upgrade_tests::postgres_both_published_histories_preserve_unknown_old_stop_subjects \
+        mutation::tests::stop_receipts_preserve_absence_and_reject_incomplete_or_ungranted_subjects \
+        mutation::tests::stop_receipt_replay_requires_original_owner_and_current_generation \
         postgres_archive_keeps_existing_session_authority_after_reconnect \
         durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
         durable::postgres_independent_pools_allocate_concurrently_without_reset \
@@ -886,7 +916,7 @@ if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -
   elif [ "$http_only" -eq 1 ]; then
     http_transport_evidence || record_failure "$?"
   elif [ "$work_store_only" -eq 1 ]; then
-    work_store_evidence || record_failure "$?"
+    checked_work_store_evidence || record_failure "$?"
   else
     checked_backend_parity || record_failure "$?"
   fi
@@ -1156,7 +1186,7 @@ pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_
 # Both entry points require these physical outcomes. Private restart children
 # stay parent-only; the shared helper selects all seven live witnesses.
 resources_evidence
-work_store_evidence || record_failure "$?"
+checked_work_store_evidence || record_failure "$?"
 
 # The same live PostgreSQL and object-store substrates finish with a physical
 # point-in-time restore. This is a recovery drill, not another repository or

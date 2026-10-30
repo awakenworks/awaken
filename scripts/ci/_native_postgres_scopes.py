@@ -101,6 +101,7 @@ def _require_work_parity_phase(phases, root):
     wrapper = definitions[1].split('\n}', 1)[0] + '\n' if len(definitions) == 2 else None
     expected_wrapper = (
         '  python3 scripts/ci/_native_postgres_gap_policy.py --check || return "$?"\n'
+        '  python3 scripts/ci/_native_work_target_coverage.py --check || return "$?"\n'
         '  backend_parity\n'
     )
     direct = [line for line in source.splitlines() if line.strip() == 'backend_parity']
@@ -108,6 +109,53 @@ def _require_work_parity_phase(phases, root):
                if line.strip() == 'checked_backend_parity || record_failure "$?"']
     if wrapper != expected_wrapper or len(direct) != 1 or len(checked) != 2:
         raise ValueError('PostgreSQL Work parity must validate its exact product-gap ledger before execution')
+
+
+
+def _require_work_store_phase(phases, root):
+    work = [phase for phase in phases if phase.selector == 'work_store_evidence'
+            and phase.package == 'awaken-work-store']
+    if len(work) != 1:
+        raise ValueError('PostgreSQL selector changed independent Work store domain')
+    expected_frontend = (
+        '-p', 'awaken-work-store', '--features', 'test-support',
+        '--lib', '--test', 'archive', '--test', 'environment_revision',
+        '--test', 'lease_book_properties', '--test', 'work_identity',
+        '--test', 'work_queue_parity', '--test', 'work_queue_properties',
+        '--require-case=schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids',
+        '--require-case=schema::ack_upgrade_tests::sqlite_both_published_histories_add_only_known_ack_generations',
+        '--require-case=schema::ack_upgrade_tests::postgres_both_published_histories_add_only_known_ack_generations',
+        '--require-case=schema::stop_upgrade_tests::sqlite_both_published_histories_preserve_unknown_old_stop_subjects',
+        '--require-case=schema::stop_upgrade_tests::postgres_both_published_histories_preserve_unknown_old_stop_subjects',
+        '--require-case=mutation::tests::stop_receipts_preserve_absence_and_reject_incomplete_or_ungranted_subjects',
+        '--require-case=mutation::tests::stop_receipt_replay_requires_original_owner_and_current_generation',
+        '--require-case=postgres_archive_keeps_existing_session_authority_after_reconnect',
+        '--require-case=durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction',
+        '--require-case=durable::postgres_independent_pools_allocate_concurrently_without_reset',
+        '--require-case=durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed',
+        '--require-case=postgres_work_identity_is_not_reused_after_lifecycle_removal',
+        '--require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart',
+    )
+    expected_runtime = (
+        '--include-ignored', '--test-threads=1',
+        '--skip', 'environment_revision_restart_child',
+        '--skip', 'restart::identity_restart_child',
+    )
+    if work[0].arguments != (*expected_frontend, '--', *expected_runtime):
+        raise ValueError('PostgreSQL selector changed independent Work store target/floor/helper policy')
+
+    source = (root / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+    definitions = source.split('checked_work_store_evidence() {\n')
+    wrapper = definitions[1].split('\n}', 1)[0] + '\n' if len(definitions) == 2 else None
+    expected_wrapper = (
+        '  python3 scripts/ci/_native_work_target_coverage.py --check || return "$?"\n'
+        '  work_store_evidence\n'
+    )
+    direct = [line for line in source.splitlines() if line.strip() == 'work_store_evidence']
+    checked = [line for line in source.splitlines()
+               if line.strip() == 'checked_work_store_evidence || record_failure "$?"']
+    if wrapper != expected_wrapper or len(direct) != 1 or len(checked) != 2:
+        raise ValueError('PostgreSQL Work store must validate actual Cargo targets before execution')
 
 
 def postgres_phases(scope, root=None):
@@ -120,6 +168,7 @@ def postgres_phases(scope, root=None):
         _require_session_extraction_phase(phases)
     if scope == 'core':
         _require_work_parity_phase(phases, root or Path(__file__).resolve().parents[2])
+        _require_work_store_phase(phases, root or Path(__file__).resolve().parents[2])
         dispatch = [phase for phase in phases if phase.package == 'awaken-dispatch']
         if len(dispatch) != 1:
             raise ValueError('PostgreSQL selector changed independent Dispatch observation phase')

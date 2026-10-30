@@ -19,12 +19,21 @@ WORK_CURRENT_CASES = (
     'lease_acceptance::session_and_healthcheck_leases_are_taken_over_independently',
     'lease_acceptance::terminal_ack_retries_only_the_original_identity',
     'work_fixture_cleanup_preserves_another_live_schema',
+    'lease_acceptance::ack_after_the_lease_lapsed_is_refused',
+    'lease_acceptance::retried_ack_replays_the_original_acknowledgement',
+    'lease_acceptance::acknowledgement_receipts_do_not_cross_lease_generations',
+    'lease_acceptance::concurrent_acknowledgements_share_one_original_receipt',
+    'lease_acceptance::sqlite_ack_checks_expiry_after_waiting_for_its_write_transaction',
+    'lease_acceptance::postgres_ack_reply_belongs_to_its_committed_lease_snapshot',
+    'lease_acceptance::retried_stop_after_lost_response_replays',
+    'lease_acceptance::stop_replay::concurrent_stops_share_one_original_receipt',
+    'lease_acceptance::stop_replay::old_stop_receipts_never_authorize_a_woken_generation',
+    'lease_acceptance::stop_replay::sqlite_stop_receipt_survives_reopening_without_restoring_authority',
+    'lease_acceptance::stop_replay::postgres_stop_receipt_survives_a_new_pool_without_restoring_authority',
+    'lease_acceptance::stop_replay::postgres_stop_reply_belongs_to_its_committed_lease_snapshot',
 )
 WORK_GAP_BINDINGS = (
-    ('B247', 'T08-C02', 'retried_ack_replays_the_original_acknowledgement'),
-    ('B248', 'T08-C02', 'retried_stop_after_lost_response_replays'),
     ('B250', 'T09-C02', 'stale_same_owner_claimer_is_refused_after_reclaim'),
-    ('B251', 'T09-C02', 'ack_after_the_lease_lapsed_is_refused'),
 )
 WORK_PRODUCT_GAPS = tuple('lease_acceptance::' + row[2] for row in WORK_GAP_BINDINGS)
 WORK_SOURCE = 'crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs'
