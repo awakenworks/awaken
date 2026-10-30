@@ -1140,3 +1140,15 @@ The existing portability gate requires the named cases; private helper functions
 are launched by their parents rather than counted as independent passing tests.
 These Windows observations do not qualify Linux/FUSE, remote stop semantics or
 T10-C03 actionable recovery. Historical acceptance receipts retain their source.
+
+## A2A Recovery Refusal
+
+A durable Prepared A2A operation without an Accepted task keeps its unknown
+remote outcome. Its execute, resume and cancel paths share a Conflict diagnostic,
+`a2a_operation_recovery_unconfirmed`, with the original execution cause and
+operation, context and message identities for peer reconciliation. The Run stays
+blocked until that outcome is reconciled; the classification grants no replay
+authority. The refusal precedes transport resolution and leaves committed state
+unchanged. Existing Accepted-task recovery continues to reconnect its pinned task.
+Valid-state execute/cancel tests observe these boundaries with a scripted peer;
+physical restart and provider recovery keep their separate qualification scope.

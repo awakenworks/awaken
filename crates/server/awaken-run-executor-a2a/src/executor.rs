@@ -10,6 +10,7 @@
 //! Execution of one publication-pinned remote A2A attempt.
 
 use super::*;
+use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
 
 pub(super) fn ensure_supported_narrowing(
     activation: &RunActivation,
@@ -36,12 +37,20 @@ fn reject_unconfirmed_operation<T>(
     intent: &RemoteOperationIntent,
     action: &str,
 ) -> Result<T> {
+    let cause = Error::Execution(format!(
+        "A2A operation {:?} (context {:?}, message {:?}) has no committed remote task; \
+         automatic {action} is unsafe. Inspect the original operation on the peer; \
+         keep this Run blocked until its outcome is reconciled",
+        intent.operation_id, intent.context_id, intent.message_id
+    ));
     preserve_remote_uncertainty(
         context,
-        Error::Execution(format!(
-            "A2A operation {:?} has no committed remote task; automatic {action} is unsafe",
-            intent.operation_id
-        )),
+        RuntimeDiagnostic::new(
+            RuntimeErrorKind::Conflict,
+            "a2a_operation_recovery_unconfirmed",
+            cause,
+        )
+        .into(),
     )
 }
 
