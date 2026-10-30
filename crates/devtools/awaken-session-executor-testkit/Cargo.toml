@@ -14,24 +14,39 @@ description = "Local Resources, Skill and Memory-extraction adapters handed to t
 separation = "test-support"
 
 [dependencies]
-awaken-deployment-config.workspace = true
+awaken-deployment-config = { workspace = true, optional = true }
 awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
-awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-session-executor = { workspace = true, features = ["test-support"], optional = true }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 # The sandbox-backed Session environment volatile and durable fixtures run in.
-awaken-session-environment = { workspace = true, features = ["test-support"] }
-awaken-runtime-contract.workspace = true
-awaken-resource-application.workspace = true
-awaken-resource-contract.workspace = true
+awaken-session-environment = { workspace = true, features = ["test-support"], optional = true }
+awaken-runtime-contract = { workspace = true, optional = true }
+awaken-resource-application = { workspace = true, optional = true }
+awaken-resource-contract = { workspace = true, optional = true }
 awaken-ext-memory.workspace = true
 awaken-time.workspace = true
-awaken-file-store = { workspace = true, features = ["test-support"] }
-awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-file-store = { workspace = true, features = ["test-support"], optional = true }
+awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"], optional = true }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 
+[features]
+# Host/scenario callers opt into complete Executor and Resource assembly.
+# Core unit fixtures consume only the original repository/authority factories.
+# Selecting this package itself keeps its existing default API.
+# ScenarioHost owns the Host/Resources composition test for both profiles.
+default = ["host"]
+host = [
+    "dep:awaken-deployment-config",
+    "dep:awaken-session-executor",
+    "dep:awaken-session-environment",
+    "dep:awaken-runtime-contract",
+    "dep:awaken-resource-application",
+    "dep:awaken-resource-contract",
+    "dep:awaken-file-store",
+    "dep:awaken-memory-store",
+]
+
 [dev-dependencies]
-awaken-dispatch-execution.workspace = true
-awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }
 

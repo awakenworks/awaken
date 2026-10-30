@@ -35,7 +35,6 @@ awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
-awaken-session-budget-contract.workspace = true
 awaken-session-event-contract.workspace = true
 # Per-Session MCP lifecycle and Worker relay; the installed Session holds its state.
 awaken-session-mcp.workspace = true
@@ -102,10 +101,11 @@ test-support = [
 k8s-tests = ["awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
+awaken-session-budget-contract.workspace = true
 awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
 # Unit fixtures reuse the testkit's sole storage-dir extraction selection.
 # It returns the common MemoryExtractionRepository port, never a second Host.
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, default-features = false }
 awaken-environment-contract.workspace = true
 
 awaken-agent-channel.workspace = true
@@ -119,10 +119,8 @@ awaken-worker-contract.workspace = true
 # Managed fixtures use the real Session Root/sink and its existing Store port.
 awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-session-repository-contract.workspace = true
-# Resource fixtures compose the same Environment catalog/Work owner as Coordinator.
-awaken-environment-application.workspace = true
-awaken-executable-environment-catalog.workspace = true
-awaken-work-store = { workspace = true, features = ["test-support"] }
+# Private Root fixtures guard unused Environment roles; ScenarioHost owns real Work composition.
+awaken-executable-environment-contract.workspace = true
 awaken-coordinator-client.workspace = true
 # MCP relay tests call the relay over plain loopback HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
@@ -138,7 +136,6 @@ awaken-sandbox-container.workspace = true
 # ACP contract re-uses but does not re-export, so a test handshake has to name
 # the trait itself. Dev-only: production code only ever consumes the port.
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
-awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 # The sandbox-backed Session environment the process composition installs;
 # this crate's own tests realize environments through it.
@@ -163,8 +160,6 @@ awaken-store-inmem = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }
 awaken-lease-testkit.workspace = true
-# Drives Worker transport routers in-process through `ServiceExt::oneshot`.
-tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

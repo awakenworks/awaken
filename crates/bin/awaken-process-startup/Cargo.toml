@@ -69,11 +69,9 @@ awaken-ext-builtin-tools.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
-awaken-session-configuration-contract.workspace = true
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
-awaken-dispatch-http.workspace = true
 awaken-local-process.workspace = true
 awaken-fs-durability.workspace = true
 uuid = { version = "1", features = ["v7"] }
@@ -188,6 +186,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+awaken-dispatch-http.workspace = true
+awaken-session-configuration-contract.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-protocol-a2a.workspace = true
@@ -245,7 +245,7 @@ awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-lease-testkit.workspace = true
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 # sqlite_process_store_contract holds an independent writer on the shared file.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"

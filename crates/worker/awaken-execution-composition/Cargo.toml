@@ -16,7 +16,6 @@ separation = "process"
 [dependencies]
 awaken-deployment-config.workspace = true
 awaken-credential-contract.workspace = true
-awaken-tool-contract.workspace = true
 # The Session owner whose container-tier provider this crate selects and installs.
 awaken-session-executor.workspace = true
 # The frozen backend/tool vocabulary and the neutral ACP policy port.
@@ -63,10 +62,11 @@ podman = ["awaken-sandbox-container/podman", "dep:awaken-package-image", "awaken
 k8s = ["dep:awaken-sandbox-kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:awaken-package-image", "awaken-package-image/k8s"]
 
 [dev-dependencies]
+awaken-tool-contract.workspace = true
 # Test access to the adapters behind the installed role handles (`at_root`).
 awaken-session-environment = { workspace = true, features = ["test-support"] }
 # Hosts over a chosen Deployment for the startup rows.
-awaken-session-executor-testkit.workspace = true
+awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 awaken-agent-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }

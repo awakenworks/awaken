@@ -82,7 +82,7 @@ ALLOWED_CONTEXT_PAIRS: dict[str, frozenset[str]] = {
         {"access", "config", "credentials", "deployment", "dispatch", "environment", "governance", "resources", "session"}
     ),
     "resources": frozenset({"dispatch", "environment", "session"}),
-    "sandbox": frozenset({"dispatch", "environment", "resources", "session"}),
+    "sandbox": frozenset({"dispatch", "environment", "resources"}),
     "session": frozenset(
         {"config", "credentials", "deployment", "dispatch", "environment", "resources"}
     ),
