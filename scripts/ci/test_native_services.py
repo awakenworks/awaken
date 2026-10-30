@@ -738,7 +738,7 @@ class DispatchObservationSelectionTests(unittest.TestCase):
             self.verify(changed)
 
 # unittest discovers these imported policy cases in the native gate suite.
-from test_postgres_work_tiers import WorkGapAdmissionTests, WorkParitySelectionTests, WorkStoreSelectionTests
+from test_postgres_work_tiers import WorkCalibrationAdmissionTests, WorkParitySelectionTests, WorkStoreSelectionTests
 from test_native_work_targets import WorkTargetMetadataTests
 
 

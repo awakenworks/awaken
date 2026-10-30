@@ -16,7 +16,7 @@ import uuid
 
 from native_services import NatsService, sha256
 from _native_postgres import PostgresService
-from _native_postgres_gap_policy import postgres_product_gap_report
+from _native_postgres_gap_policy import postgres_product_gap_report, postgres_work_limitations
 from _native_postgres_scopes import POSTGRES_SELECTORS, postgres_phases, postgres_plan
 from _native_s3 import MinioService
 from _native_recovery_postgres import ArchivePrimary
@@ -183,6 +183,7 @@ def worker(args: argparse.Namespace) -> int:
             plan=postgres_plan(args.postgres_scope)
             record["postgres_scope"]=args.postgres_scope
             record["unverified_product_gaps"]=postgres_product_gap_report(args.postgres_scope,ROOT)
+            record["unaccepted_limitations"]=postgres_work_limitations(args.postgres_scope,ROOT)
         elif args.service=="s3":
             service=MinioService(args.minio_bin,args.mc_bin,root/"minio",out,owner,
                 ROOT/"scripts/ci/fixtures/minio-file-store-policy.json")

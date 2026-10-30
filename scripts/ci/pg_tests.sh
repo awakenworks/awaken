@@ -147,8 +147,9 @@ backend_parity() {
     --require-case=lease_acceptance::stop_replay::sqlite_stop_receipt_survives_reopening_without_restoring_authority \
     --require-case=lease_acceptance::stop_replay::postgres_stop_receipt_survives_a_new_pool_without_restoring_authority \
     --require-case=lease_acceptance::stop_replay::postgres_stop_reply_belongs_to_its_committed_lease_snapshot \
+    --require-case=lease_acceptance::credential_generation::same_credential_session_reclaim_fences_the_exact_generation \
+    --require-case=lease_acceptance::credential_generation::owner_only_reclaim_preserves_the_credential_principal_boundary \
     -- \
-    --skip lease_acceptance::stale_same_owner_claimer_is_refused_after_reclaim \
     --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \
     --require-case=sqlite_backend_conforms --require-case=postgres_backend_conforms \

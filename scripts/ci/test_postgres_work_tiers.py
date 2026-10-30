@@ -1,18 +1,22 @@
 """Pure selector and ledger admission controls; never backend execution proof."""
 import copy
+import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
 from _native_postgres_gap_policy import (
     WORK_CURRENT_CASES, WORK_GAP_BINDINGS, WORK_PRODUCT_GAPS, WORK_SOURCE,
-    postgres_product_gap_report, validate_work_product_gaps,
+    postgres_product_gap_report, validate_work_product_gaps, validate_work_calibration, postgres_work_limitations,
 )
 from _native_postgres_scopes import postgres_phases
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_GAPS = (
-    ('B250', 'T09-C02', 'stale_same_owner_claimer_is_refused_after_reclaim'),
+EXPECTED_GAPS = ()
+CALIBRATED = (
+    ('B250', 'owner_only_reclaim_preserves_the_credential_principal_boundary', [0, 2]),
+    ('B262', 'same_credential_session_reclaim_fences_the_exact_generation', [0, 1, 2]),
 )
 
 
@@ -37,16 +41,18 @@ class WorkParitySelectionTests(unittest.TestCase):
         self.assertNotEqual(original, changed)
         return self.source[:start] + changed + self.source[end:]
 
-    def test_all_current_cases_and_only_the_remaining_gap_are_declared(self):
+    def test_all_current_cases_are_required_without_retired_gap_exclusions(self):
         phases = self.verify(self.source)
         self.assertEqual(len(phases), 18)
         work = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(work), 1)
-        self.assertEqual(len(WORK_CURRENT_CASES), 22)
+        self.assertEqual(len(WORK_CURRENT_CASES), 24)
         self.assertEqual(WORK_GAP_BINDINGS, EXPECTED_GAPS)
         self.assertEqual(WORK_PRODUCT_GAPS, tuple('lease_acceptance::' + row[2] for row in EXPECTED_GAPS))
         floors = [a.removeprefix('--require-case=') for a in work[0].arguments if a.startswith('--require-case=')]
         self.assertEqual(tuple(floors), WORK_CURRENT_CASES)
+        for _, name, _ in CALIBRATED:
+            self.assertIn('lease_acceptance::credential_generation::' + name, floors)
         self.assertNotIn('--ignored', work[0].arguments)
 
     def test_each_current_case_is_mandatory_and_cannot_be_replaced(self):
@@ -80,12 +86,12 @@ class WorkParitySelectionTests(unittest.TestCase):
                 self.verify(changed)
 
 
-    def test_each_gap_exclusion_must_remain_exact_and_cannot_expand(self):
-        for case in WORK_PRODUCT_GAPS:
-            for replacement in ('', '--skip lease_acceptance', '--skip in_memory_backend_conforms'):
-                changed = self.changed_work(lambda text: text.replace('--skip ' + case, replacement, 1))
-                with self.subTest(case=case, replacement=replacement), self.assertRaisesRegex(ValueError, 'independent Work'):
-                    self.verify(changed)
+    def test_no_current_case_can_be_skipped_and_retired_oracle_cannot_return_as_skip(self):
+        for case in (*WORK_CURRENT_CASES, 'lease_acceptance::stale_same_owner_claimer_is_refused_after_reclaim'):
+            changed = self.changed_work(lambda text: text.replace('--test-threads=1',
+                '--skip ' + case + ' --test-threads=1', 1))
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'independent Work'):
+                self.verify(changed)
 
     def test_target_features_filter_and_ignored_flags_cannot_change_current_scope(self):
         mutations = (
@@ -94,7 +100,7 @@ class WorkParitySelectionTests(unittest.TestCase):
             lambda text: text.replace('    -- \\\n', '    other_filter -- \\\n', 1),
             lambda text: text.replace('--test-threads=1', '--ignored --test-threads=1', 1),
             lambda text: text.replace('--test-threads=1', '--include-ignored --test-threads=1', 1),
-            lambda text: text.replace('--skip ' + WORK_PRODUCT_GAPS[0], '--skip=' + WORK_PRODUCT_GAPS[0], 1),
+            lambda text: text.replace('--test-threads=1', '--skip=lease_acceptance --test-threads=1', 1),
         )
         for index, mutation in enumerate(mutations):
             with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'independent Work'):
@@ -127,7 +133,7 @@ class WorkParitySelectionTests(unittest.TestCase):
         self.assertTrue(observed['errors'])
 
 
-class WorkGapAdmissionTests(unittest.TestCase):
+class WorkCalibrationAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -135,103 +141,118 @@ class WorkGapAdmissionTests(unittest.TestCase):
         self.path = self.root / WORK_SOURCE
         self.path.parent.mkdir(parents=True)
         lines, bindings = [], []
-        for binding_id, case_id, name in EXPECTED_GAPS:
-            lines += ['#[tokio::test]', '#[ignore = "product gap: required invariant"]',
-                      'async fn ' + name + '() { assert!(false); }', '']
-            bindings.append({
-                'id': binding_id, 'name': name, 'relation': 'reproduces_product_gap',
-                'execution_witnesses': [],
+        for binding_id, name, oracles in CALIBRATED:
+            lines += ['#[tokio::test(flavor = "multi_thread", worker_threads = 4)]',
+                      'async fn ' + name + '() { assert!(true); }', '']
+            bindings.append({'id': binding_id, 'name': name, 'relation': 'supports_subset_only',
+                'execution_witnesses': [], 'review': 'Supported credential and generation boundary',
+                'limitation': 'No physical incarnation claim',
                 'source_locations': [{'path': WORK_SOURCE, 'line': len(lines) - 1}],
-                'covers': {case_id: {'oracles': [], 'negative_control': False}},
-            })
-        self.path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-        cases = [{
-            'id': case_id, 'evidence_state': 'product_gap',
-            'binding_ids': [row[0] for row in EXPECTED_GAPS if row[1] == case_id],
-            'product_gap': {
-                'reason': 'unaccepted invariant', 'follow_up': 'separate protocol work',
-                'reproducers': [row[2] for row in EXPECTED_GAPS if row[1] == case_id],
-            },
-        } for case_id in sorted({row[1] for row in EXPECTED_GAPS})]
-        self.data = {'groups': [{'cases': cases}], 'bindings': bindings}
+                'covers': {'T09-C02': {'oracles': oracles, 'negative_control': False}}})
+        self.path.write_bytes(('\n'.join(lines) + '\n').encode())
+        for binding in bindings:
+            binding['source_locations'][0]['file_sha256'] = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.old_source = self.path.parent.parent / 'lease_acceptance.rs'
+        self.old_source.write_bytes(b'mod credential_generation;\n')
+        case = {'id': 'T09-C02', 'evidence_state': 'current_subset', 'acceptance_state': 'pending',
+                'acceptance_scope': None, 'full_group_acceptance_implied': False,
+                'binding_ids': ['B250', 'B262'],
+                'slices': {'unaccepted': ['Legacy owner-only requests: same-credential process fencing remains absent']},
+                'calibration_note': 'E17 keeps the original failure; this does not claim implementation.'}
+        self.data = {'groups': [{'cases': [case]}], 'bindings': bindings}
+        self.ledger = self.root / 'scripts/ci/test_inventory_ledger.json'
+        self.ledger.parent.mkdir(parents=True)
+        self.ledger.write_text(json.dumps({'removed': {
+            'stale_same_owner_claimer_is_refused_after_reclaim':
+                'E17 credential process distinction unaccepted; ' + ' '.join(row[1] for row in CALIBRATED)}}), encoding='utf-8')
 
     def verify(self, data=None):
-        return validate_work_product_gaps(self.data if data is None else data, self.root)
+        return validate_work_calibration(self.data if data is None else data, self.root)
 
-    def test_report_keeps_every_gap_unverified_without_an_execution_witness(self):
+    def test_no_skips_does_not_mean_legacy_process_fencing_was_accepted(self):
         report = self.verify()
         self.assertEqual(len(report), 1)
-        self.assertEqual([r['binding'] for r in report], [row[0] for row in EXPECTED_GAPS])
-        self.assertTrue(all(r['status'] == 'unverified-product-gap' for r in report))
-        self.assertTrue(all(r['reason'] and r['follow_up'] for r in report))
-        self.assertEqual(postgres_product_gap_report('resources', self.root), [])
-        self.assertEqual(postgres_product_gap_report('storage', self.root), [])
+        self.assertEqual(report[0]['status'], 'unaccepted-legacy-process-fencing')
+        self.assertEqual(report[0]['historical_evidence'], 'E17')
+        self.assertFalse(report[0]['full_acceptance'])
+        self.assertEqual(validate_work_product_gaps(self.data, self.root), [])
+        for scope in ('resources', 'storage', 'storage-observations'):
+            self.assertEqual(postgres_work_limitations(scope, self.root), [])
         with self.assertRaises(ValueError):
             postgres_product_gap_report('unknown', self.root)
 
-    def test_missing_duplicate_or_unrelated_bindings_are_refused(self):
-        missing = copy.deepcopy(self.data)
-        missing['bindings'].pop()
-        duplicated = copy.deepcopy(self.data)
-        duplicated['bindings'].append(copy.deepcopy(duplicated['bindings'][0]))
-        unrelated = copy.deepcopy(self.data)
-        unrelated['bindings'][0]['name'] = 'another_case'
-        wrong_path = copy.deepcopy(self.data)
-        wrong_path['bindings'][0]['source_locations'][0]['path'] = 'other.rs'
-        for data in (missing, duplicated, unrelated, wrong_path):
-            with self.subTest(data=data), self.assertRaises(ValueError):
-                self.verify(data)
+    def test_actual_ledger_retains_exact_calibrated_limits(self):
+        report = postgres_work_limitations('core', ROOT)
+        self.assertEqual(report[0]['bindings'], ['B250', 'B262'])
+        self.assertIn('same-credential process fencing', report[0]['reason'])
 
-    def test_promoted_unreasoned_or_expanded_gap_classification_requires_review(self):
-        for field, value in (('evidence_state', 'current_subset'), ('evidence_state', 'current_clause_complete')):
+    def test_promotion_erased_limitation_or_restored_gap_requires_review(self):
+        changes = {'evidence_state': 'current_clause_complete', 'acceptance_state': 'accepted',
+                   'acceptance_scope': 'all', 'full_group_acceptance_implied': True,
+                   'slices': {'unaccepted': []}, 'calibration_note': 'fixed',
+                   'product_gap': {'reason': 'restored'}}
+        for field, value in changes.items():
             data = copy.deepcopy(self.data)
             data['groups'][0]['cases'][0][field] = value
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                self.verify(data)
-        for field in ('reason', 'follow_up', 'reproducers'):
-            data = copy.deepcopy(self.data)
-            data['groups'][0]['cases'][0]['product_gap'].pop(field)
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.verify(data)
-        data = copy.deepcopy(self.data)
-        data['groups'][0]['cases'][0]['product_gap']['reproducers'].append('another_gap')
-        with self.assertRaises(ValueError):
-            self.verify(data)
 
-    def test_a_gap_cannot_become_execution_evidence_or_change_its_acceptance_case(self):
-        for mutation in ('witness', 'relation', 'case', 'binding', 'oracle'):
+    def test_missing_duplicate_wrong_or_promoted_binding_is_refused(self):
+        for index in range(2):
+            for field, value in (('name', 'other'), ('relation', 'proves_clause'),
+                                 ('execution_witnesses', [{'status': 'passed'}]),
+                                 ('covers', {'T09-C02': {'oracles': [0], 'negative_control': True}})):
+                data = copy.deepcopy(self.data)
+                data['bindings'][index][field] = value
+                with self.subTest(index=index, field=field), self.assertRaises(ValueError):
+                    self.verify(data)
+            for mutation in ('missing', 'duplicate', 'unbound'):
+                data = copy.deepcopy(self.data)
+                if mutation == 'missing':
+                    data['bindings'].pop(index)
+                elif mutation == 'duplicate':
+                    data['bindings'].append(copy.deepcopy(data['bindings'][index]))
+                else:
+                    data['groups'][0]['cases'][0]['binding_ids'].remove(CALIBRATED[index][0])
+                with self.subTest(index=index, mutation=mutation), self.assertRaises(ValueError):
+                    self.verify(data)
+
+    def test_ignored_changed_or_relocated_test_is_refused_even_with_updated_hash(self):
+        original = self.path.read_bytes()
+        for change in ('ignored', 'renamed', 'moved', 'body'):
             data = copy.deepcopy(self.data)
-            binding = data['bindings'][0]
-            if mutation == 'witness':
-                binding['execution_witnesses'] = [{'status': 'passed'}]
-            elif mutation == 'relation':
-                binding['relation'] = 'proves_clause'
-            elif mutation == 'case':
-                binding['covers'] = {'T00-C01': {}}
-            elif mutation == 'oracle':
-                binding['covers'][EXPECTED_GAPS[0][1]]['oracles'] = [0]
+            body = original
+            if change == 'ignored':
+                body = body.replace(b'#[tokio::test(', b'#[ignore]\n#[tokio::test(', 1)
+                for binding in data['bindings']:
+                    binding['source_locations'][0]['line'] += 1
+            elif change == 'renamed':
+                body = body.replace(CALIBRATED[0][1].encode(), b'another_test', 1)
+            elif change == 'moved':
+                data['bindings'][0]['source_locations'][0]['path'] = 'other.rs'
             else:
-                data['groups'][0]['cases'][0]['binding_ids'].remove(EXPECTED_GAPS[0][0])
-            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                body += b'// changed source\n'
+            self.path.write_bytes(body)
+            if change != 'body':
+                for binding in data['bindings']:
+                    binding['source_locations'][0]['file_sha256'] = hashlib.sha256(body).hexdigest()
+            with self.subTest(change=change), self.assertRaises(ValueError):
                 self.verify(data)
+        self.path.write_bytes(original)
 
-    def test_unignored_moved_or_missing_reproducer_source_requires_review(self):
-        original = self.path.read_text(encoding='utf-8')
-        self.path.write_text(original.replace('#[ignore = "product gap: required invariant"]', '// no longer ignored', 1))
-        with self.assertRaises(ValueError):
-            self.verify()
-        self.path.write_text(original.replace('async fn ' + EXPECTED_GAPS[0][2], 'async fn another_case', 1))
-        with self.assertRaises(ValueError):
-            self.verify()
-        self.path.write_text(original)
-        data = copy.deepcopy(self.data)
-        data['bindings'][0]['source_locations'][0]['line'] += 1
-        with self.assertRaises(ValueError):
-            self.verify(data)
-        self.path.unlink()
-        with self.assertRaises((ValueError, FileNotFoundError)):
-            self.verify()
+    def test_windows_crlf_checkout_preserves_the_canonical_source_binding(self):
+        self.path.write_bytes(self.path.read_bytes().replace(b'\n', b'\r\n'))
+        self.assertEqual(self.verify()[0]['historical_evidence'], 'E17')
 
+    def test_retired_oracle_cannot_disappear_or_reappear_as_an_ignored_test(self):
+        original = self.ledger.read_bytes()
+        self.ledger.write_text('{"removed": {}}', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            self.verify()
+        self.ledger.write_bytes(original)
+        self.old_source.write_text('#[ignore]\nasync fn stale_same_owner_claimer_is_refused_after_reclaim() {}', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            self.verify()
 
 
 class WorkStoreSelectionTests(unittest.TestCase):
