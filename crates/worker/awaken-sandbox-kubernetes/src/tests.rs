@@ -2048,8 +2048,10 @@ fn retained_original_source_observation_never_grants_absence_or_execution() {
     // C3 current effect; C4 claim is live/terminating; C5 Recovery/TerminalCleanup.
     // R1 foreign/absent -> Incompatible. R2 exact terminating + current effect
     // retains the existing Disposing result. R3 exact live + terminal guard +
-    // current TerminalCleanup -> RetainedOriginal, never absence/Disposing.
-    // R4 every remaining deleting-source combination stays unresolved.
+    // current effect -> RetainedOriginal for Recovery and TerminalCleanup alike
+    // (an external DELETE of a guarded terminal Pod changes no physical fact),
+    // never absence/Disposing. R4 every remaining deleting-source combination
+    // stays unresolved.
     for purpose in [
         SandboxObservationPurpose::Recovery,
         SandboxObservationPurpose::TerminalCleanup,
@@ -2082,10 +2084,7 @@ fn retained_original_source_observation_never_grants_absence_or_execution() {
                                 result.unwrap(),
                                 ContinuationObservationDisposition::Disposing
                             );
-                        } else if purpose == SandboxObservationPurpose::TerminalCleanup
-                            && guard
-                            && fenced
-                        {
+                        } else if guard && fenced {
                             assert_eq!(
                                 result.unwrap(),
                                 ContinuationObservationDisposition::RetainedOriginal

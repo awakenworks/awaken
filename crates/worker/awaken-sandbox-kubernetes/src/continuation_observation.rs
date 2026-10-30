@@ -113,8 +113,14 @@ pub(crate) fn continuation_observation_disposition(
     }
 
     if pod_present && pod_deleting {
-        if purpose == SandboxObservationPurpose::TerminalCleanup
-            && original_guard_retained
+        // The original guard pins a Pod whose phase is already terminal, so an
+        // external DELETE (eviction, Pod GC) changes no physical fact: Recovery
+        // observes the same retained source TerminalCleanup does, and hands it
+        // to the terminal owner instead of re-claiming an unresolved error.
+        if matches!(
+            purpose,
+            SandboxObservationPurpose::Recovery | SandboxObservationPurpose::TerminalCleanup
+        ) && original_guard_retained
             && !observed_terminating
             && effect_fenced
             && expected_uid.is_some()
