@@ -1,0 +1,798 @@
+[
+  {
+    "id": "B-DOL-31",
+    "name": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 326,
+        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 331
+      },
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 336
+      },
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 337
+      },
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 342
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-protocol-ai-sdk::disconnect_policy t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
+        "package": "awaken-protocol-ai-sdk",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T32-C01": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-32",
+    "name": "t32_c01_negative_control_socket_close_as_terminal_is_detected",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 367,
+        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 374
+      },
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 379
+      },
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 384
+      },
+      {
+        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "line": 390
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-protocol-ai-sdk::disconnect_policy t32_c01_negative_control_socket_close_as_terminal_is_detected",
+        "package": "awaken-protocol-ai-sdk",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T32-C01": {
+        "oracles": [
+          0
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-33",
+    "name": "explicit_stop_reaches_the_runs_interrupt_port_exactly_once",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "line": 120,
+        "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "line": 123
+      },
+      {
+        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "line": 124
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-protocol-ag-ui::stop_receipt explicit_stop_reaches_the_runs_interrupt_port_exactly_once",
+        "package": "awaken-protocol-ag-ui",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T32-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-34",
+    "name": "T32-C01 disconnect detaches; explicit cancel has its own receipt",
+    "source_locations": [
+      {
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
+        "line": 256,
+        "file_sha256": "65311eb425834ed88e475c36b80470e88795f18c3c1ac3afc189f1a17a78f749"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
+        "line": 204
+      },
+      {
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
+        "line": 217
+      },
+      {
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
+        "line": 245
+      },
+      {
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
+        "line": 249
+      },
+      {
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
+        "line": 250
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-STREAM-20261031",
+        "case": "T32-C01 disconnect detaches; explicit cancel has its own receipt",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "cb27107a138f79f3793f6d86f2ef1551bff5953c54a57a4620d744b2599204f7"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T32-C01": {
+        "oracles": [
+          0,
+          1,
+          2
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": "Managed protocol only; the AI SDK and AG-UI explicit stops have no receipt (product gap)."
+  },
+  {
+    "id": "B-DOL-35",
+    "name": "T32-C03 paging interleaved with previews, terminals and a restart",
+    "source_locations": [
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 346,
+        "file_sha256": "2a6b5a59eb18eda01ec990e6e42fa994cfd1fbb68568259db5f34cc5f5e884ba"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 281
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 289
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 290
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 301
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 302
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 306
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-PAGING-20261031",
+        "case": "T32-C03 real run: 11 pages of 2 == 18 durable events across restart (pids 112740->135552)",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "80dc637c73adf8f4106fdd19f628e86deecfc4d2b5c66782b510181b817ef850"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T32-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-36",
+    "name": "T32-C03 negative controls: count-preserving corruption and non-resumed paging are detected",
+    "source_locations": [
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 341,
+        "file_sha256": "2a6b5a59eb18eda01ec990e6e42fa994cfd1fbb68568259db5f34cc5f5e884ba"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 333
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 338
+      },
+      {
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
+        "line": 340
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-E2E-PAGING-20261031",
+        "case": "T32-C03 negative controls: count-preserving corruption and non-resumed paging are detected",
+        "package": "e2e",
+        "target": "node",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "80dc637c73adf8f4106fdd19f628e86deecfc4d2b5c66782b510181b817ef850"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T32-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Drives the production awaken process over real HTTP/sockets with the official client; the checker that accepts the real run is executed against mutants or a substitute and must reject them.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-37",
+    "name": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
+    "source_locations": [
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 238,
+        "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 241
+      },
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 246
+      },
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 247
+      },
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 249
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-runtime::cross_adapter_fault_local local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
+        "package": "awaken-runtime",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-38",
+    "name": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
+    "source_locations": [
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 289,
+        "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 297
+      },
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 303
+      },
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 308
+      },
+      {
+        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "line": 319
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-runtime::cross_adapter_fault_local local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
+        "package": "awaken-runtime",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-39",
+    "name": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 480,
+        "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 483
+      },
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 487
+      },
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 496
+      },
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 497
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-dispatch-http::cross_adapter_fault_http_worker http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
+        "package": "awaken-dispatch-http",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-40",
+    "name": "http_worker_fault_checker_detects_a_transport_that_silently_reports_success",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 512,
+        "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 517
+      },
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 526
+      },
+      {
+        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 537
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-dispatch-http::cross_adapter_fault_http_worker http_worker_fault_checker_detects_a_transport_that_silently_reports_success",
+        "package": "awaken-dispatch-http",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": true
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-41",
+    "name": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 248,
+        "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 254
+      },
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 255
+      },
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 259
+      },
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 266
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-protocol-mcp::cross_adapter_fault_mcp_http mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
+        "package": "awaken-protocol-mcp",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-42",
+    "name": "acp_executor_never_reports_the_injected_upstream_fault_as_success",
+    "source_locations": [
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "line": 269,
+        "file_sha256": "8966185f68f1f821b2047f14aeb4249b570c15566a3bd2368c1bd674ecf1d668"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "line": 272
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "line": 278
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "line": 280
+      },
+      {
+        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "line": 282
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-run-executor-acp::cross_adapter_fault_acp acp_executor_never_reports_the_injected_upstream_fault_as_success",
+        "package": "awaken-run-executor-acp",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-43",
+    "name": "hand_relay_never_reports_an_injected_tool_fault_as_success",
+    "source_locations": [
+      {
+        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "line": 221,
+        "file_sha256": "1674dcee914a63db664c52447f3596d7f36386776ace88dd96db0c783f6e70d0"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "line": 225
+      },
+      {
+        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "line": 226
+      },
+      {
+        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "line": 234
+      },
+      {
+        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "line": 238
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-tool-relay::cross_adapter_fault_hand_relay hand_relay_never_reports_an_injected_tool_fault_as_success",
+        "package": "awaken-tool-relay",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T33-C03": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Calls the production entrypoint and asserts persisted state, effect counts and exact identities; the negative control is executed in-test against the same checker.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-44",
+    "name": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
+    "source_locations": [
+      {
+        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "line": 5,
+        "file_sha256": "02484203793e34c70f18604ddd3c3f27b963dfdf53a6e82afba3c173ec881b67"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "line": 16
+      },
+      {
+        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "line": 18
+      },
+      {
+        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "line": 20
+      },
+      {
+        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "line": 22
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-fs-durability native::tests::windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
+        "package": "awaken-fs-durability",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Native NTFS identity, lock contention and alias refusal on Windows/MSVC.",
+    "limitation": null
+  },
+  {
+    "id": "B-DOL-45",
+    "name": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
+    "source_locations": [
+      {
+        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "line": 9,
+        "file_sha256": "36571e88ecbed1f25347022be1f1c750866f8d13588bbafbe16e21f5e52c5e0e"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "line": 46
+      },
+      {
+        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "line": 47
+      },
+      {
+        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "line": 51
+      },
+      {
+        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "line": 55
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-DOL-RUST-20261031",
+        "case": "awaken-fs-durability::windows_long_paths windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
+        "package": "awaken-fs-durability",
+        "target": "nextest",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "378a6625909e2b2b9f73406c9a53e126c58093d1",
+        "historical": false,
+        "log_sha256": "5c752aafadcda23d268645e2e0c174838a6768f695444737ec35b9faba2ea916"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T35-C01": {
+        "oracles": [
+          1
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Native Windows long-path publication keeps exact identity and no-replace.",
+    "limitation": null
+  }
+]

@@ -344,8 +344,14 @@
           ],
           "scope": "SDK 本身与 API；不含服务端或物理 Provider"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-01",
+          "B-DOL-02",
+          "B-DOL-03",
+          "B-DOL-04",
+          "B-DOL-05"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -355,7 +361,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, independent consumer workspace (public deps only), libtest; real cargo metadata and cargo check output"
+          ],
+          "unaccepted": [
+            "awaken-runtime declares no [features]: minimal and default are one build, no separate feature matrix",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       },
       {
         "id": "T02-C02",
@@ -412,8 +427,13 @@
           ],
           "scope": "SDK 本身与 API；不含服务端或物理 Provider"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-06",
+          "B-DOL-07",
+          "B-DOL-52",
+          "B-DOL-53"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -423,7 +443,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, cargo-public-api 0.52.0 on nightly-2026-07-14, rustdoc with E-code checking (RUSTC_BOOTSTRAP=1)"
+          ],
+          "unaccepted": [
+            "stable rustdoc compile_fail pins",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "compile_fail doctest pins are not enforced by the stable doc gate, and the C2 pin (E0412) is stale: rustc 1.96 reports E0425",
+          "follow_up": "awaken-runtime conversation.rs doctest pins and a doc gate that checks E-codes (M)",
+          "reproducers": [
+            "test_d2_reproducer_c2_doctest_pin_matches_the_compiler_error_code",
+            "test_d3_reproducer_stable_rustdoc_checks_pinned_codes"
+          ]
+        }
       }
     ],
     "risk": "P1",
@@ -461,8 +498,12 @@
           ],
           "scope": "SDK 本身与 API；不含服务端或物理 Provider"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-08",
+          "B-DOL-09",
+          "B-DOL-10"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -472,7 +513,15 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, independent consumer, in-memory commit store, libtest"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       },
       {
         "id": "T03-C02",
@@ -529,8 +578,14 @@
           ],
           "scope": "SDK 本身与 API；不含服务端或物理 Provider"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-11",
+          "B-DOL-12",
+          "B-DOL-13",
+          "B-DOL-14",
+          "B-DOL-15"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -540,7 +595,15 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, independent consumer, in-memory commit store with injected commit failure, libtest"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",

@@ -131,13 +131,14 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 
 ### 新增证据状态与守卫
 
-[台账守卫](../../scripts/ci/check_session_acceptance.py)由 [check-docs.sh](../../scripts/ci/check-docs.sh) 执行，拒绝以下情况：计数与场景不符；绑定的文件或函数不存在；条款绑定没有指向断言行；见证被跳过、仅编译或不在 receipt 的已执行列表中；见证与 receipt 的源码身份不一致；历史证据未经输入审查即被继承；已登记证据被改写；`current_clause_complete` 场景有未绑定的 oracle、反向控制或切片；公共门禁未闭合时声明验收；产品缺口没有原因、后续事项或被忽略的复现测试。每条拒绝由守卫自测对变异台账实际执行。
+[台账守卫](../../scripts/ci/check_session_acceptance.py)由 [check-docs.sh](../../scripts/ci/check-docs.sh) 执行，拒绝以下情况：计数与场景不符；绑定的文件或函数不存在；条款绑定没有指向断言行；见证被跳过、仅编译或不在 receipt 的已执行列表中；见证与 receipt 的源码身份不一致；历史证据未经输入审查即被继承；已登记证据被改写；`current_clause_complete` 场景有未绑定的 oracle、反向控制或切片；公共门禁未闭合时声明验收；产品缺口没有原因、后续事项或被忽略的复现测试；`not_applicable` 没有原因或已执行的能力拒绝证明。每条拒绝由守卫自测对变异台账实际执行。
 
 | 状态 | 含义 |
 | --- | --- |
 | `current_clause_complete` | 每条 oracle 和反向控制都有当前提交本机执行通过的具名断言绑定，并列出已执行和未验收切片；不等于场景验收 |
 | `product_gap` | 产品尚不满足某条 oracle；复现测试按正确行为断言并以 `#[ignore = "product gap: …"]` 忽略，不计为执行证据；已成立的 oracle 仍可另有执行绑定 |
 | `platform_pending` | 只能在当前授权范围外的平台验证（例如 Linux 内核 FUSE），写明原因；不报告通过 |
+| `not_applicable` | 本部署不提供该模式；写明原因，并以已执行的能力拒绝测试证明，只证明拒绝而非行为通过 |
 
 
 ### 批次
@@ -150,6 +151,11 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | SQL、全后端与原生效果 | T05-C01、T11-C03、T18-C01、T26-C03、T25-C03、T24-C02、T20-C03、T34-C01、T34-C02、T07-C03、T28-C03、T28-C02 | `current_clause_complete` | E16（T26-C03 另有 E18） |
 | SQL、全后端与原生效果 | T04-C03、T17-C01、T17-C02、T17-C03、T12-C03、T33-C02、T38-C03、T23-C03、T08-C02、T08-C03、T09-C02、T10-C03、T38-C02、T06-C02、T16-C01 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
 | 凭据读取与回执等待 | T15-C02 | `current_subset` | E42（Linux Provider/A2A 的具名等待断言）；完整场景未验收 |
+| 设计场景补测（SDK、组件、真实服务） | T02-C01、T03-C01、T03-C03、T14-C03、T27-C03、T30-C02、T30-C03、T32-C03 | `current_clause_complete` | E-DOL-RUST/SDK/SDKPY/E2E-*-20261031 |
+| 设计场景补测（SDK、组件、真实服务） | T02-C03、T13-C02、T25-C01、T31-C03、T32-C01、T33-C03 | `product_gap` | 已成立部分同上；E-DOL-GAPS、E-DOL-SDKPYGAP、E-DOL-E2E-MULTIPROCGAP 为复现测试的预期失败 |
+| 设计场景补测（SDK、组件、真实服务） | T21-C04、T35-C01、T35-C03 | `current_subset` | E-DOL-E2E-CTRLCOORD、E-DOL-RUST；未覆盖切片见各场景 |
+| 设计场景补测（平台与能力） | T24-C03、T35-C02 | `platform_pending` | 需原生 Linux 内核 FUSE/namespace，本任务不执行 Linux |
+| 设计场景补测（平台与能力） | T40-C03 | `not_applicable` | E-DOL-RUST 的能力拒绝测试；无部署提供跨进程 live FUSE |
 
 #### 静态门禁
 

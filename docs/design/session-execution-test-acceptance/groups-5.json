@@ -348,8 +348,11 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-26",
+          "B-DOL-27"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -383,7 +386,17 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; production awaken process; @anthropic-ai/sdk from the e2e lock and anthropic 1.12.1 from the oracle lock in a fresh venv"
+          ],
+          "unaccepted": [
+            "older pinned SDK anchors against the live service (covered at router level only)",
+            "external hosted service",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       },
       {
         "id": "T30-C03",
@@ -408,8 +421,11 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-28",
+          "B-DOL-29"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -419,7 +435,16 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; production awaken process hard-killed and respawned on one data dir; official TS SDK and raw HTTP"
+          ],
+          "unaccepted": [
+            "Python SDK adapter",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P1",
@@ -530,8 +555,11 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-30",
+          "B-DOL-56"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -541,7 +569,22 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; two awaken all-in-one OS processes over one PostgreSQL 16.15 database; TerminateProcess mid-projection"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "the takeover process cannot reuse the hard-killed process's local sandbox realization (no realization marker) and terminates the Session instead of finishing the held Run",
+          "follow_up": "Session takeover of a dead process's local realization (L)",
+          "reproducers": [
+            "reproduceRecoveredRunContinuesOnTheTakeoverProcess"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -582,8 +625,15 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-31",
+          "B-DOL-32",
+          "B-DOL-33",
+          "B-DOL-34",
+          "B-DOL-57",
+          "B-DOL-58"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -593,7 +643,23 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; AI SDK and AG-UI routers in-process; production awaken process over real sockets for the Managed protocol"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "the AI SDK and AG-UI explicit Stop answer 204 with no cancel receipt; only the Managed protocol gives the cancel its own receipt",
+          "follow_up": "AG-UI and AI SDK stop receipts (S)",
+          "reproducers": [
+            "explicit_stop_returns_its_own_receipt",
+            "t32_c01_explicit_stop_returns_an_independent_receipt"
+          ]
+        }
       },
       {
         "id": "T32-C02",
@@ -653,8 +719,11 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-35",
+          "B-DOL-36"
+        ],
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -664,7 +733,15 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; production awaken process restarted on one data dir; real HTTP paging and SSE previews"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        }
       }
     ],
     "risk": "P0",
@@ -794,8 +871,22 @@
           ],
           "scope": "模型可用确定性测试 Provider；授权、路由、事务、传输不可全部 mock"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-37",
+          "B-DOL-38",
+          "B-DOL-39",
+          "B-DOL-40",
+          "B-DOL-41",
+          "B-DOL-42",
+          "B-DOL-43",
+          "B-DOL-59",
+          "B-DOL-60",
+          "B-DOL-61",
+          "B-DOL-62",
+          "B-DOL-63",
+          "B-DOL-64"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -805,7 +896,27 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc; local Runtime, HTTP Worker commit boundary, MCP Streamable HTTP, ACP duplex codec and Hand relay framed channel, nextest"
+          ],
+          "unaccepted": [
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "MCP, ACP and the Hand relay drop the original authority, uncertainty or retry hint that the local and HTTP Worker paths keep",
+          "follow_up": "fault classification across MCP, ACP and Hand relay (M)",
+          "reproducers": [
+            "mcp_distinguishes_a_safe_retry_from_an_unknown_effect",
+            "mcp_http_chain_keeps_the_certain_and_retry_safe_tool_fault_classification",
+            "mcp_http_wire_distinguishes_certain_from_uncertain_tool_faults",
+            "acp_executor_keeps_the_retryable_class_of_the_injected_overloaded_upstream",
+            "acp_projection_keeps_the_native_authority_uncertainty_and_retry_hint",
+            "hand_relay_keeps_the_retry_safe_classification_of_an_undispatched_fault"
+          ]
+        }
       }
     ],
     "risk": "P0",

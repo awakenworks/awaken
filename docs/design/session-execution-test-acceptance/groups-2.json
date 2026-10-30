@@ -990,8 +990,12 @@
           ],
           "scope": "实际启用模式；内核、引擎或物理恢复额外需要 L4"
         },
-        "binding_ids": [],
-        "evidence_state": "design_only",
+        "binding_ids": [
+          "B-DOL-16",
+          "B-DOL-17",
+          "B-DOL-54"
+        ],
+        "evidence_state": "product_gap",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -1001,7 +1005,24 @@
           "负控/非法输入/故障注入按本场景实际执行并记录",
           "T00/T34/T35/T36 对应公共门禁满足",
           "原始源码、命令、日志和清理身份保留"
-        ]
+        ],
+        "slices": {
+          "executed": [
+            "native Windows x86_64-pc-windows-msvc, L1 component gate over SQLite, nextest"
+          ],
+          "unaccepted": [
+            "L3 native executor barrier",
+            "dynamic egress limit (not updatable through a Session command)",
+            "T35 platform gate open (Linux not run by policy)"
+          ]
+        },
+        "product_gap": {
+          "reason": "a Running Session cannot be tightened before its next model effect: update_limit requires an Idle root execution",
+          "follow_up": "session-application: admit budget tightening during a Running root (M)",
+          "reproducers": [
+            "running_session_budget_tightening_governs_the_next_model_request"
+          ]
+        }
       },
       {
         "id": "T13-C03",
