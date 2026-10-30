@@ -11,6 +11,18 @@ aggregate adds no persistence store, revision source or transaction authority.
 
 ## Role Catalog
 
+Session persistence has three caller capabilities over the same selected Store:
+
+| Role | Owns | Uses | Must not own | Verification |
+| --- | --- | --- | --- | --- |
+| `SessionRepositoryReads` | Exact SELECT observations | Original root and owner rows | Root writes or quarantine maintenance | Reader compile-fail and SQLite/PostgreSQL read tables |
+| `SessionReconciliation` | Original recovery scan and demand observation | The same repository's reconciliation index and quarantine | Root create/commit or lifecycle delivery | Maintenance compile-fail and same-allocation SQL tests |
+| `SessionRepository` | Application mutation and receipt boundary | Both original observation roles | Another Store selection or retry owner | Root CAS, replay and outbox conformance |
+
+Process startup derives its hosted observation roles from one repository Arc.
+Model access receives reads; checkpoint retention and demand receive maintenance.
+The complete application retains the full repository for its existing use cases.
+
 Session Runtime composition uses `SessionExecutor::from(Arc<T>)`, where `T`
 implements `CompleteSessionRuntime`. Its thirteen role handles come from that
 one owner and are immutable after construction. `SessionRuntime` retains four

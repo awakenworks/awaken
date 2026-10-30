@@ -33,7 +33,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json", "time"], optional = true }
 awaken-scoped-migration.workspace = true
 awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage = { workspace = true, optional = true, features = ["postgres"] }
@@ -116,6 +116,10 @@ required-features = ["test-support"]
 
 [[test]]
 name = "dispatch_claim_perf"
+required-features = ["test-support"]
+
+[[test]]
+name = "discovery_keyset"
 required-features = ["test-support"]
 
 [[test]]

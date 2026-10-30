@@ -538,7 +538,12 @@ mod tests {
         > {
             Ok(None)
         }
+    }
 
+    use awaken_session_repository_contract::SessionReconciliation;
+
+    #[async_trait::async_trait]
+    impl SessionReconciliation for TestSessions {
         async fn reconciliation_scan(
             &self,
             _after: Option<&awaken_session_state_contract::SessionScanCursor>,
@@ -549,7 +554,6 @@ mod tests {
             Ok(awaken_session_state_contract::SessionScan::default())
         }
     }
-
     fn frozen_session(id: &str, status: &str) -> PersistedSession {
         // Keep baseline/resources type-checked by the production constructor;
         // only the historical missing materialization field is omitted on wire.

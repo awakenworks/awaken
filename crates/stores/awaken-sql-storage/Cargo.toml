@@ -24,7 +24,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:tokio"]
+postgres = ["dep:sqlx", "dep:tokio", "sqlx/runtime-tokio-rustls"]
 
 [lints]
 workspace = true

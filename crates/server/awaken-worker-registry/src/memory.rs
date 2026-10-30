@@ -294,6 +294,19 @@ mod loom_tests {
     use loom::sync::Arc;
     use loom::thread;
 
+    // One existing model-resource policy for full Worker snapshots. This is
+    // Loom's coroutine allocation, independent of the production Tokio stack.
+    const SNAPSHOT_ACTOR_STACK_BYTES: usize = 1024 * 1024;
+
+    fn snapshot_actor<T: Send + 'static>(
+        operation: impl FnOnce() -> T + Send + 'static,
+    ) -> thread::JoinHandle<T> {
+        thread::Builder::new()
+            .stack_size(SNAPSHOT_ACTOR_STACK_BYTES)
+            .spawn(operation)
+            .unwrap()
+    }
+
     fn registration(incarnation: &str) -> WorkerRegistration {
         WorkerRegistration {
             worker_id: "worker".to_string(),
@@ -310,45 +323,35 @@ mod loom_tests {
         // all three physical identities remain in the same Registry history.
         // This uses the production Memory transaction and reducer, not a model
         // of the lock. SQL independent-connection races live in conformance.
-        const STACK_BYTES: usize = 1024 * 1024;
         loom::model(|| {
             // A full RegisteredWorker snapshot/fingerprint exceeds generator's
             // small default coroutine stack on this host. Give every actor a
             // larger stack without bounding preemptions or permutations: the
             // two original mutex acquisition orders remain exhaustive.
-            let scenario = thread::Builder::new()
-                .stack_size(STACK_BYTES)
-                .spawn(|| {
-                    let directory = Arc::new(MemoryWorkerDirectory::new());
-                    directory.register_sync(registration("A"), 0, 10).unwrap();
-                    directory.register_sync(registration("B"), 10, 10).unwrap();
-                    let first = directory.clone();
-                    let old = thread::Builder::new()
-                        .stack_size(STACK_BYTES)
-                        .spawn(move || first.register_sync(registration("A"), 20, 10))
-                        .unwrap();
-                    let second = directory.clone();
-                    let fresh = thread::Builder::new()
-                        .stack_size(STACK_BYTES)
-                        .spawn(move || second.register_sync(registration("C"), 20, 10))
-                        .unwrap();
-                    assert!(matches!(
-                        old.join().unwrap(),
-                        Err(RegistryError::HistoricalIncarnation { .. })
-                    ));
-                    let fresh = fresh.join().unwrap().unwrap();
-                    assert_eq!(fresh.snapshot.identity.incarnation_id, "C");
-                    assert_eq!(fresh.snapshot.identity.generation, 3);
-                    let workers = directory.workers.lock().unwrap();
-                    let records = workers.get("worker").unwrap();
-                    assert_eq!(records.len(), 3);
-                    assert_eq!(
-                        records.get(&1).unwrap().snapshot.identity.incarnation_id,
-                        "A"
-                    );
-                    assert_eq!(records.last_key_value().unwrap().1, &fresh);
-                })
-                .unwrap();
+            let scenario = snapshot_actor(|| {
+                let directory = Arc::new(MemoryWorkerDirectory::new());
+                directory.register_sync(registration("A"), 0, 10).unwrap();
+                directory.register_sync(registration("B"), 10, 10).unwrap();
+                let first = directory.clone();
+                let old = snapshot_actor(move || first.register_sync(registration("A"), 20, 10));
+                let second = directory.clone();
+                let fresh = snapshot_actor(move || second.register_sync(registration("C"), 20, 10));
+                assert!(matches!(
+                    old.join().unwrap(),
+                    Err(RegistryError::HistoricalIncarnation { .. })
+                ));
+                let fresh = fresh.join().unwrap().unwrap();
+                assert_eq!(fresh.snapshot.identity.incarnation_id, "C");
+                assert_eq!(fresh.snapshot.identity.generation, 3);
+                let workers = directory.workers.lock().unwrap();
+                let records = workers.get("worker").unwrap();
+                assert_eq!(records.len(), 3);
+                assert_eq!(
+                    records.get(&1).unwrap().snapshot.identity.incarnation_id,
+                    "A"
+                );
+                assert_eq!(records.last_key_value().unwrap().1, &fresh);
+            });
             scenario.join().unwrap();
         });
     }
@@ -489,86 +492,92 @@ mod loom_tests {
         // omitted legacy manifest must fail H0 before credential admission.
         // Runs the production register/heartbeat/admission code with only its
         // mutex replaced by Loom; complements WorkerCredentialLiveness.tla.
+        // H4 full snapshots use the SAME existing actor stack policy as the
+        // historical-registration model. Default-stack exhaustion is not an
+        // invariant counterexample; preemptions/permutations stay exhaustive.
         loom::model(|| {
-            use awaken_worker_contract::{
-                PlacementRequirements, TRUSTED_HOST_SANDBOX_BACKEND, WorkerCredentialObservation,
-                WorkerCredentialRevision, WorkerCredentialState,
-            };
-            let credential = WorkerCredentialRevision {
-                id: "host-login".into(),
-                revision: 1,
-            };
-            let required = PlacementRequirements {
-                sandbox_backend: Some(TRUSTED_HOST_SANDBOX_BACKEND.into()),
-                required_credentials: [credential.clone()].into(),
-                ..PlacementRequirements::remote_required()
-            };
-            let directory = Arc::new(MemoryWorkerDirectory::new());
-            let mut host = registration("host");
-            host.manifest.runtime_protocol = awaken_worker_contract::VersionRange {
-                min: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
-                max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
-            };
-            host.manifest
-                .sandbox_backends
-                .insert(TRUSTED_HOST_SANDBOX_BACKEND.into());
-            let registered = directory.register_sync(host, 0, 100).unwrap();
-            let identity = registered.snapshot.identity.clone();
-            let available = WorkerCredentialObservation::available(credential.clone(), 0, 100);
-            let mut baseline = registered.snapshot;
-            baseline.state = WorkerState::Ready;
-            baseline.credential_observations.insert(available.clone());
-            assert!(baseline.accepts(&required, 1), "H1 positive control");
-            let mut legacy = baseline.clone();
-            legacy.manifest.runtime_protocol = awaken_worker_contract::VersionRange::ANY;
-            legacy.capability_fingerprint = legacy.manifest.fingerprint().unwrap();
-            assert!(
-                !legacy.accepts(&required, 1),
-                "H0 omitted protocol fails closed"
-            );
-            let mut cloud = baseline.clone();
-            cloud.manifest.sandbox_backends = ["container".into()].into();
-            cloud.capability_fingerprint = cloud.manifest.fingerprint().unwrap();
-            assert!(!cloud.accepts(&required, 1), "H3 no trust fallback");
-            let mut handles = Vec::new();
-            for sequence in [1, 2] {
-                let directory = directory.clone();
-                let identity = identity.clone();
-                let mut observation = available.clone();
-                if sequence == 2 {
-                    observation.state = WorkerCredentialState::LoginRequired;
+            let scenario = snapshot_actor(|| {
+                use awaken_worker_contract::{
+                    PlacementRequirements, TRUSTED_HOST_SANDBOX_BACKEND,
+                    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
+                };
+                let credential = WorkerCredentialRevision {
+                    id: "host-login".into(),
+                    revision: 1,
+                };
+                let required = PlacementRequirements {
+                    sandbox_backend: Some(TRUSTED_HOST_SANDBOX_BACKEND.into()),
+                    required_credentials: [credential.clone()].into(),
+                    ..PlacementRequirements::remote_required()
+                };
+                let directory = Arc::new(MemoryWorkerDirectory::new());
+                let mut host = registration("host");
+                host.manifest.runtime_protocol = awaken_worker_contract::VersionRange {
+                    min: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                    max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                };
+                host.manifest
+                    .sandbox_backends
+                    .insert(TRUSTED_HOST_SANDBOX_BACKEND.into());
+                let registered = directory.register_sync(host, 0, 100).unwrap();
+                let identity = registered.snapshot.identity.clone();
+                let available = WorkerCredentialObservation::available(credential.clone(), 0, 100);
+                let mut baseline = registered.snapshot;
+                baseline.state = WorkerState::Ready;
+                baseline.credential_observations.insert(available.clone());
+                assert!(baseline.accepts(&required, 1), "H1 positive control");
+                let mut legacy = baseline.clone();
+                legacy.manifest.runtime_protocol = awaken_worker_contract::VersionRange::ANY;
+                legacy.capability_fingerprint = legacy.manifest.fingerprint().unwrap();
+                assert!(
+                    !legacy.accepts(&required, 1),
+                    "H0 omitted protocol fails closed"
+                );
+                let mut cloud = baseline.clone();
+                cloud.manifest.sandbox_backends = ["container".into()].into();
+                cloud.capability_fingerprint = cloud.manifest.fingerprint().unwrap();
+                assert!(!cloud.accepts(&required, 1), "H3 no trust fallback");
+                let mut handles = Vec::new();
+                for sequence in [1, 2] {
+                    let directory = directory.clone();
+                    let identity = identity.clone();
+                    let mut observation = available.clone();
+                    if sequence == 2 {
+                        observation.state = WorkerCredentialState::LoginRequired;
+                    }
+                    handles.push(snapshot_actor(move || {
+                        directory
+                            .heartbeat_sync(
+                                &identity,
+                                WorkerHeartbeat {
+                                    sequence,
+                                    ready: true,
+                                    in_flight: 0,
+                                    warm_environment_shapes: Default::default(),
+                                    credential_observations: [observation].into(),
+                                    acp_capability_observations: Default::default(),
+                                    source_retention: Default::default(),
+                                },
+                                1,
+                                100,
+                            )
+                            .unwrap();
+                    }));
                 }
-                handles.push(thread::spawn(move || {
-                    directory
-                        .heartbeat_sync(
-                            &identity,
-                            WorkerHeartbeat {
-                                sequence,
-                                ready: true,
-                                in_flight: 0,
-                                warm_environment_shapes: Default::default(),
-                                credential_observations: [observation].into(),
-                                acp_capability_observations: Default::default(),
-                                source_retention: Default::default(),
-                            },
-                            1,
-                            100,
-                        )
-                        .unwrap();
-                }));
-            }
-            for handle in handles {
-                handle.join().unwrap();
-            }
-            let workers = directory.workers.lock().unwrap();
-            let current = workers.get("worker").unwrap().last_key_value().unwrap().1;
-            assert_eq!(current.heartbeat_sequence, 2);
-            assert_eq!(current.snapshot.state, WorkerState::Ready);
-            assert!(!current.snapshot.accepts(&required, 1), "H2 revoked login");
-            assert!(
-                !cloud.accepts(&required, 1),
-                "H3 still no cloud substitution"
-            );
+                for handle in handles {
+                    handle.join().unwrap();
+                }
+                let workers = directory.workers.lock().unwrap();
+                let current = workers.get("worker").unwrap().last_key_value().unwrap().1;
+                assert_eq!(current.heartbeat_sequence, 2);
+                assert_eq!(current.snapshot.state, WorkerState::Ready);
+                assert!(!current.snapshot.accepts(&required, 1), "H2 revoked login");
+                assert!(
+                    !cloud.accepts(&required, 1),
+                    "H3 still no cloud substitution"
+                );
+            });
+            scenario.join().unwrap();
         });
     }
 }

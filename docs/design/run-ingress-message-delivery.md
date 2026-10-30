@@ -55,6 +55,40 @@ only an already-active local attempt can expose it.
 Pending edit, retract, reorder, and recovery operations belong to the
 thread-message or operations surface. They are not direct-driver or Dispatch internals.
 
+## PostgreSQL candidate discovery
+
+The existing Dispatch adapter uses one discovery query for local, compatible
+and placed claims. Its first page is bounded; after a long incompatible prefix,
+the same query streams the remaining order. Once an admissible Run is found,
+a window of at most128 rows including that Run is inspected before exact claims.
+This avoids issuing another sorted query for every128 incompatible rows. A batch
+that loses every exact-claim race continues from the last inspected key rather
+than replaying the prefix. Creation time is a typed database timestamp, never a
+DateStyle-dependent text codec.
+
+Each call starts at the beginning of the original order: physical rank, state
+rank, descending priority, creation time and Run id. The cursor survives only
+that call and grants no claim. The adapter drops the read stream before its
+original exact claim transactions; even a one-connection pool can claim without
+holding its own discovery connection. A buffered batch checks out one connection
+for its ordered exact attempts. Each attempt retains its own original transaction
+and releases every lock at that transaction boundary; losing a race does not
+rejoin the pool queue for every remaining id. A full candidate batch bounds client
+memory, and the stream yields cooperatively while rejecting a long prefix.
+An error while inspecting a later row is retained until earlier buffered
+candidates have had their original exact-claim attempts. A successful earlier
+claim wins; if every earlier candidate loses, the original error is returned.
+Read-ahead must never let a later corrupt row suppress legal earlier work.
+
+Only exhausting the original order returns no work. One thirty-second discovery
+deadline instead returns the existing retryable unavailable result, never
+an empty queue observation. The caller's original retry policy remains the only
+retry owner. Concurrent changes before the cursor are reconsidered by the next
+fresh call. SQL state, Worker capabilities, credentials and lease fencing remain
+exact-transaction authority. The placement preference remains a hint, including
+when the read-only batch inspects more than one admissible Run.
+
+
 ## External Use Surface
 
 External callers use run ingress indirectly through product/server adapters.

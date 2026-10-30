@@ -110,7 +110,13 @@ async fn sqlite_reader_preserves_quarantine_and_only_maintenance_clears_it() {
         commands,
         "S1 command identities/payloads/revisions cannot change in place or in count"
     );
-    store.reconciliation_scan(None).await.unwrap();
+    // S4 the maintenance-only view is an upcast of the SAME root authority;
+    // its original scan may clear quarantine, but carries no root write role.
+    let full: Arc<dyn SessionRepository> = store.clone();
+    let maintenance: Arc<dyn SessionReconciliation> = full;
+    let expected: Arc<dyn SessionReconciliation> = store.clone();
+    assert!(Arc::ptr_eq(&maintenance, &expected), "S4 same Store");
+    maintenance.reconciliation_scan(None).await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_session_quarantine")
             .fetch_one(&store.pool)
@@ -175,7 +181,16 @@ async fn postgres_reader_preserves_quarantine_and_only_maintenance_clears_it() {
         commands,
         "S1 command identities/payloads/revisions cannot change in place or in count"
     );
-    store.reconciliation_scan(None).await.unwrap();
+    // S4 shares the same positive and negative observations on PostgreSQL:
+    // upcasting grants quarantine maintenance, never root mutation authority.
+    let full: Arc<dyn SessionRepository> = store.clone();
+    let maintenance: Arc<dyn SessionReconciliation> = full;
+    let expected: Arc<dyn SessionReconciliation> = store.clone();
+    assert!(
+        Arc::ptr_eq(&maintenance, &expected),
+        "S4 same PostgreSQL Store"
+    );
+    maintenance.reconciliation_scan(None).await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_session_quarantine")
             .fetch_one(&store.pool)

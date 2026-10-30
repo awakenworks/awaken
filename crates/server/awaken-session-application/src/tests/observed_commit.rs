@@ -104,7 +104,12 @@ impl SessionRepository for ObservedCommitPort {
     ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
         panic!("unexpected repository operation")
     }
+}
 
+use awaken_session_repository_contract::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for ObservedCommitPort {
     async fn reconciliation_scan(
         &self,
         _after: Option<&awaken_session_state_contract::SessionScanCursor>,
@@ -112,7 +117,6 @@ impl SessionRepository for ObservedCommitPort {
         panic!("unexpected repository operation")
     }
 }
-
 #[test]
 fn observed_commit_future_cause_effect_decision_table() {
     // Relocation coverage: execute the same canonical future through its sole

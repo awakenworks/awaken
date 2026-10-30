@@ -12,6 +12,17 @@ is the crate category for the persistence seam (media `inmem` / `fs` / `postgres
 
 ## Context map
 
+### PostgreSQL transport capability
+
+`awaken-sql-storage` owns the shared PostgreSQL pool policy. Its `postgres`
+feature selects SQLx's Tokio/Rustls transport as well as the driver, so an
+independently built adapter does not depend on another workspace package to
+activate TLS accidentally. The process still selects the exact URL, SSL mode
+and trust material; requiring TLS never falls back to plaintext. SQLite-only
+and authority-free builds do not enable this optional PostgreSQL capability.
+Real adapter selections against a verified private-CA PostgreSQL fixture own
+the transport evidence; ordinary plaintext local fixtures do not prove TLS.
+
 Durable state is not one domain. Three domains own truth or operational state, a
 fourth is a downstream projection, and the backend crates are shared adapters that
 cut across them.

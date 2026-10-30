@@ -580,7 +580,12 @@ impl SessionRepository for ScheduledConflictRepository {
     ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
         self.inner.count_environment_phase(phase).await
     }
+}
 
+use awaken_session_repository_contract::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for ScheduledConflictRepository {
     async fn reconciliation_scan(
         &self,
         after: Option<&awaken_session_state_contract::SessionScanCursor>,
@@ -591,7 +596,6 @@ impl SessionRepository for ScheduledConflictRepository {
         self.inner.reconciliation_scan(after).await
     }
 }
-
 #[async_trait::async_trait]
 impl awaken_session_repository_contract::LifecycleOutbox for ScheduledConflictRepository {
     async fn append_lifecycle(

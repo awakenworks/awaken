@@ -6,7 +6,7 @@ mod repository_port;
 pub(crate) use awaken_session_state_contract::*;
 pub(crate) use awaken_session_types::SessionId;
 pub use lifecycle_outbox::{LifecycleOutbox, SessionStore};
-pub use repository_port::{SessionRepository, SessionRepositoryReads};
+pub use repository_port::{SessionReconciliation, SessionRepository, SessionRepositoryReads};
 
 #[cfg(test)]
 mod tests;

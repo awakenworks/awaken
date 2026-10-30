@@ -979,3 +979,29 @@
 - Decision-table tests cover retained cleanup, restart/replay, missing or foreign
   evidence, other execution classes and concurrent activity. Source evidence does
   not assert independent effect closure or deployed Flow successor admission.
+
+
+## 2026-10-29 — Share standalone service startup and bounded discovery
+
+- [Runtime interface boundaries](../design/runtime-interface-boundaries.md)
+  records the standalone Control process over the existing shared startup.
+- [Run ingress](../design/run-ingress-message-delivery.md#postgresql-candidate-discovery)
+  owns the single paged PostgreSQL candidate discovery and exact-claim boundary.
+  Read-ahead retains earlier claim precedence over later decoding failures;
+  the existing lifecycle and durable tests own the decision tables.
+
+- [Session persistence roles](../design/session-aggregate-and-dispatch-capabilities.md#role-catalog)
+  retains SELECT-only reads separately from the original quarantine-maintaining
+  scan; hosted maintenance receives no root mutation capability.
+
+## 2026-10-30 — Keep exact-claim batches on one checkout
+
+- [Run ingress](../design/run-ingress-message-delivery.md#postgresql-candidate-discovery)
+  retains one pool checkout across ordered buffered attempts. Each exact attempt
+  still owns a separate transaction and releases its original locks before the
+  next id. The existing concurrent-prefix driver covers pool contention; its
+  measurements remain local diagnostic evidence, not Cell capacity acceptance.
+
+- [Session acceptance bindings](../design/session-execution-test-acceptance.md#现有测试绑定索引)
+  follow the current unchanged declaration and assertion lines after source
+  movement; original receipt and historical file digests remain immutable.

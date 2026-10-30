@@ -58,7 +58,8 @@ Production process targets are role-named: `awaken-control`,
 `awaken-coordinator`, and `awaken-worker`. The `awaken` target remains the
 operator/AllInOne launcher and retains `awaken control` / `awaken coordinator`
 as compatibility commands. Control and Coordinator targets share the canonical
-source-level lifecycle in `awaken-cli`; neither entrypoint reconstructs a domain
+source-level lifecycle in `awaken-process-startup`, through their independent
+`awaken-control-process` and `awaken-coordinator-process` targets; neither reconstructs a domain
 application. Worker keeps its independent authority-store-free startup.
 
 Package names make the application and adapter roles explicit even though several

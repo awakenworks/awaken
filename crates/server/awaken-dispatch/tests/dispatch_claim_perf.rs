@@ -8,7 +8,7 @@ mod harness;
 
 use std::time::Instant;
 
-use awaken_dispatch::{PostgresDispatchStore, RunDispatch};
+use awaken_dispatch::{PlacementRequirements, PostgresDispatchStore, RunDispatch};
 use sqlx::types::Json;
 
 // The schemas isolate rows, not CPU/IO/WAL. All scenarios in this binary share
@@ -267,12 +267,95 @@ async fn incompatible_front_queue_claim_latency() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires an explicit live PostgreSQL placement-prefix measurement"]
+async fn capability_incompatible_front_queue_claim_latency() {
+    // Causes: P1 N high-priority Pending Runs require a real GPU capability;
+    // P2 the requester lacks it; P3 M independent legal lower-priority Runs.
+    // Effects: E1 every claim crosses the actual compatibility prefix, E2
+    // each legal Run is claimed once, E3 report finite warm latency. Rule
+    // G1=P1+P2+P3=>E1+E2+E3. Epoch-only prefix measurements cannot establish
+    // this property because SQL can discard their rows before discovery.
+    // The whole loop has one300s budget and long fixture leases; a slow
+    // candidate cannot pass by reclaiming an earlier measured Run. Timings
+    // remain scoped observations; alternate baseline/candidate on one host.
+    let _measurement = MEASUREMENT.lock().await;
+    let pool = harness::schema_pool("t_pg_claim_capability_perf")
+        .await
+        .expect("explicit capability measurement requires PostgreSQL");
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let rows = parameter("AWAKEN_DISPATCH_PERF_INCOMPATIBLE_ROWS", 5_000, 10_000_000) as i64;
+    let rounds = parameter("AWAKEN_DISPATCH_PERF_ROUNDS", 100, 100_000);
+    let (directory, identity) =
+        awaken_dispatch_testkit::worker_http::ready_worker("perf-no-gpu").await;
+    let worker = directory
+        .current(&identity.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    let mut placement = PlacementRequirements::remote_required();
+    placement.required_capabilities.insert("gpu".into());
+    harness::seed_placement_candidate_prefix(
+        &pool,
+        RunDispatch::new(harness::activation("gpu-template")).with_placement(placement),
+        rows,
+        "gpu-measure-",
+        100,
+    )
+    .await;
+    for index in 0..=rounds {
+        store
+            .enqueue(
+                RunDispatch::new(harness::activation_on(
+                    &format!("legal-{index}"),
+                    &format!("legal-thread-{index}"),
+                ))
+                .with_placement(PlacementRequirements::remote_required()),
+            )
+            .await
+            .unwrap();
+    }
+    let mut samples = Vec::new();
+    let mut winners = std::collections::HashSet::new();
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        for iteration in 0..=rounds {
+            let started = Instant::now();
+            let claim = store
+                .claim_compatible(&worker, 3_600_000)
+                .await
+                .unwrap()
+                .expect("G1 legal tail");
+            assert!(claim.request.run_id().0.starts_with("legal-"));
+            assert!(
+                winners.insert(claim.request.run_id().0.clone()),
+                "G1 distinct current claim"
+            );
+            if iteration > 0 {
+                samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+            }
+        }
+    })
+    .await
+    .expect("G1 whole placement measurement budget");
+    report(
+        "dispatch_capability_prefix_perf",
+        rows,
+        &mut samples,
+        pool.options().get_max_connections(),
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a live PostgreSQL fixture and compares 1/8/32/128 persistent claimers"]
 async fn concurrent_incompatible_front_claim_throughput() {
     // Causes: C1 the same exhausted high-priority prefix for every case;
     // C2 the same total of independent eligible Runs; C3 N claimers start behind
     // one barrier with N in {1,8,32,128} and each repeatedly claims total/N Runs.
+    // C4 the pool is smaller than 128 persistent claimers: losing exact ids
+    // must retain independent transactions without requeueing each checkout.
     // Effects: E1 every Run gets one distinct current claim; E2 report per-call
     // p50/p95/p99 and finite-window claim/s with the observed pool limit;
     // E3 one 300s window bounds the whole case, not each join separately. Under the
@@ -280,6 +363,17 @@ async fn concurrent_incompatible_front_claim_throughput() {
     // timing assertion is made in CI: old/new runs must alternate on one fixed
     // host, PostgreSQL image and pool before any performance claim is issued.
     let _measurement = MEASUREMENT.lock().await;
+    // T2 exercises actual immutable placement incompatibility, not an SQL-
+    // pruned epoch. Both fixture kinds use this same contention/identity table.
+    // T3 an explicit registered Worker requires current protocol coordinates
+    // on the legal tail; the legacy v0 decoder default is not eligible for
+    // that Worker. The local epoch-only case retains its original default.
+    let kind = std::env::var("AWAKEN_DISPATCH_PERF_PREFIX_KIND")
+        .unwrap_or_else(|_| "exhausted_epoch".to_owned());
+    assert!(
+        matches!(kind.as_str(), "exhausted_epoch" | "capability"),
+        "unknown prefix kind"
+    );
     let rows = parameter("AWAKEN_DISPATCH_PERF_INCOMPATIBLE_ROWS", 5_000, 10_000_000) as i64;
     let total = parameter("AWAKEN_DISPATCH_PERF_CONCURRENT_CLAIMS", 512, 100_000);
     assert!(
@@ -304,41 +398,60 @@ async fn concurrent_incompatible_front_claim_throughput() {
                 .await
                 .expect("migrated dispatch store"),
         );
-        harness::seed_exhausted_candidate_prefix(
-            &pool,
-            RunDispatch::new(harness::activation("template")),
-            rows,
-        )
-        .await;
-        for index in 0..=total {
-            store
-                .enqueue(RunDispatch::new(harness::activation_on(
-                    &format!("valid-{index}"),
-                    &format!("valid-thread-{index}"),
-                )))
+        let worker = if kind == "capability" {
+            let (directory, identity) =
+                awaken_dispatch_testkit::worker_http::ready_worker("contention-no-gpu").await;
+            let worker = directory
+                .current(&identity.worker_id)
                 .await
-                .unwrap();
+                .unwrap()
+                .unwrap()
+                .snapshot;
+            let mut placement = PlacementRequirements::remote_required();
+            placement.required_capabilities.insert("gpu".into());
+            harness::seed_placement_candidate_prefix(
+                &pool,
+                RunDispatch::new(harness::activation("template")).with_placement(placement),
+                rows,
+                "gpu-contention-",
+                100,
+            )
+            .await;
+            Some(worker)
+        } else {
+            harness::seed_exhausted_candidate_prefix(
+                &pool,
+                RunDispatch::new(harness::activation("template")),
+                rows,
+            )
+            .await;
+            None
+        };
+        for index in 0..=total {
+            let mut request = RunDispatch::new(harness::activation_on(
+                &format!("valid-{index}"),
+                &format!("valid-thread-{index}"),
+            ));
+            if worker.is_some() {
+                request = request.with_placement(PlacementRequirements::remote_required());
+            }
+            store.enqueue(request).await.unwrap();
         }
-        store
-            .claim("perf-warmup", 600_000, &Default::default())
-            .await
-            .expect("warmup claim")
-            .expect("eligible warmup Run");
+        measurement_claim(&store, "perf-warmup", worker.as_ref()).await;
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(claimers + 1));
         let mut tasks = tokio::task::JoinSet::new();
         for index in 0..claimers {
             let store = store.clone();
             let barrier = barrier.clone();
+            let worker = worker.clone();
             tasks.spawn(async move {
                 barrier.wait().await;
                 let mut observations = Vec::new();
                 for _ in 0..total / claimers {
                     let started = Instant::now();
-                    let claimed = store
-                        .claim(&format!("perf-owner-{index}"), 600_000, &Default::default())
-                        .await
-                        .expect("concurrent exact claim")
-                        .expect("eligible Run remains");
+                    let claimed =
+                        measurement_claim(&store, &format!("perf-owner-{index}"), worker.as_ref())
+                            .await;
                     assert_eq!(claimed.lease.epoch(), 1, "T1/E1 fresh current claim");
                     observations.push((
                         claimed.lease.run_id().0.clone(),
@@ -367,7 +480,7 @@ async fn concurrent_incompatible_front_claim_throughput() {
         assert_eq!(winners.len(), total, "T1/E1 every Run is claimed");
         report(
             &format!(
-                "dispatch_claim_concurrent_perf claimers={claimers} window_s={window_s:.3} claim_per_s={:.3}",
+                "dispatch_claim_concurrent_perf prefix_kind={kind} claimers={claimers} window_s={window_s:.3} claim_per_s={:.3}",
                 total as f64 / window_s
             ),
             rows,
@@ -380,3 +493,18 @@ async fn concurrent_incompatible_front_claim_throughput() {
 use awaken_dispatch_contract::{
     DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _,
 };
+
+// The same fixture drives both necessary-condition and true placement prefixes;
+// only the authored caller role differs. No benchmark substitutes a queue model.
+async fn measurement_claim(
+    store: &PostgresDispatchStore,
+    owner: &str,
+    worker: Option<&awaken_dispatch::WorkerSnapshot>,
+) -> awaken_dispatch::Claimed {
+    match worker {
+        Some(worker) => store.claim_compatible(worker, 3_600_000).await,
+        None => store.claim(owner, 3_600_000, &Default::default()).await,
+    }
+    .expect("measured exact claim")
+    .expect("eligible measured Run remains")
+}

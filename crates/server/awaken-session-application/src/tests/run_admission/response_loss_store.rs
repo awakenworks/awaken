@@ -175,13 +175,6 @@ impl SessionRepository for ResponseLossStore {
         Ok(result)
     }
 
-    async fn reconciliation_scan(
-        &self,
-        after: Option<&awaken_session_state_contract::SessionScanCursor>,
-    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
-        self.inner.reconciliation_scan(after).await
-    }
-
     async fn idempotency_receipt(
         &self,
         session_id: &SessionId,
@@ -198,6 +191,17 @@ impl SessionRepository for ResponseLossStore {
     }
 }
 
+use awaken_session_repository_contract::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for ResponseLossStore {
+    async fn reconciliation_scan(
+        &self,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
+    ) -> Result<awaken_session_state_contract::SessionScan, SessionRepositoryError> {
+        self.inner.reconciliation_scan(after).await
+    }
+}
 #[async_trait::async_trait]
 impl awaken_session_repository_contract::LifecycleOutbox for ResponseLossStore {
     async fn append_lifecycle(

@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_session_repository_contract::{
-    LifecycleOutbox, SessionRepository, SessionRepositoryReads,
+    LifecycleOutbox, SessionReconciliation, SessionRepository, SessionRepositoryReads,
 };
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;

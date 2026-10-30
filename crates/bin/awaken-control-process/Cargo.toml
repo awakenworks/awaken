@@ -1,0 +1,28 @@
+[package]
+name = "awaken-control-process"
+description = "The Control-only service executable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "apps"
+product = "apps"
+layer = "bootstrap"
+authority = "control-process"
+separation = "process"
+
+[[bin]]
+name = "awaken-control"
+path = "src/main.rs"
+
+[dependencies]
+awaken-process-startup.workspace = true
+
+[features]
+container-docker = ["awaken-process-startup/container-docker"]
+container-podman = ["awaken-process-startup/container-podman"]
+container-k8s = ["awaken-process-startup/container-k8s"]
+
+[lints]
+workspace = true

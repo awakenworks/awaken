@@ -77,7 +77,12 @@ impl SessionRepository for ScriptedRepository {
     ) -> Result<u64, SessionRepositoryError> {
         panic!("capacity reads must not substitute another index")
     }
+}
 
+use crate::SessionReconciliation;
+
+#[async_trait::async_trait]
+impl SessionReconciliation for ScriptedRepository {
     async fn reconciliation_scan(
         &self,
         after: Option<&SessionScanCursor>,
@@ -92,7 +97,6 @@ impl SessionRepository for ScriptedRepository {
         page
     }
 }
-
 fn scripted(pages: impl IntoIterator<Item = Page>) -> ScriptedRepository {
     ScriptedRepository(Mutex::new(pages.into_iter().collect()))
 }
