@@ -2304,3 +2304,102 @@ fn configuration_capability_requires_idle_and_preserves_frozen_tool_policy() {
     assert!(root.title.is_none());
     assert_eq!(root.tools, before.tools);
 }
+
+#[test]
+fn uncounted_failures_count_only_failed_recovery_and_reset_on_counted_progress() {
+    // Causes: C1 execution (counted Preparing/Activating vs uncounted Idle,
+    // Running, Rescheduling); C2 the failure is a not-ready deferral.
+    // Effects: E1 count + 1; E2 unchanged.
+    // | Rule | C1        | C2    | effect |
+    // | U1   | uncounted | false | E1     |
+    // | U2   | uncounted | true  | E2     |
+    // | U3   | counted   | any   | E2 (the claim already counted) |
+    // Resets: R1 published realization readiness clears the count; R2 a counted
+    // initial claim clears it with the other failure coordinates; R3 the
+    // historical wire omits a zero count and decodes absence as zero.
+    use SessionExecutionState::{Activating, Idle, Preparing, Rescheduling, Running};
+    for (rule, execution, not_ready, expected) in [
+        ("U1 idle", Idle, false, 1),
+        ("U1 running", Running, false, 1),
+        ("U1 rescheduling", Rescheduling, false, 1),
+        ("U2 idle", Idle, true, 0),
+        ("U2 running", Running, true, 0),
+        ("U3 preparing", Preparing, false, 0),
+        ("U3 activating", Activating, true, 0),
+    ] {
+        let mut aggregate = root(execution, 1);
+        let counted = aggregate.assignment().note_uncounted_failure(not_ready);
+        assert_eq!(counted, Ok(expected), "{rule}");
+        assert_eq!(
+            aggregate
+                .snapshot()
+                .realization_progress()
+                .uncounted_failures(),
+            expected,
+            "{rule}"
+        );
+    }
+
+    let mut running = root(Running, 1);
+    for expected in 1..=3 {
+        assert_eq!(
+            running.assignment().note_uncounted_failure(false),
+            Ok(expected)
+        );
+    }
+    running.activity().realization_ready(20).unwrap();
+    assert_eq!(
+        running
+            .snapshot()
+            .realization_progress()
+            .uncounted_failures(),
+        0,
+        "R1"
+    );
+
+    let mut preparing = root(Idle, 1);
+    preparing
+        .assignment()
+        .note_uncounted_failure(false)
+        .unwrap();
+    let wire = serde_json::to_value(preparing.snapshot()).unwrap();
+    assert_eq!(
+        wire["realization_progress"]["uncounted_failures"], 1,
+        "a non-zero count is persisted"
+    );
+    let mut dto = serde_json::from_value::<PersistedSession>(wire).unwrap();
+    assert_eq!(
+        dto.realization_progress().uncounted_failures(),
+        1,
+        "round-trip"
+    );
+    dto.execution = Preparing;
+    let mut preparing = SessionAggregate::try_from(dto).unwrap();
+    preparing
+        .assignment()
+        .claim(
+            crate::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker:1:boot".into(),
+                epoch: 1,
+                expires_at_unix_ms: 500,
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        preparing
+            .snapshot()
+            .realization_progress()
+            .uncounted_failures(),
+        0,
+        "R2"
+    );
+    let historical = serde_json::to_value(root(Running, 1).snapshot()).unwrap();
+    assert!(
+        historical["realization_progress"]
+            .get("uncounted_failures")
+            .is_none(),
+        "R3 zero is omitted"
+    );
+}

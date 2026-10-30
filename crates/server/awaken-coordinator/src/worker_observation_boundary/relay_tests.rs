@@ -235,6 +235,7 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
         relay_authenticator: Some(
             awaken_service_auth_contract::static_token_authenticator("relay-token").unwrap(),
         ),
+        retirement_explanations: Default::default(),
     };
     let query = format!("session_id=relay-session&attachment_id={attachment}&version=1");
     let app = domain_router_with_authenticator(state.clone());

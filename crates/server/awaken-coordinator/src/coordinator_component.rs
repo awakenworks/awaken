@@ -359,6 +359,7 @@ pub async fn build_coordinator_component(
                 clock: clock.clone(),
                 authenticator: authenticator.clone(),
                 relay_authenticator: relay_destination_authenticator.clone(),
+                retirement_explanations: Default::default(),
             },
         )
     });

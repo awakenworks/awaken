@@ -143,6 +143,13 @@ Session therefore cannot starve later MCP credential adoption. Concurrent
 polls share the same cursor lock while current-root and Worker checks still
 fence every assignment.
 
+A Run-free update is bounded by the Session's realization budget like initial
+preparation: a terminal failure, or retryable failures that spend the budget,
+fail exactly the Active generations whose publication was never acknowledged,
+which ends their preparation demand
+([worker retirement amendment 2026-10-31](worker-retirement.md#amendment-2026-10-31-bound-uncounted-failures-close-unissued-leases-explain-refusals)).
+A capacity or provisioning deferral never spends it.
+
 Credential rollout remains pending until the desired source revision is Active
 and publication-acknowledged, or a revoked source is absent from both desired
 configuration and every live generation. The existing source-reference index

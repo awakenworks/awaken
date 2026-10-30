@@ -817,6 +817,7 @@ impl SessionRealizations {
             self.clock.now_ms(),
             command.source_run_id.clone(),
         );
+        command.record_bounded_failure(&mut session, self.realization_retry_budget)?;
         let initial_realization = session.execution != SessionExecutionState::Idle;
         let retry_initial = {
             match command
@@ -1163,25 +1164,32 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                         Err(error) => return Err(error),
                     };
                     // A withdrawn Worker cannot start physical effects from
-                    // a lease minted just before its Registry transition.
-                    let Some(current_worker) = self.worker_for_target(&target).await? else {
-                        return Ok(None);
-                    };
+                    // a lease minted just before its Registry transition. The
+                    // refused directive never leaves this process, so its lease
+                    // is closed rather than left live on a retiring Worker.
                     let current_root = self
                         .mutations
                         .repository()
                         .get(&session_id)
                         .await
                         .map_err(repository_control)?;
-                    if current_worker.state != awaken_worker_contract::WorkerState::Ready
-                        || current_root.revision != directive.projection.revision
-                        || !current_root.is_run_free_preparation_candidate()
-                        || awaken_worker_contract::can_claim(
-                            &current_worker.manifest,
-                            &compiler.requirements(&current_root)?,
-                        )
-                        .is_err()
-                    {
+                    let admitted = match self.worker_for_target(&target).await? {
+                        Some(worker) => {
+                            worker.state == awaken_worker_contract::WorkerState::Ready
+                                && current_root.revision == directive.projection.revision
+                                && current_root.is_run_free_preparation_candidate()
+                                && awaken_worker_contract::can_claim(
+                                    &worker.manifest,
+                                    &compiler.requirements(&current_root)?,
+                                )
+                                .is_ok()
+                        }
+                        None => false,
+                    };
+                    if !admitted {
+                        self.mutations
+                            .expire_exact_assignment(&session_id, &directive.authority.lease)
+                            .await?;
                         return Ok(None);
                     }
                     return Ok(Some(

@@ -295,7 +295,7 @@ impl FailSessionRealization {
             self.retryable,
             self.not_ready,
             session.execution,
-            session.realization_progress().attempts(),
+            spent_realization_budget(session),
             budget,
         )
         .map_err(|reason| crate::SessionRealizationControlFailure::Invalid(reason.into()))?;
@@ -303,6 +303,97 @@ impl FailSessionRealization {
             return Ok(RealizationFailureOutcome::Absorb);
         }
         Ok(outcome)
+    }
+}
+
+/// The budget an assignment has spent: counted claims for an initial
+/// (Preparing/Activating) realization, otherwise the consecutive failed
+/// effects of uncounted recovery or Run-free assignments, which the caller
+/// records before planning. Recovery claims never count, so without this a
+/// recovery whose effect always fails would be re-claimed forever.
+fn spent_realization_budget(session: &PersistedSession) -> u32 {
+    let progress = session.realization_progress();
+    spent_budget(
+        session.execution,
+        progress.attempts(),
+        progress.uncounted_failures(),
+    )
+}
+
+const fn spent_budget(
+    execution: SessionExecutionState,
+    attempts: u32,
+    uncounted_failures: u32,
+) -> u32 {
+    if matches!(
+        execution,
+        SessionExecutionState::Preparing | SessionExecutionState::Activating
+    ) {
+        attempts
+    } else {
+        uncounted_failures
+    }
+}
+
+const fn run_free_exhausted(
+    retryable: bool,
+    not_ready: bool,
+    uncounted_failures: u32,
+    budget: u32,
+) -> bool {
+    !retryable || (!not_ready && uncounted_failures >= budget)
+}
+
+impl FailSessionRealization {
+    /// Apply this failure's bounded-retry bookkeeping to the Session before
+    /// the budget is planned: count it when its assignment counted no initial
+    /// attempt (Run-free preparation, Running/Rescheduling recovery), and, for
+    /// an Idle Session whose Run-free preparation is exhausted, fail exactly
+    /// the Active generations whose publication was never acknowledged. Those
+    /// generations are the demand that re-selects the Session on every poll;
+    /// acknowledged (serving) generations are retained unchanged.
+    pub fn record_bounded_failure(
+        &self,
+        session: &mut awaken_session_state_contract::SessionAggregate,
+        budget: u32,
+    ) -> Result<(), crate::SessionRealizationControlFailure> {
+        let unavailable = |error: &dyn std::fmt::Display| {
+            crate::SessionRealizationControlFailure::Unavailable(error.to_string())
+        };
+        session
+            .assignment()
+            .note_uncounted_failure(self.not_ready)
+            .map_err(|error| unavailable(&error))?;
+        if session.execution == SessionExecutionState::Idle
+            && self.run_free_preparation_exhausted(session, budget)
+        {
+            session
+                .mcp()
+                .fail_unpublished_generations(self.reason.clone())
+                .map_err(|error| unavailable(&error))?;
+        }
+        Ok(())
+    }
+
+    /// Whether an Idle Session's Run-free preparation may not be retried
+    /// again: a terminal effect failure, or a retryable one that has spent the
+    /// realization budget. A not-ready deferral never exhausts it. The caller
+    /// then fails the unacknowledged MCP generations that keep demanding it.
+    ///
+    /// | retryable | not-ready | uncounted failures | exhausted |
+    /// |-----------|-----------|--------------------|-----------|
+    /// | false     | -         | any                | true      |
+    /// | true      | true      | any                | false     |
+    /// | true      | false     | < budget           | false     |
+    /// | true      | false     | >= budget          | true      |
+    #[must_use]
+    pub fn run_free_preparation_exhausted(&self, session: &PersistedSession, budget: u32) -> bool {
+        run_free_exhausted(
+            self.retryable,
+            self.not_ready,
+            session.realization_progress().uncounted_failures(),
+            budget,
+        )
     }
 }
 
@@ -317,6 +408,34 @@ fn symbolic_execution() -> SessionExecutionState {
         5 => SessionExecutionState::Idle,
         _ => SessionExecutionState::Terminated,
     }
+}
+
+#[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+#[kani::proof]
+fn uncounted_failures_bound_recovery_and_run_free_preparation() {
+    // For every execution, count and budget: an uncounted assignment spends
+    // its consecutive failures, so a retryable non-deferred failure at or
+    // above the budget always absorbs, and a deferral never exhausts.
+    let execution = symbolic_execution();
+    let attempts: u32 = kani::any();
+    let failures: u32 = kani::any();
+    let budget: u32 = kani::any();
+    let spent = spent_budget(execution, attempts, failures);
+    let counted = matches!(
+        execution,
+        SessionExecutionState::Preparing | SessionExecutionState::Activating
+    );
+    assert!(spent == if counted { attempts } else { failures });
+    if !counted && failures >= budget {
+        assert!(
+            realization_failure_outcome(true, false, execution, spent, budget)
+                == Ok(RealizationFailureOutcome::Absorb)
+        );
+        assert!(run_free_exhausted(true, false, failures, budget));
+    }
+    assert!(!run_free_exhausted(true, true, failures, budget));
+    assert!(run_free_exhausted(false, false, failures, budget));
 }
 
 #[cfg(kani)]
@@ -375,6 +494,70 @@ fn provisioning_defers_only_before_the_providers_deadline() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncounted_recovery_and_run_free_failures_spend_the_same_budget() {
+        // Causes: C1 execution (counted Preparing/Activating vs uncounted
+        // Idle/Running/Rescheduling); C2 retryable; C3 not-ready deferral;
+        // C4 spent count against a budget of 3.
+        // S-rows (spent budget): S1 counted executions read the counted
+        // attempts; S2 every other execution reads the consecutive uncounted
+        // failures, so a recovery claim that never counts is still bounded.
+        // O-rows (Running recovery outcome through the existing budget law):
+        // O1 retryable below budget -> Retry; O2 retryable at budget -> Absorb;
+        // O3 not-ready at any count -> Retry (no consumption); O4 terminal ->
+        // Absorb. X-rows (Idle Run-free exhaustion): X1 terminal -> exhausted;
+        // X2 not-ready -> never exhausted; X3 retryable below budget -> not;
+        // X4 retryable at or above budget -> exhausted.
+        use SessionExecutionState::{
+            Activating, ActivationFailed, Idle, Preparing, Rescheduling, Running, Terminated,
+        };
+        for execution in [Preparing, Activating] {
+            assert_eq!(spent_budget(execution, 2, 9), 2, "S1 {execution:?}");
+        }
+        for execution in [Idle, Running, Rescheduling, ActivationFailed, Terminated] {
+            assert_eq!(spent_budget(execution, 2, 9), 9, "S2 {execution:?}");
+        }
+        let running = |retryable, not_ready, failures| {
+            realization_failure_outcome(
+                retryable,
+                not_ready,
+                Running,
+                spent_budget(Running, 1, failures),
+                3,
+            )
+            .unwrap()
+        };
+        let retry = RealizationFailureOutcome::Retry {
+            refund_attempt: false,
+        };
+        assert_eq!(running(true, false, 1), retry, "O1");
+        assert_eq!(running(true, false, 2), retry, "O1");
+        assert_eq!(
+            running(true, false, 3),
+            RealizationFailureOutcome::Absorb,
+            "O2"
+        );
+        assert_eq!(running(true, true, u32::MAX), retry, "O3");
+        assert_eq!(
+            running(false, false, 0),
+            RealizationFailureOutcome::Absorb,
+            "O4"
+        );
+        for failures in [0, 1, 3, u32::MAX] {
+            assert!(
+                run_free_exhausted(false, false, failures, 3),
+                "X1 {failures}"
+            );
+            assert!(
+                !run_free_exhausted(true, true, failures, 3),
+                "X2 {failures}"
+            );
+        }
+        assert!(!run_free_exhausted(true, false, 2, 3), "X3");
+        assert!(run_free_exhausted(true, false, 3, 3), "X4");
+        assert!(run_free_exhausted(true, false, 4, 3), "X4");
+    }
 
     #[test]
     fn effect_failures_classify_by_fault_and_code_and_report_capacity() {

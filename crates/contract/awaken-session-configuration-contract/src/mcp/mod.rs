@@ -813,6 +813,39 @@ impl SessionMcpAttachmentSet {
         self.bump_revision()
     }
 
+    /// Close every Active generation whose publication was never acknowledged
+    /// for its current claim, after the Session's realization budget refused
+    /// another retry. An acknowledged Active generation is serving and is never
+    /// touched; Requested/Realizing/Draining keep their own laws. The secret-free
+    /// claim is retained as evidence, like a finished drain. Returns how many
+    /// generations failed; zero is an idempotent no-op that keeps the revision.
+    ///
+    /// | state     | acknowledged | effect          |
+    /// |-----------|--------------|-----------------|
+    /// | Active    | false        | Failed + error  |
+    /// | Active    | true         | unchanged       |
+    /// | any other | any          | unchanged       |
+    pub fn fail_unpublished_generations(
+        &mut self,
+        error: impl Into<String>,
+    ) -> Result<usize, McpAttachmentError> {
+        let error = error.into();
+        let mut failed = 0;
+        for attachment in &mut self.attachments {
+            if attachment.state == McpAttachmentState::Active
+                && !attachment.publication_acknowledged
+            {
+                attachment.state = McpAttachmentState::Failed;
+                attachment.last_error = Some(error.clone());
+                failed += 1;
+            }
+        }
+        if failed > 0 {
+            self.bump_revision()?;
+        }
+        Ok(failed)
+    }
+
     pub fn begin_drain(&mut self, generation: &McpGeneration) -> Result<(), McpAttachmentError> {
         let attachment = exact_mut(&mut self.attachments, generation)?;
         if attachment.state != McpAttachmentState::Active {
@@ -1246,6 +1279,77 @@ mod tests {
                     expected,
                     "{state:?}/{acknowledged}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn exhausted_preparation_fails_only_unacknowledged_active_generations() {
+        // Causes: C1 one of all six generation states; C2 publication ACK.
+        // Effects: E1 Failed with the reported error and the claim retained as
+        // evidence; E2 unchanged. Decision table (without ACK / with ACK):
+        // Active E1/E2 (an acknowledged generation is serving); every other
+        // state E2/E2 (Requested/Realizing/Draining keep their own laws,
+        // Removed/Failed are terminal). R-REV: a change bumps the set revision
+        // once; no change keeps it. R-DEMAND: after E1 the generation no longer
+        // demands preparation, which ends the Run-free re-claim loop.
+        for state in [
+            McpAttachmentState::Requested,
+            McpAttachmentState::Realizing,
+            McpAttachmentState::Active,
+            McpAttachmentState::Draining,
+            McpAttachmentState::Removed,
+            McpAttachmentState::Failed,
+        ] {
+            for acknowledged in [false, true] {
+                let mut set = SessionMcpAttachmentSet::from_initial(
+                    vec![draft("docs", "https://docs.example.test", None)],
+                    None,
+                )
+                .unwrap();
+                set.attachments[0].state = state;
+                set.attachments[0].publication_acknowledged = acknowledged;
+                set.attachments[0].realization = Some(McpRealizationClaim {
+                    realization_id: "realization".into(),
+                    runtime_incarnation: "worker:1:boot".into(),
+                    lease_epoch: 7,
+                    lease_expires_at_unix_ms: 0,
+                    stage_idempotency_key: "stage".into(),
+                });
+                let before = set.clone();
+                let expected = state == McpAttachmentState::Active && !acknowledged;
+                let failed = set
+                    .fail_unpublished_generations("sealed credential envelope is expired")
+                    .unwrap();
+                let rule = format!("{state:?}/{acknowledged}");
+                if expected {
+                    assert_eq!(failed, 1, "E1 {rule}");
+                    assert_eq!(
+                        set.attachments[0].state,
+                        McpAttachmentState::Failed,
+                        "E1 {rule}"
+                    );
+                    assert_eq!(
+                        set.attachments[0].last_error.as_deref(),
+                        Some("sealed credential envelope is expired"),
+                        "E1 {rule}"
+                    );
+                    assert_eq!(
+                        set.attachments[0].realization, before.attachments[0].realization,
+                        "E1 claim retained {rule}"
+                    );
+                    assert_eq!(set.revision.0, before.revision.0 + 1, "R-REV {rule}");
+                    assert!(!set.needs_realization(), "R-DEMAND {rule}");
+                    assert_eq!(
+                        set.fail_unpublished_generations("again").unwrap(),
+                        0,
+                        "E1 replay is a no-op {rule}"
+                    );
+                    assert_eq!(set.revision.0, before.revision.0 + 1, "R-REV replay {rule}");
+                } else {
+                    assert_eq!(failed, 0, "E2 {rule}");
+                    assert_eq!(set, before, "E2 byte-identical {rule}");
+                }
             }
         }
     }

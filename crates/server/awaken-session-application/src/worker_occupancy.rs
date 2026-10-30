@@ -35,11 +35,44 @@ pub struct SessionWorkerOccupancy {
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
 }
 
-/// One complete Worker-owned Session read: `None` when a Session the Worker
-/// holds keeps it occupied and refuses retirement on its root facts alone;
-/// otherwise occupancy and the original sources whose reported retention
-/// admits retirement.
-type WorkerRealizationScan = Option<(bool, Vec<SourceRetentionSubject>)>;
+/// Why one Session keeps an exact Worker incarnation from retiring. Each
+/// variant is one refusal of the retirement read; none grants anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum WorkerRetirementBlockReason {
+    /// The Session's lease belongs to another incarnation of this Worker.
+    LeaseHeldByAnotherIncarnation,
+    /// Committed Thread events are still being appended.
+    IncompleteEventBatches,
+    /// A terminal Session has no readable cleanup action.
+    TerminalCleanupUnavailable,
+    /// A terminal Session's cleanup is fenced or awaiting publication.
+    TerminalCleanupWaiting,
+    /// The terminal Session's source Dispatch has not settled.
+    SourceDispatchUnsettled,
+    /// A live Session without a frozen baseline or a retainable execution.
+    LiveRootNotRetainable,
+    /// A live Session whose Environment is not Resident.
+    EnvironmentNotResident,
+    /// The Worker has not reported this original source as retained.
+    SourceRetentionNotReported,
+}
+
+/// One Session that refuses an exact Worker incarnation's retirement.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WorkerRetirementBlocker {
+    pub session_id: String,
+    pub reason: WorkerRetirementBlockReason,
+}
+
+/// One complete Worker-owned Session read: occupancy, the original sources
+/// whose reported retention may admit retirement, and every Session that
+/// refuses retirement on its root facts alone. Any blocker refuses; the read
+/// continues past it only so that every refusal can be reported.
+struct WorkerRealizationScan {
+    occupied: bool,
+    subjects: Vec<SourceRetentionSubject>,
+    blockers: Vec<WorkerRetirementBlocker>,
+}
 
 impl SessionWorkerOccupancy {
     pub(crate) fn new(
@@ -69,21 +102,49 @@ impl SessionWorkerOccupancy {
                 (identity.worker_id.as_str(), Some((identity, reported)))
             }
         };
-        let scan = self.scan(worker_id, retirement.map(|(identity, _)| identity));
-        let Some((occupied, subjects)) = scan.await? else {
-            return Ok(crate::WorkerRealizationObservation {
-                occupied: true,
-                sources_retained: false,
-            });
-        };
+        let scan = self
+            .scan(worker_id, retirement.map(|(identity, _)| identity))
+            .await?;
         Ok(crate::WorkerRealizationObservation {
-            occupied,
-            sources_retained: retirement.is_some_and(|(_, reported)| {
-                subjects
-                    .iter()
-                    .all(|subject| subject.reported_retained(reported))
-            }),
+            occupied: scan.occupied,
+            sources_retained: scan.blockers.is_empty()
+                && retirement.is_some_and(|(_, reported)| {
+                    scan.subjects
+                        .iter()
+                        .all(|subject| subject.reported_retained(reported))
+                }),
         })
+    }
+
+    /// Every Session that refuses this exact incarnation's retirement, with
+    /// its reason, from the same complete read the decision makes. Unreported
+    /// sources are named only when no Session refuses on root facts. Empty means
+    /// the Session read alone would permit retirement; the Worker-domain owner
+    /// still decides Registry, physical and Work admission. Read-only.
+    pub async fn explain_worker_retirement(
+        &self,
+        identity: &WorkerIdentity,
+        reported: &std::collections::BTreeSet<awaken_worker_contract::WorkerSourceRetention>,
+    ) -> Result<Vec<WorkerRetirementBlocker>, RunError> {
+        let scan = self.scan(&identity.worker_id, Some(identity)).await?;
+        let mut blockers = scan.blockers;
+        if !blockers.is_empty() {
+            // Root facts already refuse; source retention cannot decide, and
+            // naming subjects would depend on which Sessions the read reached.
+            blockers.sort();
+            return Ok(blockers);
+        }
+        blockers.extend(
+            scan.subjects
+                .iter()
+                .filter(|subject| !subject.reported_retained(reported))
+                .map(|subject| WorkerRetirementBlocker {
+                    session_id: subject.session_id.as_str().to_owned(),
+                    reason: WorkerRetirementBlockReason::SourceRetentionNotReported,
+                }),
+        );
+        blockers.sort();
+        Ok(blockers)
     }
 
     async fn scan(
@@ -107,46 +168,73 @@ impl SessionWorkerOccupancy {
                 .map_err(session_repository_error)?;
         let mut occupied = false;
         let mut subjects = Vec::new();
+        let mut blockers = Vec::new();
         for scoped in sessions {
             let session = scoped.session;
-            if !session
-                .has_unfinished_worker_realization()
-                .map_err(|error| RunError::unavailable(error.to_string()))?
-            {
-                continue;
+            match session.has_unfinished_worker_realization() {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) if !blockers.is_empty() => continue,
+                Err(error) => return Err(RunError::unavailable(error.to_string())),
             }
             occupied = true;
             let Some(identity) = identity else {
-                return Ok(None);
+                // An occupancy read needs only `occupied`.
+                return Ok(WorkerRealizationScan {
+                    occupied,
+                    subjects: Vec::new(),
+                    blockers,
+                });
             };
             let lease = session
                 .realization
                 .as_ref()
                 .ok_or_else(|| RunError::unavailable("Worker realization owner missing"))?;
-            if lease.runtime_incarnation != identity.lease_owner()
-                || session.has_incomplete_event_batches()
-            {
-                return Ok(None);
+            if lease.runtime_incarnation != identity.lease_owner() {
+                blockers.push(blocker(
+                    &session,
+                    WorkerRetirementBlockReason::LeaseHeldByAnotherIncarnation,
+                ));
+                continue;
+            }
+            if session.has_incomplete_event_batches() {
+                blockers.push(blocker(
+                    &session,
+                    WorkerRetirementBlockReason::IncompleteEventBatches,
+                ));
+                continue;
             }
             let prepared = if session.is_terminal() {
                 let Some(action) = session
                     .terminal_cleanup_work_action()
                     .map_err(|error| RunError::unavailable(error.to_string()))?
                 else {
-                    return Ok(None);
+                    blockers.push(blocker(
+                        &session,
+                        WorkerRetirementBlockReason::TerminalCleanupUnavailable,
+                    ));
+                    continue;
                 };
                 if matches!(action, SessionTerminalCleanupAction::Waiting) {
-                    return Ok(None);
+                    blockers.push(blocker(
+                        &session,
+                        WorkerRetirementBlockReason::TerminalCleanupWaiting,
+                    ));
+                    continue;
                 }
-                if crate::archive_intent::terminal_environment_creation_not_attempted(
+                match crate::archive_intent::terminal_environment_creation_not_attempted(
                     self.repository.as_ref(),
                     &scoped.workspace_id,
                     &session,
                 )
                 .await
-                .map_err(session_repository_error)?
                 {
-                    continue;
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    // A recorded refusal already decides; keep reporting the
+                    // remaining root facts rather than turn it into an error.
+                    Err(_) if !blockers.is_empty() => continue,
+                    Err(error) => return Err(session_repository_error(error)),
                 }
                 if !matches!(
                     self.coordination_reads
@@ -154,7 +242,11 @@ impl SessionWorkerOccupancy {
                         .await,
                     awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
                 ) {
-                    return Ok(None);
+                    blockers.push(blocker(
+                        &session,
+                        WorkerRetirementBlockReason::SourceDispatchUnsettled,
+                    ));
+                    continue;
                 }
                 matches!(action, SessionTerminalCleanupAction::Dispose { .. })
             } else {
@@ -170,7 +262,11 @@ impl SessionWorkerOccupancy {
                             | SessionExecutionState::Rescheduling
                     )
                 {
-                    return Ok(None);
+                    blockers.push(blocker(
+                        &session,
+                        WorkerRetirementBlockReason::LiveRootNotRetainable,
+                    ));
+                    continue;
                 }
                 if awaken_session_state_contract::session_has_no_create_evidence(&session)
                     && session.execution == SessionExecutionState::Idle
@@ -193,10 +289,18 @@ impl SessionWorkerOccupancy {
                     session.environment,
                     SessionEnvironmentState::Resident { .. }
                 ) {
-                    return Ok(None);
+                    blockers.push(blocker(
+                        &session,
+                        WorkerRetirementBlockReason::EnvironmentNotResident,
+                    ));
+                    continue;
                 }
                 false
             };
+            if !blockers.is_empty() {
+                // Refused already: a projection could not change the decision.
+                continue;
+            }
             let projection = self
                 .queries
                 .frozen_session_projection(scoped.workspace_id, &session, false)
@@ -207,7 +311,21 @@ impl SessionWorkerOccupancy {
                 projection,
             )?);
         }
-        Ok(Some((occupied, subjects)))
+        Ok(WorkerRealizationScan {
+            occupied,
+            subjects,
+            blockers,
+        })
+    }
+}
+
+fn blocker(
+    session: &awaken_session_state_contract::PersistedSession,
+    reason: WorkerRetirementBlockReason,
+) -> WorkerRetirementBlocker {
+    WorkerRetirementBlocker {
+        session_id: session.session_id.as_str().to_owned(),
+        reason,
     }
 }
 
@@ -221,6 +339,10 @@ impl WorkerSourceRetentionSubjects for SessionWorkerOccupancy {
         worker: &WorkerIdentity,
     ) -> Result<Vec<SourceRetentionSubject>, RunError> {
         let scan = self.scan(&worker.worker_id, Some(worker)).await?;
-        Ok(scan.map(|(_, subjects)| subjects).unwrap_or_default())
+        Ok(if scan.blockers.is_empty() {
+            scan.subjects
+        } else {
+            Vec::new()
+        })
     }
 }

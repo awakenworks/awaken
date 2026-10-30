@@ -5,6 +5,47 @@ It delegates the existing role catalog to the
 [remote Worker component catalog](remote-worker-protocol.md#10-remote-worker-component-catalog);
 it adds no service, queue, durable cleanup state or permission authority.
 
+## Amendment 2026-10-31: bound uncounted failures, close unissued leases, explain refusals
+
+A local deployment showed three ways a Worker stayed unretirable without any
+Session progressing. An Idle Run-free MCP update whose Active, unacknowledged
+generation failed with an expired credential was re-claimed 7,684 times: a
+Run-free failure expires the lease but fails only Realizing generations, so the
+same generation re-selected the Session on every poll. A Running Session whose
+recovery effect failed with a retryable error was re-claimed 596 times: recovery
+claims count no initial attempt, so the realization budget never absorbed it.
+And a preparation claim that minted a lease and then saw its Worker leave Ready
+returned no directive but left that lease live; an only time-expired lease is
+not the explicit closure the no-Create rule above requires.
+
+Reuse unchanged the realization budget, the effect-failure classification, the
+terminal ActivationFailed path, the MCP Failed state and root CAS. Modify only:
+
+- The Session's realization progress counts consecutive failed effects of
+  assignments that counted no initial attempt (Idle Run-free preparation,
+  Running/Rescheduling recovery). A not-ready deferral never counts; a counted
+  claim or published realization readiness resets it. The budget compares this
+  count for uncounted executions and the counted attempts otherwise, so
+  recovery is absorbed by the existing terminal path after the same budget.
+- When an Idle Run-free failure is terminal, or retryable with the budget
+  spent, the Active generations whose publication was never acknowledged become
+  Failed with the reported error. Acknowledged (serving) generations are never
+  touched; a new desired generation remains the recovery path.
+- A preparation claim whose post-CAS Worker or root re-check refuses closes
+  exactly the lease it minted (expiry zero) by root CAS. No directive left the
+  claim, so no effect can run under that lease; a lease another writer
+  installed since is never touched.
+- A refused retirement read continues past the first refusal only to name
+  every refusing Session and reason. The decision is unchanged (any refusal
+  denies), no read error is introduced after a recorded refusal, and the
+  Coordinator logs the reasons once per change. Logging is diagnostics only.
+
+Regression comments own the decision tables: the MCP state x acknowledgement
+table, the execution x deferral counting table, the Idle class x budget table,
+the Running recovery budget, the draining re-check closure and the multi-Session
+explanation. A Kani harness covers the counting/exhaustion law for every
+execution, count and budget. These do not substitute for a deployed upgrade.
+
 ## Amendment 2026-10-29: retain live Sessions that never admitted Environment creation
 
 An idle, on-tool-use Session can complete model/MCP work without creating a

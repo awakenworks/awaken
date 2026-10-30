@@ -14,6 +14,7 @@
 /// assert_eq!(progress.last_error(), None);
 /// assert_eq!(progress.failed_at_unix_ms(), None);
 /// assert_eq!(progress.failure_source_run_id(), None);
+/// assert_eq!(progress.uncounted_failures(), 0);
 /// # Ok::<(), serde_json::Error>(())
 /// ```
 /// Each direct write is rejected independently (W4: a valid imported/default
@@ -43,6 +44,11 @@
 /// let mut progress = SessionRealizationProgress::default();
 /// progress.failure_source_run_id = None;
 /// ```
+/// ```compile_fail,E0616
+/// # use awaken_session_state_contract::SessionRealizationProgress;
+/// let mut progress = SessionRealizationProgress::default();
+/// progress.uncounted_failures = 0;
+/// ```
 /// A struct literal cannot bypass the assignment owner either:
 /// ```compile_fail,E0451
 /// # use awaken_session_state_contract::SessionRealizationProgress;
@@ -63,6 +69,12 @@ pub struct SessionRealizationProgress {
     pub(crate) last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) failure_source_run_id: Option<Box<awaken_agent_contract::agent::run::Id>>,
+    /// Consecutive failed effects of assignments that counted no initial
+    /// attempt (Idle Run-free preparation, Running/Rescheduling recovery).
+    /// Absent on historical roots and omitted while zero, so their wire shape
+    /// is unchanged. A counted claim or published realization readiness resets it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) uncounted_failures: u32,
 }
 
 impl SessionRealizationProgress {
@@ -90,6 +102,13 @@ impl SessionRealizationProgress {
         self.failed_at_unix_ms
     }
 
+    /// Consecutive failed effects of uncounted (recovery or Run-free)
+    /// assignments since the last counted claim or acknowledged realization.
+    #[must_use]
+    pub const fn uncounted_failures(&self) -> u32 {
+        self.uncounted_failures
+    }
+
     /// The original optional failure Run, without transferring ownership.
     #[must_use]
     pub fn failure_source_run_id(&self) -> Option<&awaken_agent_contract::agent::run::Id> {
@@ -99,6 +118,11 @@ impl SessionRealizationProgress {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[cfg(test)]

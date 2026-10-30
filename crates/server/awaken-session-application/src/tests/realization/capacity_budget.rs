@@ -508,3 +508,104 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
         }
     }
 }
+
+#[tokio::test]
+async fn running_recovery_failures_spend_the_budget_their_claims_never_count() {
+    // Regression for a Running Session whose recovery effect failed with a
+    // retryable sandbox error on every claim (596 epochs): recovery claims
+    // count no initial attempt, so the persisted attempts stayed at one and
+    // the budget never absorbed it. Causes: C1 failure class; C2 consecutive
+    // failed recovery effects against a budget of 2. Effects: E1 Running is
+    // kept and the lease expires for a later recovery; E2 the existing
+    // terminal ActivationFailed absorbs the Session.
+    // | Rule | C1        | C2            | effect                    |
+    // | V1   | not-ready | 3 rounds      | E1, nothing counted       |
+    // | V2   | retryable | below budget  | E1, one uncounted failure |
+    // | V3   | retryable | budget        | E2                        |
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        sqlite_session_repository("session repository").await;
+    create(
+        repo.as_ref(),
+        persisted("recovery-budget", false, "running"),
+    )
+    .await;
+    let app = application_with_configuration(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            realization_retry_budget: 2,
+            ..Default::default()
+        },
+    );
+    let id = SessionId::from("recovery-budget");
+    let begin = |round: usize| {
+        let app = &app;
+        async move {
+            app.realizations
+                .begin_session_realization(
+                    awaken_session_realization_contract::BeginSessionRealization {
+                        expected_resources: None,
+                        session_id: "recovery-budget".into(),
+                        target: awaken_session_realization_contract::SessionRealizationTarget {
+                            owner: "worker".into(),
+                            runtime_incarnation: format!("worker/{round}"),
+                            lease_expires_at_unix_ms: u64::MAX,
+                            reassign_existing_lease: false,
+                        },
+                    },
+                )
+                .await
+                .expect("begin recovery")
+                .authority
+                .lease
+        }
+    };
+    let failure =
+        |lease, retryable, not_ready| awaken_session_realization_contract::FailSessionRealization {
+            session_id: "recovery-budget".into(),
+            lease,
+            prepared_resource_revision: None,
+            retryable,
+            not_ready,
+            source_run_id: None,
+            reason: "Kubernetes Sandbox Pod deletion is indeterminate".into(),
+        };
+    for round in 1..=3 {
+        let lease = begin(round).await;
+        app.realizations
+            .fail_session_realization(failure(lease, true, true))
+            .await
+            .expect("V1 deferral");
+        let after = repo.get(&id).await.unwrap();
+        assert_eq!(after.execution, SessionExecutionState::Running, "V1");
+        assert_eq!(after.realization_progress().uncounted_failures(), 0, "V1");
+        assert_eq!(
+            after.realization_progress().attempts(),
+            0,
+            "V1 claims uncounted"
+        );
+    }
+    let lease = begin(4).await;
+    app.realizations
+        .fail_session_realization(failure(lease, true, false))
+        .await
+        .expect("V2");
+    let after = repo.get(&id).await.unwrap();
+    assert_eq!(after.execution, SessionExecutionState::Running, "V2");
+    assert_eq!(after.realization_progress().uncounted_failures(), 1, "V2");
+    assert_eq!(
+        after.realization.as_ref().unwrap().expires_at_unix_ms,
+        0,
+        "V2 lease expired for a later recovery"
+    );
+    let lease = begin(5).await;
+    app.realizations
+        .fail_session_realization(failure(lease, true, false))
+        .await
+        .expect("V3");
+    assert_eq!(
+        repo.get(&id).await.unwrap().execution,
+        SessionExecutionState::ActivationFailed,
+        "V3 absorbed"
+    );
+}

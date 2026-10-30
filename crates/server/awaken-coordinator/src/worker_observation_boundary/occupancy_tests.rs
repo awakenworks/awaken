@@ -105,6 +105,7 @@ async fn domain_reads_require_only_work_observation_and_preserve_exact_owner_and
         authenticator: awaken_service_auth_contract::static_token_authenticator("domain-token")
             .unwrap(),
         relay_authenticator: None,
+        retirement_explanations: Default::default(),
     });
     for (mode, expected, calls) in [(0, false, 1), (1, true, 2)] {
         selected.mode.store(mode, Ordering::SeqCst);
