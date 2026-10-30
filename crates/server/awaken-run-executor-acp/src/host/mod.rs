@@ -1,6 +1,22 @@
 // @formal entrypoint worker_credential.host_observation_projection_is_backend_scoped
 // @formal entrypoint worker_credential.local_binding_batch_is_atomic
 //! Host-side ACP preparation and liveness adapters. No Control repository or secret store.
+//!
+//! Type-ownership rule O2: the retired backend capability enum cannot resolve;
+//! consumers use the single `awaken_acp_contract::AcpCapabilityObservationState`.
+//! O1's positive example is attached to the contract-owned host observation.
+//! These cases check ownership at compilation, not process probe behavior.
+//!
+//! ```compile_fail
+//! use awaken_run_executor_acp::host::AcpCapabilityState;
+//! ```
+//!
+//! Binding rule A4: the existing secret-free binding record lives only in the
+//! contract, not behind a host-module compatibility export.
+//!
+//! ```compile_fail
+//! use awaken_run_executor_acp::host::AcpLocalCredentialBinding;
+//! ```
 
 #[cfg(test)]
 mod binding_batch_tests;
@@ -18,7 +34,10 @@ use std::sync::Mutex;
 use crate::{AcpCli, acp_cli};
 use async_trait::async_trait;
 pub use awaken_acp_contract::AcpCapabilityNegotiator;
-use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
+use awaken_acp_contract::{
+    AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
+    AcpDetectionState, AcpHostObservation, AcpLocalCredentialBinding,
+};
 use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_contract::{
     CredentialMaterialError, CredentialObservation, CredentialObservationSource,
@@ -31,11 +50,9 @@ mod host_discovery;
 mod npm_launch;
 mod process_output;
 mod projected_bindings;
-pub use capability_probe::{
-    AcpCapabilityState, EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
-};
-pub use host_discovery::{AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation};
-pub use projected_bindings::{AcpLocalCredentialBinding, ProjectedAcpCredentials};
+pub use capability_probe::{EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator};
+pub use host_discovery::{AcpDiscovery, AcpHostDiscovery};
+pub use projected_bindings::ProjectedAcpCredentials;
 
 /// Acquisition port for an ACP protocol wrapper declared by the canonical catalog.
 #[async_trait]
@@ -249,13 +266,13 @@ pub async fn prepare_host_acp_capabilities_with(
                     negotiated,
                     input.clock.now_ms(),
                 );
-                observation.capability_state = Some(AcpCapabilityState::Verified);
+                observation.capability_state = Some(AcpCapabilityObservationState::Verified);
                 observation.capability_fingerprint = Some(profile.fingerprint.clone());
                 observation.capability_reason_code = None;
                 effective_profiles.insert(observation.cli_id.clone(), profile);
             }
             Err(_) => {
-                observation.capability_state = Some(AcpCapabilityState::ProbeFailed);
+                observation.capability_state = Some(AcpCapabilityObservationState::ProbeFailed);
                 observation.capability_fingerprint = None;
                 observation.capability_reason_code =
                     Some("acp_capability_probe_failed".to_string());
@@ -379,7 +396,7 @@ fn routable_cli_ids(
                 selected_cli_ids.contains(&observation.cli_id),
                 observation.detected(),
                 observation.credential_state == Some(CredentialObservationState::Available),
-                observation.capability_state == Some(AcpCapabilityState::Verified),
+                observation.capability_state == Some(AcpCapabilityObservationState::Verified),
             )
         })
         .map(|observation| observation.cli_id.clone())
@@ -532,7 +549,7 @@ impl AcpLocalCredentialResolver {
     ) -> Result<Self, String> {
         let mut bindings = BTreeMap::new();
         for projection in projections {
-            let binding = projection.to_local_binding()?;
+            let binding = projected_bindings::to_local_binding(&projection)?;
             if bindings
                 .insert(binding.credential.id.clone(), binding)
                 .is_some()

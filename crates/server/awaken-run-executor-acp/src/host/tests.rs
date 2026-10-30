@@ -145,7 +145,7 @@ fn observation(
     id: &str,
     detection: AcpDetectionState,
     credential: Option<CredentialObservationState>,
-    capability: Option<AcpCapabilityState>,
+    capability: Option<AcpCapabilityObservationState>,
 ) -> AcpHostObservation {
     AcpHostObservation {
         cli_id: id.into(),
@@ -246,7 +246,7 @@ fn worker_route_admission_follows_the_capability_decision_table() {
                 "codex",
                 AcpDetectionState::Detected,
                 Some(CredentialObservationState::LoginRequired),
-                Some(AcpCapabilityState::Unavailable),
+                Some(AcpCapabilityObservationState::Unavailable),
             )],
             &selected,
         ),
@@ -259,7 +259,7 @@ fn worker_route_admission_follows_the_capability_decision_table() {
                 "codex",
                 AcpDetectionState::Detected,
                 Some(CredentialObservationState::Available),
-                Some(AcpCapabilityState::ProbeFailed),
+                Some(AcpCapabilityObservationState::ProbeFailed),
             )],
             &selected,
         )
@@ -272,7 +272,7 @@ fn worker_route_admission_follows_the_capability_decision_table() {
                 "codex",
                 AcpDetectionState::Detected,
                 Some(CredentialObservationState::Available),
-                Some(AcpCapabilityState::Verified),
+                Some(AcpCapabilityObservationState::Verified),
             )],
             &selected,
         ),
@@ -286,10 +286,14 @@ fn worker_route_admission_follows_the_capability_decision_table() {
             .expect("empty resolver"),
     );
     for (rule, capability, expected) in [
-        ("R4", AcpCapabilityState::ProbeFailed, BTreeMap::new()),
+        (
+            "R4",
+            AcpCapabilityObservationState::ProbeFailed,
+            BTreeMap::new(),
+        ),
         (
             "R5",
-            AcpCapabilityState::Verified,
+            AcpCapabilityObservationState::Verified,
             BTreeMap::from([("codex".to_string(), vec!["/wrapper/codex".to_string()])]),
         ),
     ] {

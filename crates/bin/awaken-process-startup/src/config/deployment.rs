@@ -45,7 +45,7 @@ pub struct ResolvedDeployment {
     pub admin_listen: Option<String>,
     pub runtime: awaken_deployment_config::DeploymentConfig,
     pub observability: awaken_observability::ObservabilityConfig,
-    pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
+    pub local_acp_observations: Vec<awaken_acp_contract::AcpHostObservation>,
     pub configured_acp_clis: Option<Vec<String>>,
     pub control: awaken_control::ControlStoreConfig,
     pub coordinator: CoordinatorStoreConfig,

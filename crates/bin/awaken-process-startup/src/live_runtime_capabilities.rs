@@ -7,7 +7,7 @@ use awaken_time::WallClockExt as _;
 /// startup edge is intentionally the only place that knows both contexts;
 /// neither Control nor the executor keeps a synchronized adapter list.
 fn runtime_capabilities(
-    observations: &[awaken_acp_application::AcpHostObservation],
+    observations: &[awaken_acp_contract::AcpHostObservation],
 ) -> Vec<awaken_control::RuntimeCapability> {
     std::iter::once(awaken_control::RuntimeCapability::native())
         .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
@@ -67,7 +67,7 @@ enum LiveLocalEvidence {
 /// claim an executable route.
 fn resolve_local(
     live: LiveLocalEvidence,
-    observation: Option<&awaken_acp_application::AcpHostObservation>,
+    observation: Option<&awaken_acp_contract::AcpHostObservation>,
     discovered: Option<&awaken_control::LocalRuntimeCapability>,
 ) -> awaken_control::LocalRuntimeCapability {
     match (live, observation, discovered) {
@@ -85,7 +85,7 @@ fn resolve_local(
 /// startup row explains nothing about the absence of a Worker route, so it must
 /// not mask `acp_runtime_unavailable`.
 fn startup_diagnosis(
-    observation: &awaken_acp_application::AcpHostObservation,
+    observation: &awaken_acp_contract::AcpHostObservation,
     discovered: &awaken_control::LocalRuntimeCapability,
 ) -> Option<awaken_control::LocalRuntimeCapability> {
     let refused = !observation.detected()
@@ -98,7 +98,8 @@ fn startup_diagnosis(
             ..discovered.clone()
         });
     }
-    if observation.capability_state == Some(awaken_acp_application::AcpCapabilityState::ProbeFailed)
+    if observation.capability_state
+        == Some(awaken_acp_contract::AcpCapabilityObservationState::ProbeFailed)
     {
         // Discovery and login both succeeded; the backend handshake did not.
         // That is a different physical cause from an absent runtime and keeps
@@ -195,7 +196,7 @@ fn live_acp_local(
 }
 
 pub(crate) struct LiveRuntimeCapabilities {
-    pub(crate) initial: Vec<awaken_acp_application::AcpHostObservation>,
+    pub(crate) initial: Vec<awaken_acp_contract::AcpHostObservation>,
     pub(crate) workers: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     pub(crate) credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub(crate) workspace: String,
@@ -430,10 +431,10 @@ mod tests {
         // Decision table:
         // L1 same id + detected/login-required -> detected status + remediation
         // L2 no observation                    -> local status absent
-        let projected = runtime_capabilities(&[awaken_acp_application::AcpHostObservation {
+        let projected = runtime_capabilities(&[awaken_acp_contract::AcpHostObservation {
             cli_id: "codex".into(),
             display_name: "Codex".into(),
-            detection: awaken_acp_application::AcpDetectionState::Detected,
+            detection: awaken_acp_contract::AcpDetectionState::Detected,
             version: Some("codex 1".into()),
             credential_state: Some(
                 awaken_credential_contract::CredentialObservationState::LoginRequired,
@@ -621,11 +622,11 @@ mod tests {
     }
 
     fn observed(
-        detection: awaken_acp_application::AcpDetectionState,
+        detection: awaken_acp_contract::AcpDetectionState,
         credential_state: Option<awaken_credential_contract::CredentialObservationState>,
         reason_code: &str,
-    ) -> awaken_acp_application::AcpHostObservation {
-        awaken_acp_application::AcpHostObservation {
+    ) -> awaken_acp_contract::AcpHostObservation {
+        awaken_acp_contract::AcpHostObservation {
             cli_id: "codex".into(),
             display_name: "Codex".into(),
             detection,
@@ -641,7 +642,7 @@ mod tests {
     /// Project one startup observation through the exact management edge used
     /// in production when no Worker has published live ACP evidence.
     fn published(
-        observation: &awaken_acp_application::AcpHostObservation,
+        observation: &awaken_acp_contract::AcpHostObservation,
     ) -> awaken_control::LocalRuntimeCapability {
         let capabilities = runtime_capabilities(std::slice::from_ref(observation));
         let capability = capabilities
@@ -657,7 +658,7 @@ mod tests {
 
     #[test]
     fn every_physical_discovery_cause_publishes_its_own_capability_reason_code() {
-        use awaken_acp_application::AcpDetectionState;
+        use awaken_acp_contract::AcpDetectionState;
         use awaken_credential_contract::CredentialObservationState;
 
         // Without live Worker evidence the capability row is the *only* place an
@@ -683,14 +684,15 @@ mod tests {
             "acp_login_available",
         );
         handshake_failed.capability_state =
-            Some(awaken_acp_application::AcpCapabilityState::ProbeFailed);
+            Some(awaken_acp_contract::AcpCapabilityObservationState::ProbeFailed);
         handshake_failed.capability_reason_code = Some("acp_capability_probe_failed".into());
         let mut healthy = observed(
             AcpDetectionState::Detected,
             Some(CredentialObservationState::Available),
             "acp_login_available",
         );
-        healthy.capability_state = Some(awaken_acp_application::AcpCapabilityState::Verified);
+        healthy.capability_state =
+            Some(awaken_acp_contract::AcpCapabilityObservationState::Verified);
 
         let table = [
             (

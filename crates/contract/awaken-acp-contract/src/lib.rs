@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod adapter_policy;
+mod host_observation;
 pub mod managed_credential;
 mod session;
 mod worker_profile;
 pub use adapter_policy::AcpAdapterPolicy;
+pub use host_observation::{AcpDetectionState, AcpHostObservation, AcpLocalCredentialBinding};
 pub use session::{
     AcpLaunchEvent, AcpLaunchStage, LaunchObserver, McpExecutionContext, SessionMcpServer,
 };

@@ -932,3 +932,35 @@ broker and mounter regardless of construction order, while preserving the same
 clock and physical owner. Installation itself proves neither readiness nor
 execution authority. Session effective-spec projection, Hand assembly, retained
 rebinding, terminal readability, effect claims and restore codecs are unchanged.
+
+## Amendment 2026-10-30: ACP registration and compilation roles
+
+`awaken-acp-application` registers non-secret WorkerLocal intent and projects
+credential metadata using the existing `AcpPublicationCapability` view supplied
+by composition. The executable `AcpCli` catalog and its publication projector
+remain one owner in `awaken-run-executor-acp`. The existing binding record and
+host observations belong to `awaken-acp-contract`; neither the application nor
+the host adapter keeps a compatibility re-export of those moved values.
+
+CLI composition owns host preparation and binds the original preparation's one
+resolver to the canonical credential repository. The application exposes no
+host discovery, installer, negotiator, process, filesystem or resolver facade.
+An unknown catalog id fails closed; registration retains its original per-row
+idempotent transaction boundary rather than inventing a cross-row transaction.
+
+The same backend package also owns valid opaque durable session-blob custody.
+Coordinator startup retains that store and catalog facts with no implementation
+features. Existing executor code is compiled only by `execution`, and host
+preparation only by `host-preparation`. Physical CLI/Worker and test consumers
+explicitly retain the original execution, host and real-ACP wire roles. No
+second catalog, byte store, provider or process package is introduced; the
+separately owned Control-only process uses the same startup boundary.
+
+Cargo features are additive. The existing D4 package-set guard therefore remains
+separate from its ACP isolated-product feature check: Cargo supplies the actual
+compiler-artifact feature records from a successful isolated product check, and
+the canonical backend must compile without ACP implementation features. Backend no-default compile contracts refuse physical executor/host
+names while accepting the original catalog and blob port. The same subject-
+scoped blob erasure/retry case runs in that graph, and the original full/default
+executor tests remain required. A combined workspace build cannot substitute
+for isolated-product evidence, and source checks do not claim native acceptance.

@@ -53,6 +53,8 @@ an enabled feature must not reopen the edge.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -280,6 +282,7 @@ def selftest() -> None:
     | B13 | no package, or two packages, declare the binary | reject D4 |
     | B14 | the Coordinator crate depends on a Worker composition root | reject D3 |
     """
+    selftest_acp_product_features()
     base = [
         ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-dispatch-contract", "shared", "contract", set()),
@@ -369,6 +372,110 @@ def selftest() -> None:
         and written["transitions"]["awaken-sandbox-local"]["reason"] == "new", "B10 growth keeps held records"
 
 
+ACP_EXECUTOR = "awaken-run-executor-acp"
+ACP_METADATA_PRODUCTS = frozenset({"awaken-coordinator-process", "awaken-control-process"})
+
+
+def acp_product_feature_errors(compiler_output: str, root: Path) -> list[str]:
+    """Check actual Cargo compiler-artifact features of the isolated product.
+
+    The existing benchmark parser validates test executables, not check-only
+    library artifacts. This boundary reads Cargo's standard JSON directly and
+    never reconstructs feature resolution from source or dependency names.
+    """
+    manifest = (root / "crates/server/awaken-run-executor-acp/Cargo.toml").resolve()
+    source = manifest.parent / "src/lib.rs"
+    records = []
+    finished = []
+    try:
+        for line in compiler_output.splitlines():
+            if not line.startswith("{"):
+                continue
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                raise ValueError("compiler message is not an object")
+            if record.get("reason") == "build-finished":
+                finished.append(record.get("success") is True)
+            if record.get("reason") != "compiler-artifact":
+                continue
+            if Path(record.get("manifest_path", "")).resolve() != manifest:
+                continue
+            target = record.get("target", {})
+            if (target.get("name") != "awaken_run_executor_acp"
+                    or target.get("kind") != ["lib"]
+                    or Path(target.get("src_path", "")).resolve() != source):
+                continue
+            features = record.get("features")
+            if not isinstance(features, list) or not all(isinstance(value, str) for value in features):
+                raise ValueError("canonical artifact has malformed features")
+            if record.get("profile", {}).get("test") is not False:
+                raise ValueError("canonical artifact is not a production library")
+            records.append(set(features))
+    except (ValueError, TypeError, AttributeError) as error:
+        return ["dispatch-boundary: malformed ACP compiler evidence: " + str(error) + " (D4 ACP)"]
+    if finished != [True]:
+        return ["dispatch-boundary: one successful isolated product build is required (D4 ACP)"]
+    if not records:
+        return ["dispatch-boundary: missing canonical ACP catalog/blob compiler artifact (D4 ACP)"]
+    active = sorted(set().union(*records))
+    if active:
+        return ["dispatch-boundary: isolated metadata/blob product compiled ACP implementation features "
+                + ", ".join(active) + " (D4 ACP)"]
+    return []
+
+
+def selftest_acp_product_features() -> None:
+    # Cause/effect table: P1 actual canonical production artifact + empty features
+    # + successful build accepts; P2 execution/host/real-acp or unreviewed feature
+    # rejects; P3 missing/malformed/wrong-owner/failed/incomplete evidence rejects;
+    # P4 unrelated package features are irrelevant; P5 every compiled occurrence
+    # must remain metadata-only. These synthetic JSON tests execute no Cargo.
+    root = Path("/fixture")
+    artifact = {"reason": "compiler-artifact", "package_id": "fixture-acp",
+                "manifest_path": str(root / "crates/server/awaken-run-executor-acp/Cargo.toml"),
+                "target": {"name": "awaken_run_executor_acp", "kind": ["lib"],
+                           "src_path": str(root / "crates/server/awaken-run-executor-acp/src/lib.rs")},
+                "profile": {"test": False}, "features": []}
+    done = {"reason": "build-finished", "success": True}
+    def output(*records):
+        return "\n".join(json.dumps(record) for record in records)
+    assert acp_product_feature_errors(output(artifact, done), root) == [], "P1"
+    for feature in ["execution", "host-preparation", "real-acp", "future-role"]:
+        assert acp_product_feature_errors(output({**artifact, "features": [feature]}, done), root), "P2 " + feature
+    for rows in [[], [done], [artifact], [artifact, {**done, "success": False}],
+                 [{**artifact, "features": "execution"}, done],
+                 [{**artifact, "manifest_path": "/other/Cargo.toml"}, done],
+                 [{**artifact, "profile": {"test": True}}, done]]:
+        assert acp_product_feature_errors(output(*rows), root), "P3"
+    assert acp_product_feature_errors("{bad json", root), "P3 malformed"
+    other = {**artifact, "manifest_path": "/other/Cargo.toml", "features": ["execution"]}
+    assert acp_product_feature_errors(output(other, artifact, done), root) == [], "P4"
+    assert acp_product_feature_errors(output(artifact, artifact, done), root) == [], "P5 fresh/cached records"
+    assert acp_product_feature_errors(output(artifact, {**artifact, "features": ["execution"]}, done), root), "P5 no hidden union"
+
+
+def check_acp_product_features(package: str) -> int:
+    """Explicit qualification entry point; normal source guards launch no Cargo."""
+    selftest_acp_product_features()
+    if package not in ACP_METADATA_PRODUCTS:
+        print("dispatch-boundary: not an isolated ACP metadata product: " + package, file=sys.stderr)
+        return 1
+    root = Path(__file__).resolve().parents[2]
+    command = [os.environ.get("CARGO", "cargo"), "check", "--locked", "--package", package,
+               "--message-format=json"]
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+    if result.returncode:
+        print(result.stdout, end="")
+        print(result.stderr, file=sys.stderr, end="")
+        return result.returncode
+    errors = acp_product_feature_errors(result.stdout, root)
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    print("dispatch-boundary: " + package + " compiled canonical catalog/blob custody without ACP implementation features (D4 ACP)")
+    return 0
+
+
 def check_all() -> list[str]:
     specs = {spec.name: spec for spec in _crate_boundary_workspace.dependency_fitness_specs()}
     return dispatch_boundary_errors(specs) + check_coordinator_binary()
@@ -376,6 +483,8 @@ def check_all() -> list[str]:
 
 def main(argv: list[str]) -> int:
     """``--self-test`` runs the decision table; the D4 transitions use the shared baseline CLI."""
+    if len(argv) == 2 and argv[0] == "--check-acp-product-features":
+        return check_acp_product_features(argv[1])
     if argv == ["--self-test"]:
         selftest()
         print("_dispatch_boundary_fitness selftest: the decision table holds")
