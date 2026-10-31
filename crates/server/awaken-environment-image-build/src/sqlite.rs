@@ -159,6 +159,9 @@ fn decode_checked(
 }
 
 #[cfg(test)]
+mod contention_tests;
+
+#[cfg(test)]
 mod tests {
     use awaken_executable_environment_contract::EnvironmentImageBuildState;
 

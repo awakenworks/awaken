@@ -911,3 +911,7 @@ mod ack_upgrade_tests;
 #[cfg(all(test, not(feature = "loom")))]
 #[path = "schema/stop_upgrade_tests.rs"]
 mod stop_upgrade_tests;
+
+#[cfg(all(test, not(feature = "loom")))]
+#[path = "schema/identity_upgrade_file_tests.rs"]
+mod identity_upgrade_file_tests;

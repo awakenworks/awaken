@@ -192,7 +192,17 @@ mod tests {
         // completion alone publishes Ready; E5 reconnect observes that same
         // durable fact. Decision rules: P1=C1+C2=>E1, P2=E1+C3+C4=>E2,
         // P3=E2+C5=>E3, P4=E2+C6=>E4, P5=E4+C7=>E5.
-        const SCHEMA: &str = "t_environment_image_build_concurrency";
+        // Harness rule: each run owns one fresh nonce schema and drops only it,
+        // so the fixture-admission twin's live child and parallel or repeated
+        // runs never reset another run's schema.
+        let schema = format!(
+            "t_environment_image_build_concurrency_{}_{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
         // G1 absent configuration => reported local skip; G2 explicit fixture
         // unavailable => fail, never claim the concurrency rules were executed.
         let Some(database_url) = awaken_reliability_testkit::postgres_fixture_url() else {
@@ -205,22 +215,26 @@ mod tests {
             .await
             .expect("G2 configured PostgreSQL must be reachable");
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
             .await
             .expect("P1 reset schema");
         admin
-            .execute(format!("CREATE SCHEMA {SCHEMA}").as_str())
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
             .await
             .expect("P1 create schema");
         let pool = PgPoolOptions::new()
             .max_connections(24)
-            .after_connect(|connection, _| {
-                Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {SCHEMA}").as_str())
-                        .await?;
-                    Ok(())
-                })
+            .after_connect({
+                let schema = schema.clone();
+                move |connection, _| {
+                    let schema = schema.clone();
+                    Box::pin(async move {
+                        connection
+                            .execute(format!("SET search_path = {schema}").as_str())
+                            .await?;
+                        Ok(())
+                    })
+                }
             })
             .connect(&database_url)
             .await
@@ -289,7 +303,7 @@ mod tests {
 
         pool.close().await;
         let separator = if database_url.contains('?') { '&' } else { '?' };
-        let scoped_url = format!("{database_url}{separator}options=-c%20search_path%3D{SCHEMA}");
+        let scoped_url = format!("{database_url}{separator}options=-c%20search_path%3D{schema}");
         let reopened = connect_existing_postgres_environment_image_build_store(&scoped_url)
             .await
             .expect("P5 reconnect");
@@ -306,9 +320,21 @@ mod tests {
         );
 
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
             .await
             .expect("P5 cleanup schema");
         admin.close().await;
+    }
+
+    /// T39-C03 twin: the PostgreSQL claim rows above are evidence only when the
+    /// fixture-admission table holds for this exact test (absent => reported
+    /// skip; required but missing/invalid/unreachable => failure; configured
+    /// live => executed, never skipped).
+    #[test]
+    fn concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority_fixture_admission()
+     {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority",
+        );
     }
 }

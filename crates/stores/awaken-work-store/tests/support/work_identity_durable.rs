@@ -8,6 +8,11 @@ use awaken_executable_environment_contract::{
 use awaken_store_conformance::work_queue::WorkBackend;
 use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
 
+#[path = "work_identity_durable_exhaustion.rs"]
+mod exhaustion;
+#[path = "work_identity_durable_nc.rs"]
+mod nc;
+
 async fn concurrent<Q: WorkBackend>(a: &Q, b: &Q) -> Vec<String> {
     let mut ids = Vec::new();
     for ordinal in 0..16 {

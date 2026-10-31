@@ -18,6 +18,8 @@ use super::*;
 
 mod creation_intents;
 mod reads;
+#[cfg(test)]
+mod transaction_crash_tests;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{
     LedgerSchema, MigrationBundle, MigrationError, check_ledger_version,

@@ -90,6 +90,41 @@ impl MemoryStoreMounter {
     }
 
     /// Select CopyOnly capabilities from one actual backend/client instance.
+    ///
+    /// A remote client that offers reads and snapshots is a valid Memory
+    /// source on its own:
+    /// ```
+    /// use awaken_resource_contract::{MemErr, Memory, MemoryEntry, MemoryQueries, MemorySnapshotSource};
+    /// struct ReadOnlyRemote;
+    /// #[async_trait::async_trait]
+    /// impl MemoryQueries for ReadOnlyRemote {
+    ///     async fn list(&self, _: &str, _: &str) -> Result<Vec<MemoryEntry>, MemErr> { Ok(Vec::new()) }
+    ///     async fn get_by_path(&self, _: &str, _: &str) -> Result<Option<Memory>, MemErr> { Ok(None) }
+    /// }
+    /// #[async_trait::async_trait]
+    /// impl MemorySnapshotSource for ReadOnlyRemote {
+    ///     async fn snapshot_heads(&self, _: &str) -> Result<Vec<Memory>, MemErr> { Ok(Vec::new()) }
+    /// }
+    /// let _reads: &dyn MemorySnapshotSource = &ReadOnlyRemote;
+    /// ```
+    /// but without CAS write-back and conflict preservation it cannot be
+    /// mounted, even as a copy:
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    /// use awaken_resource_contract::{MemErr, Memory, MemoryEntry, MemoryQueries, MemorySnapshotSource};
+    /// use awaken_sandbox_memoryd::MemoryStoreMounter;
+    /// struct ReadOnlyRemote;
+    /// #[async_trait::async_trait]
+    /// impl MemoryQueries for ReadOnlyRemote {
+    ///     async fn list(&self, _: &str, _: &str) -> Result<Vec<MemoryEntry>, MemErr> { Ok(Vec::new()) }
+    ///     async fn get_by_path(&self, _: &str, _: &str) -> Result<Option<Memory>, MemErr> { Ok(None) }
+    /// }
+    /// #[async_trait::async_trait]
+    /// impl MemorySnapshotSource for ReadOnlyRemote {
+    ///     async fn snapshot_heads(&self, _: &str) -> Result<Vec<Memory>, MemErr> { Ok(Vec::new()) }
+    /// }
+    /// let _ = MemoryStoreMounter::copy_only(Arc::new(ReadOnlyRemote));
+    /// ```
     #[must_use]
     pub fn copy_only<T>(backend: Arc<T>) -> Self
     where
@@ -127,6 +162,24 @@ impl MemoryStoreMounter {
     }
 
     /// Reject a second bus before retaining a projection or starting any listener/mount.
+    ///
+    /// A live projection needs a `MemoryMountSource`, which only the
+    /// Resources-owned invalidating decorator can supply. Patching a raw,
+    /// full-permission backend in to obtain the filesystem role does not compile:
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    /// use awaken_resource_contract::{LocalInvalidator, MemoryMountSource};
+    /// use awaken_sandbox_memoryd::MemoryStoreMounter;
+    /// let raw = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+    ///     awaken_time::system_clock(),
+    /// ));
+    /// let source = MemoryMountSource::new(raw);
+    /// let _ = MemoryStoreMounter::fuse_preferred(
+    ///     source,
+    ///     Arc::new(LocalInvalidator::default()),
+    ///     awaken_time::system_clock(),
+    /// );
+    /// ```
     pub fn fuse_preferred(
         source: MemoryMountSource,
         bus: Arc<LocalInvalidator>,

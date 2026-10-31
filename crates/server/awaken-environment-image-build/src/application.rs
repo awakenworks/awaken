@@ -334,6 +334,12 @@ fn retry_delay_ms(policy: &EnvironmentImageBuildPolicy, attempt: u64) -> u64 {
 }
 
 #[cfg(test)]
+mod admission_gate_tests;
+
+#[cfg(test)]
+mod frozen_identity_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::{
         Mutex,

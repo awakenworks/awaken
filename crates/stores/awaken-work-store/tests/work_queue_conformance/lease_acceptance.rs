@@ -1098,3 +1098,6 @@ async fn retried_stop_after_lost_response_replays() {
 
 #[path = "lease_acceptance/credential_generation.rs"]
 mod credential_generation;
+
+#[path = "lease_acceptance/exact_boundary.rs"]
+mod exact_boundary;
