@@ -12,6 +12,14 @@
 // @formal entrypoint resource_binding.pending_effect_survives_until_readback
 // @formal entrypoint resource_binding.replay_is_idempotent_and_identity_stable
 //! Postgres config-store adapter under the built-in `config` namespace.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;

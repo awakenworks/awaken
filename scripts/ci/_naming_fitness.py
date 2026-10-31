@@ -38,6 +38,11 @@ scanned); a type is any `struct`, `enum`, `trait`, `type` or `union` declaration
   which `sdk-standalone` keeps out of every SDK crate's dependencies; this rule
   refuses an SDK crate that declares or names one of the words itself. A hard
   rule: the baseline holds no record for it.
+* `retired-name`: an identifier, in any crate, that names a mechanism the
+  architecture removed (`RETIRED_NAMES`), so it cannot quietly come back. The
+  first entry is the blocking SQLite bridge `SharedSqliteConnection` (ADR-0087),
+  moved here from the retired `_store_pool_fitness.py`; the other tombstones
+  join this table with guard-consolidation R20. A hard rule.
 
 Every ratchet is held at or below `naming_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -73,6 +78,11 @@ PROTOCOL_ADAPTER_PREFIX = "awaken-protocol-"
 PROTOCOL_ADAPTER_CRATES = frozenset({"awaken-run-executor-acp", "awaken-managed-session-events"})
 SDK_PRODUCT = "sdk"
 SECRET_VOCABULARY = frozenset({"SecretHandle", "SecretResolver", "SecretStore", "CredentialBinding", "SecretRef"})
+# Retired mechanisms, with the decision that removed each.
+RETIRED_NAMES = {
+    "SharedSqliteConnection": "a blocking SQLite bridge; open SQLite through awaken_sqlite_pool::EmbeddedSqlite "
+                              "(ADR-0087)",
+}
 COMPOSITION_LAYER = "bootstrap"
 BINARY_DIRECTORY = "bin"
 
@@ -90,6 +100,7 @@ RULES = (
          "its responsibility when its code moves (ADR-0091 D7.2, D9)"),
     Rule("sdk-secret-vocabulary", "the Runtime receives resolved values; credential storage and resolution live in "
          "the Platform (ADR-0091 D6, D9)", hard=True),
+    Rule("retired-name", "the architecture removed this mechanism; use its replacement (RETIRED_NAMES)", hard=True),
 )
 
 _DECLARATION = re.compile(r"\b(?:struct|enum|trait|type|union)\s+([A-Z]\w*)")
@@ -160,12 +171,16 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                     record("bare-runtime", f"{crate.name}::{name}", where)
                 if name in BARE_NAMES:
                     record("bare-name", f"{crate.name}::{name}", where)
-            seen: set[str] = set()
+            seen: set[str | tuple[str, str]] = set()
             for match in _IDENTIFIER.finditer(syntax):
                 identifier = match.group(0)
                 if sdk and identifier in SECRET_VOCABULARY and identifier not in seen:
                     seen.add(identifier)
                     record("sdk-secret-vocabulary", f"{crate.name}::{identifier}",
+                           f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}")
+                if identifier in RETIRED_NAMES and ("retired", identifier) not in seen:
+                    seen.add(("retired", identifier))
+                    record("retired-name", f"{crate.name}::{identifier}",
                            f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}")
                 if adapter:
                     continue
@@ -268,6 +283,13 @@ def selftest() -> None:
                              Path("/w"))
     assert counts["sdk-secret-vocabulary"] == {"awaken-ext-x::SecretRef": 1}, f"N11 {counts['sdk-secret-vocabulary']}"
     assert places["sdk-secret-vocabulary"]["awaken-ext-x::SecretRef"] == ["crates/x/awaken-ext-x/src/lib.rs:1"], "N11"
+    # N12 a retired name in any crate's production code is refused once per
+    # file; in a comment it is not code.
+    retired_code = "struct Store { c: SharedSqliteConnection }\nfn f(_: SharedSqliteConnection) {}\n// SharedSqliteConnection\n"
+    counts, places = measure((_architecture_ratchet.CrateSource(
+        "awaken-store-x", {"product": "platform"}, Path("/w/crates/x/awaken-store-x"),
+        {Path("/w/crates/x/awaken-store-x/src/lib.rs"): retired_code}),), Path("/w"))
+    assert counts["retired-name"] == {"awaken-store-x::SharedSqliteConnection": 1}, f"N12 {counts['retired-name']}"
     print("_naming_fitness selftest: the decision tables hold")
 
 

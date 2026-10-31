@@ -6,6 +6,14 @@
 //! The aggregate is the sole durable Session model. Indexed SQL columns are
 //! projections for lookup and constraints; they are never an alternate source
 //! from which a partially specified aggregate can be reconstructed.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_session_contract::PersistedSession;
 use awaken_session_types::SessionRevision;

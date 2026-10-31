@@ -29,6 +29,14 @@
 // Keep keyed ownership predicates and affected-row checks, but do not compare
 // reserialized JSON with stored JSON: legacy omitted fields decode to defaults.
 // The held row lock, not a competing JSON encoding comparison, fences the write.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;

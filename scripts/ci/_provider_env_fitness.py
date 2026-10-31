@@ -1,4 +1,20 @@
-"""Keep ambient product configuration outside shipped execution paths."""
+"""Keep ambient provider construction outside shipped execution paths.
+
+Environment reads moved to the compiler: the workspace `clippy.toml` denies
+`std::env::{var, var_os, vars, vars_os}` in production code, and a composition
+root states its read with a reviewed `#[expect(clippy::disallowed_methods)]`
+(docs/design/guard-consolidation.md R11; wider than the provider-variable name
+list this guard held). Two rules stay here because clippy cannot name them:
+
+* an ambient SDK default: `genai::Client::default()` or `GenaiExecutor::default()`
+  resolves to the trait method `Default::default`, which a disallowed-methods
+  path cannot single out (R12);
+* the GenAI transport adapter consumes only transport-ready facts and exposes one
+  materialized constructor.
+
+Retires when the GenAI SDK client has no `Default` implementation reachable from
+the workspace, and the transport rule moves into the adapter's types.
+"""
 
 from __future__ import annotations
 
@@ -7,18 +23,6 @@ from pathlib import Path
 
 import _crate_boundary_workspace
 
-
-PROVIDER_ENV_READ = re.compile(
-    r"std::env::var(?:_os)?\(\s*\"(?:"
-    r"ANTHROPIC_|OPENAI_|KIMI_|GEMINI_|MINIMAX_|"
-    r"AWAKEN_MODEL_FALLBACKS|AWAKEN_ACP_GATEWAY_|"
-    r"AWAKEN_ACP_LEASE_|AWAKEN_ACP_CREDENTIAL_FILE"
-    r"|PODMAN_BIN|AWAKEN_BASH|AWAKEN_SANDBOX_AGENT_STDERR"
-    r"|AWAKEN_MEMORY_(?:STORE_ID|MOUNT_PATH|STORE_DIR|MODE|SHUTDOWN_)"
-    r"|AWAKEN_LOG_FORMAT|AWAKEN_TRACE_FILE|RUST_LOG"
-    r"|OTEL_EXPORTER_|OTEL_SERVICE_|OTEL_METRIC_EXPORT_INTERVAL"
-    r")"
-)
 
 AMBIENT_SDK_CONSTRUCTOR = re.compile(
     r"(?:GenaiExecutor::(?:new|default)|genai::Client::default)\s*\("
@@ -119,7 +123,7 @@ def _genai_transport_errors(repo_root: Path, crates: Path) -> list[str]:
 
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
-    """Reject direct provider-environment reads in shipped Rust code.
+    """Reject ambient provider SDK construction in shipped Rust code.
 
     Devtools and test targets remain explicit fixtures and are never product
     composition roots.
@@ -130,11 +134,6 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         relative = path.relative_to(crates)
         if relative.parts[0] == "devtools" or "tests" in relative.parts:
             continue
-        if PROVIDER_ENV_READ.search(path.read_text(encoding="utf-8")):
-            errors.append(
-                f"{path.relative_to(repo_root)}: provider execution configuration "
-                "must come from persisted catalog/credential/deployment policy"
-            )
         if AMBIENT_SDK_CONSTRUCTOR.search(path.read_text(encoding="utf-8")):
             errors.append(
                 f"{path.relative_to(repo_root)}: ambient provider SDK defaults are "

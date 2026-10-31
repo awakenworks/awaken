@@ -6,6 +6,14 @@
 // @formal entrypoint memory.stale_cas_never_clobbers_live_content
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! SQLite [`MemoryWriter`] over the crate's `memory_store` migration scope.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sql_storage::StoredU64;
@@ -341,6 +349,10 @@ async fn append_version(
 }
 
 impl SqliteMemoryRepository {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
@@ -469,6 +481,10 @@ impl SqliteMemoryRepository {
         self.create_as_inner(store, path, content, None).await
     }
 
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn create_as_inner(
         &self,
         store: &str,

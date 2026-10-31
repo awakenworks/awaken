@@ -1,23 +1,30 @@
-"""A poisoned lock denies; the Session executor and the realization never panic on one.
+"""An invariant lock's poison refusal is propagated, never unwrapped away.
 
-Plan v4 principle P7 (concurrency you can reason about: poison denies, reads
-never create). A lock whose holder panicked guards state that may be
-half-written. The executor (`awaken-session-executor`) and the realization
-(`awaken-session-realization`) answer it with a typed refusal --
-`RealizationLock` for the installed-Session registry, `ExecutorLock` for the
-executor's own process-local locks -- or, where a decision table in the code
-shows the answer is the fail-closed one, with that answer. Two spellings would
-silently undo that, and the compiler sees neither:
+Plan v5 P7 / S5 and `docs/design/lock-poisoning.md`. The workspace
+`clippy.toml` denies the `std::sync` lock methods in production code, so a
+lock's poisoning is decided by its `awaken_sync` type: a `LeafLock` recovers
+it, an `InvariantLock` refuses it with `LockPoisoned`, which the owning crate
+converts once into its own typed error. Clippy cannot tell an `InvariantLock`
+refusal unwrapped away from a legitimate `Result::expect`, so two spellings
+stay here:
 
-* `L1` a lock read through `.expect(..)`/`.unwrap()`
-  (`.lock()`, `.read()`, `.write()`).
-* `L2` a registry read whose poison error is unwrapped with an `.expect(..)`
-  that names the poison (`.expect("... poisoned")`): the read already returns
-  the typed refusal, and the caller must propagate it.
+* `L1` an `InvariantLock`/`InvariantRwLock` acquisition read through
+  `.expect(..)`/`.unwrap()` (`.lock()`, `.read()`, `.write()`). A leaf lock's
+  acquisition returns the guard itself, so this spelling compiles only on an
+  invariant lock (or a `std` lock, which clippy already refuses).
+* `L2` an `.expect(..)` whose message names the poison (`"... poisoned"`): the
+  refusal is already typed, and the caller propagates it.
 
-The count is held at zero: there is no baseline, every occurrence is refused.
-Only production code is scanned: comments, `cfg(test)` code, test files and the
-test-support fixtures are excluded.
+Scope: every production module of every workspace crate (the module closure
+Cargo compiles without `cfg(test)`, test-support and testkit code included),
+except `awaken-sync`, the one crate that reads a `std` lock. A site inside an
+item carrying the reviewed `#[expect(clippy::disallowed_methods, reason = ..)]`
+for a lock still on `std` is that lock's one recorded exemption and is not
+counted twice. The count is held at zero: there is no baseline.
+
+Retires when an invariant refusal can be unwrapped only through a typed route
+(for example a `LockPoisoned` that is not `Debug`), so the compiler refuses
+`.expect(..)` on it.
 """
 
 from __future__ import annotations
@@ -28,77 +35,72 @@ from pathlib import Path
 
 import _crate_boundary_workspace
 
-TEST_FILES = re.compile(r"(^|/)(tests?|test_support|fixtures)(\.rs|/)|_tests?\.rs$")
-
+SYNC_CRATE = "awaken-sync"
 LOCK_PANIC = re.compile(r"\.\s*(?:lock|read|write)\s*\(\s*\)\s*\.\s*(?:expect|unwrap)\s*\(")
 POISON_EXPECT = re.compile(r"\.\s*expect\s*\(\s*\"[^\"]*poison[^\"]*\"", re.IGNORECASE)
+REVIEWED_STD_LOCK = re.compile(r"#\[\s*(?:cfg_attr\s*\([^\]]*?,\s*)?expect\s*\(\s*clippy\s*::\s*disallowed_methods\b")
+FN_ITEM = re.compile(r"\bfn\s+[A-Za-z_]\w*")
 
 
 def scanned_manifests(repo_root: Path) -> list[Path]:
-    """Discover the two state owners from their declared Cargo authority.
-
-    A crate move must not remove its code from the rule. Source paths and the
-    production module closure are derived from the same manifests Cargo owns.
-    """
+    """Every workspace crate except the sync crate, discovered from Cargo."""
     return [
         path
         for path in _crate_boundary_workspace.crate_manifests(repo_root / "crates")
-        if _crate_boundary_workspace.load_manifest(path)
-        .get("package", {})
-        .get("metadata", {})
-        .get("awaken", {})
-        .get("authority")
-        in {"session-executor", "session-realization"}
+        if _crate_boundary_workspace.package_name(_crate_boundary_workspace.load_manifest(path))
+        != SYNC_CRATE
     ]
 
 
-def _source_roots(repo_root: Path) -> tuple[str, ...]:
-    return tuple(
-        (path.parent / "src").relative_to(repo_root).as_posix()
-        for path in scanned_manifests(repo_root)
-    )
+def _reviewed_ranges(syntax: str) -> list[tuple[int, int]]:
+    """Body spans of the fn items annotated with the reviewed std-lock expect."""
+    ranges: list[tuple[int, int]] = []
+    for attribute in REVIEWED_STD_LOCK.finditer(syntax):
+        item = FN_ITEM.search(syntax, attribute.end())
+        if item is None:
+            continue
+        brace = syntax.find("{", item.end())
+        end = _crate_boundary_workspace._balanced_end(syntax, brace, "{", "}") if brace >= 0 else None
+        if end is not None:
+            ranges.append((attribute.start(), end))
+    return ranges
 
 
-def _scanned_root(relative: str, roots: tuple[str, ...]) -> str | None:
-    for root in roots:
-        if relative.startswith(root + "/") and relative.endswith(".rs"):
-            return root
-    return None
+def poisoned_lock_violations(sources: dict[str, str]) -> list[str]:
+    """Rule violations in production sources, keyed by repository path.
 
-
-def poisoned_lock_violations(
-    sources: dict[str, str], roots: tuple[str, ...] | None = None
-) -> list[str]:
-    """Rule violations in the scanned production sources.
-
-    Cause/effect graph: C1 the source is production executor or realization
-    code; C2 it reads a lock through `.expect`/`.unwrap` (L1); C3 it unwraps a
-    poison refusal with a poison-naming `.expect` (L2). E1 accept when C1 is
-    false or neither C2 nor C3 holds; E2 reject and name the file, line and rule.
+    Cause/effect graph: C1 the source is production code outside the sync
+    crate; C2 it unwraps a lock acquisition (L1); C3 it unwraps with a
+    poison-naming `.expect` (L2); C4 the site is inside an item carrying the
+    reviewed std-lock `#[expect(clippy::disallowed_methods)]`. E1 accept when
+    C1 is false, C4 holds, or neither C2 nor C3 holds; E2 reject and name the
+    file, line and rule.
     """
-    if roots is None:
-        roots = _source_roots(_crate_boundary_workspace.REPO_ROOT)
     errors: list[str] = []
     for relative, source in sorted(sources.items()):
-        root = _scanned_root(relative, roots)
-        if root is None or TEST_FILES.search(relative[len(root) + 1 :]):
-            continue
         production = _crate_boundary_workspace.production_rust(source)
         syntax = _crate_boundary_workspace.rust_syntax(production)
+        reviewed = _reviewed_ranges(syntax)
+
+        def exempt(offset: int) -> bool:
+            return any(start <= offset < end for start, end in reviewed)
+
         for match in LOCK_PANIC.finditer(syntax):
             # The blanked projection turns `read("path")` into `read(      )`;
             # a call with an argument is not a lock acquisition.
-            if '"' in production[match.start():match.end()]:
+            if '"' in production[match.start():match.end()] or exempt(match.start()):
                 continue
             line = syntax.count("\n", 0, match.start()) + 1
             errors.append(
-                f"{relative}:{line}: a poisoned lock denies with a typed refusal "
-                "(RealizationLock / ExecutorLock) instead of panicking (L1)"
+                f"{relative}:{line}: an InvariantLock refuses poison with LockPoisoned; "
+                "propagate it through the crate's typed error instead of unwrapping it (L1)"
             )
         for match in POISON_EXPECT.finditer(production):
+            if exempt(match.start()):
+                continue
             line = production.count("\n", 0, match.start()) + 1
             errors.append(
-                f"{relative}:{line}: propagate the registry's typed poison refusal "
+                f"{relative}:{line}: propagate the typed poison refusal "
                 "instead of expecting it away (L2)"
             )
     return errors
@@ -107,36 +109,32 @@ def poisoned_lock_violations(
 def selftest() -> None:
     """Decision table for the poisoned-lock rules.
 
-    | Rule | Source                                                         | Effect |
+    | Rule | Source                                                          | Effect |
     |---|---|---|
     | P1 | `.lock().map_err(..)?`, `.lock().ok()`, `if let Ok(g) = m.lock()` | accept |
-    | P2 | a forbidden spelling in a cfg(test) module or a test file      | accept |
-    | P3 | a forbidden spelling in a crate outside the scanned two        | accept |
-    | P4 | `.lock().expect(..)` / `.lock().unwrap()` / `.write().unwrap()` | reject L1 |
-    | P5 | `.frozen(t).expect("slots mutex poisoned")`                    | reject L2 |
-    | P6 | the forbidden text only inside a comment                       | accept |
-    | P7 | `.expect("..")` whose message does not name poison             | accept (not a lock read) |
-    | P8 | tokio `.lock().await`                                          | accept (cannot poison) |
-    | P9 | authority moved to a nested crate / unrelated authority        | still scanned / excluded |
-    | P10 | `store.read("path").unwrap()`, a call with a string argument   | accept (not a lock read) |
+    | P2 | a forbidden spelling in a cfg(test) module                       | accept |
+    | P3 | a forbidden spelling in the sync crate                           | accept (not scanned) |
+    | P4 | `.lock().expect(..)` / `.lock().unwrap()` / `.write().unwrap()`  | reject L1 |
+    | P5 | `.frozen(t).expect("slots mutex poisoned")`                      | reject L2 |
+    | P6 | the forbidden text only inside a comment                         | accept |
+    | P7 | `.expect("..")` whose message does not name poison               | accept (not a lock read) |
+    | P8 | tokio `.lock().await`, a leaf `.lock().push(..)`                 | accept (cannot poison / recovers) |
+    | P9 | any production crate other than the sync crate                   | scanned |
+    | P10 | `store.read("path").unwrap()`, a call with a string argument    | accept (not a lock read) |
+    | P11 | L1/L2 inside a fn carrying the reviewed std-lock `#[expect]`    | accept (one recorded exemption) |
+    | P12 | the same spelling in the next fn, outside that item             | reject |
     """
-    roots = _source_roots(_crate_boundary_workspace.REPO_ROOT)
-    executor_root = next(root for root in roots if "session-executor/" in root)
-    realization_root = next(root for root in roots if "session-realization/" in root)
-    executor = f"{executor_root}/thread_reads.rs"
-    realization = f"{realization_root}/realization_state.rs"
+    path = "crates/server/awaken-any/src/lib.rs"
     clean = (
         "fn f() -> Result<(), E> { let g = m.lock().map_err(|_| E::Poisoned)?; "
-        "let h = n.lock().ok(); if let Ok(i) = o.lock() {} p.lock().await; Ok(()) }\n"
+        "let h = n.lock().ok(); if let Ok(i) = o.lock() {} p.lock().await; "
+        "leaf.lock().push(1); Ok(()) }\n"
     )
-    assert poisoned_lock_violations({executor: clean, realization: clean}) == [], "P1/P8"
+    assert poisoned_lock_violations({path: clean}) == [], "P1/P8"
     forbidden = "fn f() { let _ = m.lock().expect(\"x\"); r.frozen(t).expect(\"slots poisoned\"); }\n"
     assert poisoned_lock_violations(
-        {executor: clean + "#[cfg(test)]\nmod tests {\n" + forbidden + "}\n"}
+        {path: clean + "#[cfg(test)]\nmod tests {\n" + forbidden + "}\n"}
     ) == [], "P2 cfg(test)"
-    for test_file in ("installed_session/tests.rs", "test_support.rs", "host/tests/fixtures.rs", "memory_tests.rs"):
-        assert poisoned_lock_violations({f"{executor_root}/{test_file}": forbidden}) == [], test_file
-    assert poisoned_lock_violations({"crates/server/awaken-session-mcp/src/mcp.rs": forbidden}) == [], "P3"
     rejected = {
         "P4a": "fn f() { let _ = self.slots.lock().expect(\"slots\"); }\n",
         "P4b": "fn f() { let _ = self.slots.lock().unwrap(); }\n",
@@ -144,51 +142,44 @@ def selftest() -> None:
         "P5": "fn f() { let _ = r.frozen(t).expect(\"session runtime slots mutex poisoned\"); }\n",
     }
     for rule, source in rejected.items():
-        for path in (executor, realization):
-            assert len(poisoned_lock_violations({path: source})) == 1, rule
+        for crate in ("crates/server/awaken-session-executor/src/a.rs", "crates/devtools/x-testkit/src/b.rs"):
+            assert len(poisoned_lock_violations({crate: source})) == 1, (rule, "P9")
     commented = "// m.lock().expect(\"x\") and .expect(\"poisoned\")\nfn f() {}\n"
-    assert poisoned_lock_violations({executor: commented}) == [], "P6"
+    assert poisoned_lock_violations({path: commented}) == [], "P6"
     assert poisoned_lock_violations(
-        {executor: "fn f() { let _ = v.first().expect(\"non-empty by construction\"); }\n"}
+        {path: "fn f() { let _ = v.first().expect(\"non-empty by construction\"); }\n"}
     ) == [], "P7"
     assert poisoned_lock_violations(
-        {executor: "fn f() { let _ = store.read(\"path\").unwrap(); w.write(r\"x\").expect(\"io\"); }\n"}
+        {path: "fn f() { let _ = store.read(\"path\").unwrap(); w.write(r\"x\").expect(\"io\"); }\n"}
     ) == [], "P10"
+    reviewed = (
+        "#[expect(\n    clippy::disallowed_methods,\n    reason = \"the IAM API fixes this std lock\"\n)]\n"
+        "fn state(&self) -> G { self.state.lock().expect(\"state lock poisoned\") }\n"
+    )
+    assert poisoned_lock_violations({path: reviewed}) == [], "P11"
+    assert len(poisoned_lock_violations({path: reviewed + forbidden})) == 2, "P12"
 
-    # P9: moved/nested crates with the same authority retain the rule; an
-    # unrelated authority does not enter it. Cargo owns the manifest and the
-    # module graph, so neither directory depth nor an unreferenced .rs file
-    # can become a second scan-scope list.
+    # P3/P9: discovery follows Cargo manifests; only the sync crate is outside.
     import tempfile
 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        moved = root / "crates" / "nested" / "moved-executor"
-        (moved / "src").mkdir(parents=True)
-        (moved / "Cargo.toml").write_text(
-            '[package]\nname = "moved-executor"\n'
-            '[package.metadata.awaken]\nauthority = "session-executor"\n',
-            encoding="utf-8",
-        )
-        (moved / "src" / "lib.rs").write_text(forbidden, encoding="utf-8")
-        assert len(check_all(root)) == 2, "P9 moved authority remains scanned"
-        (moved / "Cargo.toml").write_text(
-            '[package]\nname = "moved-executor"\n'
-            '[package.metadata.awaken]\nauthority = "other"\n',
-            encoding="utf-8",
-        )
-        assert check_all(root) == [], "P9 unrelated authority remains outside"
+        for name in ("awaken-sync", "moved-anywhere"):
+            crate = root / "crates" / "nested" / name
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n', encoding="utf-8")
+            (crate / "src" / "lib.rs").write_text(forbidden, encoding="utf-8")
+        assert len(check_all(root)) == 2, "P3 sync crate excluded, P9 every other crate scanned"
 
 
 def check_all(repo_root: Path) -> list[str]:
-    """Scan the files a production build of either crate compiles: a module
-    declared under `cfg(test)` (or reached only through one) is test code."""
-    manifests = scanned_manifests(repo_root)
+    """Scan the files a production build compiles: a module declared under
+    `cfg(test)` (or reached only through one) is test code."""
     sources = {
         path.relative_to(repo_root.resolve()).as_posix(): path.read_text(encoding="utf-8")
-        for path in _crate_boundary_workspace.production_module_files(manifests)
+        for path in _crate_boundary_workspace.production_module_files(scanned_manifests(repo_root))
     }
-    return poisoned_lock_violations(sources, _source_roots(repo_root))
+    return poisoned_lock_violations(sources)
 
 
 if __name__ == "__main__":

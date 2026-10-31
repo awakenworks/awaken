@@ -7,6 +7,14 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! Postgres [`MemoryWriter`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_sql_storage::StoredU64;
 use awaken_time::WallClock;
@@ -308,6 +316,10 @@ async fn append_version(
 }
 
 impl PostgresMemoryRepository {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
@@ -467,6 +479,10 @@ impl PostgresMemoryRepository {
         self.create_as_inner(store, path, content, None).await
     }
 
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn create_as_inner(
         &self,
         store: &str,

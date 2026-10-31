@@ -8,6 +8,14 @@
 //! `put_endpoint` requires its provider, `put_offering` requires its endpoint and
 //! re-validates the whole catalog inside a transaction (a rejected write leaves
 //! no trace), and `snapshot()` runs [`ProviderCatalog::validate`] on the reload.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;

@@ -6,6 +6,14 @@
 //! `control_data_subject` migration scope ([`control_data_subject_bundle`]). The subject
 //! aggregate serializes into the `data {json}` column; `id`/`org` are keyed
 //! columns for lookups.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;

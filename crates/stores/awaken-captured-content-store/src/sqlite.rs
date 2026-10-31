@@ -7,6 +7,14 @@
 //! enforces storage limitation. Implements both [`CaptureSink`] (write) and
 //! [`ContentEraser`] (erase) over the Coordinator-owned
 //! `coordinator_data_capture` migration scope.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -132,6 +140,10 @@ impl SqliteCapturedContentStore {
     }
 
     /// Restrict a subject's records (GDPR Art. 18); returns the number restricted.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     pub async fn restrict(&self, subject: &DataSubjectId) -> usize {
         sqlx::query(&format!(
             "UPDATE {NS}_captured SET restricted = 1 WHERE subject = ?1 AND restricted = 0"
@@ -144,6 +156,10 @@ impl SqliteCapturedContentStore {
     }
 
     /// Lift the restriction on a subject's records (Art. 18(3)); returns released.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     pub async fn release(&self, subject: &DataSubjectId) -> usize {
         sqlx::query(&format!(
             "UPDATE {NS}_captured SET restricted = 0 WHERE subject = ?1 AND restricted = 1"
@@ -157,6 +173,10 @@ impl SqliteCapturedContentStore {
 
     /// Remove records older than `ttl_millis` as of `now`; returns count swept.
     /// Restricted (Art. 18) records are exempt.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     pub async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
         sqlx::query(&format!(
             "DELETE FROM {NS}_captured WHERE restricted = 0 AND ?1 - recorded_at >= ?2"
@@ -170,6 +190,11 @@ impl SqliteCapturedContentStore {
     }
 
     /// Current record count.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     pub async fn len(&self) -> usize {
         sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {NS}_captured"))
             .fetch_one(&self.pool)
@@ -203,6 +228,10 @@ impl CaptureSink for SqliteCapturedContentStore {
 
 #[async_trait]
 impl ContentEraser for SqliteCapturedContentStore {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn erase_subject(
         &self,
         subject: &DataSubjectId,

@@ -23,6 +23,14 @@
 //! offer. The one durable secret path is the AEAD decorator over the blob port:
 //! `SealedAeadSecretStore::over(&key, Arc::new(SqliteSealedBlobStore::open(..).await?))`
 //! (features `sealed-aead` + `sqlite`), which stores only `nonce ‖ ciphertext`.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;

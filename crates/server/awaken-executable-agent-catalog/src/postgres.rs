@@ -6,6 +6,14 @@
 //! The database stores the existing boundary commands. It does not reproduce
 //! catalog transition rules: construction and every mutation replay commands
 //! through [`ExecutableAgentCatalog`], the sole state machine.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::sync::Arc;
 

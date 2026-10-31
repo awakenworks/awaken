@@ -31,6 +31,14 @@
     unreachable_pub,
     reason = "pending: narrow the unreachable items to pub(crate)"
 )]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::collections::HashMap;
 

@@ -9,6 +9,14 @@
 //! (single owner per run) without a global lock. The claim policy — recover an
 //! expired lease, then wake an awaiting run with pending input, then a fresh run —
 //! matches the test-support `MemoryDispatchStore` reference backend exactly.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use crate::dispatch::{no_running_peer, thread_available_for_claim};
 use async_trait::async_trait;
