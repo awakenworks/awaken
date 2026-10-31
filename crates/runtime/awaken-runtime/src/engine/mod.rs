@@ -112,6 +112,16 @@ use run_loop::*;
 pub(crate) use tool_execution::RuntimeToolOperation;
 use tool_execution::*;
 
+/// A Native-loop phase owned on the heap.
+///
+/// Unoptimized builds give every poll function a stack slot for each callee
+/// future it constructs inline, and those slots add up across every await site.
+/// Embedding the loop and its large step phases made one Run attempt cost
+/// several hundred KiB of stack, so a nested Run started from a hook (compaction,
+/// judge, delegation) overflowed a 2 MiB thread. The loop and those phases cross
+/// this one boundary instead: a caller holds a pointer, never the phase's state.
+type PhaseFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
 /// authoritative, not the live stream (G10/G13).
 async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: AgentEvent) {
