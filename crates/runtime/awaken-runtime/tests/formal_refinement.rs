@@ -2106,9 +2106,13 @@ async fn resumed_terminal_state_never_erases_a_later_child_delivery() {
                 .any(|state| state.key.0 == PendingChildRunResults::KEY),
             "E1 A retains its real earlier consumption"
         );
+        // The tool-result journal commits B's raw return with its delivery, so
+        // the crash leaves B `Returned`: retained as data, with no state applied,
+        // no hook run and nothing published.
         assert!(
             batch.calls().iter().any(|entry| entry.call == call_b
-                && matches!(entry.phase, ToolCallPhase::Executing { .. })),
+                && matches!(&entry.phase, ToolCallPhase::Returned(output)
+                    if output.text() == child_b.text)),
             "E1 B is not consumed"
         );
         let commits = trace.commits();
