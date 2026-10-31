@@ -17,7 +17,7 @@ use std::time::Duration;
 /// implementor of [`AgentChannelSource`] can receive a door and forward it to an
 /// inner source, and nobody else can conjure one.
 ///
-/// ```compile_fail,E0603
+/// ```compile_fail,E0423
 /// use awaken_run_executor_acp::ChannelOpenDoor;
 ///
 /// let _ = ChannelOpenDoor(());
