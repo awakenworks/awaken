@@ -1,17 +1,21 @@
 // @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 //! Pod authentication through the production registration/client path. The API
-//! review is a fixture; Registry persistence and HTTP are real, not k3d evidence.
+//! review and the Pod's observed container are fixtures; Registry persistence
+//! and HTTP are real, not k3d evidence.
 
 mod postgres_support;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_dispatch::{
-    MemoryDispatchStore, WorkerDirectory, WorkerManifest, WorkerRegistration, WorkerState,
+    AttemptExecutionBinding, MemoryDispatchStore, WorkerDirectory, WorkerExecutionBindingSource,
+    WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerState,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_lease_testkit::ManualClock;
+use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
@@ -29,6 +33,42 @@ fn manifest() -> WorkerManifest {
     manifest
 }
 
+/// The Coordinator's view of each authenticated Pod's running container, as
+/// the Kubernetes binding source reads it for that Pod UID and container name.
+/// A Pod with no observed container yields no provider evidence.
+#[derive(Default)]
+struct PodContainers(Mutex<HashMap<String, String>>);
+
+impl PodContainers {
+    fn observe(&self, pod_uid: &str, container: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(pod_uid.to_owned(), container.to_owned());
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerExecutionBindingSource for PodContainers {
+    async fn registration_incarnation(
+        &self,
+        registration: &WorkerRegistration,
+    ) -> Result<Option<String>, ApplicationError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&registration.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        Ok(self.0.lock().unwrap().get(pod.uid()).cloned())
+    }
+
+    async fn binding_for(
+        &self,
+        _: &WorkerIdentity,
+    ) -> Result<AttemptExecutionBinding, ApplicationError> {
+        Err(ApplicationError::unavailable(
+            "registration fixture binds no attempts",
+        ))
+    }
+}
+
 struct Fixture {
     address: String,
     directory: Arc<dyn WorkerDirectory>,
@@ -44,7 +84,10 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    async fn new(directory: Arc<dyn WorkerDirectory>) -> Self {
+    async fn new(
+        directory: Arc<dyn WorkerDirectory>,
+        containers: Option<Arc<PodContainers>>,
+    ) -> Self {
         async fn review(Json(body): Json<Value>) -> Json<Value> {
             let uid = body["spec"]["token"].as_str().unwrap();
             assert!(uid.starts_with("uid-"));
@@ -69,13 +112,16 @@ impl Fixture {
         )
         .unwrap();
         let clock = Arc::new(ManualClock::new(100));
-        let service = WorkerDispatchService::new(
+        let mut service = WorkerDispatchService::new(
             Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
             Arc::new(auth),
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(50)),
         )
         .with_worker_directory(directory.clone(), 50);
+        if let Some(containers) = containers {
+            service = service.with_execution_binding_source(containers);
+        }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -106,17 +152,28 @@ impl Fixture {
 }
 
 async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, backend: &str) {
-    // Decision table: P1 first and concurrent same-Pod registrations with
-    // different process nonces => one UID incarnation, one generation. P2
-    // response-loss retry after expiry/closure => exact record, no refresh or
-    // replacement. P3 fresh Pod UID at same name => independent generation 1.
-    // P4 historical arbitrary incarnation (live OR expired) => reject unchanged,
-    // never backfill provider authority. P5 changed manifest => existing reject.
-    // Registry serializes P1/P2: every authenticated writer chooses the same
-    // UID, and same-incarnation register is a stutter in all states. This proves
-    // registration behavior, not Pod confinement or termination of remote work.
-    let f = Fixture::new(directory).await;
+    // Decision table (the Worker ID is the Pod; an incarnation is one running
+    // container instance the Coordinator observes for that Pod UID):
+    // P1 first and concurrent same-Pod registrations with different process
+    // nonces => the one observed container incarnation, one generation.
+    // P2 response-loss retry after expiry/closure => exact record, no refresh
+    // or replacement. P3 fresh Pod UID at same name => its own container,
+    // independent generation 1. P4 a foreign incarnation holding a live slot,
+    // or a historical container instance observed again => reject unchanged,
+    // never backfill provider authority. P5 changed manifest => existing
+    // reject. P6 a process-proposed incarnation without binding-source
+    // evidence (no binding source, or no observed container) => reject, no
+    // Registry record. P7 restarted container after the previous lease lapsed
+    // => the newly observed container as the next generation.
+    // Registry serializes P1/P2: every authenticated writer receives the same
+    // observed container, and same-incarnation register is a stutter in all
+    // states. This proves registration behavior, not Pod confinement or
+    // termination of remote work.
+    let containers = Arc::new(PodContainers::default());
+    let f = Fixture::new(directory.clone(), Some(containers.clone())).await;
     let uid = format!("uid-{backend}-{}", std::process::id());
+    let running = "0f3a9c01";
+    containers.observe(&uid, running);
     let a = f.client(&uid);
     let b = f.client(&uid);
     let (first, retry) = tokio::join!(
@@ -125,7 +182,7 @@ async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, back
     );
     let first = first.unwrap().worker;
     assert_eq!(retry.unwrap().worker, first, "P1");
-    assert_eq!(first.snapshot.identity.incarnation_id, uid);
+    assert_eq!(first.snapshot.identity.incarnation_id, running, "P1");
     assert_eq!(first.snapshot.identity.generation, 1);
     let mut changed = manifest();
     changed.build_digest = "changed".into();
@@ -195,51 +252,101 @@ async fn assert_immutable_registration(directory: Arc<dyn WorkerDirectory>, back
         assert_eq!(heartbeat.lease_ttl_ms, None);
     }
     let successor_uid = format!("{uid}-next");
+    containers.observe(&successor_uid, "0f3a9c02");
     let next = f
         .client(&successor_uid)
         .register_classified("random-next", manifest())
         .await
         .unwrap()
         .worker;
-    assert_eq!(next.snapshot.identity.incarnation_id, successor_uid, "P3");
+    assert_eq!(next.snapshot.identity.incarnation_id, "0f3a9c02", "P3");
     assert_eq!(next.snapshot.identity.generation, 1);
     assert_ne!(
         next.snapshot.identity.worker_id,
         first.snapshot.identity.worker_id
     );
-    for now in [100, 151] {
-        let legacy_uid = format!("{uid}-legacy-{now}");
-        let id = KubernetesPodIdentity::new("workers", "worker-a", &legacy_uid)
-            .unwrap()
-            .worker_id();
-        let historical = f
-            .directory
-            .register(
-                WorkerRegistration {
-                    worker_id: id.clone(),
-                    incarnation_id: "historical-boot".into(),
-                    manifest: manifest(),
-                    create_ledger: None,
-                },
-                100,
-                50,
-            )
+
+    let restart_uid = format!("{uid}-restart");
+    let restart_id = KubernetesPodIdentity::new("workers", "worker-a", &restart_uid)
+        .unwrap()
+        .worker_id();
+    let foreign = f
+        .directory
+        .register(
+            WorkerRegistration {
+                worker_id: restart_id.clone(),
+                incarnation_id: "0f3a9c10".into(),
+                manifest: manifest(),
+                create_ledger: None,
+            },
+            100,
+            50,
+        )
+        .await
+        .unwrap();
+    containers.observe(&restart_uid, "0f3a9c11");
+    f.clock.set(100);
+    assert!(
+        f.client(&restart_uid)
+            .register_classified("0f3a9c11", manifest())
             .await
-            .unwrap();
-        f.clock.set(now);
-        assert!(
-            f.client(&legacy_uid)
-                .register_classified("new-boot", manifest())
-                .await
-                .is_err(),
-            "P4"
-        );
-        assert_eq!(
-            f.directory.current(&id).await.unwrap(),
-            Some(historical),
-            "P4 no mutation"
-        );
-    }
+            .is_err(),
+        "P4 live foreign incarnation"
+    );
+    assert_eq!(
+        f.directory.current(&restart_id).await.unwrap(),
+        Some(foreign),
+        "P4 no mutation"
+    );
+    f.clock.set(151);
+    let restarted = f
+        .client(&restart_uid)
+        .register_classified("new-boot", manifest())
+        .await
+        .unwrap()
+        .worker;
+    assert_eq!(restarted.snapshot.identity.incarnation_id, "0f3a9c11", "P7");
+    assert_eq!(restarted.snapshot.identity.generation, 2, "P7");
+    containers.observe(&restart_uid, "0f3a9c10");
+    f.clock.set(300);
+    assert!(
+        f.client(&restart_uid)
+            .register_classified("0f3a9c10", manifest())
+            .await
+            .is_err(),
+        "P4 historical container instance"
+    );
+    assert_eq!(
+        f.directory.current(&restart_id).await.unwrap(),
+        Some(restarted),
+        "P4 no mutation"
+    );
+
+    let unobserved_uid = format!("{uid}-unobserved");
+    let unobserved_id = KubernetesPodIdentity::new("workers", "worker-a", &unobserved_uid)
+        .unwrap()
+        .worker_id();
+    assert!(
+        f.client(&unobserved_uid)
+            .register_classified("0f3a9c20", manifest())
+            .await
+            .is_err(),
+        "P6 no observed container"
+    );
+    let unbound = Fixture::new(directory, None).await;
+    assert!(
+        unbound
+            .client(&unobserved_uid)
+            .register_classified("0f3a9c20", manifest())
+            .await
+            .is_err(),
+        "P6 no binding source"
+    );
+    assert_eq!(
+        f.directory.current(&unobserved_id).await.unwrap(),
+        None,
+        "P6 no Registry record"
+    );
 }
 
 #[tokio::test]
