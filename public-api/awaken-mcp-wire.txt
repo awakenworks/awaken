@@ -29,8 +29,13 @@ impl awaken_mcp_wire::jsonrpc::ServerRequestError
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::tool_fault(i64, impl core::convert::Into<alloc::string::String>) -> Self
+pub const awaken_mcp_wire::jsonrpc::TOOL_FAULT_DEFINITIVE_FAILURE: i64
+pub const awaken_mcp_wire::jsonrpc::TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH: i64
+pub const awaken_mcp_wire::jsonrpc::TOOL_FAULT_UNAVAILABLE_BEFORE_DISPATCH: i64
 pub trait awaken_mcp_wire::jsonrpc::ServerRequestHandler: core::marker::Send + core::marker::Sync
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestHandler::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub const fn awaken_mcp_wire::jsonrpc::is_certain_tool_fault(i64) -> bool
 pub async fn awaken_mcp_wire::jsonrpc::server_request_reply(core::option::Option<&alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>, &serde_json::value::Value, &str, serde_json::value::Value) -> serde_json::value::Value
 pub mod awaken_mcp_wire::progress
 pub struct awaken_mcp_wire::progress::McpProgressUpdate
@@ -63,6 +68,7 @@ pub awaken_mcp_wire::McpTransportError::ServerError(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::ServerNotFound(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::ServerRestarting(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::Timeout(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::ToolFault(i64, alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::TransportError(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::UnknownTool(alloc::string::String)
 pub enum awaken_mcp_wire::Role
@@ -223,6 +229,7 @@ impl awaken_mcp_wire::jsonrpc::ServerRequestError
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::tool_fault(i64, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_mcp_wire::ServerTaskCapabilities
 pub awaken_mcp_wire::ServerTaskCapabilities::cancel: core::option::Option<serde_json::map::Map<alloc::string::String, serde_json::value::Value>>
 pub awaken_mcp_wire::ServerTaskCapabilities::list: core::option::Option<serde_json::map::Map<alloc::string::String, serde_json::value::Value>>

@@ -433,7 +433,7 @@
           "B-DOL-52",
           "B-DOL-53"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -453,13 +453,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "compile_fail doctest pins are not enforced by the stable doc gate, and the C2 pin (E0412) is stale: rustc 1.96 reports E0425",
-          "follow_up": "awaken-runtime conversation.rs doctest pins and a doc gate that checks E-codes (M)",
-          "reproducers": [
-            "test_d2_reproducer_c2_doctest_pin_matches_the_compiler_error_code",
-            "test_d3_reproducer_stable_rustdoc_checks_pinned_codes"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "compile_fail doctest pins are not enforced by the stable doc gate, and the C2 pin (E0412) is stale: rustc 1.96 reports E0425",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],
@@ -718,7 +715,7 @@
           "B166",
           "B238"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -737,12 +734,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "没有持久的准备 intent，root 失败后重建的服务无法凭原意图找回已准备的参与者",
-          "follow_up": "session creation：持久化准备 intent（L）",
-          "reproducers": [
-            "orphaned_prepare_is_found_by_recovery_after_rebuild"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "没有持久的准备 intent，root 失败后重建的服务无法凭原意图找回已准备的参与者",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],
@@ -1004,7 +999,7 @@
           "B255",
           "B256"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -1023,13 +1018,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "锁等待前只采样一次租约时钟；物理读取不带 fence 且读取后不再校验",
-          "follow_up": "resource-worker-http（S）与 resource-application 文件源（M）",
-          "reproducers": [
-            "t06_c02_lease_expiry_during_lock_wait_is_rechecked",
-            "t06_c02_lease_expiry_during_physical_read_releases_no_bytes"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "锁等待前只采样一次租约时钟；物理读取不带 fence 且读取后不再校验",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {

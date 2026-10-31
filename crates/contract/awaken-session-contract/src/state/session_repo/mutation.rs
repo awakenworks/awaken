@@ -228,8 +228,13 @@ pub enum SessionRepositoryConflict {
 pub enum SessionRepositoryError {
     #[error("Session was not found")]
     NotFound,
+    /// The outcome is unknown: the mutation may or may not have been applied.
     #[error("Session repository authority unavailable: {0}")]
     AuthorityUnavailable(String),
+    /// The authority refused before applying anything; the mutation has no
+    /// effect. Only a store that can prove this may report it.
+    #[error("Session repository refused the mutation before applying it: {0}")]
+    NotApplied(String),
     #[error("Session repository contains corrupt durable state: {0}")]
     Corrupt(String),
     #[error("Session repository conflict: {0}")]

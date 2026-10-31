@@ -519,7 +519,7 @@
           "B253",
           "B254"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -538,13 +538,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "DispatchPool::shutdown 没有期限；LiveInbox::offer 无界",
-          "follow_up": "run-ingress 关闭期限（S–M）、live inbox 容量（M）",
-          "reproducers": [
-            "shutdown_is_bounded_when_a_dependency_never_returns",
-            "live_inbox_applies_backpressure_to_a_stalled_consumer"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "DispatchPool::shutdown 没有期限；LiveInbox::offer 无界",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {
@@ -579,7 +576,7 @@
           "B243",
           "B244"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -598,14 +595,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "磁盘满归入通用 Rejected；Dream 把 AtCapacity 映射为 internal_error；连接卡死时接纳最长等待 24h",
-          "follow_up": "store-sqlite/coordinator 错误类型（M）、Dream 映射（S）、sqlite-pool 接纳等待（S–M）",
-          "reproducers": [
-            "exhausted_capacity_has_a_distinct_classification",
-            "wedged_single_connection_fails_admission_promptly",
-            "capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "磁盘满归入通用 Rejected；Dream 把 AtCapacity 映射为 internal_error；连接卡死时接纳最长等待 24h",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],

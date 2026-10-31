@@ -417,11 +417,12 @@ function executeCheckerNegativeControls(history, pages, receiptIds) {
   );
 }
 
-// O1 (opt-in, AWAKEN_E2E_RUN_PRODUCT_GAPS=1): B takes over A's expired lease
-// and the interrupted Run reaches exactly one terminal with the Session usable.
-// Today B terminates the Session with "current sandbox handle has no
-// realization marker", so this reproduction fails until the product gap closes.
-// #[ignore = "product gap: a takeover process cannot reuse the hard-killed process's local sandbox realization (no realization marker) and terminates the Session instead of continuing the held Run"]
+// O1: B takes over A's expired lease and the interrupted Run reaches exactly
+// one terminal with the Session usable. A's local sandbox realization lives in
+// A's own data_dir, so B finds no realization marker for it; ADR-0103 treats
+// that unmarked, physically absent realization as exact absence and B
+// re-realizes a fresh local sandbox under its own fenced Rebuild effect
+// instead of terminating the Session (gap closed by ADR-0103).
 async function reproduceRecoveredRunContinuesOnTheTakeoverProcess({
   clientB, sessionId, firstReceipt, heldReceipt, historyA, held,
 }) {
@@ -579,14 +580,11 @@ async function main() {
     );
     executeCheckerNegativeControls(historyB, pagesB, [firstReceipt]);
     pass('O0 public IDs, order, content and cursors survive the exit; NC-checker executed');
+    pass('T31-C03 O0 and negative controls (NC-process, NC-checker) on two OS processes over one PostgreSQL database');
 
-    if (process.env.AWAKEN_E2E_RUN_PRODUCT_GAPS === '1') {
-      await reproduceRecoveredRunContinuesOnTheTakeoverProcess({
-        clientB, sessionId: session.id, firstReceipt, heldReceipt, historyA, held,
-      });
-    } else {
-      console.log('E2E PASS: T31-C03 O0 and negative controls (NC-process, NC-checker) on two OS processes over one PostgreSQL database; O1 takeover continuation is a known product gap, run it with AWAKEN_E2E_RUN_PRODUCT_GAPS=1');
-    }
+    await reproduceRecoveredRunContinuesOnTheTakeoverProcess({
+      clientB, sessionId: session.id, firstReceipt, heldReceipt, historyA, held,
+    });
   } catch (error) {
     failures.push(error);
   } finally {

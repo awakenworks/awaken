@@ -254,26 +254,26 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 204,
+        "line": 211,
         "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
       }
     ],
     "assertion_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 205
+        "line": 212
       },
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 214
+        "line": 221
       },
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 217
+        "line": 224
       },
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 218
+        "line": 225
       }
     ],
     "execution_witnesses": [
@@ -308,22 +308,22 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 156,
+        "line": 165,
         "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
       }
     ],
     "assertion_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 159
+        "line": 168
       },
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 161
+        "line": 170
       },
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 162
+        "line": 171
       }
     ],
     "execution_witnesses": [

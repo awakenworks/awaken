@@ -614,6 +614,38 @@ fn is_distinct_authorized_rebuild(
     observed.authorizes_successor(incoming) && !observed.same_effect_identity(incoming)
 }
 
+/// Admission for an exact-source rebuild whose source has no marker under
+/// this provider base (ADR-0103). The source handle is current V2 evidence, so
+/// the only physical residue it can name here is the root or its private
+/// stage; both must be absent. The incoming effect must be a distinct
+/// aggregate successor of the source's effect, which keeps lease/incarnation
+/// fencing: a stale or regressing owner can never re-realize the Session.
+fn require_unmarked_rebuild_source_absent(
+    root: &Path,
+    lock: &awaken_fs_durability::ExclusiveFileLock,
+    fingerprint: &pc::SandboxRealizationFingerprint,
+    source: &RebuildSource<'_>,
+    effect_fence: &pc::SandboxEffectFence,
+) -> Result<(), pc::SandboxError> {
+    if source.fingerprint != fingerprint {
+        return Err(pc::SandboxError::conflict(
+            "sandbox rebuild source belongs to a different immutable specification",
+        ));
+    }
+    if source.physical_incarnation.trim().is_empty() {
+        return Err(pc::SandboxError::invalid(
+            "sandbox rebuild source has an empty physical incarnation",
+        ));
+    }
+    if !is_distinct_authorized_rebuild(source.effect_fence, effect_fence) {
+        return Err(pc::SandboxError::fence_rejected(
+            "unmarked sandbox rebuild source or authorization is stale/conflicting",
+        ));
+    }
+    let stage = PathBuf::from(private_stage_leaf(root, &source.physical_incarnation)?);
+    require_absent_locked(root, lock, &stage, "unmarked rebuild source private stage")
+}
+
 mod physical_identity;
 use physical_identity::{new_physical_incarnation, validate_removed_restore_source};
 
@@ -1135,10 +1167,13 @@ pub(crate) fn begin(
 ) -> Result<CreationGuard, pc::SandboxError> {
     let lock = acquire(root)?;
     let Some(mut observed) = read_marker_locked(root, &lock)? else {
-        if source.is_some() {
-            return Err(pc::SandboxError::not_found(
-                "sandbox rebuild source has no provider realization marker",
-            ));
+        if let Some(source) = source.as_ref() {
+            // ADR-0103: the source was realized under another provider base
+            // (a dead process's data_dir) or its marker is gone. Re-realize
+            // here only when nothing unmarked occupies the root or the
+            // source's private stage, and only under an aggregate successor
+            // of the source's effect; the fresh attempt mints its own marker.
+            require_unmarked_rebuild_source_absent(root, &lock, fingerprint, source, effect_fence)?;
         }
         require_absent_locked(root, &lock, root_leaf(root)?, "sandbox root")?;
         let mut marker = marker_for_new_attempt(
@@ -1173,8 +1208,12 @@ pub(crate) fn begin(
     execution_participant::require_quiescent(&observed)?;
     match observed.phase {
         RealizationPhase::Creating => {
-            if source.is_some()
-                || !observed.effect_fence.same_effect_identity(effect_fence)
+            // A source is accepted only by the retry of the exact ADR-0103
+            // unmarked rebuild that published this Creating marker.
+            if source.as_ref().is_some_and(|source| {
+                observed.rebuild_source.is_some()
+                    || !is_distinct_authorized_rebuild(source.effect_fence, effect_fence)
+            }) || !observed.effect_fence.same_effect_identity(effect_fence)
                 || observed.restore_input_fingerprint.as_deref() != restore_input_fingerprint
             {
                 return Err(pc::SandboxError::conflict(

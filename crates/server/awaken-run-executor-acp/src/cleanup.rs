@@ -17,7 +17,7 @@ use std::time::Duration;
 /// implementor of [`AgentChannelSource`] can receive a door and forward it to an
 /// inner source, and nobody else can conjure one.
 ///
-/// ```compile_fail,E0603
+/// ```compile_fail,E0423
 /// use awaken_run_executor_acp::ChannelOpenDoor;
 ///
 /// let _ = ChannelOpenDoor(());
@@ -96,7 +96,7 @@ pub(super) struct CleanupScope {
 }
 
 impl CleanupScope {
-    pub fn new(quiescence: AttemptQuiescence) -> Self {
+    pub(crate) fn new(quiescence: AttemptQuiescence) -> Self {
         Self {
             session: None,
             complete: true,
@@ -104,7 +104,7 @@ impl CleanupScope {
         }
     }
 
-    pub async fn finish(&mut self, grace: Duration) {
+    pub(crate) async fn finish(&mut self, grace: Duration) {
         while !self.complete {
             let session = self.session.as_mut().expect("pending ACP process");
             // Reuse the sole bounded TERM/KILL/drain policy. Only this same

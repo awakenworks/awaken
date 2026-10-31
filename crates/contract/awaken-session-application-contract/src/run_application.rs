@@ -33,6 +33,39 @@ pub enum RunResume {
     },
 }
 
+/// Receipt of one explicit Stop command, distinct from a passive stream
+/// hang-up: every accepted Stop gets its own id.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StopReceipt {
+    pub id: String,
+    pub thread_id: String,
+}
+
+impl StopReceipt {
+    /// Issue the receipt for one accepted Stop on `thread`. The id joins a
+    /// per-process random nonce with a per-process sequence, so it never
+    /// repeats within a process and does not collide across restarts.
+    #[must_use]
+    pub fn issue(thread: &str) -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        use std::sync::OnceLock;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NONCE: OnceLock<u64> = OnceLock::new();
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let nonce = *NONCE.get_or_init(|| {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        });
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Self {
+            id: format!("stop_{nonce:016x}{sequence:08x}"),
+            thread_id: thread.to_owned(),
+        }
+    }
+}
+
 /// The one neutral application port driven by AG-UI, AI SDK, A2A and ACP-facing
 /// adapters. Session creation and realization stay on their narrower Session
 /// application ports.
@@ -81,6 +114,13 @@ pub trait RunApplication: Send + Sync {
 
     async fn interrupt(&self, _thread: &str) -> Result<(), RunApplicationError> {
         Ok(())
+    }
+
+    /// An explicit client Stop: the same interrupt command, answered with its
+    /// own receipt so two Stops are two attributable commands (ADR-0103).
+    async fn stop(&self, thread: &str) -> Result<StopReceipt, RunApplicationError> {
+        self.interrupt(thread).await?;
+        Ok(StopReceipt::issue(thread))
     }
 
     async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError>;

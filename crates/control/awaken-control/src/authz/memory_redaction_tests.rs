@@ -7,9 +7,9 @@
 //! | R2 | POST a Memory (content write) | the content-write action |
 //! | R3 | POST `.../memory_versions/{vid}/redact` | an action a content-only writer does NOT hold |
 //!
-//! R1/R2 hold today. R3 is the product gap: redaction maps to the same
-//! `workspace.write` a content writer already holds, so a principal granted
-//! only content write can also erase history.
+//! R3 was a product gap (redaction mapped to the same `workspace.write` a
+//! content writer holds); ADR-0103 gives it its own `workspace.memory_redact`
+//! action, which `workspace.write` alone does not grant.
 use super::{Method, RouteAuthz, WORKSPACE_READ, WORKSPACE_WRITE, action_for};
 
 const VERSION: &str = "/v1/memory_stores/memstore_t25/memory_versions/memver_t25";
@@ -44,7 +44,6 @@ fn memory_version_reads_and_content_writes_use_the_memory_family_actions() {
 }
 
 #[test]
-#[ignore = "product gap: memory version redact maps to workspace.write, the same action as content write; there is no separate redact permission"]
 fn redacting_a_version_requires_more_than_content_write() {
     let redact = resource_action(&Method::POST, &format!("{VERSION}/redact"));
     let content_write = resource_action(&Method::POST, CONTENT);

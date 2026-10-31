@@ -11,9 +11,9 @@
 //!
 //! Oracles: O0 authority, uncertainty and retry hint are preserved; O1 the
 //! fault never becomes a successful (or `isError` tool-result) answer. O1 and
-//! the operator message hold today; the reproducer records that F1 and F2
-//! reach the wire with the same code, so a client cannot tell a safe retry
-//! from an unknown effect.
+//! the operator message hold; since ADR-0103 F1 and F3 carry their own
+//! certain tool-fault codes, so a client can tell a safe retry from an
+//! unknown effect.
 //! Negative control (executed): the same O1 checker rejects a silent-success
 //! mutant of the real wire answer.
 
@@ -121,7 +121,6 @@ async fn mcp_success_checker_rejects_a_silent_success_mutant_of_the_real_answer(
 }
 
 #[tokio::test]
-#[ignore = "product gap: MCP tools/call maps certain-not-dispatched, certain-failed and unknown-outcome tool errors all to JSON-RPC -32603, so the wire loses the uncertainty and the safe-retry hint"]
 async fn mcp_distinguishes_a_safe_retry_from_an_unknown_effect() {
     let (certain_not_dispatched, _) = call(Fault::CertainNotDispatched)
         .await

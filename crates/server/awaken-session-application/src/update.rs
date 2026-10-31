@@ -116,7 +116,8 @@ impl SessionUpdateError {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
-            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::Unavailable(message)
+            | SessionMutationError::NotApplied(message) => Self::Unavailable(message),
             error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
                 Self::Rejected(error.into())
             }
@@ -311,12 +312,30 @@ async fn record_update_fact(
         .map_err(|error| SessionUpdateError::Rejected(RunError::bad_request(error.to_string())))
 }
 
+/// A command that only lowers an Active budget threshold. It is admitted while
+/// a Run executes, so the next model effect obeys the current authority; every
+/// other field still waits for an Idle root (ADR-0103).
+fn is_budget_only_tightening(
+    command: &SessionUpdateCommand,
+    session: &awaken_session_contract::SessionAggregate,
+) -> bool {
+    command.title.is_none()
+        && command.metadata.is_none()
+        && command.tools.is_none()
+        && command.mcp_update.is_none()
+        && matches!(
+            (&command.budget, session.budget.max_list_cost_minor()),
+            (Some(SessionFieldUpdate::Replace(next)), Some(current)) if *next < current
+        )
+}
+
 fn compile_update_tool_settings(
     compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
     command: &SessionUpdateCommand,
     session: &awaken_session_contract::SessionAggregate,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
     if session.execution != SessionExecutionState::Idle
+        && !is_budget_only_tightening(command, session)
         && !(matches!(
             command.mcp_update,
             Some(SessionMcpUpdate::CredentialLifecycle { .. })

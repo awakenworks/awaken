@@ -33,7 +33,7 @@ use std::future::Future;
 ///
 /// C2: the redundant type name is absent independently of method selection.
 ///
-/// ```compile_fail,E0412
+/// ```compile_fail,E0425
 /// let _: Option<awaken_runtime::EmbeddedSession<'_>> = None;
 /// ```
 ///

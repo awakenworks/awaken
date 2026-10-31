@@ -4,20 +4,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 225,
-        "file_sha256": "f19a03f0741490c96bccff47284168c45c90324aa38ea0c9a0d042c1c3de9d92"
+        "line": 223,
+        "file_sha256": "43dec8688b40829fbeb5d5a693edc599577439716f730db9dfd9ef5b1b1c21cb"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T12-C03": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          0
+        ],
+        "negative_control": true
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the interrupt-only budget no-op exists only in the protocol parser, not at root admission",
-    "limitation": "Not execution evidence. Follow-up: session-application event-batch admission (S)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B236"
   },
   {
@@ -30,15 +32,18 @@
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: not-admitted and unknown outcomes both surface as Unavailable",
-    "limitation": "Not execution evidence. Follow-up: run-admission error taxonomy (M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B237"
   },
   {
@@ -46,20 +51,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 441,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "line": 471,
+        "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T04-C03": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          0
+        ],
+        "negative_control": true
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: no durable prepare intent; a prepared participant is known only to the failed call",
-    "limitation": "Not execution evidence. Follow-up: session creation / repository participants intent store (L)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B238"
   },
   {
@@ -67,20 +74,23 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 584,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "line": 613,
+        "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T17-C01": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          1,
+          2
+        ],
+        "negative_control": true
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: no durable pre-root intent; only the original caller can rediscover a started prepare",
-    "limitation": "Not execution evidence. Follow-up: session creation intent store (L, shared with T04-C03)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B239"
   },
   {
@@ -88,20 +98,23 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 707,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "line": 734,
+        "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T17-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: compensation failure is only logged; nothing durable stays pending for a recoverer",
-    "limitation": "Not execution evidence. Follow-up: repository participant compensation and recovery (M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B240"
   },
   {
@@ -109,20 +122,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 838,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "line": 864,
+        "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T17-C03": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          1
+        ],
+        "negative_control": true
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: abort_unadopted checks then retires without a fence against a concurrent adopt",
-    "limitation": "Not execution evidence. Follow-up: repository participant conditional retire (M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B241"
   },
   {
@@ -130,20 +145,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-store-sqlite/tests/capacity_exhaustion.rs",
-        "line": 138,
-        "file_sha256": "dda4a866373916a043e26d10c2b3469b3bd53801d9f3f070f6ab93a584871840"
+        "line": 137,
+        "file_sha256": "9b0bab2c2b29fce0867d3f9d78a5db36fdbff8d1efc2a1325db2851a3f8b48b4"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T38-C03": {
-        "oracles": [],
+        "oracles": [
+          3
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: disk full surfaces as the generic Rejected class",
-    "limitation": "Not execution evidence. Follow-up: store-sqlite / coordinator error type (M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B242"
   },
   {
@@ -151,20 +168,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-store-sqlite/tests/capacity_exhaustion.rs",
-        "line": 148,
-        "file_sha256": "dda4a866373916a043e26d10c2b3469b3bd53801d9f3f070f6ab93a584871840"
+        "line": 146,
+        "file_sha256": "9b0bab2c2b29fce0867d3f9d78a5db36fdbff8d1efc2a1325db2851a3f8b48b4"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T38-C03": {
-        "oracles": [],
+        "oracles": [
+          3
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: a wedged connection makes admission wait up to 24h instead of failing classified",
-    "limitation": "Not execution evidence. Follow-up: awaken-sqlite-pool admission wait (S-M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B243"
   },
   {
@@ -172,20 +191,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 543,
-        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
+        "line": 540,
+        "file_sha256": "425d25968e1e02d499a5e6d47d10892158ef55b506fc066b1a6acb665cd1ecd2"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T38-C03": {
-        "oracles": [],
+        "oracles": [
+          3
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: Dream maps memory AtCapacity to internal_error",
-    "limitation": "Not execution evidence. Follow-up: coordinator Dream error mapping (S) 2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B244"
   },
   {
@@ -193,20 +214,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 313,
-        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
+        "line": 312,
+        "file_sha256": "425d25968e1e02d499a5e6d47d10892158ef55b506fc066b1a6acb665cd1ecd2"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T23-C03": {
-        "oracles": [],
+        "oracles": [
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: Dream prepare registers the snapshot catalog entry Active before the clone completes",
-    "limitation": "Not execution evidence. Follow-up: coordinator Dream prepare (M) 2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B245"
   },
   {
@@ -214,20 +237,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 338,
-        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
+        "line": 336,
+        "file_sha256": "425d25968e1e02d499a5e6d47d10892158ef55b506fc066b1a6acb665cd1ecd2"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T23-C03": {
-        "oracles": [],
+        "oracles": [
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: release_result discards set_state/purge errors so cleanup reports Ok with private content left",
-    "limitation": "Not execution evidence. Follow-up: coordinator Dream cleanup (S) 2026-10-28: current source coordinates follow extraction of the read-only Session fixture. Retained execution witnesses still identify their original source heads and logs; no execution of the changed fixture or this revision is claimed.",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B246"
   },
   {

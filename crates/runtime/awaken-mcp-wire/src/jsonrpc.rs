@@ -65,7 +65,38 @@ pub struct ServerRequestError {
     pub message: String,
 }
 
+/// Implementation-defined JSON-RPC codes (the -32000..-32099 server range)
+/// for a tool's own certain failure. An uncertain tool fault keeps -32603, so
+/// a client that does not know these codes still treats it as unknown
+/// (ADR-0103).
+///
+/// The tool was not dispatched: nothing ran and a retry is safe.
+pub const TOOL_FAULT_UNAVAILABLE_BEFORE_DISPATCH: i64 = -32001;
+/// The tool ran and certainly failed: no retry hint.
+pub const TOOL_FAULT_DEFINITIVE_FAILURE: i64 = -32002;
+/// The tool ran and certainly invalidated the state it depended on.
+pub const TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH: i64 = -32003;
+
+/// Whether `code` is one of the certain tool-fault codes above.
+#[must_use]
+pub const fn is_certain_tool_fault(code: i64) -> bool {
+    matches!(
+        code,
+        TOOL_FAULT_UNAVAILABLE_BEFORE_DISPATCH
+            | TOOL_FAULT_DEFINITIVE_FAILURE
+            | TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH
+    )
+}
+
 impl ServerRequestError {
+    /// A certain tool fault with one of the `TOOL_FAULT_*` codes.
+    pub fn tool_fault(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
     /// The JSON-RPC "method not found" error (-32601).
     pub fn method_not_found(method: &str) -> Self {
         Self {
@@ -361,7 +392,16 @@ async fn dispatch(
                 && let Some(tx) = pending.lock().await.remove(&id)
             {
                 let result = if let Some(err) = value.get("error") {
-                    Err(McpTransportError::ServerError(err.to_string()))
+                    Err(
+                        match err
+                            .get("code")
+                            .and_then(Value::as_i64)
+                            .filter(|code| is_certain_tool_fault(*code))
+                        {
+                            Some(code) => McpTransportError::ToolFault(code, err.to_string()),
+                            None => McpTransportError::ServerError(err.to_string()),
+                        },
+                    )
                 } else {
                     Ok(value.get("result").cloned().unwrap_or(Value::Null))
                 };

@@ -1,8 +1,4 @@
 //! Application-facing Session ports that do not own durable state.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod event_admission;
 mod execution_observation;
@@ -43,8 +39,9 @@ pub use lifecycle_delivery::{
 pub use pending::Pending;
 pub use run_application::{
     EventForwardingSink, OwnerScopedRunApplication, RunApplication, RunApplicationError, RunMode,
-    RunResume, SessionRunBackgroundApplication, SessionRunReplacementApplication, blocks_text,
-    epoch_millis_to_rfc3339, paginate_history, project_epoch_millis, rfc3339_to_epoch_millis,
+    RunResume, SessionRunBackgroundApplication, SessionRunReplacementApplication, StopReceipt,
+    blocks_text, epoch_millis_to_rfc3339, paginate_history, project_epoch_millis,
+    rfc3339_to_epoch_millis,
 };
 pub use run_coordination::{
     DelegatedRun, DelegatedRunSnapshot, SessionBudgetResumeDelivery,

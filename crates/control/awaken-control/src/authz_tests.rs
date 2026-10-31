@@ -335,17 +335,31 @@ fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
         ("/v1/skills/skill_1/versions/1", SKILL_READ, SKILL_WRITE),
         ("/v1/memory_stores", WORKSPACE_READ, WORKSPACE_WRITE),
         ("/v1/awaken/repositories", WORKSPACE_READ, WORKSPACE_WRITE),
-        (
-            "/v1/memory_stores/mem_1/memory_versions/ver_1/redact",
-            WORKSPACE_READ,
-            WORKSPACE_WRITE,
-        ),
     ] {
         assert_eq!(resource_action_for(&Method::GET, path), Some(read));
         assert_eq!(resource_action_for(&Method::HEAD, path), Some(read));
         assert_eq!(resource_action_for(&Method::POST, path), Some(write));
         assert_eq!(resource_action_for(&Method::DELETE, path), Some(write));
     }
+    // Redacting a memory version is its own action (ADR-0103); other methods on
+    // the route keep the workspace read/write split.
+    let redact = "/v1/memory_stores/mem_1/memory_versions/ver_1/redact";
+    assert_eq!(
+        resource_action_for(&Method::GET, redact),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        resource_action_for(&Method::HEAD, redact),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        resource_action_for(&Method::POST, redact),
+        Some("workspace.memory_redact")
+    );
+    assert_eq!(
+        resource_action_for(&Method::DELETE, redact),
+        Some(WORKSPACE_WRITE)
+    );
     assert_eq!(resource_action_for(&Method::GET, "/v1/sessions"), None);
     assert_eq!(
         resource_action_for(&Method::GET, "/v1/config/catalog"),

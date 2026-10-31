@@ -519,7 +519,7 @@
           "B167",
           "B239"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -538,12 +538,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "没有 root 之前的持久 intent，崩溃后只有原调用者能找回已开始的准备",
-          "follow_up": "session creation intent 存储（L，与 T04-C03 共用）",
-          "reproducers": [
-            "crash_after_prepare_is_recoverable_without_the_original_caller"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "没有 root 之前的持久 intent，崩溃后只有原调用者能找回已开始的准备",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {
@@ -574,7 +572,7 @@
           "B169",
           "B240"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -593,12 +591,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "补偿失败只记日志，不留下持久的待处理责任",
-          "follow_up": "repository participant 补偿与恢复（M）",
-          "reproducers": [
-            "failed_compensation_is_retried_by_a_rebuilt_service"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "补偿失败只记日志，不留下持久的待处理责任",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {
@@ -628,7 +624,7 @@
           "B170",
           "B241"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -647,12 +643,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "补偿先检查后退役，缺少针对并发 adopt 的 fence",
-          "follow_up": "repository participant 条件退役（M）",
-          "reproducers": [
-            "compensation_cannot_retire_a_participant_adopted_concurrently"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "补偿先检查后退役，缺少针对并发 adopt 的 fence",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],

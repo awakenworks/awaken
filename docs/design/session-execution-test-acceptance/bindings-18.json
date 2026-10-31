@@ -275,20 +275,22 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 165,
-        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+        "line": 173,
+        "file_sha256": "4365407d01f5263ee43de413a129a8cbe00cba79e70e388039ab129360e76b9c"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T02-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Skipped reproducer asserting the correct behaviour; fails with AWAKEN_RUN_IGNORED=1: the C2 doctest pins E0412 but rustc 1.96 reports E0425",
-    "limitation": "Not execution evidence. Follow-up: awaken-runtime conversation.rs doctest pins (S)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-53",
@@ -296,20 +298,22 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 170,
-        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+        "line": 177,
+        "file_sha256": "4365407d01f5263ee43de413a129a8cbe00cba79e70e388039ab129360e76b9c"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T02-C03": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          0
+        ],
+        "negative_control": true
       }
     },
-    "review": "Skipped reproducer; fails: stable rustdoc ignores pinned compile_fail E-codes, so an unrelated failure passes the normal gate",
-    "limitation": "Not execution evidence. Follow-up: doc gate checks compile_fail codes (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-54",
@@ -317,20 +321,23 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
-        "line": 275,
-        "file_sha256": "f8f3b7377fd8eac02748193ca1ddae810082bffed6d23aa6c40bfa2341a5cd97"
+        "line": 274,
+        "file_sha256": "87a2673578eb66aeb0b4f7662b256be3cf7548f94571bdf3c8a1ee5c61c3c5a6"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T13-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: update_limit refuses tightening unless the root execution is Idle",
-    "limitation": "Not execution evidence. Follow-up: session-application budget update during a Running root (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-55",
@@ -338,20 +345,22 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-control/src/authz/memory_redaction_tests.rs",
-        "line": 48,
-        "file_sha256": "3035e292b79e78498b41f99a22d7a4171f6ec2e9918d94c6939aec647322c670"
+        "line": 47,
+        "file_sha256": "0db73efa78857cc8789ee000808a627796cfa248aa515b326c9b9a94f3e3f5a8"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T25-C01": {
-        "oracles": [],
+        "oracles": [
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: memory version redact maps to workspace.write, the same action as content write",
-    "limitation": "Not execution evidence. Follow-up: awaken-control authz separate redact action (S)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-56",
@@ -359,20 +368,22 @@
     "source_locations": [
       {
         "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 425,
-        "file_sha256": "94145ca86eb45ea2a0e2fa1c844f16bf937063a1e6dea2e1bbe2c10f1faf3bbc"
+        "line": 426,
+        "file_sha256": "9c04c428b1c9b6c4b8bded3b31a3be44021404ae2aae3f5364cbb62bc4d2f56b"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T31-C03": {
-        "oracles": [],
+        "oracles": [
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Opt-in reproducer (AWAKEN_E2E_RUN_PRODUCT_GAPS=1); fails: the takeover process terminates the Session with 'current sandbox handle has no realization marker'",
-    "limitation": "Not execution evidence. Follow-up: takeover reuse of a hard-killed process's local realization (L)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-57",
@@ -380,20 +391,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 133,
-        "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54"
+        "line": 132,
+        "file_sha256": "b92134e70ef5e62587c84cb1356daa077ee8463be895ba14d47d5a01b9e8ad46"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T32-C01": {
-        "oracles": [],
+        "oracles": [
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: the AG-UI Stop answers 204 with no cancel receipt",
-    "limitation": "Not execution evidence. Follow-up: AG-UI/AI SDK stop receipt (S)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-58",
@@ -401,20 +414,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 400,
-        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
+        "line": 399,
+        "file_sha256": "218e1f64ef1a8230a2abb597a515f4d3913137e0cf585588180e5f0990d91ba4"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T32-C01": {
-        "oracles": [],
+        "oracles": [
+          2
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: the AI SDK Stop returns 204 with no cancel receipt",
-    "limitation": "Not execution evidence. Follow-up: AG-UI/AI SDK stop receipt (S)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-59",
@@ -422,20 +437,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp.rs",
-        "line": 125,
-        "file_sha256": "3e3908520857e4538f719295b64f105cce8fc9f44bef4f9ad2879133b8e9ab41"
+        "line": 124,
+        "file_sha256": "51ede56825aebe785c376286a4e69edaede2c572441a4605faec63cdaaa591d7"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: tools/call maps certain and unknown tool errors to the same JSON-RPC -32603",
-    "limitation": "Not execution evidence. Follow-up: MCP fault classification on the wire (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-60",
@@ -443,19 +460,21 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 298,
-        "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171"
+        "line": 296,
+        "file_sha256": "76165ad6adb720ad958d06c401ec654d58995533510ef62d29e97600eb322c23"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: the MCP client sees a certain retry-safe fault as Indeterminate",
-    "limitation": "Not execution evidence. Follow-up: MCP fault classification on the wire (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   }
 ]

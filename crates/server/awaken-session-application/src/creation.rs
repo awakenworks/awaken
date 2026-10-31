@@ -508,7 +508,8 @@ impl SessionCreationError {
             }
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
-            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::Unavailable(message)
+            | SessionMutationError::NotApplied(message) => Self::Unavailable(message),
             SessionMutationError::Internal(message) => Self::Internal(message),
             SessionMutationError::Invalid(violation) => Self::Invalid(violation),
         }

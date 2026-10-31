@@ -197,6 +197,8 @@ pub trait SessionProjectionReads: Send + Sync {
 /// Admit Event batches into a Session.
 ///
 /// Consumer: a protocol's Event append command and its admission-close retry.
+/// An append returns `None` for an accepted no-op that left no root fact: an
+/// interrupt-only batch on a budget-paused Session with nothing Awaiting.
 #[async_trait]
 pub trait SessionEventBatches: Send + Sync {
     /// See [`SessionApplication::append_and_drive_session_event_batch_idempotent`].
@@ -207,7 +209,7 @@ pub trait SessionEventBatches: Send + Sync {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<(SessionEventBatch, Option<RunError>), RunError>;
+    ) -> Result<Option<(SessionEventBatch, Option<RunError>)>, RunError>;
 
     /// See [`SessionApplication::append_session_event_batch_idempotent`].
     async fn append_session_event_batch_idempotent(
@@ -217,7 +219,7 @@ pub trait SessionEventBatches: Send + Sync {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<SessionEventBatch, RunError>;
+    ) -> Result<Option<SessionEventBatch>, RunError>;
 
     /// See [`SessionApplication::session_event_batch_idempotency`].
     async fn session_event_batch_idempotency(

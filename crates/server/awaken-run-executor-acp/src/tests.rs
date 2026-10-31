@@ -4224,7 +4224,7 @@ async fn refusal_maps_to_stopped() {
 // map to `Stopped` — pinned here as the masking contrast so a refactor cannot silently
 // fold a rate-limit into a stop (which a host would not retry as an error).
 #[test]
-fn a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code() {
+fn a_rate_limited_acp_failure_ends_error_with_the_rate_limited_code() {
     use awaken_protocol_acp::error::{AcpFailure, AcpFailureClass};
 
     let rate_limited = AcpFailure {
@@ -4236,12 +4236,12 @@ fn a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code() {
     match failure_cause(&rate_limited) {
         EndCause::Error(Failure::Inference { code, message }) => {
             assert_eq!(
-                code, "acp_failure",
-                "the neutral rate-limit code is preserved"
+                code, "rate_limited",
+                "the rate-limit authority is preserved (ADR-0103)"
             );
             assert_eq!(
-                message, "quota exhausted",
-                "the raw provider message rides along"
+                message, "quota exhausted (retry after 30s)",
+                "the raw provider message rides along with its reset hint"
             );
         }
         other => panic!("a rate-limited failure must be a terminal Inference error, got {other:?}"),

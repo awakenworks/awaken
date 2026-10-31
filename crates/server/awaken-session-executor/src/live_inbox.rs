@@ -98,6 +98,9 @@ impl awaken_session_execution_contract::LiveInboxAccess for LiveInboxes {
             // The attempt closed between lookup and offer, or its finite live
             // identity space was exhausted: both route like no active inbox.
             Offer::Closed => Err(LiveInboxError::Inactive),
+            // Backpressure from a stalled consumer: the Run is live, so the
+            // caller must retry rather than route around it.
+            Offer::Full => Err(LiveInboxError::Full),
         }
     }
 

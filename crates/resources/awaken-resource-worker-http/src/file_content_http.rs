@@ -277,7 +277,11 @@ async fn read_file_content(
             {
                 return StatusCode::FORBIDDEN.into_response();
             }
-            let guard = match service.dispatch.lock_commit_epoch(claim).await {
+            let guard = service.dispatch.lock_commit_epoch(claim).await;
+            // The lock wait can outlive the lease; judge the guard, and the
+            // authorization below, at the time the lock was actually won.
+            let now_ms = clock_ms(service.clock.as_ref());
+            let guard = match guard {
                 Ok(Some(guard)) if guard.is_live_at(now_ms) => guard,
                 Ok(_) => return StatusCode::CONFLICT.into_response(),
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -376,17 +380,23 @@ async fn read_file_content(
             return StatusCode::FORBIDDEN.into_response();
         }
     }
-    let _run_guard = run_guard;
-    match service
+    let read = service
         .source
         .read(
             &request.workspace_id,
             &request.file_id,
             &request.purpose,
-            None,
+            Some(&request.authority),
         )
-        .await
-    {
+        .await;
+    // A lease that expired during the physical read releases no bytes.
+    let run_guard_live = run_guard
+        .as_ref()
+        .map(|guard| guard.is_live_at(clock_ms(service.clock.as_ref())));
+    if let Some(status) = expired_after_read(&service, &worker, &request, run_guard_live).await {
+        return status.into_response();
+    }
+    match read {
         Ok(Some(resolved)) => {
             use base64::Engine as _;
             let metadata = FileContentMetadata {
@@ -408,6 +418,37 @@ async fn read_file_content(
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+/// Re-check the operation fence at the end of the physical read, with a fresh
+/// clock: the held commit-epoch guard for a Run (`run_guard_live`, judged by
+/// the caller), the worker lease for a Session materialization.
+async fn expired_after_read(
+    service: &WorkerFileContentService,
+    worker: &VerifiedWorkerContext,
+    request: &FileContentRequest,
+    run_guard_live: Option<bool>,
+) -> Option<StatusCode> {
+    let now_ms = clock_ms(service.clock.as_ref());
+    match (&request.authority, run_guard_live) {
+        (ResourceOperationFence::Run(_), Some(live)) => (!live).then_some(StatusCode::CONFLICT),
+        (ResourceOperationFence::SessionMaterialization(intent), _) => {
+            let Some(identity) = request.identity.as_ref() else {
+                return Some(StatusCode::SERVICE_UNAVAILABLE);
+            };
+            verify_session_worker_effect(
+                service.directory.as_ref(),
+                worker,
+                identity,
+                intent.lease(),
+                now_ms,
+                SessionWorkerEffectTemporalRule::SessionRoot,
+            )
+            .await
+            .rejection_status()
+        }
+        _ => Some(StatusCode::FORBIDDEN),
     }
 }
 

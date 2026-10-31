@@ -1103,6 +1103,7 @@ pub mod awaken_agent_contract::thread
 pub mod awaken_agent_contract::thread::commit
 pub mod awaken_agent_contract::thread::commit::coordinator
 pub enum awaken_agent_contract::thread::commit::coordinator::Error
+pub awaken_agent_contract::thread::commit::coordinator::Error::CapacityExhausted(alloc::string::String)
 pub awaken_agent_contract::thread::commit::coordinator::Error::Rejected(alloc::string::String)
 pub trait awaken_agent_contract::thread::commit::coordinator::Coordinator: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::thread::commit::coordinator::Coordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

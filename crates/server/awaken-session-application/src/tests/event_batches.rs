@@ -1166,6 +1166,7 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
                 Some(("preferred-user".into(), "preferred-user-fingerprint".into())),
             )
             .await
+            .map(|batch| batch.expect("the Event batch is admitted"))
             .expect("append preferred User batch");
         assert!(drive_error.is_none(), "F1-F2 request-local drive");
         tokio::time::timeout(
@@ -1232,6 +1233,7 @@ async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
             Some(("failure-key".into(), "failure-fingerprint".into())),
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .expect("E1 accepted receipt survives local drive failure");
     assert!(drive_error.is_some(), "E1 exact drive failure is reported");
     assert_eq!(accepted.events.len(), 1, "E1 exact receipt");

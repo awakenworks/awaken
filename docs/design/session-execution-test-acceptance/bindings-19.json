@@ -5,20 +5,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 327,
-        "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171"
+        "line": 324,
+        "file_sha256": "76165ad6adb720ad958d06c401ec654d58995533510ef62d29e97600eb322c23"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: certain and uncertain tool faults share one wire classification",
-    "limitation": "Not execution evidence. Follow-up: MCP fault classification on the wire (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-62",
@@ -26,20 +28,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 338,
-        "file_sha256": "8966185f68f1f821b2047f14aeb4249b570c15566a3bd2368c1bd674ecf1d668"
+        "line": 336,
+        "file_sha256": "211cdf298fe13ebdced1efc6f25365ec8e6a8f4d9a9272d70bb2c99692e82ad1"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: ACP failure_cause collapses the overloaded 529 to acp_failure without its retry hint",
-    "limitation": "Not execution evidence. Follow-up: ACP failure projection keeps authority, uncertainty and retry hint (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-63",
@@ -47,20 +51,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/src/tests/failure_projection.rs",
-        "line": 110,
-        "file_sha256": "f4c542adb9660ef22da6a5fc5dcc5c5813e00460c7b4c1029429a57365fa3227"
+        "line": 109,
+        "file_sha256": "95eb49cf1020b0d33a375455c96de5cb9c0948ff176fe08972ae980fb517e052"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: every classified ACP failure becomes Inference{acp_failure}",
-    "limitation": "Not execution evidence. Follow-up: ACP failure projection keeps authority, uncertainty and retry hint (M)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   },
   {
     "id": "B-DOL-64",
@@ -68,19 +74,21 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 263,
-        "file_sha256": "1674dcee914a63db664c52447f3596d7f36386776ace88dd96db0c783f6e70d0"
+        "line": 262,
+        "file_sha256": "60a086c77df11c9de933b5c1a784a87b115c5923cd9dbbbec136523d159ac8b8"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T33-C03": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer; fails: HandSession folds UnavailableBeforeDispatch into a definitive failure",
-    "limitation": "Not execution evidence. Follow-up: Hand relay keeps the retry-safe class (S)"
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
   }
 ]

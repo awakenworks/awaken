@@ -141,6 +141,8 @@ pub enum HandErrorKind {
     UnknownTool,
     /// The tool's own `invoke` returned an error.
     Execution,
+    /// The tool certainly did not run, so a retry is safe (ADR-0103).
+    UnavailableBeforeDispatch,
     /// The request's catalog fingerprint did not match the hand's.
     FingerprintMismatch,
     /// The call arrived after its deadline.
