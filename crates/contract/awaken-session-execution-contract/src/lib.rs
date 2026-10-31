@@ -1,6 +1,8 @@
 //! The Session ↔ execution boundary: the Session roles execution calls, coordination
-//! and Run admission.
+//! and Run admission, and the one late binding from execution back to the Session
+//! application.
 
+mod application_binding;
 mod claimed_coordination;
 mod coordination;
 mod durable_run_operations;
@@ -59,6 +61,10 @@ pub(crate) use {
     awaken_session_contract::SourceReleasePreparedReceipt,
 };
 
+pub use application_binding::{
+    SessionApplicationBinding, SessionApplicationBindingError, SessionApplicationLifetime,
+    SessionApplicationMode, SessionApplications,
+};
 pub use claimed_coordination::ClaimedSessionCoordinationControl;
 pub use coordination::{
     CoordinatedAdmissionRef, CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind,

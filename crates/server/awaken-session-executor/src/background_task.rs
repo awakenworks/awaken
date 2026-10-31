@@ -26,7 +26,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
-use awaken_session_application_contract::SessionRunBackgroundApplication;
+use awaken_session_execution_contract::SessionApplicationBinding;
 use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
 use awaken_tool_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
@@ -115,13 +115,13 @@ fn attention_message(
 }
 
 async fn publish_attention(
-    application: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
+    application: Option<SessionApplicationBinding>,
     thread_id: &awaken_agent_contract::agent::thread::Id,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
     kind: BackgroundAttention,
 ) {
-    let Some(application) = application.and_then(|application| application.upgrade()) else {
+    let Some(Ok(application)) = application.map(|binding| binding.background_runs()) else {
         return;
     };
     let (operation_id, message) = attention_message(thread_id, task_id, fence, &kind);
@@ -183,7 +183,7 @@ pub(crate) struct BackgroundTaskTerminalObserver {
     supervisor: Arc<BackgroundTaskSupervisor>,
     session_id: String,
     environment_generation: String,
-    attention: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
+    attention: Option<SessionApplicationBinding>,
 }
 
 impl BackgroundTaskTerminalObserver {
@@ -197,7 +197,7 @@ impl BackgroundTaskTerminalObserver {
         supervisor: Arc<BackgroundTaskSupervisor>,
         session_id: String,
         environment_generation: String,
-        attention: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
+        attention: Option<SessionApplicationBinding>,
     ) -> Self {
         Self {
             runtime,
@@ -838,6 +838,7 @@ impl RunTerminalObserver for BackgroundTaskTerminalObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_session_application_contract::SessionRunBackgroundApplication;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1045,7 +1046,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn attention_publication_retries_ambiguous_failures_with_one_identity_only() {
         // Cause/effect decision table:
-        // R4 no application/expired Weak -> no publication and task truth stays
+        // R4 no application/expired role -> no publication and task truth stays
         // untouched; R5 unavailable/internal response -> retry the identical
         // Session command; R6 eventual acceptance -> stop after one successful
         // admission; R7 BadRequest -> stop immediately because rejection is
@@ -1063,7 +1064,9 @@ mod tests {
         let accepting = Arc::new(RecordingAttentionApplication::accepting(2));
         let accepting_port: Arc<dyn SessionRunBackgroundApplication> = accepting.clone();
         publish_attention(
-            Some(Arc::downgrade(&accepting_port)),
+            Some(crate::test_application_bindings::background_binding(
+                accepting_port.clone(),
+            )),
             &thread,
             &task,
             &fence,
@@ -1089,7 +1092,9 @@ mod tests {
         let rejecting = Arc::new(RecordingAttentionApplication::rejecting());
         let rejecting_port: Arc<dyn SessionRunBackgroundApplication> = rejecting.clone();
         publish_attention(
-            Some(Arc::downgrade(&rejecting_port)),
+            Some(crate::test_application_bindings::background_binding(
+                rejecting_port.clone(),
+            )),
             &thread,
             &task,
             &fence,
@@ -1109,7 +1114,9 @@ mod tests {
         let exhausted = Arc::new(RecordingAttentionApplication::accepting(usize::MAX));
         let exhausted_port: Arc<dyn SessionRunBackgroundApplication> = exhausted.clone();
         publish_attention(
-            Some(Arc::downgrade(&exhausted_port)),
+            Some(crate::test_application_bindings::background_binding(
+                exhausted_port.clone(),
+            )),
             &thread,
             &task,
             &fence,
@@ -1134,7 +1141,8 @@ mod tests {
         // replacement; R10 all external strong owners drop -> ExecutorComponents does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
-        // Startup connection rules: R11 unbound/dead Weak => typed Unavailable;
+        // Startup connection rules: R11 unbound => typed Unbound, expired role =>
+        // typed RequiredApplicationUnavailable;
         // R12 live binding => readiness observed through every shared clone.
         // Naming the shared cell `value` retains those same single-assignment
         // and owner-release rules; no second cell is introduced.
@@ -1147,42 +1155,32 @@ mod tests {
             .build()
             .expect("validated Host dependencies");
         let managed = host.clone();
-        let shared = host.session_application_bindings().clone();
+        let shared = host.session_application_binding().clone();
         assert_eq!(
-            shared.require_background_run_submission(),
-            Err(
-                crate::SessionApplicationBindingError::RequiredApplicationUnavailable(
-                    "background Run submission",
-                )
-            ),
+            shared.background_runs().err(),
+            Some(awaken_session_execution_contract::SessionApplicationBindingError::Unbound),
             "R11 unbound",
         );
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
         crate::test_application_bindings::select_background(&managed, port.clone())
             .expect("R8 first install");
-        assert!(
-            shared.require_background_run_submission().is_ok(),
-            "R12 shared binding"
-        );
+        assert!(shared.background_runs().is_ok(), "R12 shared binding");
         assert_eq!(
             crate::test_application_bindings::select_background(&managed, port.clone()),
-            Err(crate::SessionApplicationBindingError::AlreadyBound),
+            Err(awaken_session_execution_contract::SessionApplicationBindingError::AlreadyBound),
             "R9 single assignment",
         );
         drop(application);
         drop(port);
         assert!(
-            host.session_application
-                .background_run_submission()
-                .and_then(std::sync::Weak::upgrade)
-                .is_none(),
+            host.session_application.background_runs().is_err(),
             "R10 weak ownership edge"
         );
         assert_eq!(
-            shared.require_background_run_submission(),
-            Err(
-                crate::SessionApplicationBindingError::RequiredApplicationUnavailable(
+            shared.background_runs().err(),
+            Some(
+                awaken_session_execution_contract::SessionApplicationBindingError::RequiredApplicationUnavailable(
                     "background Run submission",
                 )
             ),
@@ -1475,7 +1473,9 @@ mod tests {
             supervisor.clone(),
             "session".into(),
             "generation".into(),
-            Some(Arc::downgrade(&attention_port)),
+            Some(crate::test_application_bindings::background_binding(
+                attention_port.clone(),
+            )),
         );
         let thread_id = ThreadId("thread".into());
         let origin_run = RunId("origin".into());
@@ -1724,7 +1724,9 @@ mod tests {
             supervisor.clone(),
             "session".into(),
             "generation".into(),
-            Some(Arc::downgrade(&attention_port)),
+            Some(crate::test_application_bindings::background_binding(
+                attention_port.clone(),
+            )),
         );
         let thread_id = ThreadId("remote-thread".into());
         let mut task = BackgroundTask::requested(

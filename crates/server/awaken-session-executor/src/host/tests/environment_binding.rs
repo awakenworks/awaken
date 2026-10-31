@@ -796,7 +796,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .unwrap();
         crate::WorkerRoles::of(
             &worker,
-            awaken_session_run_delivery::SessionApplications::ClaimedWorker,
+            awaken_session_execution_contract::SessionApplications::ClaimedWorker,
         )
         .expect("complete claimed Worker capabilities")
         .start_pool()

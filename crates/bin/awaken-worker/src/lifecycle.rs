@@ -1219,7 +1219,7 @@ mod tests {
                     "worker-test",
                 )
                 .await,
-                awaken_session_run_delivery::SessionApplications::Standalone,
+                awaken_session_execution_contract::SessionApplications::Standalone,
             )
             .unwrap(),
             control: awaken_coordinator_client::WorkerControlClient::new(
@@ -1289,7 +1289,7 @@ mod tests {
                         "worker-test",
                     )
                     .await,
-                    awaken_session_run_delivery::SessionApplications::Standalone,
+                    awaken_session_execution_contract::SessionApplications::Standalone,
                 )
                 .unwrap(),
                 control: awaken_coordinator_client::WorkerControlClient::new(
@@ -1915,7 +1915,7 @@ mod tests {
                         "none",
                     )
                     .await,
-                    awaken_session_run_delivery::SessionApplications::Standalone,
+                    awaken_session_execution_contract::SessionApplications::Standalone,
                 )
                 .unwrap(),
                 control: WorkerControlClient::new(

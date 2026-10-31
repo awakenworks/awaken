@@ -2,9 +2,10 @@
 // @formal owner crates/server/awaken-session-executor/src/process_roles.rs
 // @formal reason: cfg(test) only; exercises the public complete constructor, exact ownership and refusal before service/model effects.
 use super::*;
-use crate::SessionApplicationBindingError as E;
 use crate::test_application_bindings::{fresh, retaining};
-use awaken_session_run_delivery::{SessionApplicationMode as M, SessionApplications as A};
+use awaken_session_execution_contract::{
+    SessionApplicationBindingError as E, SessionApplicationMode as M, SessionApplications as A,
+};
 
 async fn host() -> Arc<crate::ExecutorComponents> {
     crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "startup")
@@ -33,7 +34,7 @@ async fn complete_startup_retains_sole_ports_through_clone_drain_and_final_drop(
         },
     )
     .unwrap();
-    assert_eq!(host.session_application_bindings().mode(), Some(M::Local));
+    assert_eq!(host.session_application_binding().mode(), Ok(M::Local));
     assert!(
         !host.dispatch().has_started_services(),
         "construction alone starts no pool or scanner"
@@ -60,7 +61,7 @@ async fn wrong_topology_and_duplicate_selection_leave_the_original_whole_pair() 
         session_dispatch_lifecycle(&host, host.worker_completion_sink(), A::ClaimedWorker),
         Err(E::InvalidTopology(_))
     ));
-    assert_eq!(host.session_application_bindings().mode(), None);
+    assert_eq!(host.session_application_binding().mode(), Err(E::Unbound));
     assert!(!host.dispatch().has_started_services());
     let original_coordination = fresh();
     let original_background = fresh();
@@ -94,12 +95,12 @@ async fn wrong_topology_and_duplicate_selection_leave_the_original_whole_pair() 
     assert!(refused_background.upgrade().is_none());
     assert!(coordination_weak.upgrade().is_some());
     assert!(background_weak.upgrade().is_some());
-    assert_eq!(host.session_application_bindings().mode(), Some(M::Local));
+    assert_eq!(host.session_application_binding().mode(), Ok(M::Local));
     drop(lifecycle);
     assert!(coordination_weak.upgrade().is_none());
     assert!(background_weak.upgrade().is_none());
     assert!(
-        host.session_application_bindings().acquire().is_err(),
+        host.session_application_binding().acquire().is_err(),
         "expiry cannot authorize a fallback mode"
     );
 }
@@ -108,11 +109,11 @@ async fn wrong_topology_and_duplicate_selection_leave_the_original_whole_pair() 
 async fn unselected_host_refuses_resolver_before_any_service_effect() {
     let host = host().await;
     assert!(matches!(
-        host.session_application_bindings().acquire(),
-        Err(E::NotSelected)
+        host.session_application_binding().acquire(),
+        Err(E::Unbound)
     ));
     assert!(crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch).is_err());
-    assert_eq!(host.session_application_bindings().mode(), None);
+    assert_eq!(host.session_application_binding().mode(), Err(E::Unbound));
     assert!(!host.dispatch().has_started_services());
 }
 
@@ -140,10 +141,7 @@ async fn started_services_reject_application_replacement_without_publishing_a_ro
     ));
     assert!(coordination_weak.upgrade().is_none());
     assert!(background_weak.upgrade().is_none());
-    assert_eq!(
-        host.session_application_bindings().mode(),
-        Some(M::Standalone)
-    );
+    assert_eq!(host.session_application_binding().mode(), Ok(M::Standalone));
     assert!(lifecycle.drain(std::time::Duration::from_secs(2)).await);
 }
 
@@ -191,16 +189,12 @@ async fn concurrent_complete_constructors_publish_exactly_one_coherent_pair() {
     );
     let winner = results.iter().position(Result::is_ok).unwrap();
     let coordination = host
-        .session_application_bindings()
+        .session_application_binding()
         .agent_coordination()
-        .unwrap()
-        .upgrade()
         .unwrap();
     let background = host
-        .session_application_bindings()
-        .background_run_submission()
-        .unwrap()
-        .upgrade()
+        .session_application_binding()
+        .background_runs()
         .unwrap();
     assert_eq!(
         Arc::as_ptr(&coordination) as *const (),
@@ -226,7 +220,7 @@ async fn concurrent_complete_constructors_publish_exactly_one_coherent_pair() {
 async fn drain_only_does_not_select_applications_or_construct_services() {
     let host = host().await;
     assert!(super::drain_session_dispatch(&host, std::time::Duration::from_secs(2)).await);
-    assert_eq!(host.session_application_bindings().mode(), None);
+    assert_eq!(host.session_application_binding().mode(), Err(E::Unbound));
     assert!(!host.dispatch().has_started_services());
 }
 
@@ -288,7 +282,7 @@ async fn claimed_worker_requires_both_control_capabilities_before_selection() {
             ),
             "realization={realization} coordination={coordination}"
         );
-        assert_eq!(absent.session_application_bindings().mode(), None);
+        assert_eq!(absent.session_application_binding().mode(), Err(E::Unbound));
         assert!(!absent.dispatch().has_started_services());
     }
     let complete = worker_host(true, true).await;
@@ -313,13 +307,16 @@ async fn claimed_worker_requires_both_control_capabilities_before_selection() {
     ));
     assert!(coordination_weak.upgrade().is_none());
     assert!(background_weak.upgrade().is_none());
-    assert_eq!(complete.session_application_bindings().mode(), None);
+    assert_eq!(
+        complete.session_application_binding().mode(),
+        Err(E::Unbound)
+    );
     assert!(!complete.dispatch().has_started_services());
     let roles =
         WorkerRoles::of(&complete, A::ClaimedWorker).expect("both original control roles supplied");
     assert_eq!(
-        complete.session_application_bindings().mode(),
-        Some(M::ClaimedWorker)
+        complete.session_application_binding().mode(),
+        Ok(M::ClaimedWorker)
     );
     roles.start_pool().unwrap();
     assert!(complete.dispatch().has_started_services());
@@ -409,7 +406,7 @@ async fn inflight_service_construction_refuses_complete_binding_and_releases_rej
                 },
             );
             let rejected = matches!(&construction, Err(E::ServicesAlreadyStarted));
-            let selected = composing_host.session_application_bindings().mode();
+            let selected = composing_host.session_application_binding().mode();
             drop(construction);
             finished.send((rejected, selected)).unwrap();
         });
@@ -422,8 +419,8 @@ async fn inflight_service_construction_refuses_complete_binding_and_releases_rej
         let (rejected, selected) =
             outcome.expect("configuration must refuse without awaiting the factory");
         assert!(rejected);
-        assert_eq!(selected, None);
-        assert_eq!(host.session_application_bindings().mode(), None);
+        assert_eq!(selected, Err(E::Unbound));
+        assert_eq!(host.session_application_binding().mode(), Err(E::Unbound));
         assert!(!host.dispatch.has_started_services());
         assert!(coordination_weak.upgrade().is_none());
         assert!(background_weak.upgrade().is_none());

@@ -23,9 +23,10 @@ pub(super) struct ContextPlan {
     pub(super) deferred_skill_bindings: Option<Vec<crate::session_resource::ResolvedSkillBinding>>,
     pub(super) execution_backend: awaken_runtime_contract::resolved::Backend,
     pub(super) background_tasks_enabled: bool,
-    pub(super) background_attention: Option<
-        std::sync::Weak<dyn awaken_session_application_contract::SessionRunBackgroundApplication>,
-    >,
+    /// The application binding this Run publishes BackgroundTask attention
+    /// through; `None` when the plan admitted no live background submission.
+    pub(super) background_attention:
+        Option<awaken_session_execution_contract::SessionApplicationBinding>,
     pub(super) a2a_only: bool,
     pub(super) claimed_runtime_identity: Option<RuntimePublicationIdentity>,
 }
@@ -183,15 +184,13 @@ pub(super) async fn prepare(
             "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
         ));
     }
-    let background_attention = if background_tasks_enabled {
-        host.capabilities
+    let background_attention = (background_tasks_enabled
+        && host
+            .capabilities
             .session_application
-            .background_run_submission()
-            .cloned()
-            .filter(|application| application.strong_count() > 0)
-    } else {
-        None
-    };
+            .background_runs()
+            .is_ok())
+    .then(|| host.capabilities.session_application.clone());
     if background_tasks_enabled && session_dispatch && background_attention.is_none() {
         return Err(SessionExecutionError::internal(
             "Managed BackgroundTask Session has no background Run application authority",

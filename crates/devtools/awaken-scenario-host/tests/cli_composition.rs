@@ -122,7 +122,7 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
         let roles = awaken_session_executor::session_dispatch_lifecycle(
             host.as_ref(),
             host.worker_completion_sink(),
-            awaken_session_run_delivery::SessionApplications::Standalone,
+            awaken_session_execution_contract::SessionApplications::Standalone,
         )
         .unwrap();
         if remote {
@@ -138,10 +138,10 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
             ),
             "C4 immutable completion selection"
         );
-        let bindings = host.session_application_bindings();
+        let binding = host.session_application_binding();
         assert_eq!(
-            bindings.mode(),
-            Some(awaken_session_run_delivery::SessionApplicationMode::Standalone),
+            binding.mode(),
+            Ok(awaken_session_execution_contract::SessionApplicationMode::Standalone),
             "C4 neither application role installed and original mode unchanged"
         );
         assert!(

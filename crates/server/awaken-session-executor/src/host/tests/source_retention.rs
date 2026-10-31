@@ -137,7 +137,7 @@ const RETENTION_SESSION: &str = "source-retention-background";
 fn retention_roles(host: &crate::ExecutorComponents) -> crate::WorkerRoles {
     crate::WorkerRoles::of(
         host,
-        awaken_session_run_delivery::SessionApplications::Standalone,
+        awaken_session_execution_contract::SessionApplications::Standalone,
     )
     .expect("retention fixture selects one complete non-executing topology")
 }

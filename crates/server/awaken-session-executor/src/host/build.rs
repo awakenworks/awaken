@@ -128,7 +128,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         skill_bundle_source,
     } = dependencies;
     // Selection is process state, never a dependency shared by distinct builds.
-    let session_application = SessionApplicationBindings::default();
+    let session_application = SessionApplicationBinding::default();
     let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
     let realizations = realization_view(
         &installed_sessions,
@@ -485,10 +485,11 @@ impl ExecutorComponents {
         self.store_dir.as_deref()
     }
 
-    /// The edges back into the Session application built over this Host. The
-    /// composition root binds each once, after it built that application.
+    /// The one late binding back into the Session application built over this
+    /// executor. The composition root completes it once, after it built that
+    /// application, through [`crate::session_dispatch_lifecycle`].
     #[must_use]
-    pub fn session_application_bindings(&self) -> &SessionApplicationBindings {
+    pub fn session_application_binding(&self) -> &SessionApplicationBinding {
         &self.session_application
     }
 

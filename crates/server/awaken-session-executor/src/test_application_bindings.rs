@@ -118,45 +118,65 @@ pub(crate) fn coordination() -> Arc<dyn SessionAgentCoordination> {
 /// remain owned by the same public constructor used in startup tests.
 pub(crate) fn select_standalone(
     host: &crate::ExecutorComponents,
-) -> Result<(), crate::SessionApplicationBindingError> {
+) -> Result<(), SessionApplicationBindingError> {
     drop(crate::session_dispatch_lifecycle(
         host,
         host.worker_completion_sink(),
-        awaken_session_run_delivery::SessionApplications::Standalone,
+        SessionApplications::Standalone,
     )?);
     Ok(())
 }
 
-// Weak-only setup for legacy mechanism fixtures: callers retain their tested
+// Role-only setup for legacy mechanism fixtures: callers retain their tested
 // application; the complementary unused role is process-static and panics on
 // use. Ownership/startup sign-off always uses the production constructor.
+fn bind_local(
+    binding: &SessionApplicationBinding,
+    coordination: Arc<dyn SessionAgentCoordination>,
+    background_runs: Arc<dyn SessionRunBackgroundApplication>,
+) -> Result<(), SessionApplicationBindingError> {
+    drop(binding.bind(&SessionApplications::Local {
+        coordination,
+        background_runs,
+    })?);
+    Ok(())
+}
 pub(crate) fn select_coordination(
     host: &crate::ExecutorComponents,
     application: Arc<dyn SessionAgentCoordination>,
-) -> Result<(), crate::SessionApplicationBindingError> {
-    let (connections, lifetime) = awaken_session_run_delivery::SessionApplications::Local {
-        coordination: application,
-        background_runs: background(),
-    }
-    .connect();
-    host.session_application_bindings()
-        .select_connections(connections)?;
-    drop(lifetime);
-    Ok(())
+) -> Result<(), SessionApplicationBindingError> {
+    bind_local(
+        host.session_application_binding(),
+        application,
+        background(),
+    )
 }
 pub(crate) fn select_background(
     host: &crate::ExecutorComponents,
     application: Arc<dyn SessionRunBackgroundApplication>,
-) -> Result<(), crate::SessionApplicationBindingError> {
-    let (connections, lifetime) = awaken_session_run_delivery::SessionApplications::Local {
-        coordination: coordination(),
-        background_runs: application,
-    }
-    .connect();
-    host.session_application_bindings()
-        .select_connections(connections)?;
-    drop(lifetime);
-    Ok(())
+) -> Result<(), SessionApplicationBindingError> {
+    bind_local(
+        host.session_application_binding(),
+        coordination(),
+        application,
+    )
+}
+
+/// A binding of its own for an adapter test that holds no executor; the
+/// caller retains `application`.
+pub(crate) fn coordination_binding(
+    application: Arc<dyn SessionAgentCoordination>,
+) -> SessionApplicationBinding {
+    let binding = SessionApplicationBinding::default();
+    bind_local(&binding, application, background()).expect("a fresh binding binds once");
+    binding
+}
+pub(crate) fn background_binding(
+    application: Arc<dyn SessionRunBackgroundApplication>,
+) -> SessionApplicationBinding {
+    let binding = SessionApplicationBinding::default();
+    bind_local(&binding, coordination(), application).expect("a fresh binding binds once");
+    binding
 }
 
 /// Existing lower-level fixtures may reuse their already-selected complete
@@ -164,17 +184,15 @@ pub(crate) fn select_background(
 pub(crate) fn lifecycle(
     host: &crate::ExecutorComponents,
     completion: Arc<dyn awaken_dispatch_contract::CompletionSink>,
-) -> awaken_session_run_delivery::SessionDispatchLifecycle<
-    awaken_session_run_delivery::SessionApplicationLifetime,
-> {
-    if host.session_application_bindings().mode().is_some() {
+) -> awaken_session_run_delivery::SessionDispatchLifecycle<SessionApplicationLifetime> {
+    if host.session_application_binding().mode().is_ok() {
         crate::process_roles::selected_test_lifecycle(host, completion)
             .expect("fixture must retain both complete local roles")
     } else {
         let selected = if host.run_assembly.authority.hosts_session_application() {
-            awaken_session_run_delivery::SessionApplications::Standalone
+            SessionApplications::Standalone
         } else {
-            awaken_session_run_delivery::SessionApplications::ClaimedWorker
+            SessionApplications::ClaimedWorker
         };
         crate::session_dispatch_lifecycle(host, completion, selected)
             .expect("explicit complete fixture topology")

@@ -18,10 +18,9 @@ use std::sync::Arc;
 use awaken_process_startup::SessionCommitOwner;
 use awaken_session_application::{SessionApplication, SessionRunApplication};
 use awaken_session_application_contract::{RunApplication, SessionRunBackgroundApplication};
+use awaken_session_execution_contract::{SessionApplicationBindingError, SessionApplications};
 
-use awaken_session_executor::{
-    AgentCoordinationInstallError, ExecutorComponents, SessionApplicationBindingError,
-};
+use awaken_session_executor::{AgentCoordinationInstallError, ExecutorComponents};
 
 /// Why the Coordinator could not be composed over this executor.
 #[derive(Debug, thiserror::Error)]
@@ -79,7 +78,7 @@ pub fn coordinator_execution(
     let roles = awaken_session_executor::session_dispatch_lifecycle(
         host.as_ref(),
         completion.clone(),
-        awaken_session_run_delivery::SessionApplications::Local {
+        SessionApplications::Local {
             coordination: sessions.coordination(),
             background_runs: background,
         },

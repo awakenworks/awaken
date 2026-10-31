@@ -1857,7 +1857,7 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         .expect("L9 one coordination application");
     assert_eq!(
         crate::test_application_bindings::select_coordination(&managed, coordination.clone()),
-        Err(crate::SessionApplicationBindingError::AlreadyBound),
+        Err(awaken_session_execution_contract::SessionApplicationBindingError::AlreadyBound),
         "L9/E5"
     );
 

@@ -20,7 +20,7 @@ async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponen
     drop(
         crate::WorkerRoles::of(
             &host,
-            awaken_session_run_delivery::SessionApplications::ClaimedWorker,
+            awaken_session_execution_contract::SessionApplications::ClaimedWorker,
         )
         .unwrap(),
     );
