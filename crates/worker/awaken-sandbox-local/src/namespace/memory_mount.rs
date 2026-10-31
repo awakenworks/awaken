@@ -187,24 +187,14 @@ pub(crate) async fn prepare_adoption_memory_replay(
     memory_mounts: crate::MemoryMountOwner,
     root: &Path,
     current_evidence: Option<&super::realization_marker::RealizationEvidence>,
-    effect_fence: Option<&pc::SandboxEffectFence>,
-    authority: Option<&dyn pc::CurrentExecutionAuthority>,
+    effect: pc::SandboxEffect<'_>,
     spec: Option<&pc::SandboxSpec>,
     receipt: &super::realization_marker::RealizationCompletionReceipt,
     handle: &pc::SandboxHandle,
     ordinary_realization: pc::Realization,
     host_paths: Option<&[PathBuf]>,
 ) -> Result<AdoptionMemoryReplay, pc::SandboxError> {
-    let admit = || match effect_fence {
-        Some(fence) => pc::with_current_sandbox_effect(
-            fence,
-            authority.ok_or_else(|| {
-                pc::SandboxError::fence_rejected("adoption has no current authority")
-            })?,
-            |_| Ok(()),
-        ),
-        None => Ok(()),
-    };
+    let admit = || effect.admit();
     admit()?;
     let (realized, materializations) = match spec {
         Some(spec) => super::replay_completion_receipt(spec, receipt, ordinary_realization)?,
@@ -220,7 +210,7 @@ pub(crate) async fn prepare_adoption_memory_replay(
     }
 
     let memory_mounts = if let Some(spec) = spec {
-        let ready_operation = match (current_evidence, effect_fence) {
+        let ready_operation = match (current_evidence, effect.fence()) {
             (Some(evidence), Some(effect_fence)) => Some(
                 super::realization_marker::begin_ready_operation(root, evidence, effect_fence)?,
             ),

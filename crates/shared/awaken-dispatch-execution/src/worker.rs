@@ -985,13 +985,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         let (projected_revision, recovery) = match preparation {
                             Ok(revision) => {
                                 let recovery = if revision.is_some() {
-                                    self.recovery_source.as_deref().map(Some).ok_or_else(|| {
-                                        awaken_dispatch_contract::DispatchSettlementError(
+                                    match self.recovery_source.as_deref() {
+                                        Some(source) => Ok(awaken_dispatch_contract::PreparedRunRecovery::OriginalAuthority(source)),
+                                        None => Err(awaken_dispatch_contract::DispatchSettlementError(
                                             "prepared reservation requires its guarded original recovery source".into(),
-                                        )
-                                    })
+                                        )),
+                                    }
                                 } else {
-                                    Ok(None)
+                                    Ok(awaken_dispatch_contract::PreparedRunRecovery::ReceiptOnly)
                                 };
                                 (revision, recovery)
                             }

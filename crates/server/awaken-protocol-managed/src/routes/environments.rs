@@ -144,7 +144,6 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             Json(ErrorResponse::new("invalid_request_error", message)),
         ),
         EnvironmentApplicationError::Policy(SandboxExecutionPolicyError::StoreFailed(_))
-        | EnvironmentApplicationError::PolicyStoreUnavailable
         | EnvironmentApplicationError::Create(CreateEnvironmentError::Store(_))
         | EnvironmentApplicationError::Registration(_)
         | EnvironmentApplicationError::Store(EnvironmentStoreError::Backend(_))
@@ -654,11 +653,6 @@ mod tests {
             (
                 "P4a",
                 EnvironmentApplicationError::Policy(PolicyError::StoreFailed("x".into())),
-                StatusCode::SERVICE_UNAVAILABLE,
-            ),
-            (
-                "P4b",
-                EnvironmentApplicationError::PolicyStoreUnavailable,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (

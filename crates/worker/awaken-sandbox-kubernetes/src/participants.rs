@@ -641,7 +641,7 @@ pub(super) async fn publish(
         name,
         Some(pod.clone()),
         true,
-        Some(admit),
+        admit,
         &replacement,
         &verify,
     )

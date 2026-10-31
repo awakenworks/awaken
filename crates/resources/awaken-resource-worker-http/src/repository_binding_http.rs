@@ -42,7 +42,7 @@ pub struct WorkerRepositoryBindingService {
     validator: Arc<dyn LiveResourceBindingVerifier>,
     dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    directory: Option<Arc<dyn WorkerDirectory>>,
+    directory: Arc<dyn WorkerDirectory>,
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
     publication_control: Option<
@@ -312,24 +312,19 @@ impl WorkerRepositoryBindingService {
         validator: Arc<dyn LiveResourceBindingVerifier>,
         dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        directory: Arc<dyn WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             validator,
             dispatch,
             authenticator,
-            directory: None,
+            directory,
             materialization_control: None,
             publication_control: None,
             transport_authorizer: None,
             clock,
         }
-    }
-
-    #[must_use]
-    pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
-        self.directory = Some(directory);
-        self
     }
 
     /// Install another port view of the same Coordinator Session application
@@ -422,7 +417,7 @@ async fn verify_run_repository_binding(
     claim: RunClaim,
 ) -> Response {
     if verify_claim_owner(
-        service.directory.as_deref(),
+        service.directory.as_ref(),
         worker,
         request.identity.as_ref(),
         &claim,
@@ -543,9 +538,7 @@ async fn verify_session_repository_binding(
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let Some(directory) = service.directory.as_deref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
+    let directory = service.directory.as_ref();
     let Some(control) = service.materialization_control.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -668,9 +661,7 @@ async fn verify_terminal_repository_binding(
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let Some(directory) = service.directory.as_deref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
+    let directory = service.directory.as_ref();
     let Some(control) = service.publication_control.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };

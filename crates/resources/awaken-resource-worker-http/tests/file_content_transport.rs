@@ -322,15 +322,13 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         clock.clone(),
     ));
     let source = Arc::new(ApplicationFileContentSource::new(application));
-    let service = Arc::new(
-        WorkerFileContentService::new(
-            source,
-            dispatch.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            clock.clone(),
-        )
-        .with_worker_directory(directory),
-    );
+    let service = Arc::new(WorkerFileContentService::new(
+        source,
+        dispatch.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        clock.clone(),
+    ));
     let address = support::serve(worker_file_content_router(service)).await;
     let source = HttpFileContentSource::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
@@ -644,9 +642,9 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            directory,
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory)
         .with_session_file_authorization(queries.clone()),
     );
     let address = support::serve(worker_file_content_router(service)).await;
@@ -825,15 +823,13 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
         lifecycle,
         awaken_time::system_clock(),
     ));
-    let service = Arc::new(
-        WorkerFileContentService::new(
-            Arc::new(ApplicationFileContentSource::new(application)),
-            dispatch,
-            Arc::new(HeaderWorkerAuthenticator),
-            awaken_time::system_clock(),
-        )
-        .with_worker_directory(directory),
-    );
+    let service = Arc::new(WorkerFileContentService::new(
+        Arc::new(ApplicationFileContentSource::new(application)),
+        dispatch,
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        awaken_time::system_clock(),
+    ));
     let address = support::serve(worker_file_content_router(service)).await;
     let source = HttpFileContentSource::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
@@ -972,9 +968,9 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
             Arc::new(ApplicationFileContentSource::new(application)),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            directory,
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory)
         .with_recovery(recovery.clone()),
     );
     let address = support::serve(worker_file_content_router(service)).await;

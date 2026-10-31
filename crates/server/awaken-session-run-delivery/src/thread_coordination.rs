@@ -19,7 +19,7 @@ mod terminal_quiescence;
 
 use session_reply_receipt::SessionReplyReceipt;
 pub use session_reply_receipt::validate_awaiting_tool_authority;
-pub use terminal_quiescence::ResidentAttempt;
+pub use terminal_quiescence::{ResidentAttempt, RootAttempt};
 
 use std::sync::Arc;
 
@@ -926,7 +926,10 @@ impl CoordinatedThreads {
             .await?;
         for run_id in child_runs {
             self.durable_run_control()?
-                .persist_recoverable_cancellation(&run_id, None)
+                .persist_recoverable_cancellation(
+                    &run_id,
+                    awaken_dispatch_execution::durable_control::RunResidence::Elsewhere,
+                )
                 .await?;
         }
         Ok(())

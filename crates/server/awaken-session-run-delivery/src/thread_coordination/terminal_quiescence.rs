@@ -6,13 +6,49 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::{
     DispatchControlReads as _, DispatchReads as _, SessionRunReservations as _,
 };
+use awaken_dispatch_execution::durable_control::RunResidence;
 use awaken_runtime_contract::control::LiveRunControl;
 use awaken_session_types::RunError;
 
 use super::CoordinatedThreads;
 
-/// The Session's root attempt resident in this process, when one is: the
-/// local accelerator terminal quiescence signals after the durable intent.
+/// Where a terminal Session's root attempt executes, as seen by the process
+/// that quiesces it.
+///
+/// Decision table of one dispatch's cancellation residence (test
+/// `root_attempt_reaches_only_its_own_threads_dispatches`):
+/// | Rule | root attempt | dispatch on the root's Thread | Effect |
+/// |---|---|---|---|
+/// | Q1 | `Resident` | yes | `RunResidence::Resident(live control)` |
+/// | Q2 | `Resident` | no (a coordinated child) | `RunResidence::Elsewhere` |
+/// | Q3 | `Elsewhere` | any | `RunResidence::Elsewhere` |
+#[derive(Clone, Copy)]
+pub enum RootAttempt<'a> {
+    /// Resident in this process: after each root dispatch's durable intent its
+    /// live control receives the cancellation, and the first pass cancels its
+    /// foreground token and waits for that attempt to leave.
+    Resident(&'a dyn ResidentAttempt),
+    /// Cold, remote, or in a process that executes no attempt (a Coordinator):
+    /// durable cancellation is the whole quiescence.
+    Elsewhere,
+}
+
+impl<'a> RootAttempt<'a> {
+    /// The cancellation residence of one dispatch: only a dispatch on the
+    /// root's own Thread reaches the resident attempt; a child, cold or remote
+    /// attempt keeps the durable claim path alone.
+    fn residence_of(self, root_thread: bool) -> RunResidence<'a> {
+        match self {
+            Self::Resident(attempt) if root_thread => {
+                RunResidence::Resident(attempt.live_control())
+            }
+            Self::Resident(_) | Self::Elsewhere => RunResidence::Elsewhere,
+        }
+    }
+}
+
+/// The Session's root attempt resident in this process: the local
+/// accelerator terminal quiescence signals after the durable intent.
 pub trait ResidentAttempt: Send + Sync {
     /// The resident Runtime's live control of the root's attempts.
     fn live_control(&self) -> &(dyn LiveRunControl + Send + Sync);
@@ -53,11 +89,11 @@ const fn terminal_dispatch_action(
 impl CoordinatedThreads {
     /// Quiesce every dispatch of terminal Session `thread` and its coordinated
     /// children, then read the delegated Runs and coordinated Threads its
-    /// cleanup covers. `resident` is the root's attempt in this process, if any.
+    /// cleanup covers. `root` says whether the root's attempt is resident here.
     pub async fn quiesce_terminal_delegations(
         &self,
         thread: &str,
-        resident: Option<&dyn ResidentAttempt>,
+        root: RootAttempt<'_>,
     ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, RunError> {
         // Terminal control is deliberately Environment-free. A cold projection
         // must never materialize the sandbox, MCP connections, or current Agent
@@ -108,11 +144,11 @@ impl CoordinatedThreads {
                     // accelerator as an explicit interrupt. Child/cold/remote
                     // attempts retain the durable claim path without a second
                     // process-local registry.
-                    let live = resident
-                        .filter(|_| dispatch.thread_id == thread_id)
-                        .map(ResidentAttempt::live_control);
+                    let residence = root.residence_of(dispatch.thread_id == thread_id);
                     let control = self.durable_run_control()?;
-                    control.persist_cancellation(&dispatch.run_id, live).await?;
+                    control
+                        .persist_cancellation(&dispatch.run_id, residence)
+                        .await?;
                     if action == TerminalDispatchAction::CancelAndRejectReservation {
                         // The surrounding Session terminal transition is the
                         // absorbing authority. A still-Reserved row has no Run
@@ -132,7 +168,7 @@ impl CoordinatedThreads {
             // token. Any durable rows have crossed the intent boundary above,
             // so this legacy-compatible nudge cannot precede durable truth.
             if pass == 0
-                && let Some(resident) = resident
+                && let RootAttempt::Resident(resident) = root
             {
                 resident.cancel_foreground()?;
                 let deadline =
@@ -283,4 +319,55 @@ fn terminal_quiescence_rejects_only_unstarted_reservations() {
         action == TerminalDispatchAction::Ignore,
         state == awaken_dispatch_contract::DispatchState::Superseded
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::control::{Error as LiveControlError, LiveCommand};
+
+    struct IdleResident;
+
+    impl LiveRunControl for IdleResident {
+        fn deliver(&self, _command: LiveCommand) -> Result<(), LiveControlError> {
+            Ok(())
+        }
+    }
+
+    impl ResidentAttempt for IdleResident {
+        fn live_control(&self) -> &(dyn LiveRunControl + Send + Sync) {
+            self
+        }
+
+        fn cancel_foreground(&self) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        fn has_foreground_run(&self) -> Result<bool, RunError> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn root_attempt_reaches_only_its_own_threads_dispatches() {
+        let resident = IdleResident;
+        let root = RootAttempt::Resident(&resident);
+        assert!(
+            matches!(root.residence_of(true), RunResidence::Resident(_)),
+            "Q1"
+        );
+        assert!(
+            matches!(root.residence_of(false), RunResidence::Elsewhere),
+            "Q2"
+        );
+        for root_thread in [true, false] {
+            assert!(
+                matches!(
+                    RootAttempt::Elsewhere.residence_of(root_thread),
+                    RunResidence::Elsewhere
+                ),
+                "Q3"
+            );
+        }
+    }
 }

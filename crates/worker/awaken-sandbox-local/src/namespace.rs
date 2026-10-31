@@ -1029,7 +1029,8 @@ impl NamespaceProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        self.adopt_sandbox_inner(None, handle, None, None).await
+        self.adopt_sandbox_inner(None, handle, pc::SandboxEffect::Unattached, None)
+            .await
     }
 
     pub async fn adopt_sandbox_with_control_services(
@@ -1037,8 +1038,13 @@ impl NamespaceProvider {
         handle: &pc::SandboxHandle,
         control_services: &std::collections::BTreeSet<SandboxControlServiceKind>,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        self.adopt_sandbox_inner(None, handle, None, Some(control_services))
-            .await
+        self.adopt_sandbox_inner(
+            None,
+            handle,
+            pc::SandboxEffect::Unattached,
+            Some(control_services),
+        )
+        .await
     }
 
     pub async fn adopt_sandbox_for_effect(
@@ -1048,8 +1054,16 @@ impl NamespaceProvider {
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        self.adopt_sandbox_inner(Some(spec), handle, Some((effect_fence, authority)), None)
-            .await
+        self.adopt_sandbox_inner(
+            Some(spec),
+            handle,
+            pc::SandboxEffect::Fenced {
+                fence: effect_fence,
+                authority,
+            },
+            None,
+        )
+        .await
     }
 
     /// Reconstruct only the exact terminal participant for a `Removing`
@@ -1182,15 +1196,11 @@ impl NamespaceProvider {
         &self,
         spec: Option<&pc::SandboxSpec>,
         handle: &pc::SandboxHandle,
-        effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
+        effect: pc::SandboxEffect<'_>,
         requested_control_services: Option<&std::collections::BTreeSet<SandboxControlServiceKind>>,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        let effect_fence = effect.map(|(fence, _)| fence);
-        let admit = || {
-            effect.map_or(Ok(()), |(fence, authority)| {
-                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
-            })
-        };
+        let effect_fence = effect.fence();
+        let admit = || effect.admit();
         admit()?;
         let payload = handle.namespace_payload(Self::provider_kind())?;
         let requested_control_services = spec
@@ -1294,8 +1304,7 @@ impl NamespaceProvider {
                 self.memory_mounts.owner(&raw_root),
                 &raw_root,
                 current_evidence.as_ref(),
-                effect_fence,
-                effect.map(|(_, authority)| authority),
+                effect,
                 spec,
                 receipt,
                 handle,

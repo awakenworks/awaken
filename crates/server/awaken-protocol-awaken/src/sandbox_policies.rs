@@ -274,7 +274,6 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
             StatusCode::CONFLICT
         }
         EnvironmentApplicationError::Policy(error) => map_policy_error(error),
-        EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         EnvironmentApplicationError::Create(
             awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict
             | awaken_environment_contract::CreateEnvironmentError::OriginalResultUnavailable {
@@ -348,17 +347,13 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         );
         // Application composition must preserve the same domain cause instead
-        // of string-erasing NotFound into the generic 422 arm. C5 an absent
-        // application store is distinct infrastructure unavailability -> E5 503.
+        // of string-erasing NotFound into the generic 422 arm. The application
+        // always holds its policy store, so its failures arrive as `Policy`.
         assert_eq!(
             map_application_error(EnvironmentApplicationError::Policy(
                 SandboxExecutionPolicyError::NotFound
             )),
             StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            map_application_error(EnvironmentApplicationError::PolicyStoreUnavailable),
-            StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(
             map_application_error(EnvironmentApplicationError::Create(
@@ -496,7 +491,7 @@ mod tests {
         let application = Arc::new(EnvironmentApplication::new(
             envs.clone(),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
-            Some(store.clone()),
+            store.clone(),
         ));
         let app = environment_extensions_router(application, Some(store));
         let create =
@@ -587,9 +582,7 @@ mod tests {
                 awaken_time::system_clock(),
             )),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
-            Some(Arc::new(
-                awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
-            )),
+            Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default()),
         ));
         let created = application
             .create(awaken_environment_contract::CreateEnvironmentCommand {
@@ -686,7 +679,7 @@ mod tests {
                 awaken_time::system_clock(),
             )),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
-            Some(store.clone()),
+            store.clone(),
         ));
         let app = environment_extensions_router(application, Some(store));
         let get = |path: &'static str| Request::get(path).body(Body::empty()).expect("GET request");
@@ -789,7 +782,9 @@ mod tests {
                 Arc::new(LocalExecutableEnvironmentRegistrar::new(Arc::new(
                     ExecutableEnvironmentCatalog::new(),
                 ))),
-                None,
+                std::sync::Arc::new(
+                    awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+                ),
             )),
             None,
         );

@@ -60,7 +60,7 @@ pub struct WorkerSkillBundleService {
     source: Arc<dyn SkillBundleSource<RunClaim>>,
     dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    directory: Option<Arc<dyn WorkerDirectory>>,
+    directory: Arc<dyn WorkerDirectory>,
     materialization_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
@@ -73,24 +73,17 @@ impl WorkerSkillBundleService {
         source: Arc<dyn SkillBundleSource<RunClaim>>,
         dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        directory: Arc<dyn WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             source,
             dispatch,
             authenticator,
-            directory: None,
+            directory,
             materialization_control: None,
             clock,
         }
-    }
-
-    /// Require the current Coordinator registration in addition to transport
-    /// authentication. Registered production composition always installs this.
-    #[must_use]
-    pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
-        self.directory = Some(directory);
-        self
     }
 
     #[must_use]
@@ -129,7 +122,7 @@ async fn read_skill_bundle(
     match &request.authority {
         ResourceOperationFence::Run(claim) => {
             if verify_claim_owner(
-                service.directory.as_deref(),
+                service.directory.as_ref(),
                 &worker,
                 request.identity.as_ref(),
                 claim,
@@ -161,15 +154,14 @@ async fn read_skill_bundle(
             run_guard = Some(guard);
         }
         ResourceOperationFence::SessionMaterialization(intent) => {
-            let (Some(identity), Some(directory), Some(control)) = (
+            let (Some(identity), Some(control)) = (
                 request.identity.as_ref(),
-                service.directory.as_deref(),
                 service.materialization_control.as_deref(),
             ) else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };
             if let Some(status) = verify_session_worker_effect(
-                directory,
+                service.directory.as_ref(),
                 &worker,
                 identity,
                 intent.lease(),

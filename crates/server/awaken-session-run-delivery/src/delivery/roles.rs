@@ -196,7 +196,7 @@ impl ChildRunCoordination for WorkerPlacedSessions {
         // The Coordinator executes no attempt: durable cancellation is the
         // whole quiescence, with no resident accelerator.
         self.threads
-            .quiesce_terminal_delegations(thread, None)
+            .quiesce_terminal_delegations(thread, crate::RootAttempt::Elsewhere)
             .await
     }
 }

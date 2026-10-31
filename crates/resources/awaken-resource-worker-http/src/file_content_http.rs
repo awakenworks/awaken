@@ -55,7 +55,7 @@ pub struct WorkerFileContentService {
     source: Arc<dyn FileContentSource<ResourceOperationFence>>,
     dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    directory: Option<Arc<dyn WorkerDirectory>>,
+    directory: Arc<dyn WorkerDirectory>,
     session_file_authorization:
         Option<Arc<dyn awaken_session_realization_contract::SessionFileReadAuthorization>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
@@ -71,24 +71,19 @@ impl WorkerFileContentService {
         source: Arc<dyn FileContentSource<ResourceOperationFence>>,
         dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        directory: Arc<dyn WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             source,
             dispatch,
             authenticator,
-            directory: None,
+            directory,
             session_file_authorization: None,
             recovery: None,
             materialization_control: None,
             clock,
         }
-    }
-
-    #[must_use]
-    pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
-        self.directory = Some(directory);
-        self
     }
 
     /// Install the Session application's read-only File observation. The
@@ -271,7 +266,7 @@ async fn read_file_content(
     match &request.authority {
         ResourceOperationFence::Run(claim) => {
             if verify_claim_owner(
-                service.directory.as_deref(),
+                service.directory.as_ref(),
                 &worker,
                 request.identity.as_ref(),
                 claim,
@@ -326,15 +321,14 @@ async fn read_file_content(
             run_guard = Some(guard);
         }
         ResourceOperationFence::SessionMaterialization(intent) => {
-            let (Some(identity), Some(directory), Some(control)) = (
+            let (Some(identity), Some(control)) = (
                 request.identity.as_ref(),
-                service.directory.as_deref(),
                 service.materialization_control.as_deref(),
             ) else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };
             if let Some(status) = verify_session_worker_effect(
-                directory,
+                service.directory.as_ref(),
                 &worker,
                 identity,
                 intent.lease(),

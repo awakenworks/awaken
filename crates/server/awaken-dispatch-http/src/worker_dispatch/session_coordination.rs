@@ -329,13 +329,17 @@ pub(super) async fn session_run_activity_admit(
         let admission = if prepared {
             let recovery = exact.and_then(|()| {
                 if projected_revision.is_some() {
-                    service.recovery.as_deref().map(Some).ok_or_else(|| {
-                        RealizationHttpError::from(ApplicationError::internal(
-                            "prepared reservation recovery source is unavailable",
-                        ))
-                    })
+                    service
+                        .recovery
+                        .as_deref()
+                        .map(awaken_dispatch_contract::PreparedRunRecovery::OriginalAuthority)
+                        .ok_or_else(|| {
+                            RealizationHttpError::from(ApplicationError::internal(
+                                "prepared reservation recovery source is unavailable",
+                            ))
+                        })
                 } else {
-                    Ok(None)
+                    Ok(awaken_dispatch_contract::PreparedRunRecovery::ReceiptOnly)
                 }
             });
             let service_ref = service.as_ref();

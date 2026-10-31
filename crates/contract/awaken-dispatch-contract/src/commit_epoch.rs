@@ -94,6 +94,26 @@ impl SettledCommitEpochBoundary {
     }
 }
 
+/// How a guarded prepared-activity admission proves the Run's history.
+///
+/// Decision table (`prepared_admission_requires_exact_absence_and_observed_release`,
+/// on a live claim over an empty physical slot):
+/// | Rule | recovery | original Thread | Effect |
+/// |---|---|---|---|
+/// | A1 | `OriginalAuthority` | exact Thread and Run, no Run record | the root runs after the read's store cursor |
+/// | A2 | `OriginalAuthority` | foreign Thread or Run, or a Run record | refused as uncertain; no root |
+/// | A3 | `OriginalAuthority` | the read fails | refused; no root |
+/// | A4 | `ReceiptOnly` | not read | the root runs at cursor 0 and may only recover or refuse its receipt |
+#[derive(Clone, Copy)]
+pub enum PreparedRunRecovery<'a> {
+    /// A projected revision exists: the original committed authority must
+    /// certify that this Run has no history yet.
+    OriginalAuthority(&'a dyn RunRecoverySource),
+    /// No projected revision: nothing certifies historical absence, so the
+    /// Session root may only recover an exact receipt or refuse.
+    ReceiptOnly,
+}
+
 enum HeldAuthority {
     Drop(Box<dyn Send>),
     Release(ReleaseFuture),
@@ -176,14 +196,15 @@ impl CommitEpochGuard {
     /// The one guarded prepared-activity admission boundary. Callers prepare
     /// projections before acquiring this guard, select the original recovery
     /// authority, and supply only their Session root receipt/CAS operation.
-    /// `None` permits receipt recovery/refusal only, never evidence of
-    /// historical Run absence or permission to create a new activity.
+    /// [`PreparedRunRecovery::ReceiptOnly`] permits receipt recovery/refusal
+    /// only, never evidence of historical Run absence or permission to create
+    /// a new activity.
     /// Queue resolution and publication start only after the returned explicit
     /// release result succeeds. This grants no Worker execution authority.
     pub async fn admit_prepared_session_run<T, E, F: Future<Output = Result<T, E>>>(
         self,
         clock: &dyn awaken_time::WallClock,
-        recovery: Result<Option<&dyn RunRecoverySource>, E>,
+        recovery: Result<PreparedRunRecovery<'_>, E>,
         admit: impl FnOnce(u64, bool) -> F,
         failure: impl Fn(String) -> E,
     ) -> Result<Result<T, E>, String> {
@@ -200,7 +221,7 @@ impl CommitEpochGuard {
                 ));
             }
             let cursor = match recovery {
-                Some(source) => {
+                PreparedRunRecovery::OriginalAuthority(source) => {
                     let snapshot = source
                         .recovery_snapshot_in_session(
                             request.session_thread_id(),
@@ -222,7 +243,7 @@ impl CommitEpochGuard {
                     }
                     snapshot.store_cursor
                 }
-                None => 0,
+                PreparedRunRecovery::ReceiptOnly => 0,
             };
             admit(cursor, cancelled).await
         }
@@ -475,9 +496,9 @@ mod commit_epoch_tests {
                                         slot,
                                     );
                                     let recovery = match source_kind {
-                                        6 => Ok(None),
+                                        6 => Ok(PreparedRunRecovery::ReceiptOnly),
                                         7 => Err("caller refused".to_string()),
-                                        _ => Ok(Some(&source as &dyn RunRecoverySource)),
+                                        _ => Ok(PreparedRunRecovery::OriginalAuthority(&source)),
                                     };
                                     let operation = guard.admit_prepared_session_run(
                                         &clock,

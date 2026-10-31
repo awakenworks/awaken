@@ -85,7 +85,10 @@ impl WorkerPlacedSessions {
 impl DurableRunOperations for WorkerPlacedSessions {
     async fn cancel(&self, _thread: &str, run_id: &str) -> Result<(), ApplicationError> {
         self.durable_control()
-            .cancel(&RunId(run_id.to_owned()), None)
+            .cancel(
+                &RunId(run_id.to_owned()),
+                awaken_dispatch_execution::durable_control::RunResidence::Elsewhere,
+            )
             .await
             .map_err(refused)
     }
