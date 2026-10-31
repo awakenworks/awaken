@@ -12,8 +12,6 @@ import json
 import os
 import sys
 
-import anthropic
-
 def error_row(call):
     try:
         call()
@@ -126,6 +124,11 @@ def main() -> None:
     arity = {"lifecycle": 4, "observe": 3}
     if len(sys.argv) < 2 or arity.get(sys.argv[1]) != len(sys.argv):
         raise SystemExit(USAGE)
+    # Imported after the argument check, so a usage error (and the gate's
+    # argument probe) does not depend on the SDK being installed.
+    global anthropic
+    import anthropic
+
     mode = sys.argv[1]
     with anthropic.Anthropic(api_key="e2e-local", base_url=os.environ["AWAKEN_MANAGED_BASE_URL"], max_retries=0) as client:  # awaken-allow(secret): local test key
         if mode == "lifecycle":
