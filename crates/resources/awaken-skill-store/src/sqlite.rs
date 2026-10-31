@@ -1,5 +1,13 @@
 // @formal evidence skill.pinned_version_survives_retirement
 //! SQLite [`SkillStore`] over the crate's `skill_store` migration scope.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;

@@ -9,7 +9,7 @@ use awaken_eval::admin_authoring::{
 
 use super::{load_json, save_json};
 
-pub async fn run_live(args: &[String]) -> ExitCode {
+pub(crate) async fn run_live(args: &[String]) -> ExitCode {
     let [dataset_path, artifact_path, rest @ ..] = args else {
         eprintln!(
             "usage: awaken-eval admin-authoring-run-live <dataset.json> <observations.json> [base-url] [repetitions] [case-id,...]"
@@ -73,7 +73,7 @@ pub async fn run_live(args: &[String]) -> ExitCode {
     }
 }
 
-pub fn score(args: &[String]) -> ExitCode {
+pub(crate) fn score(args: &[String]) -> ExitCode {
     let [dataset_path, artifact_path, rest @ ..] = args else {
         eprintln!(
             "usage: awaken-eval admin-authoring-score <dataset.json> <observations.json> [min-criteria] [min-fully-correct] [min-persisted]"

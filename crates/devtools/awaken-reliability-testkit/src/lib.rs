@@ -58,6 +58,10 @@ impl CrashProcess {
 
     /// Spawn this integration-test binary, wait until the child publishes its
     /// durable-boundary marker, then terminate it without graceful cleanup.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the crash fixture bounds its child-process wait on the host monotonic clock"
+    )]
     pub fn run(self) -> Result<ExitStatus, String> {
         let mut command = Command::new(std::env::current_exe().map_err(display)?);
         command
@@ -103,6 +107,10 @@ fn display(error: impl std::fmt::Display) -> String {
 /// Emit raw observations only when the existing formal runner requests them.
 /// Models and projection contracts remain owned by formal/, never by this I/O
 /// helper. Distinct scenario names avoid parallel-test artifact replacement.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the reliability fixture reads which live service the test run provides from the environment"
+)]
 pub fn write_observation_trace(name: &str, family: &str, steps: serde_json::Value) {
     let Ok(directory) = std::env::var("AWAKEN_OBSERVATION_TRACE_DIR") else {
         return;

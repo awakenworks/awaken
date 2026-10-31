@@ -8,6 +8,14 @@
 //! rows and unavailable SQLite storage therefore become HTTP 500 responses rather
 //! than panics or false not-found results. The pool is opened under the one
 //! process-wide embedded SQLite policy.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 use awaken_sqlite_pool::EmbeddedPool;
 
 use awaken_config_resolver::{

@@ -41,7 +41,7 @@ pub(super) struct ProcessIo {
 }
 
 impl ProcessIo {
-    pub fn new(selection: ScopedStdio) -> io::Result<(Self, Vec<OwnedFd>)> {
+    pub(super) fn new(selection: ScopedStdio) -> io::Result<(Self, Vec<OwnedFd>)> {
         let (mut io, mut handles) = Self::for_mode(selection.mode)?;
         if let Some(inherit) = selection.agent_stderr {
             handles[2] = if inherit {

@@ -448,6 +448,10 @@ fn hand_launch_environment(workdir: bool, host_path: Option<String>) -> Vec<pc::
         .collect()
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the session Hand launches its helper with the host PATH"
+)]
 async fn launch_hand(
     launcher: Arc<SessionAgentLauncher>,
     factory: Arc<dyn HandExecutorFactory>,

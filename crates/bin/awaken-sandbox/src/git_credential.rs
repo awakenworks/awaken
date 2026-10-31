@@ -41,7 +41,7 @@ enum Operation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum GitCredentialError {
+pub(crate) enum GitCredentialError {
     #[error("invalid helper invocation")]
     InvalidInvocation,
     #[error("invalid Git credential query")]
@@ -278,7 +278,7 @@ async fn run_inner(args: &[String], clock: &dyn WallClock) -> Result<(), GitCred
 
 /// Run one Git credential-helper operation. `clock` is the Sandbox process's
 /// wall clock: the instant a returned capability's expiry is judged at.
-pub async fn run(args: &[String], clock: &dyn WallClock) -> Result<(), GitCredentialError> {
+pub(crate) async fn run(args: &[String], clock: &dyn WallClock) -> Result<(), GitCredentialError> {
     tokio::time::timeout(GIT_CREDENTIAL_OPERATION_TIMEOUT, run_inner(args, clock))
         .await
         .map_err(|_| GitCredentialError::Unavailable)?

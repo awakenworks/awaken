@@ -10,6 +10,7 @@
 //! the interval and terminal projections), and the result is put in
 //! canonical order (`canonical_order`) before the CAS publisher sees it.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 mod activation_failure;

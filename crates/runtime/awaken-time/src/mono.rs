@@ -13,6 +13,10 @@ pub use tokio::time::Instant;
 
 /// The current monotonic instant.
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "awaken-time owns the monotonic clock; this is its one read"
+)]
 pub fn now() -> Instant {
     Instant::now()
 }

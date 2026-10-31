@@ -1,5 +1,6 @@
 //! Local and ephemeral stores for product-process startup.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::process_stores::ControlStores;
 #[cfg(any(test, feature = "test-support"))]

@@ -1,4 +1,5 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 fn incompatible(reason: impl ToString) -> pc::SandboxObservation {

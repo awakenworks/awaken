@@ -22,6 +22,14 @@
 //! Startup reads only the global commit fence. Coordinator opens a Thread's
 //! process-local execution view on demand from one consistent recovery snapshot;
 //! durable event, lifecycle and policy reads query committed SQL directly.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::collections::HashMap;
 

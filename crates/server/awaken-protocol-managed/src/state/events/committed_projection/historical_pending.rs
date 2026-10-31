@@ -2,6 +2,7 @@
 //! Answerable events for historical Awaiting targets recovered from the Thread
 //! audit prefix (see [`awaken_managed_session_events::historical_pending_by_lifecycle`]).
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ManagedState {

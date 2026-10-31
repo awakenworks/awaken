@@ -7,6 +7,7 @@
 // @formal reason: this is a product-requirement classification, not a direct proof claim.
 //! Config-only MCP catalog, preferences, inspection and exact binding preview.
 //! No Session execution, credential storage or MCP client is implemented here.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use awaken_agent_config::mcp_config::*;
 use awaken_protocol_managed::VaultState;
 use awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding;
@@ -27,6 +28,7 @@ pub struct McpCatalogService {
     vault: Arc<VaultState>,
 }
 mod contract;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use contract::*;
 
 type ApiResult = Result<Json<Value>, (StatusCode, Json<Value>)>;

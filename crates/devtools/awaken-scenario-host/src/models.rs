@@ -20,6 +20,10 @@ pub struct EchoModel;
 
 #[async_trait::async_trait]
 impl LlmExecutor for EchoModel {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+    )]
     async fn infer(
         &self,
         request: ChatRequest,

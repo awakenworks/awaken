@@ -3,6 +3,7 @@
 //! Execution commands and committed queries have distinct interfaces; neutral
 //! fixture behaviour lives in [`super::neutral`].
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Session realization: projections, leases and binding sinks a Coordinator installs on a Worker-side runtime.

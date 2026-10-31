@@ -735,14 +735,14 @@ pub trait SkillStore: Send + Sync {
 mod skill_bytes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         bytes.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
     where
         D: Deserializer<'de>,
     {

@@ -2,6 +2,7 @@
 //! resident attempt, when one is installed, is the local accelerator of
 //! `awaken_session_run_delivery::CoordinatedThreads::quiesce_terminal_delegations`.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// One installed Session's resident context as the root attempt terminal

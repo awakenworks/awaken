@@ -3,6 +3,7 @@
 // @formal reason: authority before process adapters are assembled; moved unchanged from config.rs.
 //! Resolve one authored deployment into its typed process topology.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ResolvedDeployment {

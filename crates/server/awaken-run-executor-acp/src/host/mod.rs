@@ -25,8 +25,29 @@ mod tests;
 
 #[cfg(not(all(test, feature = "loom")))]
 use awaken_sync::LeafLock;
+/// Under Loom the leaf lock is Loom's mutex, so the model explores its
+/// interleavings; acquisition keeps `LeafLock`'s infallible shape.
 #[cfg(all(test, feature = "loom"))]
-use loom::sync::Mutex;
+struct LeafLock<T>(loom::sync::Mutex<T>);
+
+#[cfg(all(test, feature = "loom"))]
+impl<T> LeafLock<T> {
+    fn new(value: T) -> Self {
+        Self(loom::sync::Mutex::new(value))
+    }
+
+    fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+        self.0
+            .lock()
+            .expect("a Loom model never poisons the leaf lock")
+    }
+
+    fn into_inner(self) -> T {
+        self.0
+            .into_inner()
+            .expect("a Loom model never poisons the leaf lock")
+    }
+}
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -66,6 +87,10 @@ pub struct NpmWrapperInstaller;
 
 #[async_trait]
 impl AcpWrapperInstaller for NpmWrapperInstaller {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+    )]
     async fn resolved_argv(
         &self,
         cli: &AcpCli,

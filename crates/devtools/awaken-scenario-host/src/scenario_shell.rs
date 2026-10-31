@@ -2,6 +2,10 @@
 
 /// Resolve the shell used by scenario fixtures. Windows npm processes do not
 /// necessarily inherit Git for Windows' `bin` directory in `PATH`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 fn scenario_shell() -> String {
     if let Ok(shell) = std::env::var("AWAKEN_E2E_SH")
         && !shell.trim().is_empty()

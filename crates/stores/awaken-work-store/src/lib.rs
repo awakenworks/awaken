@@ -94,6 +94,7 @@ mod schema;
 #[path = "../tests/support/work_postgres.rs"]
 mod work_postgres_fixture;
 use awaken_time::WallClockExt;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use schema::*;
 mod session_access;
 

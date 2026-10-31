@@ -2,6 +2,7 @@
 // @formal entrypoint webhook.committed_outbox_row_is_recoverable
 // @formal entrypoint webhook.delivery_requires_an_enqueued_fact
 // @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::repository::{ManagedLifecycleFact, SessionId};
 use crate::state::SessionWorkerObligation;

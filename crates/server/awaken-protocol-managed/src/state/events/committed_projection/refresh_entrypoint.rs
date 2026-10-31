@@ -2,6 +2,7 @@
 // @formal entrypoint session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
 //! Prefix-stable entrypoint for the warm/cold committed projection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::state::constants::COMMITTED_PREFIX_READ_CONFLICT;
 

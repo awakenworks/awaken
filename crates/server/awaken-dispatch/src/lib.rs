@@ -24,6 +24,10 @@
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub use awaken_dispatch_execution::{
     NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,

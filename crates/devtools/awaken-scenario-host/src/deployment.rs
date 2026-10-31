@@ -158,6 +158,10 @@ pub fn install_scenario_runtime_authority(
 /// Resolve the scenario-only process fixture into the same typed deployment
 /// consumed by every Scenario platform. Production binaries never use these
 /// environment variables; their sole boundary is `ResolvedDeployment`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub fn scenario_deployment() -> awaken_deployment_config::DeploymentConfig {
     scenario_deployment_from(|name| std::env::var(name).ok())
 }
@@ -263,6 +267,10 @@ pub(crate) async fn resource_host_with_deployment(
 /// One assembly path for the binary's installed authority and direct test
 /// factories. Passing the selected port makes both branches testable without
 /// mutating the process-wide OnceLock in parallel unit tests.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 async fn resource_host_with_selected_runtime(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,

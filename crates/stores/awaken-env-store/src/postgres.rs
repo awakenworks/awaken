@@ -7,7 +7,16 @@
 //! codec and the shared value helpers stay in the crate root, which is what
 //! keeps the two backends one interpretation of a persisted Environment rather
 //! than two.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_time::WallClockExt;
 

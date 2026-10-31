@@ -7,6 +7,14 @@
 //! The repository ports are asynchronous and fallible: SQL and JSON failures
 //! cross the repository boundary as `ConfigRepositoryError`, and every port
 //! awaits its queries on the caller's runtime.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;

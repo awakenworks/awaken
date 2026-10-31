@@ -2,6 +2,7 @@
 // @formal reason: Composition-only adapter from dispatch-owned routing to existing Run assembly and Session projections.
 //! Composes this Host's roles into dispatch's claimed-Run resolver, without
 //! routing policy: the topology chooses the resolver's construction once.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_dispatch_contract::{Claimed, RunClaim, RunDispatch};
 use awaken_dispatch_execution::session_execution::{

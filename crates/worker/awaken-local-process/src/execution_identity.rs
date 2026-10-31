@@ -72,6 +72,7 @@ fn invalid() -> io::Error {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
     use super::*;
     use rustix::process::{Pid, PidfdFlags, pidfd_open};
     use std::{

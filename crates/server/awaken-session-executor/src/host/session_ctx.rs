@@ -3,6 +3,7 @@
 // @formal entrypoint session_run.reservation_never_executes
 //! Per-thread runtime context ([`SessionCtx`]) owned by [`ExecutorComponents`].
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Derived validity key for a process-local Runtime cache. It includes exactly

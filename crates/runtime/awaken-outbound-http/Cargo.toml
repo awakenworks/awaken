@@ -37,3 +37,16 @@ blocking = ["reqwest/blocking"]
 kubernetes = ["dep:kube", "dep:http", "dep:http-body-util", "dep:serde_json", "dep:tower"]
 # A bounded permissive sender exists only for loopback integration tests.
 test-support = []
+
+# The workspace lints, except that unsafe code is denied rather than forbidden:
+# one single-threaded integration test sets the proxy environment variables,
+# which is `unsafe` since edition 2024, and allows it in its own file.
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unreachable_pub = "warn"
+
+[lints.clippy]
+wildcard_imports = "warn"
+disallowed_methods = "warn"
+disallowed_types = "warn"

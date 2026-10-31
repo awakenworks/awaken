@@ -15,6 +15,10 @@ use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Resul
 use genai::adapter::AdapterKind;
 
 /// Build the model port from the environment, as a non-streaming executor.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the example program is its own process root and reads its model endpoint from the environment"
+)]
 pub fn build_executor() -> anyhow::Result<Arc<dyn LlmExecutor>> {
     let genai = if let Some(key) = env_nonempty("MINIMAX_API_KEY") {
         let base = std::env::var("MINIMAX_BASE_URL")
@@ -61,6 +65,10 @@ impl LlmExecutor for NonStreaming {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the example program is its own process root and reads its model endpoint from the environment"
+)]
 fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }

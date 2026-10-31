@@ -1,5 +1,6 @@
 //! Pure projections from frozen Session inputs into runtime-owned values.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Tool ids with an unattended baseline under the canonical authored policy.

@@ -268,6 +268,7 @@ pub fn validate_mcp_configuration_write(
 // Unknown transport fields (including credential material) never disappear into
 // the permissive historical Agent transport decoder.
 mod transport_wire {
+    #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
     use super::*;
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -282,7 +283,7 @@ mod transport_wire {
             args: Vec<String>,
         },
     }
-    pub fn serialize<S: serde::Serializer>(
+    pub(super) fn serialize<S: serde::Serializer>(
         value: &AgentMcpTransportBinding,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
@@ -295,7 +296,7 @@ mod transport_wire {
         }
         .serialize(serializer)
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> Result<AgentMcpTransportBinding, D::Error> {
         Ok(match McpTransportConfig::deserialize(deserializer)? {

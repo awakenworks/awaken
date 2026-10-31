@@ -3,6 +3,7 @@
 // @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! Attempt progress, incremental commit watermarks, and state reconstruction.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Exact accepted durable resume carried until the first successful commit.

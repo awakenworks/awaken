@@ -10,6 +10,14 @@
 //! endpoint and re-validates the whole catalog inside a transaction (a rejected
 //! write leaves no trace), and `snapshot()` runs [`ProviderCatalog::validate`] on
 //! the reload.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;

@@ -5,6 +5,14 @@
 //! Advisory transaction locks serialize reference creation with fence changes;
 //! the durable fence row survives process loss while physical deletion is in
 //! progress. Neither mechanism carries authentication or authorization data.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::collections::BTreeSet;
 

@@ -60,6 +60,10 @@ impl HostAcpCapabilityNegotiator {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+)]
 pub(super) fn executable_on_path(program: &str, path: Option<&std::ffi::OsStr>) -> PathBuf {
     let requested = Path::new(program);
     if requested.components().count() > 1 {
@@ -94,6 +98,10 @@ pub(super) fn executable_on_path(program: &str, path: Option<&std::ffi::OsStr>) 
 
 #[async_trait]
 impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+    )]
     async fn negotiate(
         &self,
         argv: &[String],

@@ -6,6 +6,7 @@
 
 use std::io::Read;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Secret-free exact Gateway route returned by a composition-owned authority.

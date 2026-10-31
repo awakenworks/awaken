@@ -43,7 +43,7 @@ pub(crate) use terminal_observer::MemoryTerminalObservers;
 /// machinery but deliberately owns no MemoryStore identity or content handle.
 /// A Session's realization projects a [`MemoryBinding`] from its resolved
 /// resource manifest; [`MemoryRuntime::bound`] pairs it with this runtime.
-pub struct MemoryRuntime {
+pub(crate) struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
     /// The Host's runtime-only inference materialization, when its
     /// composition installed one (`SessionExecutorBuilder::with_inference_materializer`).
@@ -163,7 +163,7 @@ impl CredentialRealizationRecorder for MemoryExtractionCredentialAuthority {
 }
 
 impl MemoryRuntime {
-    pub fn new(
+    pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
         background: Arc<BackgroundRuns>,
@@ -285,7 +285,7 @@ impl BoundMemory {
     /// Durably enqueue one extraction keyed by the terminal commit, then drive it
     /// asynchronously. Returning from this method means the intent is persistent,
     /// not that extraction has completed.
-    pub async fn trigger(
+    pub(crate) async fn trigger(
         &self,
         terminal_commit_id: &str,
         committed: TranscriptSnapshot,
@@ -313,7 +313,7 @@ impl BoundMemory {
     /// frozen resource binding. Invoked after enqueue and after parent Session
     /// rehydration, so a process crash cannot lose a delegated child's remaining
     /// extraction/store/receipt work.
-    pub async fn reconcile(&self) -> Result<bool, MemoryExtractionError> {
+    pub(crate) async fn reconcile(&self) -> Result<bool, MemoryExtractionError> {
         if self
             .binding
             .extraction_commit()

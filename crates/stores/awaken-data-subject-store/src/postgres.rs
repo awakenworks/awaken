@@ -8,6 +8,14 @@
 //! serializes into the `data {json}` (jsonb) column; `id`/`org` are keyed columns,
 //! so `list`/erasure stay **Org-partitioned** (D7). The *same* portable bundle
 //! renders here as on sqlite — the schema is written once.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;

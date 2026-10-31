@@ -4,6 +4,7 @@
 // @formal reason: permission continuations settle without implying an executed effect was absent.
 //! ACP's one ThreadCommit projection: messages, batch, ticket and terminal fact.
 //! Transport notifications and one-shot permission grants never commit directly.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Commit a terminal failure that occurred before/instead of a Step (open fault):

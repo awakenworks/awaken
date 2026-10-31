@@ -911,6 +911,10 @@ pub fn relocated_provider(
 
 /// The Hand companion or scoped launcher the portability gate built, by its
 /// environment variable.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test support locates the Hand companion the portability gate built from the environment"
+)]
 pub fn deployment_test_binary(key: &str) -> std::path::PathBuf {
     let path =
         std::path::PathBuf::from(std::env::var_os(key).unwrap_or_else(|| panic!("required {key}")));

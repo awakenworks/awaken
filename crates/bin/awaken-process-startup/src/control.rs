@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use axum::Router;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 const HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);

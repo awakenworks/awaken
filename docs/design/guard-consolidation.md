@@ -3,8 +3,11 @@
 Plan v5 item V1: an inventory of every CI script, the enforcement each
 architecture rule should move to under constraint S1, and the order of the
 moves. Phase 1 wrote the inventory; phase 2 carried out the steps that need no
-compile (M1, M2, M7 in part); see [Phase 2 outcome](#phase-2-outcome). The
-inventory tables below are the phase-1 snapshot.
+compile (M1, M2, M7 in part); see [Phase 2 outcome](#phase-2-outcome). Phase 3
+wrote the compiler configuration for M3, M4 and M6 and retired the rules it
+replaces, ahead of the first compile slot; see
+[Phase 3 outcome](#phase-3-outcome). The inventory tables below are the
+phase-1 snapshot.
 
 Numbers come from commands (S3):
 
@@ -293,75 +296,10 @@ Rules that stay (b) and how each retires:
 
 ## Proposed compiler configuration
 
-`clippy.toml` (new, workspace root):
-
-```toml
-# Rules the compiler holds instead of Python guards (plan v5 V1).
-# Denied on production code by the production lint pass; the all-targets
-# pass allows these two lints so tests may use std locks, clocks and env.
-disallowed-methods = [
-  # P7 (V2): only the sync module locks a std lock (S5 decides poison there).
-  { path = "std::sync::Mutex::lock", reason = "use the sync module's InvariantLock or leaf lock" },
-  { path = "std::sync::Mutex::try_lock", reason = "use the sync module's InvariantLock or leaf lock" },
-  { path = "std::sync::RwLock::read", reason = "use the sync module's InvariantLock or leaf lock" },
-  { path = "std::sync::RwLock::write", reason = "use the sync module's InvariantLock or leaf lock" },
-  { path = "std::sync::RwLock::try_read", reason = "use the sync module's InvariantLock or leaf lock" },
-  { path = "std::sync::RwLock::try_write", reason = "use the sync module's InvariantLock or leaf lock" },
-  # P3: time arrives through WallClock.
-  { path = "std::time::SystemTime::now", reason = "take a WallClock at construction" },
-  { path = "std::time::Instant::now", reason = "take a WallClock at construction" },
-  { path = "chrono::Utc::now", reason = "take a WallClock at construction" },
-  { path = "chrono::Local::now", reason = "take a WallClock at construction" },
-  # ADR-0091 D6: only binaries read the environment.
-  { path = "std::env::var", reason = "only composition roots read configuration" },
-  { path = "std::env::var_os", reason = "only composition roots read configuration" },
-  { path = "std::env::vars", reason = "only composition roots read configuration" },
-  { path = "std::env::vars_os", reason = "only composition roots read configuration" },
-  { path = "awaken_provider_genai::GenaiExecutor::new", reason = "build the executor from a materialized binding" },
-  { path = "genai::Client::default", reason = "build the executor from a materialized binding" },
-  # ADR-0087: one pool policy per driver.
-  { path = "sqlx::pool::PoolOptions::new", reason = "open SQLite through EmbeddedSqlite, PostgreSQL through awaken-sql-storage" },
-  { path = "sqlx::pool::Pool::connect", reason = "open through the driver's pool owner" },
-  { path = "sqlx::pool::Pool::connect_with", reason = "open through the driver's pool owner" },
-  { path = "sqlx::pool::Pool::connect_lazy", reason = "open through the driver's pool owner" },
-  { path = "sqlx::pool::Pool::connect_lazy_with", reason = "open through the driver's pool owner" },
-  { path = "sqlx::pool::PoolOptions::after_connect", reason = "pool hooks belong to the pool owner" },
-  { path = "sqlx::pool::PoolOptions::before_acquire", reason = "pool hooks belong to the pool owner" },
-  { path = "sqlx::pool::PoolOptions::after_release", reason = "pool hooks belong to the pool owner" },
-  { path = "sqlx::pool::PoolOptions::test_before_acquire", reason = "pool hooks belong to the pool owner" },
-]
-disallowed-types = [
-  { path = "sqlx::sqlite::SqliteConnectOptions", reason = "connect options belong to awaken-sqlite-pool" },
-  { path = "sqlx::sqlite::SqliteConnection", reason = "reach SQLite through the pool owner" },
-  { path = "rusqlite::Connection", reason = "embedded SQLite uses sqlx (ADR-0087)" },
-]
-```
-
-`Cargo.toml`:
-
-```toml
-[workspace.lints.rust]
-unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
-unreachable_pub = "warn"        # R8
-
-[workspace.lints.clippy]
-wildcard_imports = "warn"       # R9
-disallowed_methods = "warn"     # R10-R13, R18; denied by -D warnings in the production pass
-disallowed_types = "warn"       # R10
-```
-
-`check-rust.sh` runs two lint passes over one graph:
-
-```sh
-cargo clippy --workspace --all-features --all-targets -- -D warnings \
-  -A clippy::disallowed_methods -A clippy::disallowed_types
-cargo clippy --workspace --all-features --lib --bins -- -D warnings   # production only
-```
-
-`--lib --bins` compiles without `cfg(test)`, the same projection the guards
-scan. A source `#[expect]` outranks the command-line `-A`, so owner sites hold
-in both passes.
+The configuration now lives in `clippy.toml` and the root `Cargo.toml`
+`[workspace.lints]`, and `check-rust.sh` runs the two passes; the
+[Phase 3 outcome](#phase-3-outcome) records where they differ from this
+proposal and why.
 
 To verify in the first compile slot, because clippy cannot be run in this
 phase: that `disallowed-methods` paths resolve through the `sqlx` and `chrono`
@@ -393,10 +331,10 @@ Each step lands as its own commits and is checked on its own. Steps marked
 | M0 | this inventory; `principle_status.py` | `principle_status.py --self-test`, `check-docs.sh` | no | done |
 | M1 | R1–R5; decide the k8s negative control (wire it into the opt-in k3d lane, or register it, or delete it) | `check_crate_boundaries.py`, `check_lane_reachability.py`, `principle_status.py --guards` | no | done |
 | M2 | R6, R7 | `cargo deny check bans` (Cargo metadata only) | no | done |
-| M3 | `[lints] workspace = true` in the 9 crates without it; R8, R9 | both clippy passes `-D warnings` | yes | open |
-| M4 | `clippy.toml`; the two-pass `check-rust.sh`; R10–R14 with owner `#[expect]`s | both clippy passes; `check_crate_boundaries.py` | yes | open |
+| M3 | `[lints] workspace = true` in the 9 crates without it; R8, R9 | both clippy passes `-D warnings` | yes | written; awaits the compile slot |
+| M4 | `clippy.toml`; the two-pass `check-rust.sh`; R10–R14 with owner `#[expect]`s | both clippy passes; `check_crate_boundaries.py` | yes | written; awaits the compile slot |
 | M5 | R15–R17, with V3/V4 | workspace build and tests | yes | open |
-| M6 | R18, R19, with V2 | both clippy passes; the V2 decision table | yes | open |
+| M6 | R18, R19, with V2 | both clippy passes; the V2 decision table | yes | written; awaits the compile slot |
 | M7 | the merges above and R20; `_input_closure` for every `INPUT_GLOBS` checker | each guard's `--self-test`; `check_crate_boundaries.py` | no | input closure done; merges in part (see outcome) |
 
 ## Expected reductions
@@ -501,3 +439,66 @@ the rest of the dependency-direction module.
 
 Each slot runs both clippy passes with `-D warnings`, `check_crate_boundaries.py`
 and the workspace tests.
+
+## Phase 3 outcome
+
+Base `504872e23d` (V2 lock types and the V3 Family A binding in). Written
+without a build: the [compile-slot checklist](#compile-slot-checklist) lists
+what the first batch must confirm.
+
+| Measure (`principle_status.py --guards`) | Base | After phase 3 |
+|---|---:|---:|
+| Python scripts (entry / module / test) | 191 (104 / 61 / 26) | 190 (104 / 60 / 26) |
+| Python lines | 75,978 | 75,643 |
+| baseline files under `scripts/ci` / entries | 10 / 947 | 10 / 775 |
+| P7 lock poison panics (production) | 8 | 2 (the two reviewed `std` locks below) |
+
+The 172 baseline entries left with the 137-crate `unreachable-pub-pending`
+registry, the 34 `super-glob` counts and the one `ambient_clock_read` file;
+they now live in source as compiler-held `#[expect]`s.
+
+| # | Done | Difference found |
+|---|---|---|
+| R8 | `unreachable_pub = "warn"` in `[workspace.lints.rust]`; `#![expect(unreachable_pub, reason = ..)]` in the pending roots; the registry and its rules deleted from `_modularity_fitness`. The first compile reported 109 of the 139 expectations unfulfilled (the registry over-counted crates the compiler finds clean); they were dropped, leaving 28 pending library roots, 2 binary roots (`awaken-eval`, `awaken-sandbox`) and an item-level `#[expect]` on the release-admission binary's `release_admission` module, which only `standalone-release-admission` compiles privately | production targets only: the all-targets pass allows the lint, as the registry ignored tests; binaries are now covered (the registry read one root per crate); `awaken-fs-win32` has no expectation because it compiles empty on Linux (Windows unverified) |
+| R8 | adoption: `_modularity_fitness` hard rule `workspace-lints` refuses a crate that does not inherit `[workspace.lints]` (or restate every key) and a production `allow` of a compiler-held lint (`unreachable_pub`, `wildcard_imports`, `disallowed_methods`, `disallowed_types`) | replaces "adopted crates keep `#![warn]`"; `awaken-sync` now states `#![expect]` too |
+| M3 | the 9 crates adopt the lints: six with `[lints] workspace = true`; `awaken-fs-win32` and `awaken-process-win32` (FFI, `unsafe_code = "allow"`) and `awaken-outbound-http` (`unsafe_code = "deny"`, its one proxy test allows `set_var`) restate the rest | Cargo cannot combine `workspace = true` with a local table |
+| R9 | `wildcard_imports = "warn"`; 175 sites carried `#[cfg_attr(not(test), expect(clippy::wildcard_imports))]`, 167 after the first compile dropped the 8 it reported unfulfilled; `super-glob` and its baseline deleted | wider: 147 `super::*` plus 28 other private globs; `cfg_attr(not(test))` because clippy skips the lint in `--test` builds; the 3 enum-variant globs belong to `enum_glob_use` and carry nothing |
+| R10 | pool constructors, connects and hooks, `SqliteConnectOptions` and `rusqlite::Connection` in `clippy.toml`; `#[expect]` on `EmbeddedSqlite::open`, its options import and `postgres_pool_options`; `_store_pool_fitness.py` deleted | `SqliteConnection` is not a disallowed type (about 100 `&mut SqliteConnection` transaction parameters are legitimate); `Mutex<Connection>` is closed instead by banning a raw connection (`sqlx::Connection::{connect, connect_with}`, `PoolConnection::{detach, leak}`) together with R18; naming `SqlitePoolOptions` without constructing it is no longer refused; `SharedSqliteConnection` moved to the `_naming_fitness` hard rule `retired-name`, the first R20 entry |
+| R11 | `std::env::{var, var_os, vars, vars_os}` in `clippy.toml`; 67 item-level `#[expect]`s with reasons (32 in devtools harnesses and fixtures, 35 in production: process roots, launchers passing PATH/HOME through, the Control credential-consumers file); `PROVIDER_ENV_READ` deleted | wider: every variable and devtools crates; three sites gated to the platform that reads (`cfg_attr`) |
+| R12 | stays in `_provider_env_fitness` (no clippy entry) | clippy resolves `Client::default()` to the trait method `Default::default`, which a path cannot single out; `GenaiExecutor::new` does not exist and is refused as a parallel constructor |
+| R13 | std and tokio `Instant::now`, `SystemTime::now`, chrono `Utc::now`/`Local::now`, `time::OffsetDateTime::now_utc`; `#[expect]` in `awaken-time` (its two reads), `awaken-authority-clock` (non-Linux only) and four testkit functions; `check_fabricated_facts` R2 keeps only concrete clock values (`SystemClock.now_ms()`, `system_clock().now()`), is at zero and became a hard rule; its alias resolver and rows C1, C2, C7, C12–C25 deleted | clippy resolves aliases and scopes itself; wider: testkits and test-support code |
+| R14 | `#![cfg_attr(not(test), deny(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation))]` in the 35 SQL adapter modules `check_authority_arithmetic` discovers; 23 functions with existing size and count casts carry `#[expect]` naming their lints; ` as i64`/` as u64` removed from the guard, which keeps `.max(0)`, epoch increments and codec expects | wider: every cast in those modules and their child modules, not only authority-named lines |
+| R18 | the lock-method ban of [lock poisoning](lock-poisoning.md); the publication slot and the namespace Sandbox's Memory materializations are leaf locks (integrator decision; test PS6 pins a panic under an open slot); `ManagementAuthz` reads its lock through one accessor and `LiveInbox` through its existing one, each with a reviewed `#[expect]` | the two remaining `std` locks are the reviewed exemptions; P7 counts them |
+| R19 | `_poisoned_lock_fitness` is a no-baseline deny over all production code except `awaken-sync`; it exempts only an item carrying the reviewed std-lock `#[expect]`; `_realization_error_fitness` owns its own authority discovery | wider: every crate, testkits included, instead of two |
+
+### Compile-slot checklist
+
+The first batch must confirm, and each item names its fallback:
+
+1. Clippy resolves the `clippy.toml` paths through re-exports: `std::sync::Mutex`
+   (defined in `std::sync::poison` since 1.84), `tokio::time::Instant`,
+   `sqlx::pool::*`, `sqlx::sqlite::SqliteConnectOptions`, and the trait
+   methods `sqlx::Connection::{connect, connect_with}`. An unresolved path
+   prints "does not refer to a reachable function"; take the defining path.
+2. Clippy 1.96 has no `allow-*-in-tests` for `disallowed_*` (checked in the
+   1.96 `clippy-driver` binary: only `dbg`, `expect`, `indexing-slicing`,
+   `large-stack-frames`, `panic`, `print`, `unwrap`, `useless-vec`), so both
+   passes stay.
+3. `cargo clippy -- -A ..` overrides the `[lints]` levels Cargo passes, and a
+   source `#[expect]` overrides `-A`, in both passes.
+4. Every `#[expect]` is fulfilled; an unfulfilled one names its file and line:
+   pending crates already clean of unreachable `pub` (drop the line), and crates
+   whose only unreachable items are feature-gated under the `--no-default-features`
+   scoped steps in `check-rust.sh`.
+5. `wildcard_imports` fires on every listed glob outside `--test` builds, and
+   not on the 3 enum-variant globs (`enum_glob_use`).
+6. `disallowed_types` fires on the `SqliteConnectOptions` import and inside
+   `EmbeddedSqlite::open`; `disallowed_methods` on `PoolOptions::new` and the
+   hooks there.
+7. The R14 cast expectations name the lints that fire: `MAX_MEMORIES_PER_STORE
+   as i64` (a `usize` constant) and `CANDIDATE_PAGE_SIZE as usize`,
+   `i64::MAX as u64` (constants clippy may evaluate) are the uncertain ones.
+8. The new `[lints]` on `awaken-agent-channel`, `awaken-admin-assistant`,
+   `awaken-runtime-examples`, `awaken-ext-skills`, `awaken-coordinator` and
+   `awaken-webhook` bring no new `unsafe_code`/`unexpected_cfgs` errors, and
+   `awaken-outbound-http`'s proxy test compiles with its file-level allow.

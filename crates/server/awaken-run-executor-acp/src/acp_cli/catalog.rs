@@ -1,5 +1,6 @@
 //! Data-only rows for the external ACP adapter catalog.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::{InstructionsChannel, InstructionsDelivery};
 

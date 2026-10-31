@@ -4,6 +4,7 @@
 // @formal reason: the product classification does not substitute for those commit/effect checks.
 //! Controlled Session working aggregate; the compatible DTO is its read snapshot.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::state::*;
 use awaken_credential_contract::PlaintextHolder;
 use awaken_session_configuration_contract::mcp::{

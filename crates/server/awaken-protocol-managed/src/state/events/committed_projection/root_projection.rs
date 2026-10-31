@@ -9,6 +9,7 @@
 //! aggregate close.
 
 use super::candidate_evidence::CandidateEvidence;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{EventIdentity, TranscriptRole};
 

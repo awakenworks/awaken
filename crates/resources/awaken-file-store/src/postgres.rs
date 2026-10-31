@@ -4,6 +4,14 @@
 //! Postgres backend (`postgres` feature): content-addressed blobs in a `bytea`
 //! column. `put` is an idempotent `INSERT ... ON CONFLICT (id) DO NOTHING`, matching
 //! the immutable/dedup contract. Compile-verified; running needs a database.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use async_trait::async_trait;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -28,6 +36,10 @@ fn ce(x: impl ToString) -> FileCatalogError {
     }
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+)]
 fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
     FileRecord {
         id: row.get("id"),
@@ -167,6 +179,10 @@ impl PgFileStore {
 
 #[async_trait]
 impl FileStore for PgFileStore {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);
         sqlx::query(
@@ -295,6 +311,10 @@ impl FileCatalog for PgFileStore {
         Ok(outcome)
     }
 
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn create_file(
         &self,
         record: FileRecord,
@@ -467,6 +487,10 @@ impl FileCatalog for PgFileStore {
         .map_err(ce)
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
         sqlx::query(
             "SELECT COALESCE(SUM(size_bytes),0)::BIGINT AS total FROM file_store_file \

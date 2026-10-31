@@ -9,6 +9,7 @@
 // @formal reason: than a separate formal-proof claim.
 // The Memory adapter's existing physical admission transaction. Kept with
 // its owning store; all backends share the Dispatch decision kernel.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl MemoryDispatchStore {

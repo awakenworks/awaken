@@ -5,6 +5,7 @@
 //! Kept separate from the main loop so parent/child correlation and continuation
 //! handling form one bounded responsibility.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::agent::state::StateError;
 use awaken_runtime_contract::snapshot::AgentId;

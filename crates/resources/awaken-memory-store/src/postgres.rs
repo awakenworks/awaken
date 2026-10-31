@@ -7,6 +7,14 @@
 // @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! Postgres [`MemoryWriter`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use awaken_sql_storage::StoredU64;
 use awaken_time::WallClock;
@@ -97,7 +105,7 @@ async fn selected_bundles(
 
 use crate::repository::{
     ConditionalDeleteAdmission, HeadUpdateAdmission, rename_replace_identity, stored_now_nanos,
-    under_prefix, validate_path, validate_size,
+    stored_unix_nanos, under_prefix, validate_path, validate_size,
 };
 use crate::{
     MemErr, Memory, MemoryActor, MemoryContentPurge, MemoryCopyConflictPreservation,
@@ -194,8 +202,8 @@ fn to_memory(
         path,
         content_sha256: sha,
         version: domain_version(version)?,
-        created_unix_nanos: created as u128,
-        updated_unix_nanos: updated as u128,
+        created_unix_nanos: stored_unix_nanos(created),
+        updated_unix_nanos: stored_unix_nanos(updated),
     })
 }
 
@@ -230,14 +238,12 @@ fn to_version(row: sqlx::postgres::PgRow) -> Result<MemoryVersion, MemErr> {
         operation: parse_operation(row.get::<String, _>("operation").as_str())?,
         path: row.get("path"),
         content,
-        created_unix_nanos: row.get::<i64, _>("created") as u128,
+        created_unix_nanos: stored_unix_nanos(row.get::<i64, _>("created")),
         created_by: row
             .get::<Option<String>, _>("created_by_json")
             .map(|json| serde_json::from_str(&json).map_err(mem_err))
             .transpose()?,
-        redacted_unix_nanos: row
-            .get::<Option<i64>, _>("redacted")
-            .map(|value| value as u128),
+        redacted_unix_nanos: row.get::<Option<i64>, _>("redacted").map(stored_unix_nanos),
         redacted_by: row
             .get::<Option<String>, _>("redacted_by_json")
             .map(|json| serde_json::from_str(&json).map_err(mem_err))
@@ -308,6 +314,10 @@ async fn append_version(
 }
 
 impl PostgresMemoryRepository {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn preserve_copy_conflict_inner(
         &self,
         store: &str,
@@ -433,7 +443,7 @@ impl PostgresMemoryRepository {
                     content_sha256: sha,
                     content_size: u64::try_from(size).map_err(mem_err)?,
                     version: domain_version(version)?,
-                    updated_unix_nanos: updated as u128,
+                    updated_unix_nanos: stored_unix_nanos(updated),
                 })
             })
             .collect()
@@ -467,6 +477,10 @@ impl PostgresMemoryRepository {
         self.create_as_inner(store, path, content, None).await
     }
 
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn create_as_inner(
         &self,
         store: &str,
@@ -564,8 +578,8 @@ impl PostgresMemoryRepository {
             path: path.to_string(),
             content_sha256: sha,
             version: 1,
-            created_unix_nanos: now as u128,
-            updated_unix_nanos: now as u128,
+            created_unix_nanos: stored_unix_nanos(now),
+            updated_unix_nanos: stored_unix_nanos(now),
         })
     }
 
@@ -692,8 +706,8 @@ impl PostgresMemoryRepository {
             path: to.to_string(),
             content_sha256: sha,
             version: next_domain_version(version)?,
-            created_unix_nanos: created as u128,
-            updated_unix_nanos: now as u128,
+            created_unix_nanos: stored_unix_nanos(created),
+            updated_unix_nanos: stored_unix_nanos(now),
         })
     }
 
@@ -883,7 +897,7 @@ impl PostgresMemoryRepository {
             .await
             .map_err(mem_err)?;
             version.content = None;
-            version.redacted_unix_nanos = Some(redacted as u128);
+            version.redacted_unix_nanos = Some(stored_unix_nanos(redacted));
             version.redacted_by = actor.cloned();
         }
         tx.commit().await.map_err(mem_err)?;
@@ -1081,8 +1095,8 @@ impl PostgresMemoryRepository {
             path: requested_path.to_string(),
             content_sha256: new_sha,
             version: next_domain_version(version)?,
-            created_unix_nanos: created as u128,
-            updated_unix_nanos: now as u128,
+            created_unix_nanos: stored_unix_nanos(created),
+            updated_unix_nanos: stored_unix_nanos(now),
         })
     }
 }

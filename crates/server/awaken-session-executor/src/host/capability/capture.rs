@@ -5,6 +5,7 @@
 //! subject-tagged content sink, the deployment-resolved capture ceiling, and
 //! the Control consent and Workspace-narrowing read ports.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 /// Content-capture wiring. Consumer: Session context assembly (per-Run

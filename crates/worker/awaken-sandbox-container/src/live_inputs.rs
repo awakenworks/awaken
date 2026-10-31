@@ -3,6 +3,7 @@
 // @formal reason: Installs claim-scoped live Session inputs.
 //! Provider-neutral admission and resolution for the one live Managed File tree.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_container_contract::RuntimeError;
 

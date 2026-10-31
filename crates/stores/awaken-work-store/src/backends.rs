@@ -11,6 +11,7 @@
 //! lifecycle, schema admission, idempotent row creation, owned-row reads and
 //! storage-atomic Environment registration watermarks for the two durable adapters.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_environment_contract::EnvironmentRevision;
 use awaken_executable_environment_contract::{

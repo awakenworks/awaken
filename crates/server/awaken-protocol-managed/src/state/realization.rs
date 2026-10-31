@@ -3,6 +3,7 @@
 // @formal reason: Managed realization driver.
 //! Managed wire-cache coordination around the Session application realization owner.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
 #[cfg(test)]

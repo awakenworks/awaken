@@ -4,13 +4,13 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 // These identifiers are durable, published migration identities. Keep them
 // stable even though the Rust-facing responsibility is named "reclamation".
-pub const BUNDLE_ID: &str = "awaken.resource_lifecycle";
-pub const NS: &str = "resource_lifecycle";
+pub(crate) const BUNDLE_ID: &str = "awaken.resource_lifecycle";
+pub(crate) const NS: &str = "resource_lifecycle";
 // The public responsibility is now named Registry, but these values identify
 // an already-published migration stream and its tables. Renaming either would
 // silently create a second empty store instead of upgrading existing data.
-pub const REGISTRY_BUNDLE_ID: &str = "awaken.resource_catalog";
-pub const REGISTRY_NS: &str = "resource_catalog";
+pub(crate) const REGISTRY_BUNDLE_ID: &str = "awaken.resource_catalog";
+pub(crate) const REGISTRY_NS: &str = "resource_catalog";
 
 const FILES: &[(&str, &str)] = &[(
     "V0001__resource_lifecycle.sql",
@@ -34,7 +34,7 @@ fn description_of(name: &str, contents: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-pub fn resource_reclamation_bundle() -> Result<MigrationBundle, MigrationError> {
+pub(crate) fn resource_reclamation_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
@@ -50,7 +50,7 @@ pub fn resource_reclamation_bundle() -> Result<MigrationBundle, MigrationError> 
 
 /// Resources-owned Registry aggregate, independently versioned from lifecycle
 /// fencing because the two aggregates have no table-level dependency.
-pub fn resource_registry_bundle() -> Result<MigrationBundle, MigrationError> {
+pub(crate) fn resource_registry_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         REGISTRY_BUNDLE_ID,
         vec![

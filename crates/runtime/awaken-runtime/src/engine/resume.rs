@@ -7,6 +7,7 @@
 //! continuation, and re-entry into the ordinary execution loop.
 
 use super::delegation::is_resolved_advisor_call;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::audit::permission::PermissionConfirmation;
 

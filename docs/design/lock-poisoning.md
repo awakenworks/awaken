@@ -49,8 +49,7 @@ crate shrinks to the invariant half.
 ## Enforcement (S1)
 
 The compiler enforces the rule: production code cannot read a `std::sync` lock
-except through `awaken-sync`. V1 installs this `clippy.toml` (this lane does not
-create the file):
+except through `awaken-sync`. The workspace `clippy.toml` holds this ban:
 
 ```toml
 # Plan v5 S5 / P7: a lock's poisoning is decided by its type, not at the call
@@ -70,20 +69,23 @@ disallowed-methods = [
 ```
 
 `awaken-sync` is the one crate that calls these methods
-(`#![allow(clippy::disallowed_methods)]` in its root). V1 must confirm with a
-canary that the paths resolve on the pinned toolchain: since Rust 1.84 `Mutex`
-is defined in `std::sync::poison` and re-exported, and if clippy does not follow
-the re-export the paths become `std::sync::poison::Mutex::lock` and so on.
+(`#![expect(clippy::disallowed_methods, reason = ..)]` in its root). The first
+compile slot confirms that the paths resolve on the pinned toolchain: since
+Rust 1.84 `Mutex` is defined in `std::sync::poison` and re-exported, and if
+clippy does not follow the re-export the paths become
+`std::sync::poison::Mutex::lock` and so on.
 
 **Test policy.** The rule binds what ships: library and binary targets with all
 features, which includes testkit and `test-support` code. Test code
 (`cfg(test)` modules, `tests/`, benches, examples) may use `std` locks directly,
 because a poisoned lock in a test is a panic and a panic is how a test reports
-failure. V1 wires this as two clippy invocations over the existing graph:
+failure. `scripts/ci/check-rust.sh` runs two clippy invocations over the
+existing graph:
 
 ```sh
-cargo clippy --workspace --all-features --lib --bins --locked -- -D clippy::disallowed_methods
-cargo clippy --workspace --all-features --all-targets --locked -- -D warnings -A clippy::disallowed_methods
+cargo clippy --workspace --all-features --all-targets --locked -- -D warnings \
+  -A clippy::disallowed_methods -A clippy::disallowed_types -A unreachable_pub
+cargo clippy --workspace --all-features --lib --bins --locked -- -D warnings
 ```
 
 ## `_poisoned_lock_fitness.py`
@@ -91,13 +93,14 @@ cargo clippy --workspace --all-features --all-targets --locked -- -D warnings -A
 The clippy rule replaces the guard's L1 for `std` locks across the whole
 workspace, wider than the guard's executor-and-realization scope. It does not
 replace two semantic spellings: an `InvariantLock` refusal unwrapped with
-`.lock().expect(..)` / `.unwrap()` (L1 on the new type), and a typed registry
-refusal expected away (L2). Clippy cannot tell those apart from legitimate
-`Result::expect`. So the guard stays. V1 must: widen its scan from the two
-`authority` crates to all production code (after this migration the count is
-zero, so it remains a no-baseline deny check), name `InvariantLock` in its
-messages, and record its retirement condition: retire when the invariant
-refusal can be made unwrappable only through a typed route.
+`.lock().expect(..)` / `.unwrap()` (L1 on the new type), and a typed refusal
+expected away with a poison-naming message (L2). Clippy cannot tell those
+apart from a legitimate `Result::expect`, so the guard stays, now as a
+no-baseline deny over all production code except `awaken-sync`, naming
+`InvariantLock` in its messages. The one exemption is an item carrying the
+reviewed `#[expect(clippy::disallowed_methods)]` of a lock still on `std`
+(below), so a reviewed site is not counted twice. It retires when an
+invariant refusal can be unwrapped only through a typed route.
 
 ## Classification
 
@@ -126,12 +129,12 @@ the deployment application (`Unavailable`), session tokens
 
 ### Open locks
 
-These still read a `std` lock in production; V1 cannot enable the lint until
-each is decided. `LiveInbox` is decided in [SDK versioning](sdk-versioning.md):
+These four read a `std` lock in production when V2 landed. Each is now
+decided:
 
-| Lock | Why it is open |
+| Lock | Decision |
 |---|---|
-| `awaken-runtime-contract` `LiveInbox` state | decided: `InvariantLock`; a poisoned inbox admits nothing and reads as closed and empty, `version()` returns `Option<u64>`, edits and waits report `Unavailable` (SDK break inside the pending `2.0.0`) |
-| `awaken-control` `ManagementAuthz.state` | the type `Arc<std::sync::Mutex<LocalIamState>>` is fixed by `awaken_iam_host::IamGate::from_local_state`; changing it is an awaken-iam API change |
-| `awaken-sandbox-control-transport` `SandboxControlPublicationSlot.state` | invariant for reserve/update, yet `close()` deliberately recovers poison so disposal stays absorbing (test PS5); it needs an explicit "dispose despite poison" route on `InvariantLock` or a split of the slot |
-| `awaken-sandbox-local` `NamespaceSandbox.memory_materializations` | invariant with existing refusals, but `Sandbox::handle()` cannot fail and dropping the materialization evidence from the handle is not a safe answer |
+| `LiveInbox` state | `InvariantLock` (package L): a poisoned inbox admits nothing and reads as closed and empty, `version()` returns `Option<u64>`, edits and waits report `Unavailable`; an SDK break inside the pending `2.0.0` ([SDK versioning](sdk-versioning.md)) |
+| `ManagementAuthz.state` | stays on `std` because `IamGate::from_local_state` takes that type; every read goes through one `iam_state()` accessor with a reviewed `#[expect]`; changes with the awaken-iam API |
+| `SandboxControlPublicationSlot.state` | `LeafLock` (integrator decision): every critical section reads the slot state or replaces it whole, so disposal stays absorbing without a special route; test PS6 pins that a panic under an open slot keeps its exact owner |
+| `NamespaceSandbox.memory_materializations` | `LeafLock` (integrator decision): every critical section reads the list or appends one independent entry, and `Sandbox::handle()` keeps its evidence |

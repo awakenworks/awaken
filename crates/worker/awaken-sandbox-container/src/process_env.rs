@@ -3,6 +3,7 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Runtime-owned process environment shared by native exec, Hand, and ACP agents.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Runtime-owned configuration homes which may contain provider-created

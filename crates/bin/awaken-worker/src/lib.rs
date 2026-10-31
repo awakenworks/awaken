@@ -27,6 +27,10 @@
 //! the injected [`InferenceExecutorMaterializer`]. The host's inert executor
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use awaken_provisioning_contract::{SandboxProvider, SessionSandbox};
 use futures_util::FutureExt as _;
@@ -1396,6 +1400,10 @@ impl WorkerNode {
 
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
     /// deregister. Losing registry authority closes the local claim gate.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the Worker process root reads its test-harness shutdown switch from the environment"
+    )]
     pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if std::env::var("AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
             return self

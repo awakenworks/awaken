@@ -8,17 +8,17 @@
   },
   "realization-code": {
     "awaken-credential-contract": 269,
-    "awaken-dispatch-http": 731,
+    "awaken-dispatch-http": 733,
     "awaken-executable-environment-contract": 327,
-    "awaken-protocol-managed": 23,
-    "awaken-scenario-host": 78,
-    "awaken-session-application": 1886,
+    "awaken-protocol-managed": 24,
+    "awaken-scenario-host": 79,
+    "awaken-session-application": 1885,
     "awaken-session-configuration-contract": 84,
     "awaken-session-contract": 48,
     "awaken-session-environment": 76,
     "awaken-session-environment-contract": 253,
     "awaken-session-executor": 292,
-    "awaken-session-realization-driver": 265
+    "awaken-session-realization-driver": 264
   },
   "environment-rewrite": {
     "awaken-store-conformance": 5
@@ -28,7 +28,9 @@
       "awaken-store-conformance": "store conformance fixtures write arbitrary persisted Environment rows (bound, Restoring, worker-owned) to exercise the store contract; test-support crate outside every production closure"
     },
     "realization-code": {
-      "awaken-dispatch-http": "ADR-0091 responsibility naming only: SessionExecutionError and ApplicationError replace mechanism names in unchanged realization renewal/permit/transport bodies, adding four and eight rustfmt lines. No state transition, persistence owner, lease, retry or physical-effect algorithm is added; realization ownership targets remain unchanged.",
+      "awaken-dispatch-http": "ADR-0091 responsibility naming only: SessionExecutionError and ApplicationError replace mechanism names in unchanged realization renewal/permit/transport bodies, adding four and eight rustfmt lines. No state transition, persistence owner, lease, retry or physical-effect algorithm is added; realization ownership targets remain unchanged.; then: {\"reason\": \"attribute lines only: each pending glob import now carries its #[cfg_attr(not(test), expect(clippy::wildcard_imports))] (guard-consolidation R9); no realization behaviour added\", \"approved_by\": \"integrator (Claude) under the user's 2026-10-31 approval of plan v5; reviewed at integration: attribute lines only (lane v5/guard-lints)\", \"date\": \"2026-10-31\", \"remove_when\": \"the glob imports are replaced by named imports and the expectations removed\"}",
+      "awaken-protocol-managed": "{\"reason\": \"attribute lines only: each pending glob import now carries its #[cfg_attr(not(test), expect(clippy::wildcard_imports))] (guard-consolidation R9); no realization behaviour added\", \"approved_by\": \"integrator (Claude) under the user's 2026-10-31 approval of plan v5; reviewed at integration: attribute lines only (lane v5/guard-lints)\", \"date\": \"2026-10-31\", \"remove_when\": \"the glob imports are replaced by named imports and the expectations removed\"}",
+      "awaken-scenario-host": "{\"reason\": \"attribute lines only: the scenario harness reads its realization-observation directory from the environment under a reviewed #[expect(clippy::disallowed_methods)] (guard-consolidation R11); no realization behaviour added\", \"approved_by\": \"integrator (Claude) under the user's 2026-10-31 approval of plan v5; reviewed at integration: attribute lines only (lane v5/guard-lints)\", \"date\": \"2026-10-31\", \"remove_when\": \"the harness receives the directory as configuration\"}",
       "awaken-session-application": "2026-10-18 root-reviewed W21 SessionMutations extraction: existing realization control commands now borrow the sole root-CAS component explicitly, adding 12 import/borrow/call-wrap lines. No state decision, physical effect, persistence port or retry authority is added here; all original aggregate decisions, store receipts and domain error arms remain unchanged. This measured composition overhead leaves with the remaining application use-case extraction.; then: W21 Core replay over accepted P5: the existing realization-control commands still make aggregate-owned decisions and borrow the same SessionMutations CAS kernel; 12 explicit import/borrow/wrapping lines, with the accepted P5 terminal driver/supervisor reductions retained. No new state machine, store, effect, retry or scheduler authority.; then: 2026-10-18 Root-reviewed W26: immutable outer progress accessor adds three rustfmt wrapping lines to unchanged application realization predicates. The five immutable inner getters were previously reviewed at their Session aggregate owner. No state/effect/timer/retry/Store authority changes; preserve module names and record exact measured code.; then: {\"reason\": \"W21 Session use cases become components that hold their collaborators: each adds a private struct and one constructor, the application keeps construction plus a test-support re-assembly of retained inputs, and a call moved to its owning component gains one field segment that rustfmt wraps in held long functions\", \"approved_by\": \"integrator (Claude) under the user's 2026-10-24 approval of the adjusted plan; reviewed at integration\", \"date\": \"2026-10-24\", \"remove_when\": \"the W21 component split is complete: --tighten lowers the crate budget and each long function is split as it moves into its component\"}",
       "awaken-session-contract": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Exact identity relocation only: original Session State realization-code measurement38 moves to canonical Session Core38; realization_progress.rs algorithm and value methods are conserved, no new behavior or numeric allowance.\", \"remove_when\": \"existing owned progress value is measured at its canonical semantic boundary without restoring split Session ownership\"}; then: {\"reason\":\"Bound uncounted realization failures (docs/design/worker-retirement.md amendment 2026-10-31): the persisted uncounted-failure counter is Session state the state contract owns (ADR-0089 D1); its budget decision lives in the realization contract.\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"SessionRealizationProgress moves into awaken-session-realization-contract (ADR-0089 D6)\"}",
       "awaken-session-executor": "installed-Session poison denial (plan v4 P1 leftover, P4): the registry's own reads, changes, installs and realization permit refuse a poisoned lock with the typed RealizationLock and callers propagate it instead of panicking, so error propagation lines grow; then: ADR-0091 responsibility naming only: SessionExecutionError and ApplicationError replace mechanism names in unchanged realization renewal/permit/transport bodies, adding four and eight rustfmt lines. No state transition, persistence owner, lease, retry or physical-effect algorithm is added; realization ownership targets remain unchanged."

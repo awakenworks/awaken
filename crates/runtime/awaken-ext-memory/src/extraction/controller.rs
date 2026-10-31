@@ -4,6 +4,7 @@
 //! The parent module retains the aggregate and its ports; this module advances
 //! those existing contracts without introducing a second lifecycle authority.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_time::WallClockExt as _;
 

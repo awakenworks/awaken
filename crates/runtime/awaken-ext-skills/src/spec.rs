@@ -13,9 +13,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Cap on a skill name, mirroring the reference implementations (Hermes uses 64).
-pub const MAX_NAME_LENGTH: usize = 64;
+pub(crate) const MAX_NAME_LENGTH: usize = 64;
 /// Cap on a skill description shown in the catalog (Hermes uses 1024).
-pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
+pub(crate) const MAX_DESCRIPTION_LENGTH: usize = 1024;
 
 /// Truncate on a char boundary, appending an ellipsis when cut. Shared by the
 /// parser (source caps) and the catalog renderer (budget caps).

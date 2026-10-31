@@ -4,6 +4,7 @@
 // @formal reason: contract admission. This is a product-boundary classification, not proof.
 //! Workdir child command preparation shared by process and Agent-channel spawn.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use tokio::process::Command as TokioCommand;
 
@@ -13,6 +14,13 @@ pub(super) struct PreparedCommand {
 }
 
 impl PreparedCommand {
+    #[cfg_attr(
+        windows,
+        expect(
+            clippy::disallowed_methods,
+            reason = "on Windows the launched process inherits the host's OS locator variables"
+        )
+    )]
     pub(super) fn into_tokio(self) -> TokioCommand {
         let mut cmd = TokioCommand::new(&self.command.argv[0]);
         cmd.args(&self.command.argv[1..])

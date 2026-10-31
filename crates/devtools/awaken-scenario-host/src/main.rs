@@ -74,6 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_process_startup::block_on_service(async_main)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let model_mode = std::env::var("AWAKEN_MODEL_MODE");
     // The scenario-only role axis (`AWAKEN_SCENARIO_ROLE`). Worker is an execution
@@ -332,6 +336,10 @@ fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
     )
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 fn scenario_observability() -> awaken_observability::ObservabilityConfig {
     let mut config = awaken_observability::ObservabilityConfig {
         trace_file: std::env::var_os("AWAKEN_TRACE_FILE").map(Into::into),
@@ -369,6 +377,10 @@ fn scenario_observability() -> awaken_observability::ObservabilityConfig {
 /// kill (exit 143) that dropped in-flight foreground work and skipped the span
 /// flush below. Background/queued pool work not tied to a live request is not
 /// covered here; it relies on lease-expiry recovery on the next start.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 async fn shutdown_signal() {
     if std::env::var("AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
         use tokio::io::{AsyncReadExt, stdin};

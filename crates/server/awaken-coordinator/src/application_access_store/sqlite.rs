@@ -1,6 +1,14 @@
 // @formal surface requirement=store.backends.schema_and_adapter_conformance
 // @formal reason: SQLite adapter for the sole Coordinator application-access repository; this is
 // @formal reason: product-requirement classification, not a formal-proof claim.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 use async_trait::async_trait;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::{EmbeddedPool, EmbeddedSqlite};

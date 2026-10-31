@@ -74,3 +74,6 @@ awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 [[example]]
 name = "coding_agent"
 required-features = ["coding-agent-tui"]
+
+[lints]
+workspace = true

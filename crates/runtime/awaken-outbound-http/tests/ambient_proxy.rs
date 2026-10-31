@@ -5,6 +5,11 @@
 //! before any client is built, and `reqwest` reads the proxy environment once
 //! per client construction.
 
+#![allow(
+    unsafe_code,
+    reason = "edition 2024 makes setting the proxy environment unsafe; this binary runs one single-threaded test"
+)]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

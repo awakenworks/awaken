@@ -380,12 +380,14 @@ count at zero.
    amendments.
 
 4. **A poisoned lock is a typed error.** A lock whose holder panicked guards
-   possibly half-written state; the executor and the realization answer it
-   with a typed refusal (`RealizationLock`, `ExecutorLock`) or a documented
-   fail-closed answer, never a panic. `scripts/ci/_poisoned_lock_fitness.py`
-   refuses `L1` (`.lock()`/`.read()`/`.write()` followed by
-   `.expect`/`.unwrap`) and `L2` (an `.expect` naming the poison) in their
-   production code, found by the crates' `authority` metadata.
+   possibly half-written state; an invariant lock answers it with a typed
+   refusal (`RealizationLock`, `ExecutorLock`, or the owning crate's
+   `From<LockPoisoned>`) or a documented fail-closed answer, never a panic;
+   a leaf lock recovers it ([Lock poisoning](../design/lock-poisoning.md)).
+   `clippy.toml` denies the `std::sync` lock methods in all production code
+   outside `awaken-sync`, and `scripts/ci/_poisoned_lock_fitness.py` refuses
+   `L1` (an `InvariantLock` acquisition followed by `.expect`/`.unwrap`) and
+   `L2` (an `.expect` naming the poison) in all production code.
 
 5. **The Session aggregate decides every Environment transition.** Changes go
    through `transition_environment` in `awaken-session-contract`, or a

@@ -1,4 +1,12 @@
 // @formal entrypoint worker.incarnation_generation_fences_stale_processes
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,

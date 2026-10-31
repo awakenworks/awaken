@@ -13,6 +13,7 @@ use crate::vocab::{Artifact, MountAccess, MountRequirement, RealizedMount};
 use std::sync::Arc;
 
 use super::fence::SandboxEffectFence;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::foundation::*;
 use super::handle::SandboxHandle;
 use super::restore_contract::{SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget};
@@ -302,7 +303,7 @@ const fn isolation_rank(class: IsolationClass) -> u8 {
 /// kept separate from readiness/ranking so a fail-closed policy can never silently
 /// turn into a downgrade while candidate ordering changes.
 #[must_use]
-pub const fn degradation_is_authorized(
+pub(crate) const fn degradation_is_authorized(
     actual: IsolationClass,
     required: IsolationClass,
     on_unmet: OnUnmet,

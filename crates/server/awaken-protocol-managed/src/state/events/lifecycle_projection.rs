@@ -1,6 +1,7 @@
 // @formal entrypoint session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{CoordinatedThread, OrderIndex, ThreadStatus};
 

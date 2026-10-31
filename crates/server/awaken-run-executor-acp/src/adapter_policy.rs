@@ -5,7 +5,7 @@ use awaken_credential_contract::McpCredentialDelivery;
 use awaken_runtime_contract::resolved::ProviderServerTool;
 
 /// A stateless view of the authoritative `AcpCli` rows.
-pub struct CanonicalAcpAdapterPolicy;
+pub(crate) struct CanonicalAcpAdapterPolicy;
 
 static ACP_ADAPTER_POLICY: CanonicalAcpAdapterPolicy = CanonicalAcpAdapterPolicy;
 

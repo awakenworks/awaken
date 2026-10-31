@@ -41,6 +41,10 @@ fn postgres_fixture_child_output(
 /// Exercise the one fixture-admission decision table through a real backend
 /// test process. The full PostgreSQL gate supplies a live URL; local runs can
 /// still verify the negative cases without an external database.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the reliability fixture reads which live service the test run provides from the environment"
+)]
 pub fn assert_postgres_fixture_child_contract(test_name: &str) {
     let run = |fixture| {
         postgres_fixture_child_output(test_name, fixture).expect("PostgreSQL fixture rule child")
@@ -90,6 +94,10 @@ pub fn assert_postgres_fixture_child_contract(test_name: &str) {
 /// need a second shared client pass this exact URL on; calling again admits a
 /// new, disjoint namespace. A caller may still select its own schema, since a
 /// later `search_path` option or `SET` replaces this one.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the reliability fixture reads which live service the test run provides from the environment"
+)]
 pub fn postgres_fixture_url() -> Option<String> {
     let required = postgres_fixture_required(std::env::var("AWAKEN_TEST_REQUIRE_POSTGRES"));
     let configured = admit_postgres_fixture(std::env::var("AWAKEN_TEST_DATABASE_URL"), required);
@@ -122,6 +130,10 @@ pub async fn postgres_fixture_pool(url: &str) -> sqlx::PgPool {
 /// A schema name unique across concurrent test processes and repeated runs on
 /// one database: process id, wall-clock nanoseconds and a process counter.
 /// Only `[a-z0-9_]` and at most 63 bytes, so it needs no quoting.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the fixture names a unique test schema from the host wall clock"
+)]
 fn fresh_namespace() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()

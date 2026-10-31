@@ -1103,6 +1103,10 @@ impl awaken_dispatch_contract::DispatchMaintenance for PostgresDispatchStore {
 }
 
 impl PostgresDispatchStore {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn purge_dead_letters_with_cutoff(
         &self,
         cutoff_ms: Option<u64>,

@@ -447,6 +447,10 @@ impl awaken_admin_config_api::ConfigCapabilitiesSource for LiveControlCapabiliti
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the Control composition reads the operator's application-credential consumers file from the environment"
+)]
 fn application_credential_routes(
     vault: Arc<VaultState>,
     authority: Option<Arc<dyn awaken_credential_contract::CredentialExecutionAuthority>>,
