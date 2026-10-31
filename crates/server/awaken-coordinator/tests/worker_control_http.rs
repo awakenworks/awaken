@@ -442,10 +442,13 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         .await
         .unwrap();
 
+    // The claiming client is the same current Worker: it decodes the journal
+    // codec its registration offered.
     let client = HttpDispatchQueue::new(
         format!("http://{address}"),
         registered.worker.snapshot.identity.clone(),
-    );
+    )
+    .with_worker_manifest(current_manifest());
     dispatch_clock.set(99);
     let claimed = client
         .claim("ignored-local-owner", 99, &Default::default())
@@ -601,7 +604,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         },
     )
     .await;
-    let wrong_queue = HttpDispatchQueue::new(format!("http://{address}"), wrong);
+    let wrong_queue = HttpDispatchQueue::new(format!("http://{address}"), wrong)
+        .with_worker_manifest(current_manifest());
     clock.set(100);
     dispatch_clock.set(100);
     assert!(
@@ -614,7 +618,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     );
 
     let exact = ready_worker(address, "worker-exact-revision", required.clone()).await;
-    let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone());
+    let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone())
+        .with_worker_manifest(current_manifest());
     clock.set(130);
     dispatch_clock.set(130);
     assert!(
