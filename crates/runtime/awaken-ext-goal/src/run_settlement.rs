@@ -21,7 +21,8 @@ pub enum RunSettlement {
     /// a cancel request that is still on its way to the settlement is never
     /// read as a Worker failure.
     Unsettled,
-    /// Delivery settled; whether a durable cancel request was retained on it.
+    /// The cancel fact is durable: read from the settled completion, or from
+    /// the still-live dispatch row when the Run fault committed before settle.
     Settled { cancellation_requested: bool },
 }
 
