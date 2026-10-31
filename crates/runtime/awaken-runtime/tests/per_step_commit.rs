@@ -158,10 +158,11 @@ async fn each_continuing_step_commits_under_a_running_fact() {
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     // The input commits first. Each tool step then commits Requested before any
-    // executor entry, Executing before the side effect, and Finalized with its
-    // result; each of the three model invocations adds Entered/Returned
-    // evidence. The terminal text step commits through finish.
-    assert_eq!(commit.commit_count(), 14);
+    // executor entry, Executing before the side effect, Returned when the
+    // tool-result journal retains the raw output before its state and hooks,
+    // and Finalized with its result; each of the three model invocations adds
+    // Entered/Returned evidence. The terminal text step commits through finish.
+    assert_eq!(commit.commit_count(), 16);
 
     let committed = commit.committed();
     // The durable state history walked Running → Running → Ended.
@@ -172,7 +173,7 @@ async fn each_continuing_step_commits_under_a_running_fact() {
         .collect();
     assert_eq!(
         states,
-        vec![RunState::Running; 13]
+        vec![RunState::Running; 15]
             .into_iter()
             .chain([RunState::Ended(EndCause::NaturalEnd)])
             .collect::<Vec<_>>()
