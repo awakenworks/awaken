@@ -339,7 +339,54 @@ impl awaken_session_execution_contract::SessionRuns for ActivationOnlySessionRun
     }
 }
 
-awaken_session_execution_contract::neutral_role!(BudgetAccounting for ActivationOnlySessionRunRuntime);
+// A cap raise resumes budget pauses through the update-command owner, which
+// first discovers them. This runtime never executes a Run (`run` is
+// unreachable), so it can hold no committed `BudgetReached` ticket: the truthful
+// discovery answer is empty. Resumption keeps the neutral fail-closed refusal.
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::BudgetAccounting for ActivationOnlySessionRunRuntime {
+    async fn resume_budget_reached(
+        &self,
+        delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
+    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, RunError> {
+        awaken_session_execution_contract::BudgetAccounting::resume_budget_reached(
+            &awaken_session_execution_contract::NeutralRuntime,
+            delivery,
+        )
+        .await
+    }
+
+    async fn session_budget_resume_tickets(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, RunError> {
+        Ok(Vec::new())
+    }
+
+    async fn session_usage(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        awaken_session_execution_contract::BudgetAccounting::session_usage(
+            &awaken_session_execution_contract::NeutralRuntime,
+            thread,
+        )
+        .await
+    }
+
+    async fn session_thread_usage(
+        &self,
+        session_id: &SessionId,
+        thread_id: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        awaken_session_execution_contract::BudgetAccounting::session_thread_usage(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+        )
+        .await
+    }
+}
 
 awaken_session_execution_contract::neutral_role!(StreamingRuns for ActivationOnlySessionRunRuntime);
 
