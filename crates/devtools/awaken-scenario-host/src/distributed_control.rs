@@ -18,6 +18,10 @@ use axum::routing::{get, post};
 
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn serve_distributed_control(
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {

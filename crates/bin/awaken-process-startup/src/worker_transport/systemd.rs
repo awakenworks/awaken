@@ -26,6 +26,10 @@ const UNIT_PREFIX: &str = "awaken-agent-worker-";
 const UNIT_SUFFIX: &str = ".service";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the process composition root reads its host configuration from the environment"
+)]
 fn trusted_operator_executable(name: &str) -> Option<PathBuf> {
     awaken_local_process::resolve_operator_executable(
         name,
@@ -76,6 +80,10 @@ fn launch_assignment(key: &str, value: &std::ffi::OsStr) -> Result<std::ffi::OsS
 /// Process-placement inputs only. The Worker still receives its model,
 /// credential, sandbox and endpoint policy through the existing deployment
 /// document and signed control plane, never an ambient provider key.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the process composition root reads its host configuration from the environment"
+)]
 pub(super) fn launch_environment() -> Result<Vec<std::ffi::OsString>, String> {
     let mut assignments = Vec::new();
     for key in LOCAL_WORKER_ENVIRONMENT_KEYS {

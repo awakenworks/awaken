@@ -66,6 +66,10 @@ pub struct NpmWrapperInstaller;
 
 #[async_trait]
 impl AcpWrapperInstaller for NpmWrapperInstaller {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+    )]
     async fn resolved_argv(
         &self,
         cli: &AcpCli,

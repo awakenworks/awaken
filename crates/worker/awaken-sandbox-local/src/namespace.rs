@@ -84,6 +84,10 @@ fn linux_probe_argv() -> Vec<String> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the local Sandbox provider passes the host PATH and passthrough variables to the processes it launches"
+)]
 async fn run_native_probe_argv(argv: &[String], timeout: std::time::Duration) -> bool {
     use pc::{ProcessHandle as _, Signal};
     if timeout.is_zero() {

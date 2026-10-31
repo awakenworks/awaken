@@ -19,6 +19,10 @@ fn schema_name(identity: &str) -> String {
 /// Each temporary scenario path identifies one schema shared by parent and
 /// killed child. The lane owns an ephemeral database; no existing schema is
 /// dropped. Every connection/setup error is fatal once Postgres is selected.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the reliability fixture reads which live service the test run provides from the environment"
+)]
 pub async fn postgres_crash_pool(identity: &str) -> Option<sqlx::PgPool> {
     if !selected(std::env::var("AWAKEN_CRASH_BACKEND")) {
         return None;

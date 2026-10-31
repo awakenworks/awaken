@@ -48,6 +48,10 @@ impl<C: WallClock + ?Sized> WallClockExt for C {
 struct SystemWallClock;
 
 impl WallClock for SystemWallClock {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "awaken-time owns the wall clock; this is its one read"
+    )]
     fn now(&self) -> UtcTime {
         UtcTime::from_system_time(SystemTime::now())
     }

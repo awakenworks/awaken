@@ -9,6 +9,10 @@ const EXERCISED: &str = "VERIFIED live NATS fixture";
 
 /// An absent optional fixture is a reported skip. Explicit configuration and a
 /// required fixture must never turn a connection or protocol failure into a skip.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the reliability fixture reads which live service the test run provides from the environment"
+)]
 pub fn nats_fixture_url() -> Option<String> {
     let url = admit(
         std::env::var("AWAKEN_TEST_NATS_URL"),
@@ -44,6 +48,10 @@ fn admit(url: Result<String, VarError>, required: Result<String, VarError>) -> O
 
 /// Cross the actual test-process boundary for every admission outcome. Invalid
 /// URLs are intentional loopback fixtures; never disclose a caller's live URL.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the reliability fixture reads which live service the test run provides from the environment"
+)]
 pub fn assert_nats_fixture_child_contract(test_name: &str) {
     let run = |url: Option<&str>, required: bool| {
         let mut child = Command::new(std::env::current_exe().expect("NATS test executable"));

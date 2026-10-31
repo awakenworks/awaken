@@ -40,6 +40,10 @@ pub(super) fn package_entry(prefix: &Path, package: &str, bin: &str) -> Result<P
 }
 
 #[cfg(windows)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+)]
 fn node() -> Result<PathBuf, String> {
     awaken_local_process::resolve_operator_executable(
         "node",
@@ -85,6 +89,10 @@ pub(super) fn installer_command(installer: &str) -> Result<Command, String> {
     Ok(Command::new(installer))
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+)]
 pub(super) fn inherit_host_environment(command: &mut Command) {
     for key in ["PATH", "HOME"] {
         if let Some(value) = std::env::var_os(key) {

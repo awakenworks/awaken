@@ -197,6 +197,10 @@ const GIT_HOST_PROCESS_FLOOR: &[&str] = &[
 /// The fully composed Git process for one invocation. The returned directory,
 /// when present, is the Network branch's isolated working directory and must
 /// live until the process has exited.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the local Sandbox provider passes the host PATH and passthrough variables to the processes it launches"
+)]
 fn compose_git_command(
     cwd: Option<&Path>,
     args: &[&str],

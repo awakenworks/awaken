@@ -1400,6 +1400,10 @@ impl WorkerNode {
 
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
     /// deregister. Losing registry authority closes the local claim gate.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the Worker process root reads its test-harness shutdown switch from the environment"
+    )]
     pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if std::env::var("AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF").as_deref() == Ok("1") {
             return self

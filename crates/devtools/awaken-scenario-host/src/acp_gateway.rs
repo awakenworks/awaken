@@ -19,6 +19,10 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
         ))
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+    )]
     async fn materialize_process(
         &self,
         reference: &str,
@@ -50,6 +54,10 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
 
 #[async_trait::async_trait]
 impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+    )]
     async fn model(
         &self,
         activation: &awaken_runtime_contract::activation::RunActivation,

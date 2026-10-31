@@ -252,6 +252,10 @@ impl Request {
 }
 
 impl CredentialKind {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the local Sandbox provider passes the host PATH and passthrough variables to the processes it launches"
+    )]
     fn read_environment(
         self,
     ) -> Result<Option<pc::RepositoryHttpBasicCredential>, pc::SandboxError> {

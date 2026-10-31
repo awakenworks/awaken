@@ -25,6 +25,10 @@ pub struct LocalExecutionDeployment {
 impl LocalExecutionDeployment {
     /// Resolve once from operator PATH, not Agent environment. Retain the exact
     /// executable used by the probe; later launches do not repeat PATH lookup.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the local Sandbox provider passes the host PATH and passthrough variables to the processes it launches"
+    )]
     pub fn discover(helper: PathBuf) -> Result<Self, pc::SandboxError> {
         let paths = std::env::var_os("PATH").unwrap_or_default();
         Self::from_operator_path(helper, &paths)
@@ -115,6 +119,10 @@ fn denied() -> io::Error {
 }
 
 impl LocalSandbox {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the local Sandbox provider passes the host PATH and passthrough variables to the processes it launches"
+    )]
     pub(super) async fn scoped_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,

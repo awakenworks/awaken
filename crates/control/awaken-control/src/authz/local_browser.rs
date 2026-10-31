@@ -43,12 +43,7 @@ impl ManagementAuthz {
         };
         RoleBindingRepository::add(&self.store, binding.clone())
             .expect("persist local browser admin binding");
-        self.state
-            .lock()
-            .expect("local IAM state lock")
-            .authz
-            .policy_mut()
-            .bind_role(binding);
+        self.iam_state().authz.policy_mut().bind_role(binding);
         browser.attach_to(&self.gate);
     }
 

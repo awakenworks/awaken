@@ -401,6 +401,17 @@ scoped_step "run-ingress-neutral" "keep store-only arithmetic out of the databas
 scoped_step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
   "awaken-dispatch" cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
+# Two lint passes over one graph (docs/design/guard-consolidation.md, M4).
+# `clippy.toml` and `[workspace.lints]` hold rules that bind what ships: no std
+# lock, ambient clock, environment read or private pool construction outside a
+# reviewed `#[expect]`, and no unreachable `pub`. Tests may use std locks, clocks
+# and the environment, so the all-targets pass allows exactly those lints and
+# the production pass (`--lib --bins`, compiled without cfg(test)) denies every
+# warning. A source `#[expect]` outranks the command-line `-A`, so a reviewed
+# production site holds in both passes. clippy 1.96 has no `allow-*-in-tests`
+# option for these lints, which is why there are two passes.
+production_only_lints=(-A clippy::disallowed_methods -A clippy::disallowed_types -A unreachable_pub)
+
 # CR7 a brokered client needs catalog/HTTP contracts but no Admin database:
 # its actual transitive graph must compile warning-free without workspace SQL
 # feature unification. CR8 SQL adapters/tests still own migration-history helpers;
@@ -416,7 +427,7 @@ for materializer_profile in bare brokered; do
     materializer_features=(--features brokered)
   fi
   scoped_step "credential-materializer-$materializer_profile-neutral" "keep database-only helpers out of neutral materializer consumers" \
-    "awaken-credential-materializer" cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings
+    "awaken-credential-materializer" cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
   scoped_step "credential-materializer-$materializer_profile-neutral-unit" "keep neutral materializer tests independent of local Vault authority" \
     "awaken-credential-materializer" cargo test -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --lib "${locked[@]}"
 done
@@ -426,6 +437,7 @@ done
 # security adapters. A leaf-only check would miss configuration/wiring drift.
 # The full gate retains its existing real Hand companion in the same graph.
 workspace_features="awaken-cli/container-k8s"
+
 case "$mode" in
   --quick|--push)
     # Causal regression: the physical Attempt owns chained ScheduledActions;
@@ -488,7 +500,9 @@ case "$mode" in
         echo "↷ lint-all-features (unaffected: $scope_reason)"
       else
         step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
-          cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings
+          cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
+        step "lint-production" "route the call through its owner (clippy.toml names it), or state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item" \
+          cargo clippy --workspace --all-features --lib --bins "${locked[@]}" -- -D warnings
       fi
       step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
         python3 scripts/ci/check_formal_coverage.py
@@ -513,7 +527,9 @@ case "$mode" in
     # tiers whose tests need a live daemon, and their own integration gates run
     # those. Compiling and linting them is free; running them is not.
     if step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
-      cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings; then
+      cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}" \
+      && step "lint-production" "route the call through its owner (clippy.toml names it), or state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item" \
+      cargo clippy --workspace --all-features --lib --bins "${locked[@]}" -- -D warnings; then
       # Scenario/Coordinator integration uses the real release Hand companion.
       # C1 full workspace tests => E1 build its authored feature in the same
       # Cargo graph; a thin default binary must not replace the tested companion.

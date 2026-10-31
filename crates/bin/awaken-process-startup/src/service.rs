@@ -892,6 +892,13 @@ fn browser_url(bind: &str) -> Result<String, String> {
     Ok(format!("http://{host}:{}", address.port()))
 }
 
+#[cfg_attr(
+    all(unix, not(target_os = "macos")),
+    expect(
+        clippy::disallowed_methods,
+        reason = "opening a browser on Linux first checks for a display server"
+    )
+)]
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = {

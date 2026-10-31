@@ -17,6 +17,10 @@ fn select_test_namespace_hand_path(
     })
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the process composition root reads its host configuration from the environment"
+)]
 fn cargo_test_namespace_hand_path() -> Option<std::path::PathBuf> {
     select_test_namespace_hand_path(
         std::env::var_os("CARGO_BIN_EXE_awaken-sandbox"),

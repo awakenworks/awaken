@@ -13,6 +13,10 @@ use super::{
 /// Resolves the scenario model source once, returning its executor and advertised
 /// reference. Tests default to the deterministic in-process executor; explicit
 /// HTTP or Gemini modes use the same provider adapters as production.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub fn scenario_model(
     in_process: Arc<dyn LlmExecutor>,
     default_ref: &str,

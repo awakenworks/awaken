@@ -25,6 +25,10 @@ pub async fn build_dream_router() -> Router {
 /// Process-level Dream route. Unlike the pure in-process fixture above, this
 /// realizes the configured Session runtime tier so live Native/provider runs
 /// exercise the same Namespace/Container mount semantics as production.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_dream_runtime_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DreamScenarioModel), "claude-sonnet-5");
     let resolver = Arc::new(DreamScenarioModelResolver {

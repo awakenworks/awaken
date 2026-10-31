@@ -134,6 +134,10 @@ fn content_bearing(event_type: &'static str) -> &'static str {
 /// becoming a second lifecycle driver. The caller supplies the HTTP GET
 /// adapter; this protocol-owned loop decides which wire observation is safe to
 /// retry, and `refinement` narrows -- never replaces -- the settle condition.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test observer bounds its waits on the host monotonic clock"
+)]
 pub async fn wait_for_session_events<F, Fut, P>(
     fact: DurableFact<'_>,
     timeout: Duration,
@@ -203,6 +207,10 @@ where
 ///
 /// # Panics
 /// If the outbox read fails, or the outbox is still draining at `timeout`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test observer bounds its waits on the host monotonic clock"
+)]
 pub async fn wait_for_delivered_lifecycle_facts(
     outbox: &dyn awaken_session_contract::LifecycleOutbox,
     timeout: Duration,

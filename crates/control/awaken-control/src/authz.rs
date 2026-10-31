@@ -104,7 +104,7 @@
 
 use awaken_time::WallClock;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub mod roles;
 
@@ -345,6 +345,20 @@ pub struct TokenSpec {
 }
 
 impl ManagementAuthz {
+    /// The live IAM state. Its lock is the `std::sync::Mutex` that
+    /// `awaken_iam_host::IamGate::from_local_state` takes, so it cannot become
+    /// an `awaken_sync` lock until the awaken-iam API accepts one. Until then a
+    /// poisoned state still panics here, as every former call site did.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "IamGate::from_local_state fixes this lock as a std Mutex (awaken-iam API); remove when it accepts an InvariantLock"
+    )]
+    fn iam_state(&self) -> MutexGuard<'_, LocalIamState> {
+        self.state
+            .lock()
+            .expect("the local IAM state lock is poisoned")
+    }
+
     /// Mint a token: engine write (directory + workspace role binding) and the
     /// durable rows, atomically under the state lock. Returns the one-time
     /// cleartext `sk-awaken-…` credential.
@@ -370,7 +384,7 @@ impl ManagementAuthz {
             ),
             expires_at: spec.expires_at.map(Timestamp),
         };
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.iam_state();
         let LocalIamState { authz, directory } = &mut *guard;
         let issued = ApiTokenMinter::new(OsEntropy)
             .mint(directory, authz.policy_mut(), request)
@@ -397,9 +411,7 @@ impl ManagementAuthz {
     /// The live token row for `id`, if any (engine state, so a revocation done
     /// this process is visible immediately).
     fn token_by_id(&self, id: &str) -> Option<ApiToken> {
-        self.state
-            .lock()
-            .unwrap()
+        self.iam_state()
             .directory
             .token(&ApiTokenId(id.to_string()))
             .cloned()
@@ -410,7 +422,7 @@ impl ManagementAuthz {
     /// restart). Idempotent like the engine; unknown id fails closed.
     fn revoke_token(&self, id: &str) -> Result<ApiToken, IamError> {
         let token_id = ApiTokenId(id.to_string());
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.iam_state();
         guard
             .directory
             .revoke(&token_id, Timestamp(rfc3339_at(self.clock.as_ref())))?;
@@ -545,9 +557,7 @@ impl ManagementAuthz {
     /// Registering the hierarchy grants nothing by itself; the PDP still evaluates
     /// the caller's bindings and remains default-deny.
     pub fn register_workspace(&self, workspace_id: &str) {
-        self.state
-            .lock()
-            .unwrap()
+        self.iam_state()
             .authz
             .policy_mut()
             .scope_graph_mut()

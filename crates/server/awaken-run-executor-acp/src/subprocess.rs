@@ -190,6 +190,10 @@ fn with_host_passthrough(
 /// Container launches must not call this function: their executable lookup and
 /// home belong to the image rather than the Worker host.
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+)]
 pub fn with_local_host_launch_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
     with_host_passthrough(env, HOST_PASSTHROUGH_ENV, |key| std::env::var(key).ok())
 }
@@ -197,6 +201,10 @@ pub fn with_local_host_launch_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVa
 /// Bind a backend-owned launch to the actual host user's platform identity.
 /// Resolver passthrough cannot replace an admitted identity coordinate.
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
+)]
 pub fn with_backend_owned_host_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
     with_backend_owned_host_environment_from(env, HostPlatform::current(), |key| {
         std::env::var(key).ok()

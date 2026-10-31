@@ -168,6 +168,10 @@ pub(super) fn is_postgres_url(value: &str) -> bool {
     lower.starts_with("postgres://") || lower.starts_with("postgresql://")
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the process composition root reads its host configuration from the environment"
+)]
 pub(super) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())

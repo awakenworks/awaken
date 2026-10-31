@@ -1,0 +1,62 @@
+# Rules the compiler holds instead of Python guards (plan v5 S1;
+# docs/design/guard-consolidation.md, "Retired rule -> replacement").
+#
+# `[workspace.lints.clippy]` sets disallowed_methods and disallowed_types to
+# warn. scripts/ci/check-rust.sh denies them in its production pass
+# (`--lib --bins -- -D warnings`) and allows them in its all-targets pass, so
+# tests may use std locks, clocks and the environment. A legitimate production
+# site states `#[expect(clippy::disallowed_methods, reason = "..")]` on its
+# item; no crate allows them wholesale.
+disallowed-methods = [
+  # R18 (P7, S5): a lock's poisoning is decided by its type, not at the call
+  # site. Only awaken-sync reads a std lock. docs/design/lock-poisoning.md.
+  { path = "std::sync::Mutex::lock", reason = "use awaken_sync::InvariantLock (refuses poison) or LeafLock (recovers it)" },
+  { path = "std::sync::Mutex::try_lock", reason = "use awaken_sync::InvariantLock or LeafLock" },
+  { path = "std::sync::Mutex::get_mut", reason = "use awaken_sync::InvariantLock or LeafLock" },
+  { path = "std::sync::Mutex::into_inner", reason = "use awaken_sync::InvariantLock or LeafLock" },
+  { path = "std::sync::RwLock::read", reason = "use awaken_sync::InvariantRwLock (refuses poison) or LeafRwLock (recovers it)" },
+  { path = "std::sync::RwLock::write", reason = "use awaken_sync::InvariantRwLock or LeafRwLock" },
+  { path = "std::sync::RwLock::try_read", reason = "use awaken_sync::InvariantRwLock or LeafRwLock" },
+  { path = "std::sync::RwLock::try_write", reason = "use awaken_sync::InvariantRwLock or LeafRwLock" },
+  { path = "std::sync::RwLock::get_mut", reason = "use awaken_sync::InvariantRwLock or LeafRwLock" },
+  { path = "std::sync::RwLock::into_inner", reason = "use awaken_sync::InvariantRwLock or LeafRwLock" },
+
+  # R13 (P3): time arrives through awaken_time's WallClock or mono instant.
+  { path = "std::time::SystemTime::now", reason = "take a WallClock at construction (awaken-time)" },
+  { path = "std::time::Instant::now", reason = "read monotonic time through awaken_time::mono" },
+  { path = "tokio::time::Instant::now", reason = "read monotonic time through awaken_time::mono" },
+  { path = "chrono::Utc::now", reason = "take a WallClock at construction (awaken-time)" },
+  { path = "chrono::Local::now", reason = "take a WallClock at construction (awaken-time)" },
+  { path = "time::OffsetDateTime::now_utc", reason = "take a WallClock at construction (awaken-time)" },
+
+  # R11 (ADR-0091 D6, ADR-0057): only composition roots read the process
+  # environment; everything else receives configuration.
+  { path = "std::env::var", reason = "only composition roots read the process environment" },
+  { path = "std::env::var_os", reason = "only composition roots read the process environment" },
+  { path = "std::env::vars", reason = "only composition roots read the process environment" },
+  { path = "std::env::vars_os", reason = "only composition roots read the process environment" },
+
+  # R10 (P2, ADR-0087): one pool policy per driver. SQLite pools are opened by
+  # awaken-sqlite-pool (EmbeddedSqlite), PostgreSQL pools by awaken-sql-storage.
+  { path = "sqlx::pool::PoolOptions::new", reason = "open SQLite through EmbeddedSqlite, PostgreSQL through awaken_sql_storage::postgres_pool_options" },
+  { path = "sqlx::pool::Pool::connect", reason = "open through the driver's pool owner" },
+  { path = "sqlx::pool::Pool::connect_with", reason = "open through the driver's pool owner" },
+  { path = "sqlx::pool::Pool::connect_lazy", reason = "open through the driver's pool owner" },
+  { path = "sqlx::pool::Pool::connect_lazy_with", reason = "open through the driver's pool owner" },
+  { path = "sqlx::pool::PoolOptions::after_connect", reason = "pool hooks belong to the pool owner" },
+  { path = "sqlx::pool::PoolOptions::before_acquire", reason = "pool hooks belong to the pool owner" },
+  { path = "sqlx::pool::PoolOptions::after_release", reason = "pool hooks belong to the pool owner" },
+  { path = "sqlx::pool::PoolOptions::test_before_acquire", reason = "pool hooks belong to the pool owner" },
+  # A raw connection outside a pool (the old `Mutex<SqliteConnection>` shape)
+  # can only be opened or detached through these.
+  { path = "sqlx::Connection::connect", reason = "reach the database through the driver's pool owner" },
+  { path = "sqlx::Connection::connect_with", reason = "reach the database through the driver's pool owner" },
+  { path = "sqlx::pool::PoolConnection::detach", reason = "a pooled connection stays under the pool's policy" },
+  { path = "sqlx::pool::PoolConnection::leak", reason = "a pooled connection stays under the pool's policy" },
+]
+disallowed-types = [
+  # R10: connect options belong to the SQLite pool owner (this also covers
+  # parsing them from a URL); embedded SQLite uses sqlx (ADR-0087).
+  { path = "sqlx::sqlite::SqliteConnectOptions", reason = "connect options belong to awaken-sqlite-pool" },
+  { path = "rusqlite::Connection", reason = "embedded SQLite uses sqlx through awaken-sqlite-pool (ADR-0087)" },
+]
