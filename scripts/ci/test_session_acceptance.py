@@ -41,7 +41,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     ".gitattributes",
     "Cargo.toml", "Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml",
     "docs/design/session-execution-test-acceptance/**", "scripts/ci/*.py", "scripts/ci/*.json",
-    "examples/**", "e2e/**", "rust-toolchain.toml",
+    "examples/**", "e2e/**", "rust-toolchain.toml", ".cargo/**", "scripts/ci/*.sh", "packages/managed-sdk-oracle/package.json",
 )
 SHARED_CONTRACT = "crates/contract/awaken-provisioning-contract/src/lib.rs"
 OWNED_STATE_FILE = "crates/server/awaken-protocol-managed/src/lib.rs"

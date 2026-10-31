@@ -53,10 +53,10 @@ pre-commit:
     # refused by check_test_orchestration.py, because a trigger narrower than
     # the checker's real input set is a gate that never runs when it matters.
     hook-globs:
-      # >>> generated glob from generate_hooks.py INPUT_GLOBS — do not edit
+      # >>> generated glob from _input_closure.py, generate_hooks.py INPUT_GLOBS — do not edit
       glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/check-rust.sh}"
       # <<< generated glob
-      run: python3 scripts/ci/generate_hooks.py --check
+      run: python3 scripts/ci/generate_hooks.py --check && python3 scripts/ci/_input_closure.py --self-test
 
     hook-bootstrap:
       # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
@@ -96,7 +96,7 @@ pre-commit:
     # The existing formal-surface L4 test owns that decision table.
     formal-evidence:
       # >>> generated glob from check_formal_surface.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_formal_surface.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_arch_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_formal_surface.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_anchors.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
       # <<< generated glob
       run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
 
@@ -107,7 +107,7 @@ pre-commit:
     # ones that already exist; a staged debt HEAD does not carry is refused.
     proof-input-derivation:
       # >>> generated glob from check_proof_input_derivation.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/coverage.toml,formal/obligations/**/*,formal/proof-input-exceptions.json,scripts/ci/check_proof_input_derivation.py,scripts/ci/formal_ledger.py,web/src/**/*}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/coverage.toml,formal/obligations/**/*,formal/proof-input-exceptions.json,scripts/ci/_arch_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_proof_input_derivation.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_anchors.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
       # <<< generated glob
       run: python3 scripts/ci/check_proof_input_derivation.py --staged {staged_files}
 
@@ -157,12 +157,27 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_test_inventory.py
 
+    # 3b'. A trait default that degrades silently, and a verification gate
+    #      that passes because its dependency was absent, are refused at commit
+    #      as well as in the full gate.
+    degrading-defaults:
+      # >>> generated glob from check_degrading_defaults.py INPUT_GLOBS — do not edit
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_arch_fitness.py,scripts/ci/_architecture_ratchet.py,scripts/ci/_contract_map_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_naming_fitness.py,scripts/ci/_single_owner_fitness.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py
+
+    dependency-gates:
+      # >>> generated glob from check_dependency_gates.py INPUT_GLOBS — do not edit
+      glob: "{crates/**,e2e/**,scripts/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_dependency_gates.py --self-test && python3 scripts/ci/check_dependency_gates.py
+
     # The Session acceptance ledger's gate tests drive the real workspace
     # guards, impact planner and ledger validator with injected
     # counter-examples; a change to what they read re-proves the refusals.
     session-acceptance-gates:
       # >>> generated glob from test_session_acceptance.py INPUT_GLOBS — do not edit
-      glob: "{.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py}"
+      glob: "{.cargo/**,.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,packages/managed-sdk-oracle/package.json,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py,scripts/ci/*.sh}"
       # <<< generated glob
       run: python3 scripts/ci/test_session_acceptance.py
 
@@ -170,13 +185,13 @@ pre-commit:
     # cannot reject a newly introduced wait in a production test suite.
     test-orchestration:
       # >>> generated glob from check_test_orchestration.py INPUT_GLOBS — do not edit
-      glob: "{.config/**,.github/workflows/*.yml,crates/**,e2e/**,lefthook.yml,pnpm-lock.yaml,scripts/ci/**}"
+      glob: "{.config/**,.github/workflows/*.yml,crates/**,e2e/**,lefthook.yml,pnpm-lock.yaml,scripts/ci/**,scripts/e2e/*.sh}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_orchestration.py --self-test && python3 scripts/ci/check_test_orchestration.py
 
     affected-rust-plan:
       # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/modularity_baseline.json,scripts/ci/test_inventory.txt,tests/**,xtask/**}"
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
       # <<< generated glob
       run: python3 scripts/ci/rust_test_plan.py --self-test
 
@@ -184,7 +199,7 @@ pre-commit:
     # Ordinary Rust edits still run the impact planner and every live gate.
     rust-execution-framework:
       # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,scripts/e2e/sandbox_capability_suite.sh}"
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/e2e/sandbox_capability_suite.sh}"
       # <<< generated glob
       run: python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test
 
@@ -194,7 +209,7 @@ pre-commit:
     #     thing the rule is about, and the trigger follows the same declaration.
     observation-collapse:
       # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/Cargo.toml,crates/**/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_observation_collapse.py}"
+      glob: "{crates/**/Cargo.toml,crates/**/src/**/*.rs,scripts/ci/_arch_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_observation_collapse.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_observation_collapse.py
 
@@ -231,7 +246,7 @@ pre-commit:
     #    that stopped describing reality fails here rather than inside a proof.
     gate-tools:
       # >>> generated glob from gate_tools.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_provider_environment.sh,scripts/ci/check-all.sh,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py}"
+      glob: "{e2e/package.json,package.json,pnpm-workspace.yaml,scripts/ci/*.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,web/package.json}"
       # <<< generated glob
       run: python3 scripts/ci/gate_tools.py --self-test
 
@@ -240,7 +255,7 @@ pre-commit:
     #    anyone runs the reclaimer with --apply.
     reclaim-build-space:
       # >>> generated glob from reclaim_build_space.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
+      glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
       # <<< generated glob
       run: python3 scripts/ci/reclaim_build_space.py --self-test
 
@@ -257,7 +272,7 @@ pre-commit:
     #    over the whole set of entry points, so a new checker inherits it.
     gate-arguments:
       # >>> generated glob from check_gate_arguments.py, guards.py INPUT_GLOBS — do not edit
-      glob: "{CONTRIBUTING.md,deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
+      glob: "{CONTRIBUTING.md,deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/contract/*.py,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
       # <<< generated glob
       run: python3 scripts/ci/check_gate_arguments.py && python3 scripts/ci/guards.py --self-test
 
@@ -266,7 +281,7 @@ pre-commit:
     #    lane kept mutating the old path; nothing ran until hours later.
     gate-path-references:
       # >>> generated glob from check_gate_path_references.py INPUT_GLOBS — do not edit
-      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/check_gate_path_references.py,scripts/ci/formal_sources.py}"
+      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/_arch_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_gate_path_references.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_sources.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
 
@@ -276,7 +291,7 @@ pre-commit:
     #    a requirement. Every executable is selected or registered with a reason.
     lane-reachability:
       # >>> generated glob from check_lane_reachability.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,deploy/**/*,e2e/**/*,formal/coverage.toml,formal/obligations/**/*,lefthook.yml,scripts/**/*,web/src/**/*}"
+      glob: "{.github/workflows/*.yml,contracts/**,crates/**/*.rs,crates/**/Cargo.toml,deploy/**/*,e2e/**/*,formal/coverage.toml,formal/obligations/**/*,lefthook.yml,package.json,packages/**,scripts/**/*,web/scripts/**,web/src/**/*}"
       # <<< generated glob
       run: python3 scripts/ci/check_lane_reachability.py
 
@@ -285,7 +300,7 @@ pre-commit:
     #    run. Staleness is a schedule and is reported by check-all, not here.
     gate-freshness:
       # >>> generated glob from check_gate_freshness.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json}"
+      glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_gate_freshness.py --self-test
 
@@ -299,7 +314,7 @@ pre-commit:
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
       # >>> generated glob from check_sdk_consumer.py, check_trust_roots.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/*.py,scripts/ci/check-rust.sh,scripts/ci/check_trust_roots.py,scripts/ci/modularity_baseline.json,scripts/ci/test_inventory.txt,tests/**,xtask/**}"
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
       # <<< generated glob
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
 
@@ -310,7 +325,7 @@ pre-commit:
     # carries the owner and expiry that stop it becoming permanent.
     fabricated-facts:
       # >>> generated glob from check_fabricated_facts.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_arch_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
       # <<< generated glob
       run: python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py
 
@@ -319,7 +334,7 @@ pre-commit:
     # defaults (ADR-0081). Module line measurements are diagnostic (ADR-0091 D8).
     contract-shape:
       # >>> generated glob from check_contract_shape.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_architecture_ratchet.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
+      glob: "{Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_arch_fitness.py,scripts/ci/_architecture_ratchet.py,scripts/ci/_contract_map_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_naming_fitness.py,scripts/ci/_single_owner_fitness.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
       # <<< generated glob
       # A fall is recorded here, by the tool, and staged with the commit that
       # achieved it; only growth needs a person (--write-baseline --reason).
@@ -350,7 +365,7 @@ pre-commit:
     # when the types, the baseline, or the oracle change.
     managed-wire-naming:
       # >>> generated glob from check_managed_wire_naming.py INPUT_GLOBS — do not edit
-      glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/contracts/wire-naming-baseline.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,lefthook.yml,scripts/ci/*.py}"
+      glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py
 
@@ -366,19 +381,19 @@ pre-commit:
     # full CI uses the same owner through check-all.sh's static lane.
     command-deadline:
       # >>> generated glob from test_deadline.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
+      glob: "{scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
       # <<< generated glob
       run: python3 scripts/ci/test_deadline.py
 
     native-service-runner:
       # >>> generated glob from test_native_services.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
       # <<< generated glob
       run: python3 scripts/ci/test_native_services.py
 
     native-recovery-laws:
       # >>> generated glob from test_native_recovery.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+      glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
       # <<< generated glob
       run: python3 scripts/ci/test_native_recovery.py
 
@@ -390,7 +405,7 @@ pre-commit:
 
     postgres-storage-selection:
       # >>> generated glob from _postgres_phase_plan.py, test_postgres_storage.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**,scripts/ci/pg_tests.sh}"
+      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
       # <<< generated glob
       run: python3 scripts/ci/_postgres_phase_plan.py --self-test && python3 scripts/ci/test_postgres_storage.py
 
@@ -408,7 +423,7 @@ pre-commit:
 
     full-gate-admission:
       # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_deadline.sh,scripts/ci/check-all.sh,scripts/ci/deadline.py,scripts/ci/test_full_gate_admission.py}"
+      glob: "{scripts/ci/_deadline.sh,scripts/ci/_strict_unittest.py,scripts/ci/check-all.sh,scripts/ci/deadline.py,scripts/ci/test_full_gate_admission.py}"
       # <<< generated glob
       # Existing host capability regressions remain separate from the source matrix.
       run: python3 scripts/ci/test_full_gate_admission.py
@@ -440,7 +455,7 @@ pre-commit:
     #    Status/Owner/Fact/Links/Verification, owner links that resolve.
     check-wiki-okf:
       # >>> generated glob from check_wiki_okf.py INPUT_GLOBS — do not edit
-      glob: "{docs/wiki/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_okf.py}"
+      glob: "{docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_okf.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_wiki_okf.py {staged_files}
 
@@ -448,7 +463,7 @@ pre-commit:
     #    not paste the invariant statement verbatim (drift guard).
     check-wiki-no-invariant-copy:
       # >>> generated glob from check_wiki_no_invariant_copy.py INPUT_GLOBS — do not edit
-      glob: "{docs/INVARIANTS.md,docs/wiki/*.md,scripts/ci/check_wiki_no_invariant_copy.py}"
+      glob: "{docs/INVARIANTS.md,docs/wiki/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_no_invariant_copy.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_wiki_no_invariant_copy.py {staged_files}
 
@@ -500,15 +515,18 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_architecture_vocabulary.py
 
-    # 14. Crate dependency direction (layering) fitness function: a lower layer
-    #    must not depend on a higher one (deny.toml; INVARIANTS G2/G18/G29).
-    #    Skips with a hint if cargo-deny is not installed.
+    # 14. Only the crates deny.toml lists as wrappers depend on a transport
+    #    crate (`reqwest`, `rustls`). Production graph only (`--exclude-dev`);
+    #    an unused wrapper is an error, so a stale exemption cannot stay.
+    #    cargo-deny reads Cargo metadata and builds nothing, so it is started
+    #    directly rather than through the host's build admission. Skips with a
+    #    hint if cargo-deny is not installed.
     check-dep-direction:
       glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
       # Fold to one shell command: Windows' hook launcher cannot carry the
       # nested double-quoted, multiline `sh -c` body intact.
       run: >-
-        if command -v cargo-deny >/dev/null 2>&1; then cargo deny --log-level error check bans;
+        if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans;
         else echo 'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'; fi
 
 commit-msg:

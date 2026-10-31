@@ -167,7 +167,7 @@ documentation with `python3 scripts/ci/guards.py explain duplicate-type`.
 The navigator reads source without executing checks or writing baselines;
 use `<guard>:<rule>` when two guards declare the same rule id.
 
-Architecture naming, single-owner, contract-map, modularity, module-layer and
+Architecture naming, single-owner, contract-map, modularity and
 contract shape share one CLI. Default/`--check` is read-only. `--tighten`
 records decreases in an existing baseline, refuses growth even alongside a
 decrease, and checks the guard's hard rules before writing. Explicit growth
@@ -183,9 +183,6 @@ Use each owning script:
   fall; raising a crate line ceiling or a long function's approved length needs
   `python3 scripts/ci/_modularity_fitness.py --write-baseline --reason '<JSON>'`
   (ADR-0091, 2026-10-31).
-- module-layer: `python3 scripts/ci/_module_layer_fitness.py --tighten`.
-  `python3 scripts/ci/_module_layer_fitness.py --report` prints the original
-  JSON measurements; it is a report, not a passing ratchet check.
 - architecture naming, single-owner and contract-map: their
   `_naming_fitness.py`, `_single_owner_fitness.py` and `_contract_map_fitness.py`
   scripts use the same check/tighten/reasoned-write modes.
@@ -193,10 +190,6 @@ Use each owning script:
   Default/`--check` is read-only. `--write-baseline` also refuses new unexempted
   waits, even with `--reason`; convert them to a durable wait or document the
   existing timing exemption first. Short source/allow reasons are hard errors.
-- Managed wire naming: `python3 scripts/ci/check_managed_wire_naming.py --tighten`
-  removes annotated or deleted debt. Default/`--check` is read-only; write modes,
-  including reasoned writes, refuse new unannotated types and inline hard errors.
-  Retained decisions keep their metadata. A first write permits zero debt only.
 - test inventory: `python3 scripts/ci/check_test_inventory.py --tighten` adds
   names or raises minimum occurrence counts while retaining held requirements.
   `--write-baseline` records the current multiset after the ledger check.

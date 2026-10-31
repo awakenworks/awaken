@@ -23,16 +23,13 @@ dependency edge come back, so three rules hold it:
 * D4 The Coordinator product binary (``awaken-coordinator``) is checked over
   the normal dependency closure of the package that declares it, because Cargo
   resolves dependencies per package: every target of that package links that
-  closure. Each Worker-side crate or the Session executor the closure reaches
-  must carry a reviewed transition in ``coordinator_binary_closure_baseline.json``
-  (a complete D10 review record); a new reach is refused, and a transition whose
-  crate is no longer reached must be removed with ``--tighten``. The binary is
-  declared by ``awaken-coordinator-process`` over the shared process startup
-  (``awaken-process-startup``), which links no Worker; the startup still
-  composes the executor-backed Coordinator execution and its Sandbox
-  observation (see
-  ``docs/design/runtime-interface-boundaries.md#coordinator-only-composition``);
-  the transitions record exactly what remains.
+  closure. The closure reaches no Worker-side crate and not the Session
+  executor; any reach is refused. The binary is declared by
+  ``awaken-coordinator-process`` over the shared process startup
+  (``awaken-process-startup``), which links no Worker (see
+  ``docs/design/runtime-interface-boundaries.md#coordinator-only-composition``).
+  The reviewed-transition baseline this rule held while the startup still
+  linked the executor reached zero and was removed (plan v5 S2).
 
 Why this is the correct check: the section 3.3 constraint -- no Worker-side
 implementation anywhere in the Coordinator's closure -- is a property of the
@@ -52,6 +49,7 @@ an enabled feature must not reopen the edge.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -59,7 +57,6 @@ import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-import _architecture_ratchet
 import _crate_boundary_workspace
 import _crate_dependency_fitness
 
@@ -77,12 +74,6 @@ SESSION_EXECUTOR = "awaken-session-executor"
 
 # The Coordinator product binary whose package closure D4 checks.
 COORDINATOR_BINARY = "awaken-coordinator"
-CLOSURE_BASELINE = Path(__file__).with_name("coordinator_binary_closure_baseline.json")
-CLOSURE_COMMENT = (
-    "Reviewed transitions of scripts/ci/_dispatch_boundary_fitness.py rule D4: each Worker-side crate the "
-    "awaken-coordinator binary's package still links, with its D10 review record. Shrink with --tighten; a new "
-    "entry needs --write-baseline --reason '<JSON review record>'."
-)
 
 Specs = Mapping[str, _crate_dependency_fitness.CrateSpec]
 
@@ -168,36 +159,21 @@ def coordinator_binary_reach(specs: Specs, package: str) -> list[str]:
     )
 
 
-def coordinator_binary_errors(package: str | None, reached: Iterable[str],
-                              transitions: Mapping[str, object]) -> list[str]:
+def coordinator_binary_errors(package: str | None, reached: Iterable[str]) -> list[str]:
     """Violations of D4.
 
     Cause/effect graph: C1 no single package declares the binary; C2 the
-    package reaches a crate with no transition; C3 a transition names a crate
-    the package no longer reaches; C4 a transition lacks a complete review
-    record. E1 accept when none holds; E2 reject naming the crate and the fix.
+    package reaches a Worker-side crate or the executor. E1 accept when
+    neither holds; E2 reject naming the crate.
     """
     if package is None:
         return [f"dispatch-boundary: no single package declares the {COORDINATOR_BINARY} binary, so its "
                 "closure cannot be checked (D4)"]
-    reached = set(reached)
-    errors = [
-        f"dispatch-boundary: the {COORDINATOR_BINARY} binary's package {package} reaches {name} with no "
-        f"reviewed transition in {CLOSURE_BASELINE.name}; compose the Coordinator without it (D4)"
-        for name in sorted(reached - set(transitions))
+    return [
+        f"dispatch-boundary: the {COORDINATOR_BINARY} binary's package {package} reaches {name}; "
+        "compose the Coordinator without it (D4)"
+        for name in sorted(set(reached))
     ]
-    errors += [
-        f"dispatch-boundary: {CLOSURE_BASELINE.name} names {name}, which {package} no longer reaches; "
-        "remove it with `python3 scripts/ci/_dispatch_boundary_fitness.py --tighten` (D4)"
-        for name in sorted(set(transitions) - reached)
-    ]
-    for name, record in sorted(transitions.items()):
-        try:
-            _architecture_ratchet.validate_growth_reason(json.dumps(record))
-        except ValueError:
-            errors.append(f"dispatch-boundary: the {name} transition in {CLOSURE_BASELINE.name} needs a "
-                          "complete review record: reason, approved_by, date, remove_when (D4)")
-    return errors
 
 
 def workspace_binaries() -> dict[str, list[str]]:
@@ -211,42 +187,10 @@ def workspace_binaries() -> dict[str, list[str]]:
     return binaries
 
 
-def _measure_coordinator_binary() -> tuple[list[str], tuple[str | None, list[str]]]:
+def check_coordinator_binary() -> list[str]:
     specs = {spec.name: spec for spec in _crate_boundary_workspace.dependency_fitness_specs()}
     package = binary_package(workspace_binaries(), COORDINATOR_BINARY)
-    reached = coordinator_binary_reach(specs, package) if package else []
-    return [], (package, reached)
-
-
-def _transitions(document: Mapping) -> dict[str, object]:
-    return dict(document.get("transitions", {}))
-
-
-def _check_closure(measured: tuple[str | None, list[str]], document: Mapping) -> list[str]:
-    return coordinator_binary_errors(*measured, _transitions(document))
-
-
-def _tighten_closure(measured: tuple[str | None, list[str]], document: Mapping) -> dict:
-    _, reached = measured
-    kept = {name: record for name, record in _transitions(document).items() if name in reached}
-    return {"$comment": CLOSURE_COMMENT, "transitions": dict(sorted(kept.items()))}
-
-
-def _write_closure(measured: tuple[str | None, list[str]], document: Mapping,
-                   reason: str | None) -> tuple[dict, list[str]]:
-    _, reached = measured
-    held = _transitions(document)
-    grown = [name for name in reached if name not in held]
-    record = json.loads(reason) if reason else None
-    transitions = {name: held.get(name, record) for name in reached if name in held or record is not None}
-    return {"$comment": CLOSURE_COMMENT, "transitions": dict(sorted(transitions.items()))}, grown
-
-
-def check_coordinator_binary() -> list[str]:
-    if not CLOSURE_BASELINE.exists():
-        return [f"dispatch-boundary: {CLOSURE_BASELINE.name} is missing; restore it (D4)"]
-    _, measured = _measure_coordinator_binary()
-    return _check_closure(measured, json.loads(CLOSURE_BASELINE.read_text(encoding="utf-8")))
+    return coordinator_binary_errors(package, coordinator_binary_reach(specs, package) if package else [])
 
 
 def _specs(rows: Iterable[tuple[str, str, str, set[str]]]) -> dict[str, _crate_dependency_fitness.CrateSpec]:
@@ -275,10 +219,8 @@ def selftest() -> None:
     | B6 | the Coordinator depends on a Worker-side crate directly      | reject D3 |
     | B7 | the Coordinator reaches the executor, through a library      | reject D3 |
     | B8 | the Coordinator depends on the realization directly; its contract stays reachable | reject D3 naming only the realization |
-    | B9 | the Coordinator binary's package reaches the executor through a Worker composition root, both with reviewed transitions | accept |
-    | B10 | that package reaches a Worker-side crate without a transition | reject D4 naming the crate |
-    | B11 | a transition names a crate the package no longer reaches | reject D4: tighten |
-    | B12 | a transition carries no complete review record | reject D4 |
+    | B9 | the Coordinator binary's package reaches no Worker-side crate | accept |
+    | B10 | that package reaches the executor through a Worker composition root | reject D4 naming each crate |
     | B13 | no package, or two packages, declare the binary | reject D4 |
     | B14 | the Coordinator crate depends on a Worker composition root | reject D3 |
     """
@@ -329,47 +271,29 @@ def selftest() -> None:
         "Coordinator composes dispatch and consumes the executor through the "
         "execution ports its composition root selects (D3)"
     ], "B14"
-    # D4 completion table: C1 an existing single binary owner; C2 zero or
-    # one Worker-side reach; C3 an empty transition map. E1=C1+!C2+C3 accepts
-    # a closed composition. E2=C1+C2+C3 refuses the exact crate: empty means
-    # no Worker implementation, never an uninitialized/disabled guard.
-    assert coordinator_binary_errors("awaken-coordinator-process", [], {}) == [], "B15 closed empty baseline"
+    # D4: C1 an existing single binary owner; C2 a Worker-side reach.
+    # E1=C1+!C2 accepts a closed composition; E2=C1+C2 refuses each crate.
+    assert coordinator_binary_errors("awaken-coordinator-process", []) == [], "B9 closed composition"
     for name in ["awaken-session-executor", "awaken-session-realization", "awaken-credential-materializer"]:
-        errors = coordinator_binary_errors("awaken-coordinator-process", [name], {})
-        assert len(errors) == 1 and name in errors[0] and "no reviewed transition" in errors[0], "B16 no reopened reach"
-    record = {"reason": "fixture", "approved_by": "fixture-reviewer", "date": "2026-10-24",
-              "remove_when": "fixture completes"}
+        errors = coordinator_binary_errors("awaken-coordinator-process", [name])
+        assert len(errors) == 1 and name in errors[0], "B10 no reopened reach"
     product = _specs(base + [("awaken-cli", "apps", "bootstrap", {"awaken-coordinator", "awaken-worker"})])
-    assert dispatch_boundary_errors(product) == [], "B9 the binary's package is outside D1-D3"
+    assert dispatch_boundary_errors(product) == [], "B10 the binary's package is outside D1-D3"
     reached = coordinator_binary_reach(product, "awaken-cli")
-    assert reached == ["awaken-session-executor", "awaken-worker"], f"B9 reach {reached}"
-    assert coordinator_binary_errors("awaken-cli", reached, {name: record for name in reached}) == [], "B9"
-    b10 = coordinator_binary_errors("awaken-cli", reached, {"awaken-worker": record})
-    assert b10 == [
-        "dispatch-boundary: the awaken-coordinator binary's package awaken-cli reaches "
-        "awaken-session-executor with no reviewed transition in coordinator_binary_closure_baseline.json; "
-        "compose the Coordinator without it (D4)"
+    assert reached == ["awaken-session-executor", "awaken-worker"], f"B10 reach {reached}"
+    assert coordinator_binary_errors("awaken-cli", reached) == [
+        "dispatch-boundary: the awaken-coordinator binary's package awaken-cli reaches awaken-session-executor; "
+        "compose the Coordinator without it (D4)",
+        "dispatch-boundary: the awaken-coordinator binary's package awaken-cli reaches awaken-worker; "
+        "compose the Coordinator without it (D4)",
     ], "B10"
-    b11 = coordinator_binary_errors("awaken-cli", ["awaken-worker"],
-                                    {"awaken-worker": record, "awaken-session-executor": record})
-    assert len(b11) == 1 and "no longer reaches" in b11[0] and "--tighten" in b11[0], "B11"
-    b12 = coordinator_binary_errors("awaken-cli", ["awaken-worker"],
-                                    {"awaken-worker": {**record, "approved_by": ""}})
-    assert len(b12) == 1 and "complete review record" in b12[0], "B12"
     assert binary_package({"awaken-cli": ["awaken", "awaken-coordinator"], "awaken-worker": ["awaken-worker"]},
                           "awaken-coordinator") == "awaken-cli", "B13 single owner"
     for binaries in ({"awaken-cli": ["awaken"]},
                      {"awaken-cli": ["awaken-coordinator"], "other": ["awaken-coordinator"]}):
         package = binary_package(binaries, "awaken-coordinator")
         assert package is None, "B13"
-        assert "no single package" in coordinator_binary_errors(package, [], {})[0], "B13"
-    held = {"$comment": CLOSURE_COMMENT, "transitions": {"awaken-worker": record, "awaken-session-executor": record}}
-    assert _tighten_closure(("awaken-cli", ["awaken-worker"]), held)["transitions"] == {"awaken-worker": record}, \
-        "B11 tighten drops only the unreached transition"
-    written, grown = _write_closure(("awaken-cli", ["awaken-sandbox-local", "awaken-worker"]),
-                                    {"transitions": {"awaken-worker": record}}, json.dumps({**record, "reason": "new"}))
-    assert grown == ["awaken-sandbox-local"] and written["transitions"]["awaken-worker"] == record \
-        and written["transitions"]["awaken-sandbox-local"]["reason"] == "new", "B10 growth keeps held records"
+        assert "no single package" in coordinator_binary_errors(package, [])[0], "B13"
 
 
 ACP_EXECUTOR = "awaken-run-executor-acp"
@@ -482,17 +406,26 @@ def check_all() -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    """``--self-test`` runs the decision table; the D4 transitions use the shared baseline CLI."""
-    if len(argv) == 2 and argv[0] == "--check-acp-product-features":
-        return check_acp_product_features(argv[1])
-    if argv == ["--self-test"]:
+    """No argument checks D1-D4; ``--self-test`` runs the decision table."""
+    parser = argparse.ArgumentParser(prog=Path(__file__).name, description=__doc__, allow_abbrev=False,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--self-test", action="store_true", help="run the decision table")
+    modes.add_argument("--check-acp-product-features", metavar="PACKAGE",
+                       help="build PACKAGE and refuse ACP implementation features in it")
+    arguments = parser.parse_args(argv)
+    if arguments.check_acp_product_features:
+        return check_acp_product_features(arguments.check_acp_product_features)
+    if arguments.self_test:
         selftest()
         print("_dispatch_boundary_fitness selftest: the decision table holds")
         return 0
-    return _architecture_ratchet.baseline_cli(
-        argv, prog=Path(__file__).name, description=__doc__, baseline_path=CLOSURE_BASELINE,
-        self_test=selftest, measure=_measure_coordinator_binary, check=_check_closure,
-        tighten=_tighten_closure, write=_write_closure)
+    errors = check_all()
+    for error in errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    if not errors:
+        print("OK - the dispatch hand-off and the Coordinator binary link no Worker-side crate.")
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

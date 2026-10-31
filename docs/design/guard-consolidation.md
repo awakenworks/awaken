@@ -1,8 +1,10 @@
 # Guard consolidation
 
-Plan v5 item V1, phase 1: an inventory of every CI script, the enforcement
-each architecture rule should move to under constraint S1, and the order of
-the moves. Nothing is deleted or converted by this document.
+Plan v5 item V1: an inventory of every CI script, the enforcement each
+architecture rule should move to under constraint S1, and the order of the
+moves. Phase 1 wrote the inventory; phase 2 carried out the steps that need no
+compile (M1, M2, M7 in part); see [Phase 2 outcome](#phase-2-outcome). The
+inventory tables below are the phase-1 snapshot.
 
 Numbers come from commands (S3):
 
@@ -34,20 +36,30 @@ as constants inside modules (for example 404 `ModelBinding::new` producers and
 `_cancel_safety_fitness.py`); they are listed in the inventory column
 "Baseline" as `inline`.
 
+## Decision: optional dependencies are reported, not violations
+
+User decision, 2026-10-31: `Option<Arc<dyn ..>>` is not a P5 violation. Most
+of these fields are dependencies a deployment may leave out (a store, a
+notifier, an observer), and an `Option` states that honestly.
+`principle_status.py` reports them in an informational row with no target
+(645 in production code; 620 in the plain `Option<Arc<dyn` spelling). V3
+changes only the sites that are roles chosen per deployment, which become
+required at construction or a closed enum. The P5 optional-role row
+(`Option<&dyn ..>`, `Option<&'a dyn ..>`, and `Option<&(dyn ..)>`) keeps its
+target of zero. Both patterns match across line breaks.
+
 ## Guards that do not run, or run on less than their input
 
 | Finding | Evidence | Effect |
 |---|---|---|
-| `k8s_namespace_late_create_negative_control.py` never runs | no reference anywhere; mode 664, so lane reachability (executables only) does not see it | a negative control nothing executes |
-| pre-commit `check-dep-direction` checks nothing | `deny.toml` `[bans]` denies no crate and allows multiple versions and wildcards | `cargo deny check bans` always passes |
-| `_module_layer_fitness.py` has no input | every module in `LAYERS` is `host`; the realization already left the crate | `upward-edge` and `shared-host-impl` cannot fire |
-| triggers narrower than reads | a checker run under a Python `open` audit hook read files its `INPUT_GLOBS` does not match: `check_lane_reachability` (`.github/workflows`, `packages/**`), `check_wiki_okf` (ADR and design pages), `check_gate_arguments` (`scripts/contract/*.py`), `check_test_orchestration` (`scripts/e2e/k8s_container_e2e.sh`), `check_contract_shape` (root `Cargo.toml`), and four checkers through imported helpers | such a change skips the pre-commit run; the full gate still runs them |
-| one side of the gate only | `check_degrading_defaults` and `check_dependency_gates` run only in the full gate; `check_test_inventory` runs only at pre-commit | a commit made without hooks is never inventory-checked |
-| guard false positive | `_poisoned_lock_fitness` scans the string-blanked projection, so `store.read("path").unwrap()` reads as a lock (`awaken-run-executor-acp` `session_home.rs`, outside its two crates today); `check_gate_arguments` stops reading a parser call at its first `)` | wrong reports, none live |
-
-`_input_closure.py` already holds `check_crate_boundaries.py` to its
-`INPUT_GLOBS`; applying it to every checker that declares `INPUT_GLOBS`
-removes the third row (migration step M7).
+| Finding | Evidence | Effect | Phase 2 outcome |
+|---|---|---|---|
+| `k8s_namespace_late_create_negative_control.py` never runs | no reference anywhere; mode 664, so lane reachability (executables only) does not see it | a negative control nothing executes | guards a real rule (ADR-0078, amendment 2026-10-06); executable and run by `scripts/e2e/k8s_container_e2e.sh` (the `kubernetes` group) for all 13 Kind/scenario rows; all 13 passed on a disposable k3d cluster |
+| pre-commit `check-dep-direction` checks nothing | `deny.toml` `[bans]` denies no crate and allows multiple versions and wildcards | `cargo deny check bans` always passes | runs R6 (below) |
+| `_module_layer_fitness.py` has no input | every module in `LAYERS` is `host`; the realization already left the crate | `upward-edge` and `shared-host-impl` cannot fire | deleted (R1) |
+| triggers narrower than reads | a checker run under a Python `open` audit hook read files its `INPUT_GLOBS` does not match: `check_lane_reachability` (`.github/workflows`, `packages/**`), `check_wiki_okf` (ADR and design pages), `check_gate_arguments` (`scripts/contract/*.py`), `check_test_orchestration` (`scripts/e2e/k8s_container_e2e.sh`), `check_contract_shape` (root `Cargo.toml`), and four checkers through imported helpers | such a change skips the pre-commit run; the full gate still runs them | fixed; the class is now held for every hooked checker (see [Input closure](#input-closure)) |
+| one side of the gate only | `check_degrading_defaults` and `check_dependency_gates` run only in the full gate; `check_test_inventory` runs only at pre-commit | a commit made without hooks is never inventory-checked | both sides: the first two declare `INPUT_GLOBS` and have pre-commit commands (2 s and 4 s); `check_test_inventory` runs in the static group |
+| guard false positive | `_poisoned_lock_fitness` scans the string-blanked projection, so `store.read("path").unwrap()` reads as a lock (`awaken-run-executor-acp` `session_home.rs`, outside its two crates today); `check_gate_arguments` stops reading a parser call at its first `)` | wrong reports, none live | both fixed, each with a decision-table row (P10; C6/C7 nested call). The lock fix is one line in V2's guard, which still exists on main |
 
 ## Inventory: architecture guards
 
@@ -376,16 +388,16 @@ not its constructor, also covers parsing it from a string.
 Each step lands as its own commits and is checked on its own. Steps marked
 "compile" need one of the integrator's build slots.
 
-| Step | Content | Verified by | Compile |
-|---|---|---|---|
-| M0 | this inventory; `principle_status.py` | `principle_status.py --self-test`, `check-docs.sh` | no |
-| M1 | R1–R5; decide the k8s negative control (wire it into the opt-in k3d lane, or register it, or delete it) | `check_crate_boundaries.py`, `check_lane_reachability.py`, `principle_status.py --guards` | no |
-| M2 | R6, R7 | `cargo deny check bans` (Cargo metadata only) | no |
-| M3 | `[lints] workspace = true` in the 9 crates without it; R8, R9 | both clippy passes `-D warnings` | yes |
-| M4 | `clippy.toml`; the two-pass `check-rust.sh`; R10–R14 with owner `#[expect]`s | both clippy passes; `check_crate_boundaries.py` | yes |
-| M5 | R15–R17, with V3/V4 | workspace build and tests | yes |
-| M6 | R18, R19, with V2 | both clippy passes; the V2 decision table | yes |
-| M7 | the merges above and R20; `_input_closure` for every `INPUT_GLOBS` checker | each guard's `--self-test`; `check_crate_boundaries.py` | no |
+| Step | Content | Verified by | Compile | Status |
+|---|---|---|---|---|
+| M0 | this inventory; `principle_status.py` | `principle_status.py --self-test`, `check-docs.sh` | no | done |
+| M1 | R1–R5; decide the k8s negative control (wire it into the opt-in k3d lane, or register it, or delete it) | `check_crate_boundaries.py`, `check_lane_reachability.py`, `principle_status.py --guards` | no | done |
+| M2 | R6, R7 | `cargo deny check bans` (Cargo metadata only) | no | done |
+| M3 | `[lints] workspace = true` in the 9 crates without it; R8, R9 | both clippy passes `-D warnings` | yes | open |
+| M4 | `clippy.toml`; the two-pass `check-rust.sh`; R10–R14 with owner `#[expect]`s | both clippy passes; `check_crate_boundaries.py` | yes | open |
+| M5 | R15–R17, with V3/V4 | workspace build and tests | yes | open |
+| M6 | R18, R19, with V2 | both clippy passes; the V2 decision table | yes | open |
+| M7 | the merges above and R20; `_input_closure` for every `INPUT_GLOBS` checker | each guard's `--self-test`; `check_crate_boundaries.py` | no | input closure done; merges in part (see outcome) |
 
 ## Expected reductions
 
@@ -399,3 +411,93 @@ Each step lands as its own commits and is checked on its own. Steps marked
 The architecture-guard share falls from about 25,400 lines (classes a, b, c
 and helpers) to about 22,400. Most of the 74,000 lines are tools; S1 does not
 reduce them.
+
+## Phase 2 outcome
+
+Base `1221f70561`. Each retired rule keeps exactly one replacement; where the
+replacement differs from the rule it replaces, the difference is stated.
+
+| Measure (`principle_status.py --guards`) | Base | After phase 2 |
+|---|---:|---:|
+| Python scripts (entry / module / test) | 191 (102 / 63 / 26) | 189 (102 / 61 / 26) |
+| Python lines | 75,778 | 75,125 |
+| baseline files under `scripts/ci` / entries | 12 / 947 | 10 / 947 |
+
+The entry count is unchanged because the retired baselines held only empty
+rule keys; `wire-naming-baseline.json` (outside `scripts/ci`) is gone too.
+
+| # | Done | Evidence | Difference found |
+|---|---|---|---|
+| R1 | `_module_layer_fitness.py` and its baseline deleted; `_single_owner_fitness` lost its `in_extracting_realization` exemption, which could no longer fire | `--report` printed `{"upward-edges": {}, "shared-host-impl": {}}`; every `LAYERS` row was `host` | none |
+| R2 | `_runtime_secret_boundary.py` deleted; `_naming_fitness` hard rule `sdk-secret-vocabulary` refuses an SDK crate (product `sdk`) naming `SecretHandle`, `SecretResolver`, `SecretStore`, `CredentialBinding` or `SecretRef` | the three live types are declared only in `awaken-credential-vault` (Platform); `sdk-standalone` is at 0, so no SDK crate can import them | the old scan read raw text, comments and tests included; the rule now reads production identifiers, like every naming rule |
+| R3 | `check_sdk_tier_is_standalone` and its allowlist deleted | every `context = "runtime"` crate is product `sdk`; `sdk-standalone` (SDK→SDK only) plus the context direction (runtime→shared/runtime only) refuse every edge the aggregator refused | the aggregator also asked for review of a new SDK-product shared infrastructure crate; that set is empty, and adding one is now reviewed as its `product = "sdk"` placement |
+| R4 | `_realization_error_fitness` rule R1 removed | `awaken-session-executor` depends on `awaken-session-realization`, so Cargo refuses the reverse edge | a local type reusing the executor's error name is not refused (none exists) |
+| R5 | plain denies, no baseline: `coordinator_binary_closure_baseline.json`, `module_layer_baseline.json` and `wire-naming-baseline.json` deleted; the zero keys of `bounded_context` (3), `fabricated_facts` (3) and `single_owner` (1) removed | `_architecture_ratchet.Rule(hard=True)` refuses any occurrence and any baseline record (B7); `_bounded_context_fitness.HARD_RULES` (B15); `check_fabricated_facts.HARD_RULES`; D4 and the wire citation rules lost their baseline CLIs | none; chosen over deletion because each rule still guards live code |
+| R6 | `deny.toml` `[bans]` denies `reqwest` and `rustls` except from listed wrappers (8 first-party, each with its reason, and the third-party clients); `check_no_direct_transport_dependency` keeps only the bare-constructor rule | `cargo-deny --exclude-dev check -D unused-wrapper bans`: `bans ok`; dropping `awaken-control` from the wrappers fails with `crate 'reqwest = 0.12.28' is explicitly banned`; an unmatched wrapper fails `unused-wrapper` (the stale-exemption rule) | wider: third-party direct parents are listed too, so a new library that builds its own client is reviewed. `--exclude-dev` replaces the old normal-dependency filter; advisories still cover dev-dependencies (separate `check advisories` run) |
+| R7 | `check-dep-direction` runs R6 through the `cargo-deny` binary, which reads Cargo metadata and builds nothing | same command | `cargo deny` through the host's cargo wrapper queued behind the build lane for over 5 minutes; the binary itself took 30 s to 3.5 min (metadata lock) |
+
+### Input closure
+
+A hook trigger is now one value, `generate_hooks.trigger_patterns`: the
+checker's `INPUT_GLOBS`, its own path, and every `scripts/ci` module it
+imports, transitively (lazy imports included). `generate_hooks.py` renders it;
+`python3 scripts/ci/_input_closure.py` (full gate, static group) runs every
+pre-commit Python invocation in its own interpreter under the `open` audit hook
+and fails on a read outside that trigger. `{staged_files}` is replaced by every
+tracked file the trigger matches and write flags are dropped. This replaced
+the in-process confinement `check_crate_boundaries.py` alone carried. It found
+and fixed: `check_lane_reachability`, `check_wiki_okf`, `check_gate_arguments`,
+`check_test_orchestration`, `check_contract_shape` (as phase 1 found), plus
+`gate_tools` (Node manifests, gate shell scripts), `test_session_acceptance`
+(gate scripts, `.cargo`, the SDK oracle manifest) and `test_native_services` /
+`test_native_recovery` (the acceptance ledger read by an imported test). Helper
+imports are now part of every trigger, so the "four checkers through imported
+helpers" row closes by construction. A tool's own reads are outside any audit
+hook; only `cargo` and `git` have `TOOL_INPUTS` rows.
+
+### Hook git environment
+
+A pre-commit hook exports `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` for
+the commit in progress. A self-test fixture that runs `git init` or another
+write while inheriting them acts on that repository: the first version of the
+input-closure fixture set `core.bare = true` in the shared config and stopped
+every worktree (2026-10-31, repaired by hand). Every `scripts/ci` self-test
+that writes with git was then run with those three variables exported to a
+sentinel repository; two changed it (`test_changed_e2e_line_coverage.py`
+wrote its user config and a commit there, `commit.sh --self-test` a commit) and now drop
+`GIT_*` first, like the rest already did. `_input_closure.py` rows A5 prove
+its fixture leaves an exported outer repository byte-identical.
+
+### Merges
+
+| Merge | Done |
+|---|---|
+| trigger equals input | `check_crate_boundaries` confinement → the central audit above |
+| dependency direction | the SDK-tier rule (R3) folded into `sdk-standalone`; the transport manifest rule moved to Cargo (R6) |
+| vocabulary | the runtime secret words (R2) are a `_naming_fitness` rule |
+| brace matching | `check_degrading_defaults` (`_brace_span`, `_paren_span`) and `_modularity_fitness` (`_block_end`) use `_crate_boundary_workspace._balanced_end`, identical on 20,000 random inputs |
+
+Not merged in phase 2, because each changes scan scope and needs its own
+proof: the protocol-translation pair, the size reports, the R20 tombstone
+table (the tombstones scan different file sets with different spellings) and
+the rest of the dependency-direction module.
+
+### Left for the compile slots (M3–M6)
+
+1. M3: add `[lints] workspace = true` to the 9 crates without it; add
+   `unreachable_pub = "warn"` and `clippy::wildcard_imports = "warn"`; put
+   `#![expect(unreachable_pub)]` in the 137 pending crate roots and
+   `#[expect(clippy::wildcard_imports)]` on the remaining globs; delete the
+   `_modularity_fitness` `unreachable-pub` and `super-glob` rules and their
+   baseline keys.
+2. M4: add `clippy.toml` (above) and the two-pass `check-rust.sh`; check the
+   `sqlx`/`chrono` re-export paths, `genai::Client::default`, and whether
+   clippy 1.96 has `allow-*-in-tests` for these lints; add owner `#[expect]`s;
+   retire R10–R14.
+3. M5 (with V3/V4): private aggregate fields, `#[non_exhaustive]` state
+   variants, `assert_not_impl_any!` for `Observed`; retire R15–R17.
+4. M6 (with V2): the sync module and `disallowed-methods` on `std::sync`
+   locks; delete `_poisoned_lock_fitness.py`.
+
+Each slot runs both clippy passes with `-D warnings`, `check_crate_boundaries.py`
+and the workspace tests.

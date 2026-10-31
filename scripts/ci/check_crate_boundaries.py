@@ -7,9 +7,10 @@ from __future__ import annotations
 # lockfile and toolchain pin (through `cargo tree`), the fitness modules and
 # baselines under scripts/ci, every file of the executable trees (deploy, e2e,
 # scripts), the console sources and the Managed upstream oracle. It reads no
-# documentation, so a docs-only commit does not run it. main() holds every run
-# to this declaration (_input_closure): a read outside it fails the check, so
-# the trigger rendered from it cannot fall behind what the checker reads. The
+# documentation, so a docs-only commit does not run it. The full gate holds
+# every hooked checker, this one included, to the trigger rendered from its
+# declaration (_input_closure.py), so the trigger cannot fall behind what the
+# checker reads. The
 # release static group invokes the same checker once; the Rust gate does not.
 INPUT_GLOBS: tuple[str, ...] = (
     "Cargo.toml",
@@ -41,7 +42,6 @@ import _crate_separation_fitness
 import _dispatch_boundary_fitness
 import _dependency_use_fitness
 import _modularity_fitness
-import _module_layer_fitness
 import _naming_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
@@ -55,7 +55,6 @@ import _provider_env_fitness
 import _realization_error_fitness
 import _realization_permit_fitness
 import _resource_plane_fitness
-import _runtime_secret_boundary
 import _session_effect_fitness
 import _session_state_ownership_fitness
 import _service_data_ownership_fitness
@@ -63,7 +62,6 @@ import _single_owner_fitness
 import _store_pool_fitness
 import _wire_closure_fitness
 import _crate_boundary_workspace
-import _input_closure
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
 
 
@@ -124,29 +122,6 @@ FORBIDDEN_BACKEND_CONFIG_DEPS = {
     "awaken-run-executor-acp",
 }
 
-# The runtime tier ships as an embeddable SDK: an application links
-# `awaken-runtime` plus the extensions it wants and runs agents without any
-# server, coordinator, or worker process. That only stays true while no runtime
-# crate links a serving assembly, so what it may depend on is enumerated here
-# rather than left to convention.
-#
-# The `shared` context is deliberately NOT a blanket allowance: it holds neutral
-# values (`awaken-tool-pattern`) next to server assemblies (`awaken-session-executor`),
-# so admitting it wholesale would let the host back into the SDK. Ports and
-# values are admitted by layer instead, and each neutral shared library is named
-# so adding another is a reviewed decision rather than a side effect.
-SDK_CONTEXT = "runtime"
-SDK_ALLOWED_DEPENDENCY_LAYERS = {"contract", "domain"}
-SDK_ALLOWED_SHARED_LIBRARIES = {
-    # Provider-neutral MCP codec and HTTP client. Both are plain client
-    # libraries with no serving role, and `awaken-ext-mcp` needs them to speak
-    # MCP from an embedded runtime.
-    "awaken-mcp-wire",
-    "awaken-outbound-http",
-    # Publishable safe native SDK mechanism: no Host/Coordinator/Worker state
-    # or serving dependency. The Worker consumes this same original-Job owner.
-    "awaken-process-win32",
-}
 ACTIVE_BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
     "agent_run", "list_agents", "send_message",
@@ -609,58 +584,11 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
-# L1 guard for outbound transport construction. Selecting the process-wide
-# rustls provider and deciding whether a channel may inherit an ambient
-# `HTTP(S)_PROXY` were once obligations remembered at each client construction
-# site, which is why they were honoured in two crates and forgotten in fifteen.
-# `awaken-outbound-http` now owns both as properties of `InternalHttpClient` /
-# `ExternalHttpClient`, so a crate that cannot name `reqwest` or `rustls` cannot
-# express an unguarded client at all. Declaring one of those crates as a normal
-# dependency therefore requires an entry here saying why this crate must own
-# transport construction itself. Test-only dependencies are out of scope: a
-# `[dev-dependencies]` client is a composition root exercising a real server,
-# not a production egress path.
-TRANSPORT_CRATES = ("reqwest", "rustls")
-DIRECT_TRANSPORT_EXEMPTIONS = {
-    "awaken-outbound-http": (
-        "the transport authority itself: the one crate that selects the rustls "
-        "provider and owns the internal/external proxy variants"
-    ),
-    "awaken-provider-genai": (
-        "pins reqwest 0.13 because the `genai` SDK takes a 0.13 `Client` through "
-        "`with_reqwest`; the authority's 0.12 client is a different type and "
-        "cannot cross that semver island"
-    ),
-    "awaken-ext-mcp": (
-        "streams MCP server-sent events off a live `Response` body and mirrors "
-        "arbitrary server headers; a JSON request/reply pair cannot express it"
-    ),
-    "awaken-inference-endpoint": (
-        "re-signs and replays one prepared `RequestBuilder` after a credential "
-        "rotation, so the retry seam is the request builder itself"
-    ),
-    "awaken-control": (
-        "the Control-owned OAuth Vault refresher sends form-encoded token exchanges "
-        "with Basic/client-secret authentication; the JSON-only external client "
-        "cannot express that request, while construction still uses the one "
-        "awaken-outbound-http rustls builder"
-    ),
-    "awaken-session-mcp": (
-        "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
-        "header set and raw body, none of which the JSON client models"
-    ),
-    "awaken-worker-transport-security": (
-        "second transport authority, for the Worker-to-Coordinator plane: owns "
-        "the signed `RequestBuilder` seam and the private-CA client; it still "
-        "takes its provider selection from awaken-outbound-http"
-    ),
-    "awaken-coordinator-client": (
-        "implements the Worker-to-Coordinator signing seam, whose port is "
-        "defined over `reqwest::RequestBuilder` by the transport authority above"
-    ),
-}
-
-# Even a registered transport owner starts from the authority's builder, which
+# L1 guard for outbound transport construction. Which crates may depend on
+# `reqwest` or `rustls` at all is a Cargo-graph rule held by `deny.toml`
+# `[bans]` (each wrapper with its reason). What the graph cannot see is a bare
+# constructor inside an admitted crate:
+# even a registered transport owner starts from the authority's builder, which
 # has already installed the provider. Naming a bare `reqwest::Client`
 # constructor in production code is what these two crates alone may do.
 TRANSPORT_CONSTRUCTION_EXEMPTIONS = {
@@ -684,26 +612,6 @@ def check_no_direct_transport_dependency(
             name = _crate_boundary_workspace.package_name(manifest)
         except KeyError:
             continue
-        relative = manifest_path.relative_to(repo_root)
-        declared = sorted(
-            dependency
-            for dependency in _crate_boundary_workspace.normal_dependency_names(manifest)
-            if dependency in TRANSPORT_CRATES
-        )
-        justification = DIRECT_TRANSPORT_EXEMPTIONS.get(name)
-        if declared and justification is None:
-            errors.append(
-                f"{relative}: {name} declares transport dependency "
-                f"{', '.join(declared)} directly; depend on awaken-outbound-http and "
-                "build an InternalHttpClient/ExternalHttpClient, or record in "
-                "DIRECT_TRANSPORT_EXEMPTIONS why this crate must own transport "
-                "construction itself"
-            )
-        if not declared and justification is not None:
-            errors.append(
-                f"{relative}: {name} no longer declares {' or '.join(TRANSPORT_CRATES)}; "
-                "remove its stale DIRECT_TRANSPORT_EXEMPTIONS entry"
-            )
         if name in TRANSPORT_CONSTRUCTION_EXEMPTIONS:
             continue
         for path in sorted(_crate_boundary_workspace.production_module_files([manifest_path])):
@@ -721,52 +629,25 @@ def check_no_direct_transport_dependency(
 
 
 def selftest_no_direct_transport_dependency() -> None:
-    """Cause/effect: an unregistered transport edge or bare constructor rejects."""
-    # C1 the crate declares `reqwest`/`rustls` as a normal dependency;
-    # C2 the crate has a DIRECT_TRANSPORT_EXEMPTIONS entry;
+    """Cause/effect: a bare constructor in production code rejects."""
     # C3 production source names a bare `reqwest::Client` constructor;
     # C4 that constructor sits in test-only code;
-    # C5 the crate has a TRANSPORT_CONSTRUCTION_EXEMPTIONS entry;
-    # C6 the dependency is declared under `[dev-dependencies]` only.
-    # Effects: E1 reject; E2 admit.
+    # C5 the crate has a TRANSPORT_CONSTRUCTION_EXEMPTIONS entry.
+    # Effects: E1 reject; E2 admit. The dependency edge itself (former T1-T3,
+    # T7) is held by deny.toml `[bans]` run with `--exclude-dev`.
     #
-    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
-    # | T1   | T  | F  | F  | -  | -  | F  | E1 (unregistered transport edge) |
-    # | T2   | T  | T  | F  | -  | -  | F  | E2 |
-    # | T3   | F  | T  | F  | -  | -  | F  | E1 (stale registry entry)        |
-    # | T4   | F  | F  | T  | F  | F  | F  | E1 (bare constructor)            |
-    # | T5   | F  | F  | T  | T  | F  | F  | E2 |
-    # | T6   | F  | F  | T  | F  | T  | F  | E2 |
-    # | T7   | F  | F  | F  | -  | -  | T  | E2 (tests are composition roots) |
+    # | Rule | C3 | C4 | C5 | Effect |
+    # | T4   | T  | F  | F  | E1 (bare constructor) |
+    # | T5   | T  | T  | F  | E2 |
+    # | T6   | T  | F  | T  | E2 |
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         crates = root / "crates"
         manifest = crates / "shared/example/Cargo.toml"
         manifest.parent.mkdir(parents=True)
+        manifest.write_text('[package]\nname = "example"\n', encoding="utf-8")
         source = manifest.parent / "src/lib.rs"
         source.parent.mkdir(parents=True)
-        source.write_text("pub fn nothing() {}\n", encoding="utf-8")
-
-        with_dependency = (
-            '[package]\nname = "example"\n\n[dependencies]\n'
-            'reqwest = { version = "0.12" }\n'
-        )
-        without_dependency = '[package]\nname = "example"\n'
-        dev_only = (
-            '[package]\nname = "example"\n\n[dev-dependencies]\n'
-            'reqwest = { version = "0.12" }\n'
-        )
-
-        manifest.write_text(with_dependency, encoding="utf-8")
-        assert check_no_direct_transport_dependency(root, crates)  # T1
-        DIRECT_TRANSPORT_EXEMPTIONS["example"] = "selftest"
-        try:
-            assert not check_no_direct_transport_dependency(root, crates)  # T2
-            manifest.write_text(without_dependency, encoding="utf-8")
-            assert check_no_direct_transport_dependency(root, crates)  # T3
-        finally:
-            del DIRECT_TRANSPORT_EXEMPTIONS["example"]
-
         source.write_text("pub fn f() { let _ = reqwest::Client::new(); }\n", encoding="utf-8")
         assert check_no_direct_transport_dependency(root, crates)  # T4
         source.write_text(
@@ -780,10 +661,6 @@ def selftest_no_direct_transport_dependency() -> None:
             assert not check_no_direct_transport_dependency(root, crates)  # T6
         finally:
             del TRANSPORT_CONSTRUCTION_EXEMPTIONS["example"]
-
-        source.write_text("pub fn nothing() {}\n", encoding="utf-8")
-        manifest.write_text(dev_only, encoding="utf-8")
-        assert not check_no_direct_transport_dependency(root, crates)  # T7
 
 
 # L2 guard for the optimistic-concurrency witness (see
@@ -1646,95 +1523,7 @@ def selftest_model_binding_producers_are_ratcheted() -> None:
         UNVALIDATED_MODEL_BINDING_BASELINE = saved
 
 
-def _sdk_tier_dependency_errors(
-    crate: str, dependencies: dict[str, tuple[str, str]]
-) -> list[str]:
-    """Reject a runtime-tier dependency on a serving assembly.
-
-    Cause/effect graph: C1=the dependency is itself in the runtime tier;
-    C2=its layer is a port or a neutral value (`contract`/`domain`), whatever
-    its context; C3=it is a reviewed neutral shared library. E1=accept C1|C2|C3;
-    E2=reject anything else, because linking it would drag a serving process
-    into the embeddable SDK.
-    """
-    errors: list[str] = []
-    for dependency, (context, layer) in sorted(dependencies.items()):
-        if context == SDK_CONTEXT:
-            continue
-        if layer in SDK_ALLOWED_DEPENDENCY_LAYERS:
-            continue
-        if dependency in SDK_ALLOWED_SHARED_LIBRARIES:
-            continue
-        errors.append(
-            f"{crate}: depends on {dependency!r} ({context}/{layer}); the runtime "
-            "tier must stay embeddable without a server, so depend on a port, a "
-            "neutral value, or a reviewed shared library instead"
-        )
-    return errors
-
-
-def check_sdk_tier_is_standalone() -> list[str]:
-    """Keep `awaken-runtime` and its extensions linkable without a server."""
-    specs = {spec.name: spec for spec in architecture_fitness_specs()}
-    coordinates = {name: (spec.context, spec.layer) for name, spec in specs.items()}
-    errors: list[str] = []
-    for name, spec in sorted(specs.items()):
-        if spec.context != SDK_CONTEXT:
-            continue
-        errors.extend(
-            _sdk_tier_dependency_errors(
-                name,
-                {
-                    dependency: coordinates[dependency]
-                    for dependency in spec.normal_deps
-                    if dependency in coordinates
-                },
-            )
-        )
-    return errors
-
-
-def selftest_sdk_tier_is_standalone() -> None:
-    # Decision table. S1=another runtime crate => accept. S2=a port or neutral
-    # value in any context => accept. S3=a reviewed shared library => accept.
-    # S4=a serving assembly, even in the same `shared` context as S2 => reject;
-    # this is the case a context-only rule would have admitted.
-    assert not _sdk_tier_dependency_errors(
-        "awaken-runtime", {"awaken-ext-goal": ("runtime", "infrastructure")}
-    ), "S1/E1"
-    assert not _sdk_tier_dependency_errors(
-        "awaken-runtime-contract",
-        {
-            "awaken-credential-contract": ("control", "contract"),
-            "awaken-tool-pattern": ("shared", "domain"),
-        },
-    ), "S2/E1"
-    assert not _sdk_tier_dependency_errors(
-        "awaken-ext-mcp", {"awaken-mcp-wire": ("shared", "infrastructure")}
-    ), "S3/E1"
-    assert not _sdk_tier_dependency_errors(
-        "awaken-ext-builtin-tools", {"awaken-process-win32": ("shared", "infrastructure")}
-    ), "S3/E1 native standalone mechanism"
-    assert _sdk_tier_dependency_errors(
-        "awaken-ext-permission", {"awaken-session-executor": ("shared", "infrastructure")}
-    ), "S4/E2 a serving assembly is not admitted by its context"
-    assert _sdk_tier_dependency_errors(
-        "awaken-runtime", {"awaken-coordinator": ("coordinator", "application")}
-    ), "S4/E2"
-
-
 def main() -> int:
-    _input_closure.selftest()
-    with _input_closure.Confinement(REPO_ROOT, INPUT_GLOBS) as confinement:
-        status = check()
-    escapes = confinement.escapes()
-    if escapes:
-        _input_closure.report("check_crate_boundaries.py", escapes)
-        return 1
-    return status
-
-
-def check() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
     selftest_mcp_tool_identity_ownership()
@@ -1746,7 +1535,6 @@ def check() -> int:
     _crate_separation_fitness.selftest()
     _dependency_use_fitness.selftest()
     _modularity_fitness.selftest()
-    _module_layer_fitness.selftest()
     _architecture_ratchet.selftest()
     _single_owner_fitness.selftest()
     _contract_map_fitness.selftest()
@@ -1776,7 +1564,6 @@ def check() -> int:
     selftest_backend_configuration_is_opaque()
     selftest_composite_identity_is_stated()
     selftest_model_binding_producers_are_ratcheted()
-    selftest_sdk_tier_is_standalone()
     errors = (
         _crate_boundary_workspace.check_crate_manifests_match_workspace()
         + check_no_direct_transport_dependency()
@@ -1787,7 +1574,6 @@ def check() -> int:
         + _crate_separation_fitness.check_all(CRATES)
         + _dependency_use_fitness.check_all(CRATES)
         + _modularity_fitness.check_all(CRATES)
-        + _module_layer_fitness.check_all(CRATES)
         + _single_owner_fitness.check_all(CRATES)
         + _contract_map_fitness.check_all(CRATES)
         + _naming_fitness.check_all(CRATES)
@@ -1795,7 +1581,6 @@ def check() -> int:
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()
         + check_backend_configuration_is_opaque()
-        + check_sdk_tier_is_standalone()
         + check_tests_are_not_arch_owners()
         + check_cloud_placement_boundary()
         + check_generation_witnesses_are_complete()
@@ -1805,7 +1590,6 @@ def check() -> int:
         + check_composite_identity_is_stated()
         + check_model_binding_producers_are_ratcheted()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
-        + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
         + _cancel_safety_fitness.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)

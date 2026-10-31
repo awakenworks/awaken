@@ -73,7 +73,12 @@ import sys
 from pathlib import Path
 
 import _architecture_ratchet
+import _crate_boundary_workspace
 from _architecture_ratchet import Rule
+
+# Every crate's sources and manifests; generate_hooks.py renders the pre-commit
+# trigger from this declaration.
+INPUT_GLOBS: tuple[str, ...] = ("crates/**/*.rs", "crates/**/Cargo.toml")
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -258,17 +263,9 @@ METHOD = re.compile(r"(?:async )?fn ([a-z_]\w*)\((?:[^()]|\([^()]*\))*\)\s*->\s*
 
 
 def _brace_span(text: str, open_index: int) -> int:
-    depth = 0
-    index = open_index
-    while index < len(text):
-        if text[index] == "{":
-            depth += 1
-        elif text[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return len(text) - 1
+    """Index of the brace closing ``text[open_index]``, or the last index."""
+    end = _crate_boundary_workspace._balanced_end(text, open_index, "{", "}")
+    return len(text) - 1 if end is None else end - 1
 
 
 def degrading_default_findings(sources: dict[str, str]) -> list[tuple[str, str]]:
@@ -316,15 +313,9 @@ def degrading_default_findings(sources: dict[str, str]) -> list[tuple[str, str]]
 
 
 def _paren_span(text: str, open_index: int) -> int:
-    depth = 0
-    for index in range(open_index, len(text)):
-        if text[index] == "(":
-            depth += 1
-        elif text[index] == ")":
-            depth -= 1
-            if depth == 0:
-                return index
-    return len(text)
+    """Index of the parenthesis closing ``text[open_index]``, or ``len(text)``."""
+    end = _crate_boundary_workspace._balanced_end(text, open_index, "(", ")")
+    return len(text) if end is None else end - 1
 
 
 def _declared_parameters(signature: str) -> list[str]:

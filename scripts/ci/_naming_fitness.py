@@ -31,6 +31,14 @@ scanned); a type is any `struct`, `enum`, `trait`, `type` or `union` declaration
   `K8sRuntime`; D7.2). Such a type is renamed when its code moves (D9). Keyed
   `crate::Type`.
 
+* `sdk-secret-vocabulary`: an identifier in an SDK crate (product `sdk`) that
+  names credential storage or resolution (`SECRET_VOCABULARY`): the Runtime
+  receives resolved values and never names the credential lifecycle (ADR-0091
+  D6, D9). The types themselves live in the Platform (`awaken-credential-vault`),
+  which `sdk-standalone` keeps out of every SDK crate's dependencies; this rule
+  refuses an SDK crate that declares or names one of the words itself. A hard
+  rule: the baseline holds no record for it.
+
 Every ratchet is held at or below `naming_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
 (`python3 scripts/ci/_naming_fitness.py --write-baseline`).
@@ -64,6 +72,7 @@ PROTOCOL_ADAPTER_PREFIX = "awaken-protocol-"
 # allows in protocol DTOs and adapters.
 PROTOCOL_ADAPTER_CRATES = frozenset({"awaken-run-executor-acp", "awaken-managed-session-events"})
 SDK_PRODUCT = "sdk"
+SECRET_VOCABULARY = frozenset({"SecretHandle", "SecretResolver", "SecretStore", "CredentialBinding", "SecretRef"})
 COMPOSITION_LAYER = "bootstrap"
 BINARY_DIRECTORY = "bin"
 
@@ -79,6 +88,8 @@ RULES = (
          "mechanism words belong to composition roots (ADR-0091 D7.1-D7.3)"),
     Rule("runtime-word", "\"Runtime\" means the SDK engine or a qualified container engine; name the type for "
          "its responsibility when its code moves (ADR-0091 D7.2, D9)"),
+    Rule("sdk-secret-vocabulary", "the Runtime receives resolved values; credential storage and resolution live in "
+         "the Platform (ADR-0091 D6, D9)", hard=True),
 )
 
 _DECLARATION = re.compile(r"\b(?:struct|enum|trait|type|union)\s+([A-Z]\w*)")
@@ -149,11 +160,15 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                     record("bare-runtime", f"{crate.name}::{name}", where)
                 if name in BARE_NAMES:
                     record("bare-name", f"{crate.name}::{name}", where)
-            if adapter:
-                continue
             seen: set[str] = set()
             for match in _IDENTIFIER.finditer(syntax):
                 identifier = match.group(0)
+                if sdk and identifier in SECRET_VOCABULARY and identifier not in seen:
+                    seen.add(identifier)
+                    record("sdk-secret-vocabulary", f"{crate.name}::{identifier}",
+                           f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}")
+                if adapter:
+                    continue
                 if identifier not in seen and has_turn_noun(identifier):
                     seen.add(identifier)
                     record("turn-noun", f"{crate.name}::{identifier}",
@@ -189,6 +204,7 @@ def selftest() -> None:
     | N8   | crate `awaken-runtime*` in the SDK; `-host` in a root; `awaken-service-auth` | not counted |
     | N9   | `pub` type `SessionRuntime` outside the SDK                            | counted |
     | N10  | `DockerRuntime`, bare `Runtime`, a private type, any type in the SDK   | not counted |
+    | N11  | `SecretRef` named in an SDK crate / outside the SDK / in a comment     | counted once per file / not / not |
     """
     assert words("HTTPSharedHost_turn_id") == ["HTTP", "Shared", "Host", "turn", "id"], "words"
     assert is_mechanism_name("SharedHost") and is_mechanism_name("ResourcePorts"), "N1"
@@ -242,6 +258,16 @@ def selftest() -> None:
     assert places["crate-name"]["awaken-worker-runtime"] == ["crates/server/awaken-worker-runtime/Cargo.toml"], "N7"
     assert counts["runtime-word"] == {"awaken-worker-runtime::SessionRuntime": 1,
                                       "awaken-host::SessionRuntime": 1}, f"N9/N10 {counts['runtime-word']}"
+    secret_code = "pub struct SecretRef;\nfn f(r: SecretRef) {}\n// SecretStore\n"
+
+    def secret_crate(name, product):
+        return _architecture_ratchet.CrateSource(name, {"product": product}, Path(f"/w/crates/x/{name}"),
+                                                 {Path(f"/w/crates/x/{name}/src/lib.rs"): secret_code})
+
+    counts, places = measure((secret_crate("awaken-ext-x", "sdk"), secret_crate("awaken-vault", "platform")),
+                             Path("/w"))
+    assert counts["sdk-secret-vocabulary"] == {"awaken-ext-x::SecretRef": 1}, f"N11 {counts['sdk-secret-vocabulary']}"
+    assert places["sdk-secret-vocabulary"]["awaken-ext-x::SecretRef"] == ["crates/x/awaken-ext-x/src/lib.rs:1"], "N11"
     print("_naming_fitness selftest: the decision tables hold")
 
 

@@ -59,10 +59,12 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/*.py",
     "scripts/ci/*.sh",
     "scripts/contract/*.sh",
+    "scripts/contract/*.py",
     "scripts/e2e/*.sh",
     "scripts/release/*.py",
     "scripts/release/*.sh",
     "e2e/*.sh",
+    "e2e/*.py",
     "e2e/k3d/*.py",
     "e2e/k3d/*.sh",
     "e2e/k6/*.sh",
@@ -138,7 +140,7 @@ SOURCED_LIBRARY = re.compile(r"^_|/_")
 
 USAGE_LINE = re.compile(r"^\s*usage:", re.IGNORECASE | re.MULTILINE)
 LONG_FLAG = re.compile(r"--[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
-PARSER_CONSTRUCTION = re.compile(r"argparse\.ArgumentParser\(([^)]*)\)", re.DOTALL)
+PARSER_CONSTRUCTION = "argparse.ArgumentParser("
 # A lane invocation: an optional `python3`/`bash` prefix, a repository path, and
 # whatever flags follow on the same logical line.
 LANE_INVOCATION = re.compile(
@@ -332,12 +334,32 @@ def refusal_errors(probes: dict[str, Probe]) -> list[str]:
     return errors
 
 
+def parser_constructions(text: str) -> list[str]:
+    """The argument text of every ``argparse.ArgumentParser(...)`` call.
+
+    Read to the parenthesis that closes the call, not the first one, so a call
+    such as ``ArgumentParser(prog=Path(__file__).name, allow_abbrev=False)`` is
+    read whole.
+    """
+    found: list[str] = []
+    start = text.find(PARSER_CONSTRUCTION)
+    while start >= 0:
+        opening = start + len(PARSER_CONSTRUCTION)
+        depth, cursor = 1, opening
+        while cursor < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[cursor], 0)
+            cursor += 1
+        found.append(text[opening:cursor - 1])
+        start = text.find(PARSER_CONSTRUCTION, cursor)
+    return found
+
+
 def abbreviation_construction_errors(sources: dict[str, str]) -> list[str]:
     """A2, statically: every parser states that a flag has one spelling."""
 
     errors: list[str] = []
     for relative, text in sorted(sources.items()):
-        for arguments in PARSER_CONSTRUCTION.findall(text):
+        for arguments in parser_constructions(text):
             if "allow_abbrev" not in arguments:
                 errors.append(
                     f"{relative}: an argparse parser is constructed without allow_abbrev=False, "
@@ -629,6 +651,12 @@ def self_test() -> None:
         assert abbreviation_construction_errors(
             {"a.py": construction + "description=__doc__)"}
         ), "C7/E2"
+        assert not abbreviation_construction_errors(
+            {"a.py": construction + "prog=Path(__file__).name, allow_abbrev=False)"}
+        ), "C6/E1 a nested call is read to the closing parenthesis"
+        assert abbreviation_construction_errors(
+            {"a.py": construction + "prog=Path(__file__).name)\nx = f(allow_abbrev=False)"}
+        ), "C7/E2 a later call's argument is not the parser's"
 
         # C8/C9: the spelling rule as behaviour. `strict.sh` declares
         # --self-test and refuses --self-tes; the abbreviating fixture accepts it.

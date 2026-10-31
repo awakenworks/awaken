@@ -25,9 +25,12 @@ Scope and its reasons:
   surrounding comments stay human-authored. The Rust shell gate's literal mode
   arms and guards select its Python input owners; unsupported control shapes
   refuse generation. Other shell scripts and non-Python tools stay untouched.
-* The invoked checker's own path is added to its rendered glob automatically
-  (unless an already-declared pattern matches it), because editing a checker
-  changes what it accepts.
+* The invoked checker's own path, and the path of every ``scripts/ci`` module
+  it imports (transitively, lazy imports included), are added to its rendered
+  glob automatically (unless an already-declared pattern matches them),
+  because editing a checker or a helper it runs changes what it accepts.
+  ``trigger_patterns`` is that one trigger; ``_input_closure.py`` holds each
+  checker's reads to the same value.
 * ``INPUT_GLOBS = ("**/*",)`` is the sentinel for "reads every staged file".
   The rendered region then carries *no* ``glob:`` line, because any narrower
   trigger for such a checker is precisely the bug this file eradicates.
@@ -330,6 +333,49 @@ def _without_generated(block: list[str]) -> list[str]:
     return kept
 
 
+def local_imports(name: str, scripts: Path = SCRIPTS) -> list[str]:
+    """``scripts`` modules ``name`` imports, transitively, as file names.
+
+    Every ``import`` statement counts, including one inside a function: a lazy
+    import is still code the checker runs. Parsed, never imported.
+    """
+
+    found: set[str] = set()
+    pending = [name]
+    while pending:
+        path = scripts / pending.pop()
+        if not path.is_file():
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                modules = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules = [node.module.split(".")[0]]
+            else:
+                continue
+            for module in modules:
+                imported = f"{module}.py"
+                if imported != name and imported not in found and (scripts / imported).is_file():
+                    found.add(imported)
+                    pending.append(imported)
+    return sorted(found)
+
+
+def trigger_patterns(name: str, declarations: dict[str, tuple[str, ...]],
+                     scripts: Path = SCRIPTS) -> list[str]:
+    """The trigger of one checker: its declaration, itself and the modules it imports."""
+
+    patterns = sorted(set(declarations[name]))
+    if UNIVERSAL in patterns:
+        return [UNIVERSAL]
+    prefix = scripts.relative_to(ROOT).as_posix() if scripts.is_relative_to(ROOT) else "scripts/ci"
+    for module in [name, *local_imports(name, scripts)]:
+        own = f"{prefix}/{module}"
+        if not any(glob_matches(pattern, own) for pattern in patterns):
+            patterns.append(own)
+    return sorted(patterns)
+
+
 def _brace(patterns: list[str]) -> str:
     return patterns[0] if len(patterns) == 1 else "{" + ",".join(patterns) + "}"
 
@@ -338,7 +384,7 @@ def _region(scripts: list[str], declarations: dict[str, tuple[str, ...]]) -> lis
     sources = ", ".join(scripts)
     begin = f"{INDENT}{MARKER_BEGIN} from {sources} INPUT_GLOBS — do not edit\n"
     end = f"{INDENT}{MARKER_END}\n"
-    patterns = sorted({pattern for name in scripts for pattern in declarations[name]})
+    patterns = sorted({pattern for name in scripts for pattern in trigger_patterns(name, declarations)})
     if UNIVERSAL in patterns:
         return [
             begin,
@@ -346,11 +392,10 @@ def _region(scripts: list[str], declarations: dict[str, tuple[str, ...]]) -> lis
             f"{INDENT}# must keep the whole staged set as its trigger.\n",
             end,
         ]
-    for name in scripts:
-        own = f"scripts/ci/{name}"
-        if not any(glob_matches(pattern, own) for pattern in patterns):
-            patterns.append(own)
-    return [begin, f'{INDENT}glob: "{_brace(sorted(patterns))}"\n', end]
+    # A pattern another script's trigger already covers is not repeated.
+    kept = [pattern for pattern in patterns
+            if not any(other != pattern and "*" in other and glob_matches(other, pattern) for other in patterns)]
+    return [begin, f'{INDENT}glob: "{_brace(kept)}"\n', end]
 
 
 def wired_scripts(hooks: str) -> set[str]:
@@ -549,6 +594,23 @@ def selftest() -> None:
     other = render("glob_matcher: gobwas\n" + hand_written, declarations)
     assert other.count("glob_matcher:") == 1 and MATCHER_LINE in other, "M2"
     assert render(other, declarations) == other, "M3"
+    # I-trigger: I1 a checker importing a helper (directly, or lazily inside a
+    # function) gets the helper in its trigger; I2 transitively; I3 a module
+    # outside scripts/ci (stdlib) is not a trigger; I4 a declared pattern that
+    # already covers a helper is not repeated.
+    with tempfile.TemporaryDirectory() as directory:
+        scripts = Path(directory)
+        (scripts / "check_gamma.py").write_text(
+            "import json\nimport _helper\ndef f():\n    from _lazy import x\n", encoding="utf-8")
+        (scripts / "_helper.py").write_text("import _deep\n", encoding="utf-8")
+        (scripts / "_lazy.py").write_text("x = 1\n", encoding="utf-8")
+        (scripts / "_deep.py").write_text("import check_gamma\n", encoding="utf-8")
+        assert local_imports("check_gamma.py", scripts) == ["_deep.py", "_helper.py", "_lazy.py"], "I1-I3"
+        assert trigger_patterns("check_gamma.py", {"check_gamma.py": ("docs/*.md",)}, scripts) == [
+            "docs/*.md", "scripts/ci/_deep.py", "scripts/ci/_helper.py", "scripts/ci/_lazy.py",
+            "scripts/ci/check_gamma.py"], "I1-I3 trigger"
+        assert trigger_patterns("check_gamma.py", {"check_gamma.py": ("scripts/ci/*.py",)}, scripts) == [
+            "scripts/ci/*.py"], "I4"
     assert glob_matches("types/**/*.rs", "types/top.rs"), "M4 zero directories"
     assert glob_matches("types/**/*.rs", "types/a/b.rs"), "M4 nested"
     assert not glob_matches("docs/*.md", "docs/wiki/a.md"), "M4 * stays in one segment"

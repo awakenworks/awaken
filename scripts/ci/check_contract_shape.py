@@ -59,6 +59,7 @@ import _architecture_ratchet
 # Every Cargo manifest and production Rust file can add, remove or reshape a
 # contract crate; the baseline and the shared lexer define the comparison.
 INPUT_GLOBS: tuple[str, ...] = (
+    "Cargo.toml",
     "crates/**/*.rs",
     "crates/**/Cargo.toml",
     "scripts/ci/_crate_boundary_workspace.py",
