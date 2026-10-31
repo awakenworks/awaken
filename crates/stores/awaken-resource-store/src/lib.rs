@@ -6,10 +6,6 @@
 //! deliberately live outside IAM storage and contain no principal, role, API key
 //! or policy. The same ports support the in-process local composition and a
 //! replaceable durable adapter.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeSet;
 

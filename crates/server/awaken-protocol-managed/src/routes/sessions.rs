@@ -218,7 +218,7 @@ pub fn router(state: Arc<ManagedState>) -> Router {
 /// the same 404, because an ownership comparison against a compiled-in tenant is
 /// not an ownership check. The single-tenant surface is stamped by the
 /// composition root, never by this guard.
-pub async fn session_scope_guard(
+pub(crate) async fn session_scope_guard(
     State(state): State<Arc<ManagedState>>,
     request: Request,
     next: axum::middleware::Next,

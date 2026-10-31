@@ -8,10 +8,6 @@
 //!
 //! Composition roots and `awaken-control` depend on this authoritative owner
 //! directly; the Runtime Host does not act as a public facade.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod agent_projection;
 mod binding_resolver;

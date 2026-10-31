@@ -132,7 +132,7 @@ impl RuntimeToolProjectionPhase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CommittedToolOccurrence {
+pub(crate) struct CommittedToolOccurrence {
     message_id: String,
     block_ordinal: usize,
     call_id: String,

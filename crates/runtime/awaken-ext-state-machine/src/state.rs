@@ -330,7 +330,7 @@ impl FoldStateKey for ViolationLog {
 /// monotonic across runs on the same thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(default)]
-pub struct EmitThrottle {
+pub(crate) struct EmitThrottle {
     pub tick: u64,
     pub last: HashMap<String, u64>,
 }
@@ -338,7 +338,7 @@ pub struct EmitThrottle {
 impl EmitThrottle {
     /// Whether `key` is still cooling down at the current `tick`.
     #[must_use]
-    pub fn on_cooldown(&self, key: &str, cooldown_steps: u32) -> bool {
+    pub(crate) fn on_cooldown(&self, key: &str, cooldown_steps: u32) -> bool {
         cooldown_steps > 0
             && self
                 .last
@@ -347,13 +347,13 @@ impl EmitThrottle {
     }
 
     /// Record that `key` fired at the current tick.
-    pub fn mark(&mut self, key: String) {
+    pub(crate) fn mark(&mut self, key: String) {
         self.last.insert(key, self.tick);
     }
 }
 
 /// Thread-scoped emit cooldown state.
-pub struct EmitThrottleCell;
+pub(crate) struct EmitThrottleCell;
 impl StateKey for EmitThrottleCell {
     const KEY: &'static str = "tool_fsm_emit_throttle";
     const SCOPE: Scope = Scope::Thread;

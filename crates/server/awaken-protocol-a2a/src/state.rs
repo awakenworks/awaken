@@ -107,7 +107,7 @@ struct PersistentState {
 }
 
 impl A2aState {
-    pub fn new(
+    pub(crate) fn new(
         runtime: Arc<dyn RunApplication>,
         persistence_path: Option<PathBuf>,
         clock: Arc<dyn WallClock>,
@@ -202,7 +202,7 @@ impl A2aState {
         Ok(result)
     }
 
-    pub async fn task(&self, task_id: &str, agent_id: Option<&str>) -> Option<Task> {
+    pub(crate) async fn task(&self, task_id: &str, agent_id: Option<&str>) -> Option<Task> {
         self.inner
             .read()
             .await
@@ -212,7 +212,7 @@ impl A2aState {
             .map(|stored| stored.task.clone())
     }
 
-    pub async fn tasks(&self, agent_id: Option<&str>) -> Vec<Task> {
+    pub(crate) async fn tasks(&self, agent_id: Option<&str>) -> Vec<Task> {
         let mut tasks = self
             .inner
             .read()
@@ -226,7 +226,7 @@ impl A2aState {
         tasks
     }
 
-    pub async fn record_task(
+    pub(crate) async fn record_task(
         &self,
         task: Task,
         agent_id: Option<String>,
@@ -237,7 +237,7 @@ impl A2aState {
 
     /// Atomically publish the initial Working projection and its inline push
     /// subscription. A failed request cannot leave only one half installed.
-    pub async fn record_task_with_config(
+    pub(crate) async fn record_task_with_config(
         &self,
         task: Task,
         agent_id: Option<String>,
@@ -292,7 +292,7 @@ impl A2aState {
     /// Background sends have no response channel on which a later projection
     /// write can fail. Keep the already-durable Working task visible and retry
     /// the terminal replacement until the injected store recovers.
-    pub async fn record_task_reliably(&self, task: Task, agent_id: Option<String>) {
+    pub(crate) async fn record_task_reliably(&self, task: Task, agent_id: Option<String>) {
         loop {
             match self.record_task(task.clone(), agent_id.clone()).await {
                 Ok(()) => return,
@@ -307,7 +307,7 @@ impl A2aState {
         }
     }
 
-    pub async fn subscribe(
+    pub(crate) async fn subscribe(
         &self,
         task_id: &str,
         agent_id: Option<&str>,
@@ -326,7 +326,7 @@ impl A2aState {
         Some((task, tx.subscribe()))
     }
 
-    pub async fn publish(
+    pub(crate) async fn publish(
         &self,
         task_id: &str,
         agent_id: Option<&str>,
@@ -447,7 +447,7 @@ impl A2aState {
         }
     }
 
-    pub async fn upsert_config(
+    pub(crate) async fn upsert_config(
         &self,
         task_id: &str,
         agent_id: Option<&str>,
@@ -469,7 +469,7 @@ impl A2aState {
         .await
     }
 
-    pub async fn configs(
+    pub(crate) async fn configs(
         &self,
         task_id: &str,
         agent_id: Option<&str>,
@@ -491,7 +491,7 @@ impl A2aState {
         )
     }
 
-    pub async fn config(
+    pub(crate) async fn config(
         &self,
         task_id: &str,
         config_id: &str,
@@ -503,7 +503,7 @@ impl A2aState {
             .find(|config| config.id.as_deref() == Some(config_id))
     }
 
-    pub async fn delete_config(
+    pub(crate) async fn delete_config(
         &self,
         task_id: &str,
         config_id: &str,

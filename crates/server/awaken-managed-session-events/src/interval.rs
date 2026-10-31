@@ -248,7 +248,7 @@ fn lifecycle_opening_order(
 /// `None` for an interval no retained batch owns (a Run admitted without a
 /// user Event).
 #[must_use]
-pub fn interval_admission_fence(
+pub(crate) fn interval_admission_fence(
     opened_revision: awaken_session_types::SessionRevision,
     batches: &[SessionEventBatch],
 ) -> Option<u64> {

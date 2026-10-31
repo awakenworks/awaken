@@ -20,10 +20,6 @@
 //! vault/env state, the config plane), asks this crate for the authoring router,
 //! asks `awaken-coordinator` for the data-plane router, merges them, and applies the
 //! guard exactly where it applied before.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod admin_assistant;
 mod application_credentials;

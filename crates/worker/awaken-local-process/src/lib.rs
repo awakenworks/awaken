@@ -6,10 +6,6 @@
 //! Protocol supervisors own *when* to terminate. This adapter owns the
 //! OS-specific termination boundary: Unix targets the private process group;
 //! Windows owns a kill-on-close Job; other platforms target the direct child.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};

@@ -327,7 +327,7 @@ fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
 
 /// Stable, deployment-independent Dream authoring limits. Runtime model
 /// readiness remains workspace-scoped and is intersected with `/v1/config/catalog`.
-pub fn dream_capability() -> Value {
+pub(crate) fn dream_capability() -> Value {
     json!({
         "enabled": true,
         "research_preview": true,

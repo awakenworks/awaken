@@ -11,15 +11,15 @@
 
 use sha2::{Digest, Sha256};
 
-pub mod agents_registry;
-pub mod deployments;
-pub mod dreams;
-pub mod environments;
+pub(crate) mod agents_registry;
+pub(crate) mod deployments;
+pub(crate) mod dreams;
+pub(crate) mod environments;
 mod extractors;
-pub mod sessions;
-pub mod tunnels;
-pub mod user_profiles;
-pub mod vaults;
+pub(crate) mod sessions;
+pub(crate) mod tunnels;
+pub(crate) mod user_profiles;
+pub(crate) mod vaults;
 
 // The session surface defines the shared error-envelope conventions; re-export the
 // plumbing so sibling resource routers answer bad bodies and domain errors alike.

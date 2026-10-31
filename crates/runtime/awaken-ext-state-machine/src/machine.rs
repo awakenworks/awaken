@@ -22,7 +22,7 @@ const EVENT_TRIGGER_KIND: u8 = 1;
 /// Representation-free trigger discriminator.  Unknown numeric kinds are
 /// deliberately representable and match neither tool nor event transitions.
 #[must_use]
-pub const fn transition_trigger_matches(
+pub(crate) const fn transition_trigger_matches(
     actual_kind: u8,
     expected_kind: u8,
     pattern_matches: bool,
@@ -34,7 +34,7 @@ pub const fn transition_trigger_matches(
 
 /// Exact transition-enablement conjunction used by both tool and event paths.
 #[must_use]
-pub const fn transition_preconditions_met(
+pub(crate) const fn transition_preconditions_met(
     trigger_matches: bool,
     source_state_matches: bool,
     counters_match: bool,
@@ -43,7 +43,7 @@ pub const fn transition_preconditions_met(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransitionAdvanceDecision {
+pub(crate) enum TransitionAdvanceDecision {
     Reject,
     Stay,
     Advance,
@@ -54,7 +54,7 @@ pub enum TransitionAdvanceDecision {
 /// a known non-match stays put unless and only unless an authored fallback is
 /// present.
 #[must_use]
-pub const fn transition_advance_decision(
+pub(crate) const fn transition_advance_decision(
     preconditions_met: bool,
     result_is_known: bool,
     result_matches: bool,
@@ -74,7 +74,7 @@ pub const fn transition_advance_decision(
 /// Terminal membership is exact and unknown states never acquire terminal
 /// authority by default.
 #[must_use]
-pub const fn terminal_state_decision(state_is_known: bool, declared_terminal: bool) -> bool {
+pub(crate) const fn terminal_state_decision(state_is_known: bool, declared_terminal: bool) -> bool {
     state_is_known && declared_terminal
 }
 

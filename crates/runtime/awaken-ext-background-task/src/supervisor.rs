@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{BackgroundTaskEnd, BackgroundTaskId, BackgroundWait, TaskTenure};
 
-pub const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
+pub(crate) const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct BackgroundTaskCompletion {

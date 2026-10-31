@@ -22,7 +22,8 @@ pub const AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str = "awaken.workspace:publisher";
 /// Qualified role intended for an external product that ingresses generic
 /// business and provider credentials through the canonical Workspace Vault
 /// and the exact provider connection command, without general supply writes.
-pub const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str = "awaken.workspace:credential_ingress";
+pub(super) const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str =
+    "awaken.workspace:credential_ingress";
 /// Hosted tenant administrator: ordinary Workspace/API-key administration and
 /// Resources access plus read-only platform model supply. Cloud binds this role
 /// instead of local `workspace_admin`, whose BYOK authority remains self-hosted.

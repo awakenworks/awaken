@@ -23,30 +23,30 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 /// replaces the earlier one (last write wins), so a host can layer defaults then
 /// overrides.
 #[derive(Clone, Default)]
-pub struct AgentCatalog {
+pub(crate) struct AgentCatalog {
     configs: HashMap<String, ExecutableAgentSnapshot>,
 }
 
 impl AgentCatalog {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Register `config` under its own agent id (`root_agent_id`).
-    pub fn insert(&mut self, config: ExecutableAgentSnapshot) {
+    pub(crate) fn insert(&mut self, config: ExecutableAgentSnapshot) {
         let id = config.root_agent_id.0.clone();
         self.configs.insert(id, config);
     }
 
     /// Builder-style [`insert`](Self::insert), for one-liner assembly.
     #[must_use]
-    pub fn with_agent(mut self, config: ExecutableAgentSnapshot) -> Self {
+    pub(crate) fn with_agent(mut self, config: ExecutableAgentSnapshot) -> Self {
         self.insert(config);
         self
     }
 
     /// The config registered for `agent_id`, if any.
-    pub fn resolve(&self, agent_id: &str) -> Option<&ExecutableAgentSnapshot> {
+    pub(crate) fn resolve(&self, agent_id: &str) -> Option<&ExecutableAgentSnapshot> {
         self.configs.get(agent_id)
     }
 }

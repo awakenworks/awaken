@@ -423,7 +423,7 @@ impl SessionResourceManifests {
 
 /// Item-level Resource verbs never add or remove a MemoryStore: it is bound
 /// when the Session is created.
-pub const MEMORY_STORE_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; adding or removing one from a \
+pub(crate) const MEMORY_STORE_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; adding or removing one from a \
      running session is not supported";
 
 /// One complete authored Resource manifest, lowered from a protocol's wire

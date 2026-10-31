@@ -95,7 +95,7 @@ pub(crate) fn to_durable_error(error: SessionExecutionError) -> ApplicationError
 /// back into Host lifecycle orchestration. This is the sole inverse projector;
 /// authorization, receipt persistence, and readback must not each reinterpret
 /// retryability from error strings.
-pub fn from_run_error(error: RunError) -> SessionExecutionError {
+pub(crate) fn from_run_error(error: RunError) -> SessionExecutionError {
     SessionExecutionError {
         message: error.message,
         kind: match error.kind {
@@ -186,7 +186,8 @@ pub(crate) fn poison_for_test<T>(lock: &awaken_sync::InvariantLock<T>) {
 
 /// Stable code of every [`ExecutorLock`] refusal: the one code the delivery
 /// locks share.
-pub const EXECUTOR_LOCK_POISONED_CODE: &str = awaken_session_run_delivery::LOCK_POISONED_CODE;
+pub(crate) const EXECUTOR_LOCK_POISONED_CODE: &str =
+    awaken_session_run_delivery::LOCK_POISONED_CODE;
 
 impl From<ExecutorLock> for SessionExecutionError {
     fn from(error: ExecutorLock) -> Self {

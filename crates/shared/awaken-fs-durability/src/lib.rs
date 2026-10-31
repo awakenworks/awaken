@@ -5,10 +5,6 @@
 // @formal reason: not resource identity or authorization, and claims no proof.
 //! Shared filesystem durability. Directory flush remains available by default;
 //! the original native filesystem component is enabled only by `native-fs`.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 // Native capability selection is compile-time only. An original FS consumer
 // requests native-fs in its dependency; no missing-feature runtime fallback.

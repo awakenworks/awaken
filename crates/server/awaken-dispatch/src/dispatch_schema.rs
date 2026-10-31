@@ -20,13 +20,13 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 /// Bundle id for the durable dispatch schema. Scoped so it never collides with
 /// the commit schema (`awaken.runtime_commit`) in a shared database.
-pub const BUNDLE_ID: &str = "awaken.run_dispatch";
+pub(crate) const BUNDLE_ID: &str = "awaken.run_dispatch";
 
 /// Once either published numbering stream reaches its terminal schema, every
 /// future dispatch migration is appended here. The historical streams remain
 /// immutable compatibility evidence; they are not parallel future writers.
 #[cfg(feature = "durable")]
-pub const CONVERGED_BUNDLE_ID: &str = "awaken.run_dispatch.converged";
+pub(crate) const CONVERGED_BUNDLE_ID: &str = "awaken.run_dispatch.converged";
 
 /// The embedded migration files, in apply order. Each entry is
 /// `(file_name, file_contents)`: the name yields the version, the contents yield

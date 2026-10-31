@@ -12,8 +12,8 @@ pub struct ResidentHandConfig {
     pub max_connections: usize,
 }
 
-pub const DEFAULT_RESIDENT_HAND_LEDGER_MAX_ENTRIES: usize = 4_096;
-pub const DEFAULT_RESIDENT_HAND_MAX_CONNECTIONS: usize = 16;
+pub(crate) const DEFAULT_RESIDENT_HAND_LEDGER_MAX_ENTRIES: usize = 4_096;
+pub(crate) const DEFAULT_RESIDENT_HAND_MAX_CONNECTIONS: usize = 16;
 
 impl ResidentHandConfig {
     pub fn new(bin: impl Into<String>, port: u16) -> Result<Self, String> {

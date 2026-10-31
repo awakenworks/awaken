@@ -553,7 +553,7 @@ impl InstalledSessions {
 
     /// Read one installed Session; `None` when it is not installed. A
     /// poisoned registry is refused, never read through or recreated.
-    pub fn read<R>(
+    pub(crate) fn read<R>(
         &self,
         session: &str,
         f: impl FnOnce(&InstalledSession) -> R,
@@ -562,7 +562,7 @@ impl InstalledSessions {
     }
 
     /// Change one installed Session; `None` when it is not installed.
-    pub fn modify<R>(
+    pub(crate) fn modify<R>(
         &self,
         session: &str,
         f: impl FnOnce(&mut InstalledSession) -> R,
@@ -606,7 +606,7 @@ impl InstalledSessions {
         Ok(removed)
     }
 
-    pub fn realization_leases(
+    pub(crate) fn realization_leases(
         &self,
     ) -> Result<
         Vec<(
@@ -632,7 +632,7 @@ impl InstalledSessions {
             .collect())
     }
 
-    pub fn session_ids(&self) -> Result<Vec<String>, RealizationLock> {
+    pub(crate) fn session_ids(&self) -> Result<Vec<String>, RealizationLock> {
         Ok(self
             .installed_sessions
             .lock()

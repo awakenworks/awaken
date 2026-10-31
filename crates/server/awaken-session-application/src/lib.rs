@@ -7,10 +7,6 @@
 //! Protocol adapters retain DTO projection, route parsing, and transient stream
 //! caches.  This crate owns the application collaborators and durable Session
 //! repository so every protocol drives the same Session authority.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

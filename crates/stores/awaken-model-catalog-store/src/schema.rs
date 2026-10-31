@@ -7,7 +7,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 /// Namespaced bundle id — never collides with `awaken.config`/`awaken.credential`/
 /// the runtime `awaken.commit` schemas in a shared database.
-pub const BUNDLE_ID: &str = "awaken.catalog";
+pub(crate) const BUNDLE_ID: &str = "awaken.catalog";
 
 const SPECS: [(i64, &str, &str); 4] = [
     (
@@ -46,7 +46,7 @@ const SPECS: [(i64, &str, &str); 4] = [
 ];
 
 /// Build the catalog-schema migration bundle (prefix `catalog`).
-pub fn catalog_bundle() -> Result<MigrationBundle, MigrationError> {
+pub(crate) fn catalog_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = SPECS
         .iter()
         .map(|(version, description, sql)| Migration::new(*version, *description, *sql))

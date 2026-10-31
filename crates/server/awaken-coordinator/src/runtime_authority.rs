@@ -41,7 +41,7 @@ pub(super) enum SchemaAccess {
     Verify,
 }
 
-pub struct DurableRuntimeAuthority {
+pub(crate) struct DurableRuntimeAuthority {
     commit: CommitAuthorityConfig,
     /// The Coordinator process's one wall clock. The dispatch store judges its
     /// rows and every local commit store stamps its commits with this handle.
@@ -245,7 +245,7 @@ impl From<&CoordinatorStorage> for CommitAuthorityConfig {
 
 impl DurableRuntimeAuthority {
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn open(
+    pub(crate) async fn open(
         storage: &CoordinatorStorage,
         schema: SchemaAccess,
         clock: Arc<dyn awaken_time::WallClock>,
@@ -271,7 +271,7 @@ impl DurableRuntimeAuthority {
 
     /// Open every Runtime persistence adapter over the process's one
     /// process pool when Postgres is selected. SQLite callers pass no pool.
-    pub async fn open_with_postgres_pool(
+    pub(crate) async fn open_with_postgres_pool(
         storage: &CoordinatorStorage,
         schema: SchemaAccess,
         postgres_pool: Option<sqlx::PgPool>,

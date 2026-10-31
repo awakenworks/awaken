@@ -131,7 +131,8 @@ pub(crate) use run_control::{
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };
-pub use types::{HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, HostResume};
+pub(crate) use types::HostOutcomeIteration;
+pub use types::{HostOutcomeDrive, HostOutcomeReport, HostResume};
 #[cfg(test)]
 pub(crate) use worker_resolver::test_support::{
     eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,

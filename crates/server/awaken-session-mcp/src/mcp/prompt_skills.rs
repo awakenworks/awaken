@@ -15,14 +15,14 @@ use serde_json::Value;
 
 use awaken_ext_skills::{SkillProvenance, SkillRegistry, SkillSpec};
 
-pub struct McpPromptSkillRegistry {
+pub(super) struct McpPromptSkillRegistry {
     server_name: String,
     transport: Arc<dyn McpToolTransport>,
     prompts: BTreeMap<String, McpPromptDefinition>,
 }
 
 impl McpPromptSkillRegistry {
-    pub async fn discover(
+    pub(super) async fn discover(
         server_name: impl Into<String>,
         transport: Arc<dyn McpToolTransport>,
     ) -> Result<Self, String> {

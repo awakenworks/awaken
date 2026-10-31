@@ -9,7 +9,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 mod expanded;
 
-pub const BUNDLE_ID: &str = "awaken.config";
+pub(crate) const BUNDLE_ID: &str = "awaken.config";
 pub(crate) const CONVERGED_BUNDLE_ID: &str = "awaken.config.converged";
 
 const POSTGRES_BASELINE: &str = include_str!("migrations/V0001__control_config.postgres.sql");

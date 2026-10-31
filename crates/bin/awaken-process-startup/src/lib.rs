@@ -15,10 +15,6 @@
 //! through [`ColocatedWorkerPreparation`]; the Coordinator process package
 //! (`awaken-coordinator-process`) declares `awaken-coordinator` over this same
 //! startup and supplies none.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 mod assistant_selection;
 mod brokered_catalog;
 mod colocated_worker;

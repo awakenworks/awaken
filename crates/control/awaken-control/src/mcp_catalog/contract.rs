@@ -6,7 +6,7 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct McpServerView {
+pub(super) struct McpServerView {
     pub key: String,
     pub origin: String,
     pub definition: McpServerDefinition,
@@ -16,7 +16,7 @@ pub struct McpServerView {
 }
 #[derive(Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct McpCatalogView {
+pub(super) struct McpCatalogView {
     pub source_url: Option<String>,
     pub active_source_url: Option<String>,
     pub revision: u64,
@@ -24,14 +24,14 @@ pub struct McpCatalogView {
 }
 #[derive(Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct McpConfigurationView {
+pub(super) struct McpConfigurationView {
     pub revision: u64,
     pub servers: Vec<McpServerView>,
     pub catalog: McpCatalogView,
 }
 #[derive(Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct McpPreparedBinding {
+pub(super) struct McpPreparedBinding {
     pub binding: AgentMcpServerBinding,
     pub credential: Option<McpCredentialChoice>,
     pub revision: u64,

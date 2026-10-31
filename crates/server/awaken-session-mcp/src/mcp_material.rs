@@ -33,7 +33,7 @@ pub enum McpTransportMaterialKind {
     },
 }
 
-pub type HttpTransportMaterialRef<'a> = (
+pub(crate) type HttpTransportMaterialRef<'a> = (
     &'a str,
     &'a Option<awaken_agent_contract::RedactedString>,
     &'a Option<Box<McpRefreshMaterial>>,

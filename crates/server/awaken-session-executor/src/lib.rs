@@ -29,10 +29,6 @@
 //! ```compile_fail,E0432
 //! use awaken_session_executor::RuntimeAuthorityError;
 //! ```
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_session_configuration_contract::sandbox_layout;
 mod acp_backend;

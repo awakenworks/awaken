@@ -22,7 +22,7 @@ use awaken_credential_vault::{CredentialCreateParams, CredentialKind};
 /// The `environment_variable` create params as they arrive on the Managed wire
 /// (`BetaManagedAgentsEnvironmentVariableCreateParams`). `secret_value` is
 /// write-only and never echoed back — the ACL consumes it into the domain.
-pub struct WireEnvVarCreate {
+pub(crate) struct WireEnvVarCreate {
     pub secret_name: String,
     pub secret_value: String,
 }
@@ -31,7 +31,7 @@ pub struct WireEnvVarCreate {
 /// params. The secret crosses into a `RedactedString` here and is sealed by the
 /// `SecretStore` in `create_source`; it is never placed on the domain row.
 #[must_use]
-pub fn env_var_to_create_params(
+pub(crate) fn env_var_to_create_params(
     workspace_id: impl Into<String>,
     provider_id: Option<String>,
     wire: WireEnvVarCreate,
@@ -50,7 +50,7 @@ pub fn env_var_to_create_params(
 /// (`BetaManagedAgentsStaticBearerCreateParams`). `token` is write-only and never
 /// echoed back — the ACL consumes it into the domain. The `mcp_server_url` stays
 /// on the wire-side record (the neutral domain row does not model MCP bindings).
-pub struct WireStaticBearerCreate {
+pub(crate) struct WireStaticBearerCreate {
     pub token: String,
 }
 
@@ -58,7 +58,7 @@ pub struct WireStaticBearerCreate {
 /// The bearer token crosses into a `RedactedString` here and is sealed by the
 /// `SecretStore` in `create_source`; it is never placed on the domain row.
 #[must_use]
-pub fn static_bearer_to_create_params(
+pub(crate) fn static_bearer_to_create_params(
     workspace_id: impl Into<String>,
     wire: WireStaticBearerCreate,
 ) -> CredentialCreateParams {
@@ -80,7 +80,7 @@ pub fn static_bearer_to_create_params(
 /// The `mcp_oauth` create params as they arrive on the Managed wire
 /// (`BetaManagedAgentsMCPOAuthCreateParams`), reduced to the secret axis the
 /// domain cares about. `access_token` and `refresh_token` are write-only.
-pub struct WireMcpOauthCreate {
+pub(crate) struct WireMcpOauthCreate {
     pub access_token: String,
     /// The refresh token from the wire `refresh` object, if one was supplied.
     pub refresh_token: Option<String>,
@@ -91,7 +91,7 @@ pub struct WireMcpOauthCreate {
 /// *second* secret — comes back as a sealed-ready `RedactedString` for the caller
 /// to enter in the same aggregate's named material set. Consumer: the vault
 /// surface's create handler in `awaken-protocol-managed`.
-pub struct McpOauthDomainCreate {
+pub(crate) struct McpOauthDomainCreate {
     pub params: CredentialCreateParams,
     /// Present iff the wire supplied a refresh token; never placed on the row.
     pub refresh_secret: Option<RedactedString>,
@@ -101,7 +101,7 @@ pub struct McpOauthDomainCreate {
 /// tokens cross into `RedactedString`s here; the domain row stays secret-free
 /// (the access token and refresh slot are committed together by the caller).
 #[must_use]
-pub fn mcp_oauth_to_create_params(
+pub(crate) fn mcp_oauth_to_create_params(
     workspace_id: impl Into<String>,
     wire: WireMcpOauthCreate,
 ) -> McpOauthDomainCreate {

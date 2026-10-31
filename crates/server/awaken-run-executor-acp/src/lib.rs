@@ -49,10 +49,6 @@ let _: Option<awaken_run_executor_acp::AcpRunExecutor> = None;
 ```
 "#
 )]
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod acp_cli;
 

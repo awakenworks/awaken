@@ -283,7 +283,7 @@ mod transport_wire {
             args: Vec<String>,
         },
     }
-    pub fn serialize<S: serde::Serializer>(
+    pub(super) fn serialize<S: serde::Serializer>(
         value: &AgentMcpTransportBinding,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
@@ -296,7 +296,7 @@ mod transport_wire {
         }
         .serialize(serializer)
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> Result<AgentMcpTransportBinding, D::Error> {
         Ok(match McpTransportConfig::deserialize(deserializer)? {

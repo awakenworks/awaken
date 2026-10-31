@@ -15,11 +15,11 @@
 use awaken_session_types::RunError;
 
 /// Most File inputs one Session carries.
-pub const MAX_SESSION_FILE_RESOURCES: usize = 500;
+pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;
 /// Most MemoryStore inputs one Session carries.
-pub const MAX_SESSION_MEMORY_STORES: usize = 8;
+pub(crate) const MAX_SESSION_MEMORY_STORES: usize = 8;
 /// Longest MemoryStore instructions, in characters.
-pub const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
+pub(crate) const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
 
 /// What one Session input names.
 #[derive(Debug, Clone)]
@@ -113,7 +113,7 @@ impl SessionInputRequest {
 
 /// The family of one input, for mount-slot comparisons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub enum InputProjectionClass {
+pub(crate) enum InputProjectionClass {
     File,
     MemoryStore,
     Repository,
@@ -121,7 +121,7 @@ pub enum InputProjectionClass {
 
 impl InputProjectionClass {
     #[must_use]
-    pub fn of_request(target: &SessionInputTarget) -> Self {
+    pub(crate) fn of_request(target: &SessionInputTarget) -> Self {
         match target {
             SessionInputTarget::File(_) => Self::File,
             SessionInputTarget::MemoryStore(_) => Self::MemoryStore,
@@ -130,7 +130,7 @@ impl InputProjectionClass {
     }
 
     #[must_use]
-    pub fn of_binding(target: &awaken_resource_contract::InputResourceId) -> Self {
+    pub(crate) fn of_binding(target: &awaken_resource_contract::InputResourceId) -> Self {
         match target {
             awaken_resource_contract::InputResourceId::File(_) => Self::File,
             awaken_resource_contract::InputResourceId::MemoryStore(_) => Self::MemoryStore,
@@ -139,7 +139,7 @@ impl InputProjectionClass {
     }
 
     #[must_use]
-    pub fn of_resolved(source: &crate::session_resource::ResolvedInputSource) -> Self {
+    pub(crate) fn of_resolved(source: &crate::session_resource::ResolvedInputSource) -> Self {
         match source {
             crate::session_resource::ResolvedInputSource::File { .. } => Self::File,
             crate::session_resource::ResolvedInputSource::MemoryStore { .. } => Self::MemoryStore,
@@ -150,7 +150,7 @@ impl InputProjectionClass {
 
 /// MemoryStore inputs: at most [`MAX_SESSION_MEMORY_STORES`], each with
 /// instructions of at most [`MAX_MEMORY_INSTRUCTIONS_CHARS`] characters.
-pub fn admit_memory_inputs(requests: &[SessionInputRequest]) -> Result<(), RunError> {
+pub(crate) fn admit_memory_inputs(requests: &[SessionInputRequest]) -> Result<(), RunError> {
     let mut memory_count = 0usize;
     for request in requests {
         if !matches!(request.target, SessionInputTarget::MemoryStore(_)) {
@@ -175,7 +175,9 @@ pub fn admit_memory_inputs(requests: &[SessionInputRequest]) -> Result<(), RunEr
 
 /// Validate the complete explicit Repository mount set before any catalog,
 /// Registry, Vault or provider effect.
-pub fn preflight_repository_mount_paths(requests: &[SessionInputRequest]) -> Result<(), RunError> {
+pub(crate) fn preflight_repository_mount_paths(
+    requests: &[SessionInputRequest],
+) -> Result<(), RunError> {
     let paths = requests
         .iter()
         .filter(|request| matches!(&request.target, SessionInputTarget::Repository { .. }))
@@ -186,7 +188,7 @@ pub fn preflight_repository_mount_paths(requests: &[SessionInputRequest]) -> Res
 }
 
 /// At most [`MAX_SESSION_FILE_RESOURCES`] File inputs.
-pub fn admit_file_count(requests: &[SessionInputRequest]) -> Result<(), RunError> {
+pub(crate) fn admit_file_count(requests: &[SessionInputRequest]) -> Result<(), RunError> {
     if requests
         .iter()
         .filter(|request| matches!(request.target, SessionInputTarget::File(_)))
@@ -203,7 +205,7 @@ pub fn admit_file_count(requests: &[SessionInputRequest]) -> Result<(), RunError
 /// MemoryStore mount component derived from a display label: lowercase
 /// alphanumeric runs joined by `-`, at most 80 characters, `store` if empty.
 #[must_use]
-pub fn memory_mount_component(label: &str) -> String {
+pub(crate) fn memory_mount_component(label: &str) -> String {
     let mut component = String::new();
     let mut separated = false;
     for character in label.chars().flat_map(char::to_lowercase) {
@@ -231,7 +233,7 @@ pub fn memory_mount_component(label: &str) -> String {
 /// The derived mount path of a MemoryStore input: its display-name path,
 /// qualified by its id and then a counter until no used mount collides.
 #[must_use]
-pub fn unique_memory_mount_path(
+pub(crate) fn unique_memory_mount_path(
     display_name: &str,
     memory_store_id: &str,
     used_mounts: &std::collections::BTreeSet<String>,
@@ -260,7 +262,7 @@ pub fn unique_memory_mount_path(
 ///
 /// A Repository request without its configured platform id.
 #[must_use]
-pub fn input_binding(
+pub(crate) fn input_binding(
     binding_id: String,
     request: &SessionInputRequest,
     repository_id: Option<awaken_resource_contract::RepositoryId>,

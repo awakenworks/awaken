@@ -303,7 +303,7 @@ const fn isolation_rank(class: IsolationClass) -> u8 {
 /// kept separate from readiness/ranking so a fail-closed policy can never silently
 /// turn into a downgrade while candidate ordering changes.
 #[must_use]
-pub const fn degradation_is_authorized(
+pub(crate) const fn degradation_is_authorized(
     actual: IsolationClass,
     required: IsolationClass,
     on_unmet: OnUnmet,

@@ -246,7 +246,7 @@ const TOPICS: &[Topic] = &[
 /// The help payload for `admin_explain_console`. `None` (or an unknown topic) returns the
 /// index of topic keys + titles; a known topic returns its full 5-section explanation.
 #[must_use]
-pub fn explain(topic: Option<&str>) -> Value {
+pub(crate) fn explain(topic: Option<&str>) -> Value {
     let index = || -> Value {
         json!({
             "topics": TOPICS.iter().map(|t| json!({ "topic": t.key, "title": t.title }))
