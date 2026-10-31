@@ -335,7 +335,13 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
             "Reply with exactly the single word BANANA and nothing else.",
             "the reply contains the word BANANA",
             3,
-            &awaken_session_run_delivery::OutcomeRunExecutor::new(&admission),
+            &awaken_session_run_delivery::OutcomeRunExecutor::new(
+                &admission,
+                host.session_runs()
+                    .coordinator_dispatch()
+                    .expect("Coordinator dispatch owner")
+                    .as_ref(),
+            ),
         )
         .await
         .expect("define_outcome");

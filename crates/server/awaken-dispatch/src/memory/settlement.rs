@@ -53,14 +53,20 @@ impl MemoryDispatchStore {
                         row.request.thread_id().clone(),
                         row.request.session_thread_id.clone(),
                         row.request.admission_fingerprint(),
+                        row.cancellation_requested,
                     )
                 });
                 state.completions.push(DispatchCompletion {
                     sequence,
                     run_id: run_id.clone(),
-                    thread_id: request.as_ref().map(|(thread, _, _)| thread.clone()),
-                    session_thread_id: request.as_ref().and_then(|(_, parent, _)| parent.clone()),
-                    request_fingerprint: request.map(|(_, _, fingerprint)| fingerprint),
+                    thread_id: request.as_ref().map(|(thread, _, _, _)| thread.clone()),
+                    session_thread_id: request
+                        .as_ref()
+                        .and_then(|(_, parent, _, _)| parent.clone()),
+                    cancellation_requested: request
+                        .as_ref()
+                        .is_some_and(|(_, _, _, cancelled)| *cancelled),
+                    request_fingerprint: request.map(|(_, _, fingerprint, _)| fingerprint),
                 });
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);

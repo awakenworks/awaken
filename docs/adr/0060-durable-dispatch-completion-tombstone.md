@@ -111,6 +111,24 @@ than creating a collision registry. `NULL` is reserved for historical rows
 whose dispatch payload is no longer provable; those Run ids fail closed on
 replay instead of treating absence of evidence as identity equality.
 
+### Amendment 2026-10-31: the settled cancel request
+
+`DispatchCompletion` gains `cancellation_requested: bool`, copied from the row's
+durable cancel request in the same settlement transaction that removes the row
+(memory, SQLite and PostgreSQL). A user interrupt may reach a Worker Run whose
+cancellation claim finds an unconfirmed predecessor; that Run then commits
+`Error`/`Indeterminate` instead of `Cancelled`, and before this amendment the
+cancel fact vanished with the row. The Outcome controller reads it from the
+completion (or, while the row is still live, from the row's own cancel request)
+to classify such a Worker Run as interrupted, while the committed Run state
+stays the terminal authority and its fault is still published.
+
+Persisted format: converged migration V9 adds
+`{prefix}_dispatch_completion.cancel_requested BIGINT NOT NULL DEFAULT 0`;
+historical tombstones read as `false`. On the serde shape the field defaults to
+`false` and is omitted when `false`, so bytes exchanged with older peers are
+unchanged. `DispatchCompletion` does not cross the Worker HTTP transports.
+
 ## Consequences
 
 - A separate process can project terminal delivery after either side restarts,

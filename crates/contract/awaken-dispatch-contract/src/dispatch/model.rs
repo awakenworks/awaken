@@ -345,6 +345,15 @@ pub struct DispatchCompletion {
     /// a caller-owned Run-id replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_fingerprint: Option<String>,
+    /// Whether a durable cancel request was retained on the dispatch row when
+    /// it settled. The committed Run state stays the terminal authority; this
+    /// keeps the cancel fact an interrupted Run may not have been able to
+    /// commit (its cancellation claim found an unconfirmed predecessor and it
+    /// ended Error/Indeterminate). Tombstones written before this fact existed
+    /// decode as `false`, and `false` is omitted on the wire so older peers
+    /// read and write identical bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cancellation_requested: bool,
 }
 
 impl SettleOutcome {

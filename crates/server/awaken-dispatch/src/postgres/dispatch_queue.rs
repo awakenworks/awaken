@@ -934,8 +934,8 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
         if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
             sqlx::query(&format!(
                 "INSERT INTO {p}_dispatch_completion \
-                 (run_id, request_fingerprint, thread_id, session_thread_id) \
-                 VALUES ($1, $2, $3, $4) \
+                 (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested) \
+                 VALUES ($1, $2, $3, $4, $5) \
                  ON CONFLICT (run_id) DO NOTHING"
             ))
             .bind(&run_id.0)
@@ -947,6 +947,7 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
                     .as_ref()
                     .map(|thread| thread.0.as_str()),
             )
+            .bind(i64::from(cancellation_requested != 0))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1570,12 +1571,12 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
             row.try_get("active_attempt_epoch").map_err(store_error)?;
         let physical_binding: Option<serde_json::Value> =
             row.try_get("active_attempt_binding").map_err(store_error)?;
-        let closing: i64 = row.try_get("active_attempt_closing").map_err(store_error)?;
+        let closing: bool = row.try_get("active_attempt_closing").map_err(store_error)?;
         crate::dispatch::observed_physical_attempt_is_present(
             physical_owner.is_some(),
             physical_epoch.is_some(),
             physical_binding.is_some(),
-            closing != 0,
+            closing,
         )?;
         let adopted = crate::dispatch::pending_session_run_adoption(
             &stored,
@@ -1596,7 +1597,7 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
                 false,
                 false,
             ),
-            closing != 0,
+            closing,
             command_fingerprint,
         )?;
         let Some((request, next)) = adopted else {

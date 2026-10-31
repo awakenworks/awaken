@@ -369,6 +369,26 @@ impl RunExecutor for BoundRunExecutor<'_> {
     }
 }
 
+/// Outcome settlement of a bound Run: the Coordinator dispatch completion when
+/// this process holds the dispatch owner; an in-process Run without durable
+/// delivery retains no cancel request.
+#[async_trait::async_trait]
+impl awaken_ext_goal::run_settlement::OutcomeRuns for BoundRunExecutor<'_> {
+    async fn settlement(
+        &self,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> ExecutionResult<awaken_ext_goal::run_settlement::RunSettlement> {
+        match self.host.optional_dispatch_store() {
+            Some(dispatch) => {
+                awaken_session_run_delivery::read_run_settlement(dispatch.as_ref(), run_id).await
+            }
+            None => Ok(awaken_ext_goal::run_settlement::RunSettlement::Settled {
+                cancellation_requested: false,
+            }),
+        }
+    }
+}
+
 /// The one executor router owned by a Session. Backend identity comes only from
 /// the immutable activation snapshot, so foreground, durable, recovery, and a
 /// cold replacement worker make the same choice without a process-local route.

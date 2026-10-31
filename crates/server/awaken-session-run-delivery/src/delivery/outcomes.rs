@@ -11,11 +11,16 @@
 //! the Coordinator.
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_dispatch_contract::{
+    DispatchReads as _, SessionRunAdmissionObservation, SessionRunAdmissionReads as _,
+};
+use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_ext_goal::controller::{Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{
     AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker,
 };
 use awaken_ext_goal::outcome::{Definition, Grade, Grader, GraderError, GradingInput, Id};
+use awaken_ext_goal::run_settlement::{OutcomeRuns, RunSettlement};
 use awaken_ext_goal::state::{Binding, grader_thread_id};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_session_execution_contract::OutcomeDrive;
@@ -28,16 +33,52 @@ use crate::{outcome_controller_error, outcome_report};
 /// The Execution-owned SDK adapter for a Session application's borrowed
 /// prepared admission. Both local and Worker delivery use this same bridge;
 /// it stores no application binding and preserves typed diagnostic evidence.
+/// Settlement reads go to the Run's durable dispatch completion.
 pub struct OutcomeRunExecutor<'a> {
     admission: &'a dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+    settlements: &'a AnyCoordinatorDispatch,
 }
 
 impl<'a> OutcomeRunExecutor<'a> {
     #[must_use]
     pub fn new(
         admission: &'a dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
+        settlements: &'a AnyCoordinatorDispatch,
     ) -> Self {
-        Self { admission }
+        Self {
+            admission,
+            settlements,
+        }
+    }
+}
+
+/// The Outcome settlement of one dispatch observation. `live_cancellation`
+/// is the still-live row's durable cancel request, read only for `Live`.
+///
+/// | Rule | observation             | live row cancel | settlement                                |
+/// |------|-------------------------|-----------------|-------------------------------------------|
+/// | S1   | Completed, cancel true  | not read        | Settled { cancellation_requested: true }  |
+/// | S2   | Completed, cancel false | not read        | Settled { cancellation_requested: false } |
+/// | S3   | Live                    | true / false    | Settled with the row's durable request    |
+/// | S4   | Live                    | row gone        | Unsettled: the next drive reads again     |
+/// | S5   | Missing                 | not read        | Settled { cancellation_requested: false }: no durable cancel evidence |
+fn run_settlement(
+    observation: &SessionRunAdmissionObservation,
+    live_cancellation: Option<bool>,
+) -> RunSettlement {
+    match (observation, live_cancellation) {
+        (SessionRunAdmissionObservation::Completed(completion), _) => RunSettlement::Settled {
+            cancellation_requested: completion.cancellation_requested,
+        },
+        (SessionRunAdmissionObservation::Live(_), Some(cancellation_requested)) => {
+            RunSettlement::Settled {
+                cancellation_requested,
+            }
+        }
+        (SessionRunAdmissionObservation::Live(_), None) => RunSettlement::Unsettled,
+        (SessionRunAdmissionObservation::Missing, _) => RunSettlement::Settled {
+            cancellation_requested: false,
+        },
     }
 }
 
@@ -51,6 +92,49 @@ impl awaken_runtime_contract::execution::RunExecutor for OutcomeRunExecutor<'_> 
     {
         self.admission.admit(activation).await
     }
+}
+
+#[async_trait::async_trait]
+impl OutcomeRuns for OutcomeRunExecutor<'_> {
+    async fn settlement(
+        &self,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> awaken_runtime_contract::execution::Result<RunSettlement> {
+        read_run_settlement(self.settlements, run_id).await
+    }
+}
+
+/// Read one Run's Outcome settlement from its durable dispatch evidence: the
+/// completion tombstone, or the still-live row's cancel request. An
+/// unavailable read is an error, never a guessed settlement.
+pub async fn read_run_settlement(
+    dispatch: &AnyCoordinatorDispatch,
+    run_id: &awaken_agent_contract::agent::run::Id,
+) -> awaken_runtime_contract::execution::Result<RunSettlement> {
+    let unavailable = |error: awaken_dispatch_contract::DispatchError| {
+        awaken_runtime_contract::execution::Error::from(
+            awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+                awaken_runtime_contract::diagnostic::RuntimeErrorKind::Unavailable,
+                "run_settlement_unavailable",
+                error,
+            ),
+        )
+    };
+    let observation = dispatch
+        .observe_session_run_admission(run_id)
+        .await
+        .map_err(unavailable)?;
+    let live_cancellation = match observation {
+        SessionRunAdmissionObservation::Live(_) => dispatch
+            .list_dispatches()
+            .await
+            .map_err(unavailable)?
+            .into_iter()
+            .find(|row| &row.run_id == run_id)
+            .map(|row| row.cancellation_requested),
+        _ => None,
+    };
+    Ok(run_settlement(&observation, live_cancellation))
 }
 
 /// The Grader of a Worker-placed Session's Outcome: each grading is a Run of
@@ -102,9 +186,7 @@ enum OutcomeCommand<'a> {
     },
     /// Continuing the active Outcome drives its Worker Run through the
     /// caller's executor; preparation never executes, so only this case has one.
-    Resume {
-        executor: &'a dyn awaken_runtime_contract::execution::RunExecutor,
-    },
+    Resume { executor: &'a dyn OutcomeRuns },
 }
 
 enum OutcomeCommandResult {
@@ -211,7 +293,7 @@ impl WorkerPlacedSessions {
     async fn continue_session_outcome(
         &self,
         thread: &str,
-        executor: &dyn awaken_runtime_contract::execution::RunExecutor,
+        executor: &dyn OutcomeRuns,
     ) -> Result<Option<OutcomeDrive>, RunError> {
         match self
             .execute_outcome_command(thread, OutcomeCommand::Resume { executor })
@@ -255,9 +337,12 @@ impl awaken_session_execution_contract::Outcomes for WorkerPlacedSessions {
         );
         self.prepare_session_outcome(thread, &outcome_id, description, rubric, max_iterations)
             .await?;
-        self.continue_session_outcome(thread, &OutcomeRunExecutor::new(admission))
-            .await?
-            .ok_or_else(|| RunError::internal("defined Outcome aggregate was not persisted"))
+        self.continue_session_outcome(
+            thread,
+            &OutcomeRunExecutor::new(admission, self.ports.owner.as_ref()),
+        )
+        .await?
+        .ok_or_else(|| RunError::internal("defined Outcome aggregate was not persisted"))
     }
 
     async fn continue_outcome(
@@ -265,15 +350,22 @@ impl awaken_session_execution_contract::Outcomes for WorkerPlacedSessions {
         thread: &str,
         admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<Option<OutcomeDrive>, RunError> {
-        self.continue_session_outcome(thread, &OutcomeRunExecutor::new(admission))
-            .await
+        self.continue_session_outcome(
+            thread,
+            &OutcomeRunExecutor::new(admission, self.ports.owner.as_ref()),
+        )
+        .await
     }
 }
 
 #[cfg(test)]
 mod admission_adapter_tests {
-    use super::OutcomeRunExecutor;
+    use super::{OutcomeRunExecutor, run_settlement};
     use awaken_agent_contract::agent::run::{EndCause, RunState};
+    use awaken_dispatch_contract::SessionRunAdmissionObservation::{
+        self, Completed, Live, Missing,
+    };
+    use awaken_ext_goal::run_settlement::RunSettlement;
     use awaken_runtime_contract::diagnostic::{
         RunAdmissionDisposition, RunAdmissionFailure, RuntimeDiagnostic, RuntimeErrorKind,
         run_admission_disposition,
@@ -285,6 +377,56 @@ mod admission_adapter_tests {
     struct Admission {
         seen: Mutex<Option<RunActivation>>,
         refusal: Option<RunAdmissionDisposition>,
+    }
+
+    fn completion(cancellation_requested: bool) -> SessionRunAdmissionObservation {
+        Completed(awaken_dispatch_contract::DispatchCompletion {
+            sequence: 1,
+            run_id: awaken_agent_contract::agent::run::Id("outcome/settled/worker/0".into()),
+            thread_id: None,
+            session_thread_id: None,
+            request_fingerprint: None,
+            cancellation_requested,
+        })
+    }
+
+    #[test]
+    fn settlement_reads_the_durable_cancel_request() {
+        // Every row of `run_settlement`.
+        let live = || {
+            Live(Box::new(awaken_dispatch_contract::RunDispatch::new(
+                RunActivation::new(
+                    awaken_agent_contract::agent::run::Id("outcome/settled/worker/0".into()),
+                    awaken_agent_contract::ThreadId("session".into()),
+                    ExecutableAgentSnapshot::builder("worker")
+                        .model(
+                            awaken_runtime_contract::resolved::ModelBinding::parse(
+                                "test", "model", "native",
+                            )
+                            .expect("valid native activation fixture"),
+                        )
+                        .build(),
+                    Vec::new(),
+                ),
+            )))
+        };
+        let settled = |cancellation_requested| RunSettlement::Settled {
+            cancellation_requested,
+        };
+        for (rule, observation, live_cancellation, expected) in [
+            ("S1", completion(true), None, settled(true)),
+            ("S2", completion(false), None, settled(false)),
+            ("S3 cancel", live(), Some(true), settled(true)),
+            ("S3 plain", live(), Some(false), settled(false)),
+            ("S4", live(), None, RunSettlement::Unsettled),
+            ("S5", Missing, None, settled(false)),
+        ] {
+            assert_eq!(
+                run_settlement(&observation, live_cancellation),
+                expected,
+                "{rule}"
+            );
+        }
     }
 
     #[async_trait::async_trait]
@@ -331,6 +473,10 @@ mod admission_adapter_tests {
         )
         .with_model_ref_override(Some("frozen-model".into()))
         .without_tools();
+        let dispatch = awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(awaken_time::system_clock()),
+            None,
+        );
         for refusal in [
             None,
             Some(RunAdmissionDisposition::Deferred),
@@ -340,7 +486,7 @@ mod admission_adapter_tests {
                 seen: Mutex::new(None),
                 refusal,
             };
-            let result = OutcomeRunExecutor::new(&admission)
+            let result = OutcomeRunExecutor::new(&admission, &dispatch)
                 .execute(activation.clone(), RuntimeRunContext::new())
                 .await;
             assert_eq!(
