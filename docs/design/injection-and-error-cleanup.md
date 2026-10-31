@@ -1,6 +1,6 @@
 # Construction-Time Injection and Typed Errors
 
-Status: classification complete; (v) done, (iii) started, (i) designed.
+Status: classification complete; (v) done, (iii) started, (i) designed; Family A blocked by a verified runtime cycle.
 Principles: P5 (interface segregation, construction-time injection) and P6
 (errors are values, classified once) of the architecture plan.
 
@@ -67,6 +67,44 @@ part that does.
 This touches the composition roots (`awaken-cli`, `awaken-worker`,
 `awaken-coordinator`, `awaken-scenario-host`) and is not started in this batch.
 
+**Verification (at `65252536c3`): blocked by a true runtime cycle.** Both roles
+reach the executor, so build order alone cannot break the edge:
+
+- Coordination: `SessionCoordination` (the `SessionAgentCoordination` impl)
+  holds the executor's `ChildRunCoordination`, `SessionRuns.threads` and
+  `CommittedReads` from `SessionExecutionRoles`, and `SessionRealizations`
+  over `RunAssembly`. The executor `ChildRunCoordination` holds `SessionRuns`,
+  `RunAssembly` and `RunCapabilities`, and `RunCapabilities` carries the
+  binding. At runtime, `send_session_agent_message` launches a child Run
+  through `ChildRunCoordination`. That Run's model gate
+  (`ChildRunLauncher` → `coordination_endpoint`) calls
+  `admit_session_model_request`, and its dispatch settlement
+  (`HostDispatchSettlementObserver`) calls the boundary methods.
+- Background Runs: `SessionRunApplication` (the
+  `SessionRunBackgroundApplication` impl) holds `SessionRuns` as its
+  `RunApplication`. Its `SessionRunAdmissions` holds the executor's
+  `ChildRunCoordination` and `StreamingRuns`.
+  `submit_session_run_background` → `activate_admitted_session_run` →
+  `ChildRunCoordination::activate_session_run`. The BackgroundTask tool
+  (`context/plan.rs`) and MCP background input (`mcp_host.rs`) call it from
+  inside a Run.
+- `session_execution_roles()` passes `RunCapabilities` itself, as
+  `capability`, to the application. Injecting the roles into the claimed-Run
+  resolver also closes a strong cycle: `ProcessDispatch` keeps the pool and its
+  resolver in a `OnceCell`, and `SessionRuns` holds `ProcessDispatch`.
+
+Two remedies break the cycle, and both need a decision:
+
+- The application activates and reads Runs only through the dispatch queue and
+  committed reads, so it no longer holds `SessionRuns`,
+  `ChildRunCoordination`, `RunAssembly` or `RunCapabilities`. This changes the
+  `SessionExecutionRoles` contract.
+- The executor splits into a Session realization part, which the application
+  consumes, and a Run execution part, which is built after the application and
+  receives the roles as `Arc`.
+
+Either remedy touches V0's run paths and the Family B registry.
+
 ## Family B: installed-Session registry
 
 `InstalledSessions` owns each Session's context. That context holds attempt
@@ -98,6 +136,7 @@ lane (V2) lands. It is not started in this batch.
   `SessionMutationError` classifies it as retryable `Unavailable`; creation and
   activity reuse that conversion. Every other violation stays permanent
   (`a_list_price_outage_is_the_one_retryable_state_violation`).
+- Family A: choose between the two cycle remedies recorded under Family A.
 - Families A and B change composition roots and lock layout. Each needs its own
   slice, sequenced after V0 and V2.
 
