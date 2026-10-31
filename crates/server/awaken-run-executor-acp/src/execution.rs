@@ -1390,7 +1390,7 @@ fn retryable_handshake_failure(
     messages_empty: bool,
     error: &AcpError,
 ) -> bool {
-    codec == Codec::Acp
+    codec != Codec::Newline
         && session_id.is_none()
         && messages_empty
         && matches!(error, AcpError::Io(_) | AcpError::Truncated)
