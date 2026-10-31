@@ -118,7 +118,7 @@ pub(crate) struct HostRunDelegationService {
     /// edge and must never enter ordinary delegate lookup or recovery.
     advisor: Option<ExecutableAgentSnapshot>,
     adapters: crate::agent_runner::ChildExecutionAdapters,
-    publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
+    publications: Arc<dyn PublishedAgentSnapshotSource>,
     workspace: String,
     scheduler: Option<RunScheduler>,
     tool_configuration: CallerToolConfiguration,
@@ -170,10 +170,10 @@ impl HostRunDelegationService {
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         parent_snapshot: &ExecutableAgentSnapshot,
         adapters: crate::agent_runner::ChildExecutionAdapters,
-        publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
+        publications: Arc<dyn PublishedAgentSnapshotSource>,
         workspace: String,
     ) -> Result<Self, DelegationExecutionError> {
-        let targets = Self::resolve_targets(parent_snapshot, publications.as_deref(), &workspace)?;
+        let targets = Self::resolve_targets(parent_snapshot, publications.as_ref(), &workspace)?;
         let advisor = Self::derive_advisor_snapshot(parent_snapshot)?;
         Ok(Self {
             llm,
@@ -239,7 +239,7 @@ impl HostRunDelegationService {
 
     fn resolve_targets(
         parent: &ExecutableAgentSnapshot,
-        publications: Option<&dyn PublishedAgentSnapshotSource>,
+        publications: &dyn PublishedAgentSnapshotSource,
         workspace: &str,
     ) -> Result<HashMap<AgentId, ResolvedDelegationTarget>, DelegationExecutionError> {
         let mut targets = HashMap::new();
@@ -259,7 +259,7 @@ impl HostRunDelegationService {
             let snapshot = awaken_runtime_contract::resolve_delegate_snapshot(
                 parent,
                 binding,
-                publications,
+                Some(publications),
                 workspace,
             )
             .map_err(|_| {
@@ -267,11 +267,6 @@ impl HostRunDelegationService {
                     DelegationExecutionError::new(
                         "recursive-self delegation target does not match its owner",
                     )
-                } else if publications.is_none() {
-                    DelegationExecutionError::new(format!(
-                        "delegate agent {:?} has no publication source",
-                        binding.agent_id.0
-                    ))
                 } else {
                     DelegationExecutionError::new(format!(
                         "delegate agent {:?} revision {:?} has no published executable snapshot",
@@ -300,8 +295,7 @@ impl HostRunDelegationService {
         fingerprint: &CatalogFingerprint,
     ) -> Result<ExecutableAgentSnapshot, DelegationExecutionError> {
         self.publications
-            .as_ref()
-            .and_then(|source| source.exact(&self.workspace, fingerprint))
+            .exact(&self.workspace, fingerprint)
             .ok_or_else(|| {
                 DelegationExecutionError::new(format!(
                     "delegated Run snapshot {:?} is unavailable",
@@ -336,7 +330,7 @@ impl HostRunDelegationService {
             let mut child_service = self.clone();
             child_service.targets = Self::resolve_targets(
                 &snapshot,
-                child_service.publications.as_deref(),
+                child_service.publications.as_ref(),
                 &child_service.workspace,
             )?;
             // Advisor is primary-only. In particular, cloning the service for an
@@ -677,6 +671,15 @@ mod durable_cancel_tests {
     use awaken_store_inmem::MemoryCommitCoordinator;
     use std::collections::HashSet;
     use std::sync::Mutex;
+
+    /// A publication source with no publications, for services whose Agent
+    /// delegates to nothing.
+    fn no_publications() -> Arc<dyn PublishedAgentSnapshotSource> {
+        Arc::new(
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([])
+                .expect("an empty publication source"),
+        )
+    }
 
     #[test]
     fn delegated_child_seed_identity_is_stable_across_process_reconstruction() {
@@ -1075,20 +1078,17 @@ mod durable_cancel_tests {
         };
 
         let exact =
-            HostRunDelegationService::resolve_targets(&parent(Some(1)), Some(&source), "workspace")
+            HostRunDelegationService::resolve_targets(&parent(Some(1)), &source, "workspace")
                 .expect("V1");
         assert_eq!(exact[&AgentId("worker".into())].snapshot, first, "V1/E1");
 
-        let error = HostRunDelegationService::resolve_targets(
-            &parent(Some(99)),
-            Some(&source),
-            "workspace",
-        )
-        .expect_err("V2 missing exact publication must fail");
+        let error =
+            HostRunDelegationService::resolve_targets(&parent(Some(99)), &source, "workspace")
+                .expect_err("V2 missing exact publication must fail");
         assert!(error.to_string().contains("Some(99)"), "V2/E2");
 
         let resolved_current =
-            HostRunDelegationService::resolve_targets(&parent(None), Some(&source), "workspace")
+            HostRunDelegationService::resolve_targets(&parent(None), &source, "workspace")
                 .expect("V3");
         assert_eq!(
             resolved_current[&AgentId("worker".into())].snapshot,
@@ -1104,9 +1104,8 @@ mod durable_cancel_tests {
             .agent
             .delegates
             .push(repeated);
-        let error =
-            HostRunDelegationService::resolve_targets(&duplicate, Some(&source), "workspace")
-                .expect_err("V4 duplicate target must fail");
+        let error = HostRunDelegationService::resolve_targets(&duplicate, &source, "workspace")
+            .expect_err("V4 duplicate target must fail");
         assert!(error.to_string().contains("more than once"), "V4/E4");
 
         let reserved = ExecutableAgentSnapshot::builder("coordinator")
@@ -1124,9 +1123,8 @@ mod durable_cancel_tests {
                 ..Default::default()
             })
             .build();
-        let error =
-            HostRunDelegationService::resolve_targets(&reserved, Some(&source), "workspace")
-                .expect_err("V5 reserved target must fail");
+        let error = HostRunDelegationService::resolve_targets(&reserved, &source, "workspace")
+            .expect_err("V5 reserved target must fail");
         assert!(error.to_string().contains("reserved advisor"), "V5/E5");
     }
 
@@ -1264,7 +1262,7 @@ mod durable_cancel_tests {
                 clock: Some(clock.clone()),
                 ..Default::default()
             },
-            None,
+            no_publications(),
             "default".into(),
         )
         .expect("advisor-free service");
@@ -1280,7 +1278,7 @@ mod durable_cancel_tests {
                 clock: Some(clock.clone()),
                 ..Default::default()
             },
-            None,
+            no_publications(),
             "default".into(),
         )
         .expect("A1 service")
@@ -1529,7 +1527,7 @@ mod durable_cancel_tests {
                 clock: Some(clock.clone()),
                 ..Default::default()
             },
-            Some(Arc::new(TestPublications(child_snapshot))),
+            Arc::new(TestPublications(child_snapshot)),
             "default".into(),
         )
         .expect("resolve test roster")
