@@ -70,7 +70,8 @@ async fn native_worker_freezes_binding_before_tool_entry_and_clears_on_return() 
         store
             .enqueue(
                 RunDispatch::new(activation("worker-binding"))
-                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+                    .with_worker_codec_requirements(),
             )
             .await
             .unwrap();

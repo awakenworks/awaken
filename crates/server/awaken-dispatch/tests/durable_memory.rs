@@ -455,7 +455,8 @@ async fn an_unclaimable_parent_mediated_run_remains_scheduled_for_a_compatible_w
         "parent-worker",
     );
     let request = RunDispatch::new(activation("remote-child"))
-        .with_placement(PlacementRequirements::remote_required());
+        .with_placement(PlacementRequirements::remote_required())
+        .with_worker_codec_requirements();
 
     assert!(
         worker

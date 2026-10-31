@@ -56,7 +56,9 @@ async fn incompatible_pages_preserve_priority_time_and_id_with_one_connection() 
     gpu.required_capabilities.insert("gpu".into());
     harness::seed_placement_candidate_prefix(
         &pool,
-        RunDispatch::new(harness::activation_on("template", "template-thread")).with_placement(gpu),
+        RunDispatch::new(harness::activation_on("template", "template-thread"))
+            .with_placement(gpu)
+            .with_worker_codec_requirements(),
         384,
         "gpu-",
         i64::MAX,
@@ -76,7 +78,8 @@ async fn incompatible_pages_preserve_priority_time_and_id_with_one_connection() 
         store
             .enqueue(
                 RunDispatch::new(harness::activation_on(id, &format!("thread-{id}")))
-                    .with_placement(PlacementRequirements::remote_required()),
+                    .with_placement(PlacementRequirements::remote_required())
+                    .with_worker_codec_requirements(),
             )
             .await
             .unwrap();
@@ -100,7 +103,8 @@ async fn incompatible_pages_preserve_priority_time_and_id_with_one_connection() 
     store
         .enqueue(
             RunDispatch::new(harness::activation_on("new-front", "new-thread"))
-                .with_placement(PlacementRequirements::remote_required()),
+                .with_placement(PlacementRequirements::remote_required())
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();

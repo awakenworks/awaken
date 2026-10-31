@@ -1349,7 +1349,9 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     gpu.required_capabilities.insert("gpu".into());
     harness::seed_placement_candidate_prefix(
         &pool,
-        RunDispatch::new(activation_on("template", "template-thread")).with_placement(gpu),
+        RunDispatch::new(activation_on("template", "template-thread"))
+            .with_placement(gpu)
+            .with_worker_codec_requirements(),
         140,
         "page-incompatible-",
         100,
@@ -1367,7 +1369,8 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     for (index, placed) in [false, true].into_iter().enumerate() {
         let run = format!("page-compatible-{index}");
         let request = RunDispatch::new(activation_on(&run, &format!("compatible-thread-{index}")))
-            .with_placement(PlacementRequirements::remote_required());
+            .with_placement(PlacementRequirements::remote_required())
+            .with_worker_codec_requirements();
         store.enqueue(request).await.unwrap();
         let claimed = if placed {
             store
@@ -1393,7 +1396,8 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
                     &format!("page-raced-{index}"),
                     &format!("page-raced-thread-{index}"),
                 ))
-                .with_placement(PlacementRequirements::remote_required()),
+                .with_placement(PlacementRequirements::remote_required())
+                .with_worker_codec_requirements(),
             )
             .await
             .unwrap();
@@ -1626,7 +1630,8 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
             "boundary-template",
             "boundary-template-thread",
         ))
-        .with_placement(remote.clone()),
+        .with_placement(remote.clone())
+        .with_worker_codec_requirements(),
         129,
     )
     .await;
@@ -1642,7 +1647,8 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
     store
         .enqueue(
             RunDispatch::new(activation_on(near_limit, "boundary-remote-near-thread"))
-                .with_placement(remote.clone()),
+                .with_placement(remote.clone())
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
@@ -1668,7 +1674,8 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
     store
         .enqueue(
             RunDispatch::new(activation_on(fresh, "boundary-remote-fresh-thread"))
-                .with_placement(remote),
+                .with_placement(remote)
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
@@ -1711,7 +1718,8 @@ async fn deep_discovery_releases_its_stream_before_one_connection_exact_claim() 
         .expect("migrated dispatch");
     let template = serde_json::to_value(
         RunDispatch::new(activation_on("remote-template", "remote-template-thread"))
-            .with_placement(PlacementRequirements::remote_required()),
+            .with_placement(PlacementRequirements::remote_required())
+            .with_worker_codec_requirements(),
     )
     .unwrap();
     sqlx::query(

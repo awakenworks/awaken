@@ -380,7 +380,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             r#"{"inputs":[]}"#,
         ),
     );
-    reprojected.placement = PlacementRequirements::remote_required();
+    reprojected = current_remote_required(reprojected);
     assert_eq!(
         store
             .reserve_session_run(reprojected, RESERVATION_TTL_MS)
@@ -1020,11 +1020,11 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     repair_placement
         .required_capabilities
         .insert(repair_capability.clone());
-    let repair_request = current_session_command(
+    let repair_request = current_session_command(current_placed(
         dispatch(ns, "reservation-repair", "reservation-repair-thread")
-            .for_session(thread_id(ns, "reservation-repair-thread"))
-            .with_placement(repair_placement),
-    );
+            .for_session(thread_id(ns, "reservation-repair-thread")),
+        repair_placement,
+    ));
     let repair_run = repair_request.run_id().clone();
     let repair_session = repair_request.thread_id().clone();
     clock.set(80_000);
