@@ -18,11 +18,47 @@ use std::sync::Arc;
 pub struct AuthorizedSessionEnvironmentEffect {
     /// The contract result owns the operation's sole immutable intent.
     pub authorization: awaken_session_contract::SessionEnvironmentEffectAuthorization,
-    pub provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
-    /// Captured before provider I/O; renewal can advance expiry but cannot
-    /// lend this operation another installed Session allocation or Worker generation.
-    pub provider_authority:
-        Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
+    pub provider_effect: AuthorizedProviderEffect,
+}
+
+/// Who owns the provider effect of one authorized Environment operation: the
+/// owned form of [`awaken_provisioning_contract::SandboxEffect`]. An unowned
+/// authorization is `Unattached`; an aggregate-owned one always carries its
+/// fence together with the authority captured for it, so neither can travel
+/// without the other.
+pub enum AuthorizedProviderEffect {
+    Unattached,
+    Fenced {
+        fence: awaken_provisioning_contract::SandboxEffectFence,
+        /// Captured before provider I/O; renewal can advance expiry but cannot
+        /// lend this operation another installed Session allocation or Worker generation.
+        authority: Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
+    },
+}
+
+impl AuthorizedProviderEffect {
+    /// The aggregate fence; an unattached effect has none.
+    #[must_use]
+    pub fn fence(&self) -> Option<&awaken_provisioning_contract::SandboxEffectFence> {
+        match self {
+            Self::Unattached => None,
+            Self::Fenced { fence, .. } => Some(fence),
+        }
+    }
+
+    /// The borrowed effect every provider operation receives.
+    #[must_use]
+    pub fn sandbox_effect(&self) -> awaken_provisioning_contract::SandboxEffect<'_> {
+        match self {
+            Self::Unattached => awaken_provisioning_contract::SandboxEffect::Unattached,
+            Self::Fenced { fence, authority } => {
+                awaken_provisioning_contract::SandboxEffect::Fenced {
+                    fence,
+                    authority: authority.as_ref(),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,6 +305,56 @@ impl PreparedBoundEnvironment {
             Some(handle) => handle.memory_materializations(),
             None if self.definitive_absence => Ok(Some(&[])),
             None => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AuthorizedProviderEffect;
+    use awaken_provisioning_contract::test_support::EffectAuthority;
+    use awaken_provisioning_contract::{SandboxEffect, SandboxEffectFence};
+    use std::sync::Arc;
+
+    /// Decision table for the owned provider effect of one authorization:
+    /// | Rule | authorization          | fence | provider effect      | admit   |
+    /// |---|---|---|---|---|
+    /// | A1 | unowned                | none  | `Unattached`         | admits  |
+    /// | A2 | owned, live authority  | its   | `Fenced` (same fence) | admits  |
+    /// | A3 | owned, revoked         | its   | `Fenced` (same fence) | refuses |
+    /// | A4 | fence without authority | -    | unrepresentable      | -       |
+    #[test]
+    fn authorized_provider_effect_carries_its_fence_with_its_authority() {
+        let unowned = AuthorizedProviderEffect::Unattached;
+        assert!(unowned.fence().is_none(), "A1 fence");
+        assert!(
+            matches!(unowned.sandbox_effect(), SandboxEffect::Unattached),
+            "A1 effect"
+        );
+        assert!(unowned.sandbox_effect().admit().is_ok(), "A1 admit");
+
+        let fence = SandboxEffectFence::new("op", "owner", "boot", 1, u64::MAX).unwrap();
+        for (rule, authority, admits) in [
+            ("A2", EffectAuthority::new(&fence), true),
+            ("A3", EffectAuthority::denied(), false),
+        ] {
+            let owned = AuthorizedProviderEffect::Fenced {
+                fence: fence.clone(),
+                authority: Arc::new(authority),
+            };
+            assert_eq!(owned.fence(), Some(&fence), "{rule} fence");
+            assert!(
+                matches!(
+                    owned.sandbox_effect(),
+                    SandboxEffect::Fenced { fence: carried, .. } if carried == &fence
+                ),
+                "{rule} effect"
+            );
+            assert_eq!(
+                owned.sandbox_effect().admit().is_ok(),
+                admits,
+                "{rule} admit"
+            );
         }
     }
 }

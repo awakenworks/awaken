@@ -10,8 +10,8 @@ use crate::spec::SandboxSpec;
 /// Who owns one Sandbox provider effect. The Session aggregate decides this
 /// once (an unowned Environment has no realization lease); every provider
 /// operation then receives the matching variant. A fence always travels with
-/// its current authority, so neither an omitted fence nor a fence without
-/// authority can select a weaker path.
+/// its current authority: a fence without authority is unrepresentable, so it
+/// can never select a weaker path.
 #[derive(Clone, Copy)]
 pub enum SandboxEffect<'a> {
     /// No aggregate effect owns the Sandbox: warm capacity, a capability
@@ -25,21 +25,6 @@ pub enum SandboxEffect<'a> {
 }
 
 impl<'a> SandboxEffect<'a> {
-    /// Project an aggregate-derived optional fence and its captured authority.
-    /// A fence without authority is refused rather than degraded.
-    pub fn from_parts(
-        fence: Option<&'a SandboxEffectFence>,
-        authority: Option<&'a dyn crate::CurrentExecutionAuthority>,
-    ) -> Result<Self, SandboxError> {
-        match (fence, authority) {
-            (Some(fence), Some(authority)) => Ok(Self::Fenced { fence, authority }),
-            (None, _) => Ok(Self::Unattached),
-            (Some(_), None) => Err(SandboxError::fence_rejected(
-                "a fenced Sandbox effect has no current authority",
-            )),
-        }
-    }
-
     /// The fence this effect carries; an unattached effect has none.
     #[must_use]
     pub const fn fence(self) -> Option<&'a SandboxEffectFence> {
@@ -86,32 +71,29 @@ mod tests {
 
     #[test]
     fn sandbox_effect_is_named_and_never_degrades() {
-        // Decision table for the one ownership projection.
-        // | Rule | fence | authority | Effect                                  |
-        // | P1   | none  | any       | Unattached; unattached observation      |
-        // | P2   | some  | some      | Fenced; effect observation with spec    |
-        // | P3   | some  | none      | FenceRejected, never Unattached         |
-        // | P4   | some  | denied    | admit refuses; Unattached admits        |
+        // Decision table for the one ownership vocabulary.
+        // | Rule | variant              | Effect                                  |
+        // | P1   | Unattached           | no fence; unattached observation; admits |
+        // | P2   | Fenced, live         | its fence; effect observation with spec |
+        // | P3   | fence, no authority  | unrepresentable: `Fenced` needs both    |
+        // | P4   | Fenced, denied       | admit refuses                           |
         let fence = SandboxEffectFence::new("op", "owner", "boot", 1, u64::MAX).unwrap();
         let authority = crate::test_support::EffectAuthority::new(&fence);
         let spec = crate::test_support::spec("scope", None);
-        for authority in [
-            None,
-            Some(&authority as &dyn crate::CurrentExecutionAuthority),
-        ] {
-            let effect = SandboxEffect::from_parts(None, authority).expect("P1");
-            assert!(matches!(effect, SandboxEffect::Unattached), "P1");
-            assert!(effect.fence().is_none(), "P1 fence");
-            assert!(
-                matches!(
-                    effect.observation_basis(&spec),
-                    SandboxObservationBasis::Unattached
-                ),
-                "P1 basis"
-            );
-            assert!(effect.admit().is_ok(), "P1 admit");
-        }
-        let effect = SandboxEffect::from_parts(Some(&fence), Some(&authority)).expect("P2");
+        let effect = SandboxEffect::Unattached;
+        assert!(effect.fence().is_none(), "P1 fence");
+        assert!(
+            matches!(
+                effect.observation_basis(&spec),
+                SandboxObservationBasis::Unattached
+            ),
+            "P1 basis"
+        );
+        assert!(effect.admit().is_ok(), "P1 admit");
+        let effect = SandboxEffect::Fenced {
+            fence: &fence,
+            authority: &authority,
+        };
         assert_eq!(effect.fence(), Some(&fence), "P2 fence");
         assert!(
             matches!(
@@ -122,13 +104,6 @@ mod tests {
             "P2 basis"
         );
         assert!(effect.admit().is_ok(), "P2 admit");
-        assert!(
-            matches!(
-                SandboxEffect::from_parts(Some(&fence), None),
-                Err(SandboxError::FenceRejected(_))
-            ),
-            "P3"
-        );
         let denied = crate::test_support::EffectAuthority::denied();
         assert!(
             SandboxEffect::Fenced {

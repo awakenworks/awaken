@@ -386,22 +386,11 @@ impl ExecutionAuthority {
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<awaken_session_contract::SessionEnvironmentReceipt, RealizationError> {
-        match (&effect.provider_fence, &effect.provider_authority) {
-            (Some(initial), Some(authority)) => {
-                awaken_provisioning_contract::with_current_sandbox_effect(
-                    initial,
-                    authority.as_ref(),
-                    |_| Ok(()),
-                )
-                .map_err(RealizationError::from)?;
-            }
-            (None, None) => {}
-            _ => {
-                return Err(RealizationError::invariant(
-                    "Environment effect lacks its captured authority",
-                ));
-            }
-        }
+        effect
+            .provider_effect
+            .sandbox_effect()
+            .admit()
+            .map_err(RealizationError::from)?;
         awaken_session_contract::SessionEnvironmentReceipt::from_intent(
             effect.authorization.intent(),
             binding,

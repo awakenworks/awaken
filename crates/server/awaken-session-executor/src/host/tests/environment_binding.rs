@@ -73,19 +73,20 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
             &original,
             "R1 complete original value"
         );
-        assert_eq!(
-            effect.provider_fence.as_ref().unwrap().expires_at_unix_ms(),
-            60_000,
-            "R1 original expiry"
-        );
+        let crate::session_environment::AuthorizedProviderEffect::Fenced { fence, authority } =
+            &effect.provider_effect
+        else {
+            panic!("R1 aggregate-owned effect carries its fence and authority");
+        };
+        assert_eq!(fence.expires_at_unix_ms(), 60_000, "R1 original expiry");
         assert_eq!(
             sink.authorize_calls.load(Ordering::SeqCst),
             if request_expiry == 60_000 { 1 } else { 2 },
             "R1 one authority call per request"
         );
         awaken_provisioning_contract::with_current_sandbox_effect(
-            effect.provider_fence.as_ref().unwrap(),
-            effect.provider_authority.as_deref().unwrap(),
+            fence,
+            authority.as_ref(),
             |guard| {
                 assert_eq!(guard.fence().expires_at_unix_ms(), 120_000);
                 Ok(())

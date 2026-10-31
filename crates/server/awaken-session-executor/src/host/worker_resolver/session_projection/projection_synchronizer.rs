@@ -482,7 +482,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let fence = effect.provider_fence.as_ref().unwrap();
+            let fence = effect.provider_effect.fence().unwrap();
             let authority = host
                 .realization_executor
                 .authority()

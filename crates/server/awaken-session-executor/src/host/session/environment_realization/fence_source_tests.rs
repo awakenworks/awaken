@@ -1,6 +1,7 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
 use crate::realization_state::SessionRealizationAuthority;
+use crate::session_environment::AuthorizedProviderEffect;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_configuration_contract::resource as session_resource;
@@ -712,13 +713,15 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 .from_binding(&binding);
                 let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
                 let effect = AuthorizedSessionEnvironmentEffect {
-                    provider_authority: Some(Arc::new(
-                        host.realization_executor
-                            .authority()
-                            .provider_effect_authority("session", &initial)
-                            .unwrap(),
-                    )),
-                    provider_fence: Some(initial),
+                    provider_effect: AuthorizedProviderEffect::Fenced {
+                        authority: Arc::new(
+                            host.realization_executor
+                                .authority()
+                                .provider_effect_authority("session", &initial)
+                                .unwrap(),
+                        ),
+                        fence: initial,
+                    },
                     authorization:
                         awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
                             intent: Box::new(intent),
@@ -874,10 +877,13 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             &host.realization_executor,
             &provider,
             &spec,
-            (rule != "provider_unfenced").then_some(&initial),
-            authority
-                .as_ref()
-                .map(|source| source as &dyn CurrentExecutionAuthority),
+            match authority.as_ref() {
+                Some(authority) => awaken_provisioning_contract::SandboxEffect::Fenced {
+                    fence: &initial,
+                    authority,
+                },
+                None => awaken_provisioning_contract::SandboxEffect::Unattached,
+            },
             None,
             awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         );
@@ -1011,8 +1017,10 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                     awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
                         intent: Box::new(intent),
                     },
-                provider_fence: Some(initial),
-                provider_authority: Some(Arc::new(authority)),
+                provider_effect: AuthorizedProviderEffect::Fenced {
+                    fence: initial,
+                    authority: Arc::new(authority),
+                },
             };
             let mut current = lease();
             match rule {

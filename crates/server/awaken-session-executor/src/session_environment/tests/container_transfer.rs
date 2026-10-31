@@ -87,8 +87,12 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         // Exact Create is the only supported fake effect below. Foreign fence
         // rejects before allocation; Rebuild stays Unsupported, never inventing
         // original participant recovery. Both negative rules have zero creates.
-        let fence = effect.provider_fence.as_ref().unwrap();
-        let authority = effect.provider_authority.as_deref().unwrap();
+        let crate::session_environment::AuthorizedProviderEffect::Fenced { fence, authority } =
+            &effect.provider_effect
+        else {
+            panic!("W0a aggregate-owned effect carries its fence and authority");
+        };
+        let authority = authority.as_ref();
         let foreign = effect
             .authorization
             .intent()
@@ -141,11 +145,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .realizer()
                 .create_effective_for_effect(
                     &spec,
-                    awaken_provisioning_contract::SandboxEffect::from_parts(
-                        effect.provider_fence.as_ref(),
-                        effect.provider_authority.as_deref(),
-                    )
-                    .unwrap(),
+                    effect.provider_effect.sandbox_effect(),
                     None,
                     awaken_session_environment_contract::EnvironmentRealizationKind::Create,
                 )

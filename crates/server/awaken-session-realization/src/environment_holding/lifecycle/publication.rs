@@ -23,7 +23,9 @@ use crate::environment_owner::{
     BoundSessionEnvironmentIdentity, EnvironmentBindingPersistenceError,
     LegacyDirectEnvironmentProvenance, UnboundSessionEnvironment,
 };
-use crate::session_environment::{AuthorizedSessionEnvironmentEffect, SandboxProviderRoles};
+use crate::session_environment::{
+    AuthorizedProviderEffect, AuthorizedSessionEnvironmentEffect, SandboxProviderRoles,
+};
 use awaken_session_contract::{
     SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentEffectKind,
@@ -258,22 +260,19 @@ impl crate::environment_holding::EnvironmentHolding {
         } else {
             None
         };
-        let provider_authority = provider_fence
-            .as_ref()
-            .map(|fence| {
-                peers
-                    .authority
-                    .provider_effect_authority(thread, fence)
-                    .map(|source| {
-                        Arc::new(source)
-                            as Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>
-                    })
-            })
-            .transpose()?;
+        let provider_effect = match provider_fence {
+            None => AuthorizedProviderEffect::Unattached,
+            Some(fence) => {
+                let authority = peers.authority.provider_effect_authority(thread, &fence)?;
+                AuthorizedProviderEffect::Fenced {
+                    fence,
+                    authority: Arc::new(authority),
+                }
+            }
+        };
         Ok(AuthorizedSessionEnvironmentEffect {
             authorization,
-            provider_fence,
-            provider_authority,
+            provider_effect,
         })
     }
 
