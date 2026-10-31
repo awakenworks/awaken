@@ -14,6 +14,7 @@ mod effect_intent;
 mod generation;
 mod legacy_binding;
 mod materialization;
+mod rebuild_source;
 mod receipt_admission;
 mod transition;
 
@@ -34,6 +35,7 @@ use generation::{
     source_disposal_receipt_admitted, source_release_preparation_receipt_admitted,
 };
 pub use materialization::SessionEnvironmentMaterialization;
+pub use rebuild_source::{RebuildSourceAccess, RebuildSourceEvidence};
 use receipt_admission::reservation_binding_is_monotonic;
 pub use receipt_admission::{
     SessionEnvironmentReceiptError, SessionEnvironmentReceiptRecoveryAction,
@@ -1673,6 +1675,7 @@ mod tests {
             Error::EnvironmentMismatch,
             Error::Rejected(Rejection::RequiresResident),
             Error::Rejected(Rejection::InvalidTransition),
+            Error::Rejected(Rejection::RebuildSourceUnavailable),
             Error::InvalidReservation,
         ] {
             assert_eq!(error.recovery_action(), Action::Reject, "{error}");
@@ -1705,6 +1708,7 @@ mod tests {
             Rejection::MaterializationPending,
             Rejection::UnsupportedContinuationTopology,
             Rejection::MemoryEvidenceUnproven,
+            Rejection::RebuildSourceUnavailable,
         ] {
             assert_eq!(
                 Error::Rejected(rejection).recovery_action(),

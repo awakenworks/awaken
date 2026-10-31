@@ -81,10 +81,10 @@ pub use environment::{
     checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
 };
 pub use environment::{
-    MaterializationKind, RealizationLeaseStanding, SessionEnvironmentDecision,
-    SessionEnvironmentEvent, SessionEnvironmentFacts, SessionEnvironmentInstruction,
-    SessionEnvironmentRejection, SessionEnvironmentStep, SessionTerminality,
-    transition_environment,
+    MaterializationKind, RealizationLeaseStanding, RebuildSourceAccess, RebuildSourceEvidence,
+    SessionEnvironmentDecision, SessionEnvironmentEvent, SessionEnvironmentFacts,
+    SessionEnvironmentInstruction, SessionEnvironmentRejection, SessionEnvironmentStep,
+    SessionTerminality, transition_environment,
 };
 // These values occur in the root persistence surface; their owner is Event admission.
 pub(crate) use crate::event::DeletedSessionEventAdmissions;

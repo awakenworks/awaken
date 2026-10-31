@@ -1,6 +1,7 @@
 // @formal entrypoint session_environment.terminal_session_never_reenters_a_live_environment
 // @formal entrypoint session_environment.resident_is_entered_only_by_materialization_or_restore
 // @formal entrypoint session_environment.effect_instructions_require_a_current_realization_lease
+// @formal entrypoint session_environment.rebuild_requires_a_closed_source_with_access
 //! The Session Environment transition function (ADR-0089 D1, ADR-0090 D3).
 //!
 //! [`transition_environment`] is the one pure decision over the Environment
@@ -167,6 +168,15 @@ pub struct SessionEnvironmentFacts {
     /// pending Memory generation, and the active Memory inputs join the
     /// handle's evidence without a writable legacy copy).
     pub(crate) suspend_memory_admitted: bool,
+    /// Rebuild admission only: the realization observed the exact bound
+    /// source Terminal or Unavailable and, for a source bound to a Worker
+    /// process, that process's recorded end
+    /// ([`super::RebuildSourceEvidence::source_closed`]).
+    pub(crate) source_closed: bool,
+    /// Rebuild admission only: a retained volume or a Repository source
+    /// survives to rebuild the Session's work from
+    /// ([`super::RebuildSourceEvidence::source_access`]).
+    pub(crate) source_access: bool,
 }
 
 /// How a materialization effect relates the environment to its binding.
@@ -246,7 +256,7 @@ impl SessionEnvironmentInstruction {
     pub const fn requires_fenced_lease(self) -> bool {
         matches!(
             self,
-            Self::Materialize(MaterializationKind::Create)
+            Self::Materialize(MaterializationKind::Create | MaterializationKind::Rebuild)
                 | Self::PrepareSourceRelease
                 | Self::DisposeSource
                 | Self::Retire
@@ -312,6 +322,10 @@ pub enum SessionEnvironmentRejection {
     UnsupportedContinuationTopology,
     #[error("the Memory evidence of the resident binding does not admit a suspend")]
     MemoryEvidenceUnproven,
+    #[error(
+        "the closed Session Environment source has no retained volume or Repository to rebuild from"
+    )]
+    RebuildSourceUnavailable,
 }
 
 type Outcome = Result<SessionEnvironmentDecision, SessionEnvironmentRejection>;
@@ -439,17 +453,31 @@ const fn admit_materialization(
     if let Err(rejection) = materialization_admitted(facts.step, kind, already_applied) {
         return Err(rejection);
     }
-    // A Rebuild admission waits for source closure and access, which neither a
-    // target receipt nor the current lease supplies, even when its effect is
-    // already recorded.
     match kind {
-        MaterializationKind::Rebuild => Err(SessionEnvironmentRejection::MaterializationPending),
         _ if already_applied => stay(facts),
-        MaterializationKind::Create if !is_fenced(facts) => {
+        MaterializationKind::Create | MaterializationKind::Rebuild if !is_fenced(facts) => {
             Err(SessionEnvironmentRejection::LeaseNotCurrent)
         }
+        MaterializationKind::Rebuild => admit_rebuild(facts),
         _ => instruct(facts.step, SessionEnvironmentInstruction::Materialize(kind)),
     }
+}
+
+/// A Resident, fenced Session replaces its dead substrate only when the old
+/// source is closed (nothing can still write to it) and its work survives to
+/// rebuild from. An open source may still close: retry. A closed source with
+/// nothing to rebuild from never gains one: the refusal is permanent.
+const fn admit_rebuild(facts: SessionEnvironmentFacts) -> Outcome {
+    if !facts.source_closed {
+        return Err(SessionEnvironmentRejection::MaterializationPending);
+    }
+    if !facts.source_access {
+        return Err(SessionEnvironmentRejection::RebuildSourceUnavailable);
+    }
+    instruct(
+        facts.step,
+        SessionEnvironmentInstruction::Materialize(MaterializationKind::Rebuild),
+    )
 }
 
 /// The step × kind table shared by effect admission and receipt application.
@@ -829,6 +857,26 @@ impl SessionEnvironmentFacts {
                 session.environment,
                 SessionEnvironmentState::Resident { .. }
             ) && suspend_memory_preflight(session).is_ok(),
+            source_closed: false,
+            source_access: false,
+        }
+    }
+
+    /// Project the facts of one materialization admission: the aggregate at
+    /// `now` under the intent's asserted lease, plus the source evidence the
+    /// realization carried on a Rebuild intent. A Rebuild without evidence (a
+    /// row written before evidence existed) stands open and inaccessible, so
+    /// it stays pending exactly as before.
+    pub(crate) fn project_admission(
+        session: &crate::state::PersistedSession,
+        now_unix_ms: u64,
+        intent: &super::SessionEnvironmentEffectIntent,
+    ) -> Self {
+        let evidence = intent.rebuild_source();
+        Self {
+            source_closed: evidence.is_some_and(super::RebuildSourceEvidence::source_closed),
+            source_access: evidence.is_some_and(|evidence| evidence.source_access().is_some()),
+            ..Self::project(session, now_unix_ms, intent.realization())
         }
     }
 
@@ -905,6 +953,8 @@ impl SessionEnvironmentFacts {
             checkpoint_live: false,
             continuation_topology_supported: false,
             suspend_memory_admitted: false,
+            source_closed: false,
+            source_access: false,
         }
     }
 
@@ -939,6 +989,8 @@ impl SessionEnvironmentFacts {
             checkpoint_live: false,
             continuation_topology_supported: false,
             suspend_memory_admitted: false,
+            source_closed: false,
+            source_access: false,
         }
     }
 }
@@ -1160,6 +1212,44 @@ mod laws {
             && matches!(event, E::LegacyCleanupNormalized)
             && matches!(facts.lease, RealizationLeaseStanding::Stale);
         instruction_ok && (!destructive_observation || fenced) && !legacy_retirement
+    }
+
+    /// L4: a Rebuild is instructed only for an active, fenced, Resident
+    /// Session whose old source is closed and whose work survives to rebuild
+    /// from; an open source is never refused permanently, and a closed one
+    /// without access is never instructed.
+    pub(super) fn rebuild_requires_closed_accessible_source(
+        facts: SessionEnvironmentFacts,
+        event: SessionEnvironmentEvent,
+        outcome: Outcome,
+    ) -> bool {
+        let rebuild = Some(SessionEnvironmentInstruction::Materialize(
+            MaterializationKind::Rebuild,
+        ));
+        let instructed_ok = match outcome {
+            Ok(decision) if decision.instruction == rebuild => {
+                facts.source_closed
+                    && facts.source_access
+                    && facts.root_present
+                    && matches!(facts.terminality, SessionTerminality::Active)
+                    && matches!(facts.lease, RealizationLeaseStanding::Fenced)
+                    && facts.step == S::Resident
+                    && decision.next == S::Resident
+                    && matches!(
+                        event,
+                        E::AdmitMaterialization {
+                            kind: MaterializationKind::Rebuild,
+                            already_applied: false,
+                        }
+                    )
+            }
+            _ => true,
+        };
+        let permanent_only_when_closed = !matches!(
+            outcome,
+            Err(SessionEnvironmentRejection::RebuildSourceUnavailable)
+        ) || (facts.source_closed && !facts.source_access);
+        instructed_ok && permanent_only_when_closed
     }
 }
 

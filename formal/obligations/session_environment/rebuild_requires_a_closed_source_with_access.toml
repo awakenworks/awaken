@@ -1,0 +1,9 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = []
+production_entrypoints = []
+
+[[bounds]]
+text = '''Over the complete closed fact and event domain, the production transition_environment kernel instructs Materialize(Rebuild) only for a first AdmitMaterialization of a Rebuild on an active, rooted, Resident Session under the Fenced lease standing whose source_closed and source_access facts both hold, and it refuses permanently with RebuildSourceUnavailable only when the source is closed and no source access exists. Whether the two facts were derived correctly from provider observations, the bound Worker incarnation's recorded process end and the Session's retained volume or Repository input is covered by the session-realization derivation decision table, not by this kernel proof.'''

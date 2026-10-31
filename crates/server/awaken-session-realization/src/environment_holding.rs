@@ -167,7 +167,7 @@ impl EnvironmentHolding {
         let original = if projection.environment_materialization.is_some() {
             Some(
                 projection
-                    .original_create_fence(session_id.as_str())
+                    .materializing_effect_fence(session_id.as_str())
                     .map_err(RealizationError::from)?,
             )
         } else {

@@ -806,7 +806,7 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
         Err(crate::state::SessionEnvironmentReceiptError::Rejected(
             crate::state::SessionEnvironmentRejection::MaterializationPending
         )),
-        "R7 full Rebuild remains closed"
+        "R7 a Rebuild without source evidence stays pending"
     );
     assert_eq!(fresh, before);
     let mut legacy_adopt = root(SessionExecutionState::Preparing, 0);
@@ -855,6 +855,234 @@ fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
         legacy.environment_materialization.is_none(),
         "R4 no first history from receipt"
     );
+}
+
+#[test]
+fn rebuild_admission_reads_realization_source_evidence_and_lands_write_ahead() {
+    // Cause/effect table of a Managed Rebuild over a completed Create origin.
+    // Causes: C1 the intent's source evidence (none / open / closed without
+    // access / closed with access); C2 an admitted Rebuild is pending; C3 the
+    // exact receipt lands; C4 another effect meets the pending Rebuild.
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // | A1 | none (historical) | no | - | - | MaterializationPending, root unchanged |
+    // | A2 | open | no | - | - | MaterializationPending, root unchanged |
+    // | A3 | closed, no access | no | - | - | RebuildSourceUnavailable (Reject), root unchanged |
+    // | A4 | closed + access | no | - | - | pending Rebuild written ahead, origin kept |
+    // | A5 | any | yes | - | same | replay of the saved value, no write |
+    // | A6 | any | yes | - | other Rebuild / Adopt | MaterializationPending |
+    // | A7 | - | yes | yes | - | Resident on the new binding; pending becomes origin |
+    // | A8 | - | landed | replay | - | no write; admission replay is AlreadyApplied |
+    use crate::state::{RebuildSourceAccess, RebuildSourceEvidence};
+    let mut session = fresh_root(SessionExecutionState::Preparing, 0);
+    let fingerprint = session
+        .frozen_baseline()
+        .unwrap()
+        .environment
+        .config_fingerprint
+        .0
+        .clone();
+    let lease = crate::state::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 10_000,
+    };
+    session.assignment().claim(lease.clone(), false).unwrap();
+    let create = crate::state::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::state::SessionEnvironmentEffectKind::Create,
+        Some(lease.clone()),
+    )
+    .for_environment(fingerprint.clone());
+    session
+        .environment()
+        .admit_environment_effect("workspace", &create, 1)
+        .unwrap();
+    session
+        .environment()
+        .try_apply_environment_receipt(
+            "workspace",
+            &crate::state::SessionEnvironmentReceipt::from_intent(&create, "binding").unwrap(),
+            1,
+        )
+        .unwrap();
+    let origin = session.environment_materialization().unwrap().clone();
+    assert_eq!(origin.origin(), Some(&create), "fixture origin");
+    let source_generation = session.environment.generation().unwrap().id().to_owned();
+    let rebuild = crate::state::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::state::SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: Some(source_generation),
+        },
+        Some(lease.clone()),
+    )
+    .for_environment(fingerprint.clone())
+    .from_binding("binding");
+    let pending = Err(crate::state::SessionEnvironmentReceiptError::Rejected(
+        crate::state::SessionEnvironmentRejection::MaterializationPending,
+    ));
+    let before = session.clone();
+    for (rule, intent) in [
+        ("A1", rebuild.clone()),
+        (
+            "A2",
+            rebuild
+                .clone()
+                .with_rebuild_source(RebuildSourceEvidence::new(
+                    false,
+                    Some(RebuildSourceAccess::Repository),
+                )),
+        ),
+    ] {
+        assert_eq!(
+            session
+                .environment()
+                .admit_environment_effect("workspace", &intent, 2),
+            pending,
+            "{rule}"
+        );
+        assert_eq!(session, before, "{rule} zero root mutation");
+    }
+    let lost = rebuild
+        .clone()
+        .with_rebuild_source(RebuildSourceEvidence::new(true, None));
+    let refused = session
+        .environment()
+        .admit_environment_effect("workspace", &lost, 2)
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        crate::state::SessionEnvironmentReceiptError::Rejected(
+            crate::state::SessionEnvironmentRejection::RebuildSourceUnavailable
+        ),
+        "A3"
+    );
+    assert_eq!(
+        refused.recovery_action(),
+        crate::state::SessionEnvironmentReceiptRecoveryAction::Reject,
+        "A3 permanent"
+    );
+    assert_eq!(session, before, "A3 zero root mutation");
+
+    let admitted = rebuild
+        .clone()
+        .with_rebuild_source(RebuildSourceEvidence::new(
+            true,
+            Some(RebuildSourceAccess::RetainedVolume),
+        ));
+    let (changed, authorization) = session
+        .environment()
+        .admit_environment_effect("workspace", &admitted, 2)
+        .unwrap();
+    assert!(changed, "A4 write-ahead");
+    assert!(
+        matches!(
+            authorization,
+            crate::state::SessionEnvironmentEffectAuthorization::Authorized { .. }
+        ),
+        "A4 authorized"
+    );
+    assert_eq!(authorization.intent(), &admitted, "A4 exact value");
+    let facts = session.environment_materialization().unwrap();
+    assert_eq!(facts.origin(), origin.origin(), "A4 origin kept");
+    assert_eq!(facts.pending(), Some(&admitted), "A4 pending Rebuild");
+    before
+        .validate_observation_replacement(session.snapshot())
+        .expect("A4 replacement law admits the write-ahead Rebuild");
+    assert!(
+        session
+            .validate_observation_replacement(before.snapshot())
+            .is_err(),
+        "A4 pending cannot reset"
+    );
+
+    let written = session.clone();
+    let (changed, replay) = session
+        .environment()
+        .admit_environment_effect("workspace", &admitted, 3)
+        .unwrap();
+    assert!(!changed, "A5 no second write");
+    assert_eq!(replay.intent(), &admitted, "A5 saved value");
+    assert_eq!(session, written, "A5 unchanged");
+    let other = crate::state::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::state::SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: None,
+        },
+        Some(lease.clone()),
+    )
+    .for_environment(fingerprint.clone())
+    .from_binding("binding")
+    .with_rebuild_source(RebuildSourceEvidence::new(
+        true,
+        Some(RebuildSourceAccess::Repository),
+    ));
+    let adopt = crate::state::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::state::SessionEnvironmentEffectKind::Adopt,
+        Some(lease),
+    )
+    .for_environment(fingerprint)
+    .from_binding("binding");
+    for (rule, intent) in [("A6 other Rebuild", other), ("A6 Adopt", adopt)] {
+        assert_eq!(
+            session
+                .environment()
+                .admit_environment_effect("workspace", &intent, 3),
+            pending,
+            "{rule}"
+        );
+        assert_eq!(session, written, "{rule} unchanged");
+    }
+
+    let receipt =
+        crate::state::SessionEnvironmentReceipt::from_intent(&admitted, "replacement").unwrap();
+    assert!(
+        session
+            .environment()
+            .try_apply_environment_receipt("workspace", &receipt, 4)
+            .unwrap(),
+        "A7 lands"
+    );
+    assert_eq!(
+        session.environment.binding(),
+        Some("replacement"),
+        "A7 new binding"
+    );
+    assert!(
+        session.environment.records_effect(admitted.effect_id()),
+        "A7 effect"
+    );
+    let facts = session.environment_materialization().unwrap();
+    assert_eq!(facts.origin(), Some(&admitted), "A7 pending became origin");
+    assert!(facts.pending().is_none(), "A7 nothing in flight");
+    written
+        .validate_observation_replacement(session.snapshot())
+        .expect("A7 replacement law admits the landed Rebuild");
+    crate::state::SessionEnvironmentMaterialization::validate_for(session.snapshot())
+        .expect("A7 intrinsic law");
+
+    let landed = session.clone();
+    assert!(
+        !session
+            .environment()
+            .try_apply_environment_receipt("workspace", &receipt, 5)
+            .unwrap(),
+        "A8 receipt replay"
+    );
+    let (changed, replay) = session
+        .environment()
+        .admit_environment_effect("workspace", &admitted, 5)
+        .unwrap();
+    assert!(!changed, "A8 no write");
+    assert!(
+        matches!(
+            replay,
+            crate::state::SessionEnvironmentEffectAuthorization::AlreadyApplied { .. }
+        ),
+        "A8 already applied"
+    );
+    assert_eq!(session, landed, "A8 unchanged");
 }
 
 #[test]

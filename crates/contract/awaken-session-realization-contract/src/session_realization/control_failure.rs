@@ -131,7 +131,8 @@ impl From<awaken_session_contract::SessionEnvironmentRejection>
             | Rejection::InvalidTransition
             | Rejection::GenerationExpired
             | Rejection::InconsistentEvidence
-            | Rejection::UnsupportedContinuationTopology => Self::Invalid(rejection.to_string()),
+            | Rejection::UnsupportedContinuationTopology
+            | Rejection::RebuildSourceUnavailable => Self::Invalid(rejection.to_string()),
         }
     }
 }
@@ -354,6 +355,7 @@ mod tests {
             X::GenerationExpired,
             X::InconsistentEvidence,
             X::UnsupportedContinuationTopology,
+            X::RebuildSourceUnavailable,
         ] {
             assert_eq!(
                 SessionRealizationControlFailure::from(rejection),
