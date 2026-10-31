@@ -1,6 +1,6 @@
 # Construction-Time Injection and Typed Errors
 
-Status: classification complete; (v) done, (iii) started, (i) designed; Family A blocked by a verified runtime cycle.
+Status: classification complete; (v) done, (iii) started, (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is sequenced with package G.
 Principles: P5 (interface segregation, construction-time injection) and P6
 (errors are values, classified once) of the architecture plan.
 
@@ -105,6 +105,40 @@ Two remedies break the cycle, and both need a decision:
 
 Either remedy touches V0's run paths and the Family B registry.
 
+**Decision (user, 2026-10-31).** Remedy (a), the first one above, is the final
+design and lands with package G (plan v5, V9). Until then, remedy (c) converges
+the late binding into one typed value.
+
+**Remedy (c), done.** `SessionApplicationBinding`
+(`awaken-session-execution-contract`, `application_binding.rs`) is the one late
+binding from the executor to the two application roles it calls back,
+`SessionAgentCoordination` and `SessionRunBackgroundApplication`. It lives in
+the execution contract because both the executor and `awaken-session-mcp`
+consume it.
+
+- The executor creates one binding in `SessionExecutorBuilder::build` and gives
+  a clone to `RunCapabilities`. Every consumer receives that binding at
+  construction: the coordination endpoint and its settlement observer, the
+  BackgroundTask terminal observer, the BackgroundTask context plan and the MCP
+  input handler.
+- The composition root completes it in one place, `session_dispatch_lifecycle`
+  (also behind `WorkerRoles::of`), right after it builds the application:
+  `awaken-cli` binds `Local`; `awaken-worker` binds `Standalone` or
+  `ClaimedWorker`; the scenario-host and executor tests use the same call.
+  `awaken-process-startup` `registered_execution` and `awaken-coordinator` build
+  no executor, so they hold no binding.
+- States: unbound refuses every use with `Unbound`; `bind` succeeds once and
+  returns the `SessionApplicationLifetime` that owns the roles; a second `bind`
+  is `AlreadyBound` and changes nothing; a dropped role is
+  `RequiredApplicationUnavailable` and never changes the bound mode; a
+  `Standalone` or `ClaimedWorker` binding has `NoLocalApplication`. Each
+  consumer maps a refusal exactly as it mapped a failed `Weak::upgrade` before.
+- Decision table: `binding_refuses_unbound_use_and_a_second_bind_and_keeps_mode_after_drop`
+  and the ownership tests next to it in `application_binding/tests.rs`.
+- Removed: `SessionApplicationBindings` (executor), `SessionApplicationConnections`
+  (run delivery) and the scattered `Weak` handles. The 14 Family A `Weak<` sites
+  become the binding's 2, and the one `OnceLock` moves into it.
+
 ## Family B: installed-Session registry
 
 `InstalledSessions` owns each Session's context. That context holds attempt
@@ -129,6 +163,15 @@ Remedy, by splitting the component:
 This changes the registry's lock layout, so it is sequenced after the lock
 lane (V2) lands. It is not started in this batch.
 
+`RunCapabilities::session_run_projection_callbacks` (`run_capabilities.rs`)
+belongs here, not to Family A. The two admission callbacks it gives the
+Session application read the registry through `Arc::downgrade` of
+`InstalledSessions`, so retaining a callback cannot keep the registry alive.
+This is a read edge from the application into the registry, not a call back
+into the application, and the `Weak<` count does not see it because it never
+spells the type. Remedy 2 above applies: committed reads that the composition
+root owns replace the registry read.
+
 ## Open decisions
 
 - Resolved 2026-10-31 (user decision): `ManagedListPriceError::Unavailable` is
@@ -136,9 +179,10 @@ lane (V2) lands. It is not started in this batch.
   `SessionMutationError` classifies it as retryable `Unavailable`; creation and
   activity reuse that conversion. Every other violation stays permanent
   (`a_list_price_outage_is_the_one_retryable_state_violation`).
-- Family A: choose between the two cycle remedies recorded under Family A.
-- Families A and B change composition roots and lock layout. Each needs its own
-  slice, sequenced after V0 and V2.
+- Resolved 2026-10-31 (user decision): Family A takes remedy (a) with package G
+  and, until then, remedy (c), one typed binding (done).
+- Family B changes the lock layout. It needs its own slice, sequenced after V0
+  and V2.
 
 ## Exemptions (for the V1 guard)
 
@@ -159,6 +203,7 @@ quoted item; line numbers drift.
 | `crates/server/awaken-session-mcp/src/mcp_relay.rs` | `Weak<` ×1 | background server lifetime: the process MCP relay admits routes only while the root authority lives; it must not keep the Host alive |
 | `crates/server/awaken-session-realization/src/execution_authority.rs` | `Weak<` ×2 | captured authorization: a later effect fails closed once the installed Sessions are gone |
 | `crates/server/awaken-session-realization/src/session_realizations.rs` | `Weak<` ×1 | the one constructor of the captured authorization handle above |
+| `crates/contract/awaken-session-execution-contract/src/application_binding.rs` | `SessionApplicationBinding`: `Weak<` ×2 and its one `OnceLock` | the one late binding of Family A: the executor calls back into the application that launches Runs through it, so the composition root completes it after building the application, and it must not keep that application alive. Remove when package G lands remedy (a): the application starts Runs only through the dispatch queue and reads only committed state |
 | `crates/server/awaken-session-run-delivery/src/background.rs` | `Weak<` ×1 | interning cache: one shared admission per (thread, task) while some Run holds it |
 | `crates/server/awaken-session-run-delivery/src/completion.rs` | `Weak<` ×1 | drop guard: removing a waiter must not keep the completion registry alive |
 | `crates/worker/awaken-sandbox-local/src/provider/execution.rs` | `Weak<` ×1 | observer: the execution scope signals live child processes it does not own |
@@ -177,17 +222,17 @@ quoted item; line numbers drift.
 | `server/awaken-protocol-managed/src/lifecycle_delivery.rs:20` | (ii) | exempt | observer: the outbox supervisor must not own the HTTP adapter it wakes |
 | `server/awaken-session-executor/src/application/attempt_context.rs:24` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
 | `server/awaken-session-executor/src/application/attempt_context.rs:33` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
-| `server/awaken-session-executor/src/background_task.rs:118` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-executor/src/background_task.rs:186` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-executor/src/background_task.rs:200` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-executor/src/coordination.rs:50` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/background_task.rs:118` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/background_task.rs:186` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/background_task.rs:200` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/coordination.rs:50` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
 | `server/awaken-session-executor/src/coordination.rs:53` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
 | `server/awaken-session-executor/src/coordination.rs:92` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
-| `server/awaken-session-executor/src/coordination.rs:411` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/coordination.rs:411` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
 | `server/awaken-session-executor/src/host/capability/resources.rs:123` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
-| `server/awaken-session-executor/src/host/dependencies/session_application.rs:59` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-executor/src/host/dependencies/session_application.rs:64` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-executor/src/host/session/context/plan.rs:27` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/host/dependencies/session_application.rs:59` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/host/dependencies/session_application.rs:64` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-executor/src/host/session/context/plan.rs:27` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
 | `server/awaken-session-executor/src/lazy_sandbox.rs:13` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
 | `server/awaken-session-executor/src/lazy_sandbox.rs:14` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
 | `server/awaken-session-executor/src/lazy_sandbox.rs:54` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
@@ -206,10 +251,10 @@ quoted item; line numbers drift.
 | `server/awaken-session-executor/src/thread_reads.rs:135` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
 | `server/awaken-session-executor/src/thread_reads.rs:136` | (i) | planned | Family B: inject the per-Session cell, not the registry ([below](#family-b-installed-session-registry)) |
 | `server/awaken-session-mcp/src/mcp/attachment.rs:52` | (ii) | exempt | background server lifetime: the process MCP relay admits routes only while the root authority lives; it must not keep the Host alive |
-| `server/awaken-session-mcp/src/mcp/input.rs:36` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
+| `server/awaken-session-mcp/src/mcp/input.rs:36` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
 | `server/awaken-session-mcp/src/mcp/input.rs:37` | (ii) | exempt | observer: an MCP notification handler rechecks the Host authority per delivery and must not keep it alive |
 | `server/awaken-session-mcp/src/mcp/input.rs:41` | (ii) | exempt | observer: an MCP notification handler rechecks the Host authority per delivery and must not keep it alive |
-| `server/awaken-session-mcp/src/mcp/input.rs:42` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
+| `server/awaken-session-mcp/src/mcp/input.rs:42` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
 | `server/awaken-session-mcp/src/mcp/sessions.rs:324` | (ii) | exempt | background server lifetime: the process MCP relay admits routes only while the root authority lives; it must not keep the Host alive |
 | `server/awaken-session-mcp/src/mcp/sessions.rs:338` | (ii) | exempt | background server lifetime: the process MCP relay admits routes only while the root authority lives; it must not keep the Host alive |
 | `server/awaken-session-mcp/src/mcp/sessions.rs:350` | (ii) | exempt | background server lifetime: the process MCP relay admits routes only while the root authority lives; it must not keep the Host alive |
@@ -219,10 +264,10 @@ quoted item; line numbers drift.
 | `server/awaken-session-realization/src/session_realizations.rs:359` | (ii) | exempt | the one constructor of the captured authorization handle above |
 | `server/awaken-session-run-delivery/src/background.rs:29` | (ii) | exempt | interning cache: one shared admission per (thread, task) while some Run holds it |
 | `server/awaken-session-run-delivery/src/completion.rs:200` | (ii) | exempt | drop guard: removing a waiter must not keep the completion registry alive |
-| `server/awaken-session-run-delivery/src/session_applications.rs:57` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-run-delivery/src/session_applications.rs:58` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-run-delivery/src/session_applications.rs:99` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
-| `server/awaken-session-run-delivery/src/session_applications.rs:103` | (i) | planned | Family A: inject the application roles at construction ([below](#family-a-host-and-session-application)) |
+| `server/awaken-session-run-delivery/src/session_applications.rs:57` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-run-delivery/src/session_applications.rs:58` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-run-delivery/src/session_applications.rs:99` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
+| `server/awaken-session-run-delivery/src/session_applications.rs:103` | (i) | done (c) | Family A: replaced by the one `SessionApplicationBinding` ([above](#family-a-host-and-session-application)) |
 | `worker/awaken-sandbox-local/src/provider/execution.rs:102` | (ii) | exempt | observer: the execution scope signals live child processes it does not own |
 
 ### `Option<&dyn …>`
