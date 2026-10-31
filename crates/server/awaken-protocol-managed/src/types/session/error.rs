@@ -180,6 +180,11 @@ impl SessionError {
                 ("model_request_failed_error", RetryStatus::Exhausted)
             }
             "activation_failed" => ("unknown_error", RetryStatus::Terminal),
+            // The Session's Environment source closed with nothing to rebuild
+            // it from: a permanent Session environment failure, never retried.
+            "session_environment_rebuild_source_unavailable" => {
+                ("unknown_error", RetryStatus::Terminal)
+            }
             _ => ("unknown_error", RetryStatus::Exhausted),
         };
         Self {
@@ -262,10 +267,13 @@ mod tests {
     /// | R11  | invalid_request           | irrelevant        | model_request_failed_error      | absent          | terminal     |
     /// | R12  | model_not_found           | irrelevant        | model_request_failed_error      | absent          | terminal     |
     /// | R13  | content_filtered          | irrelevant        | model_request_failed_error      | absent          | terminal     |
+    /// | R15  | session_environment_rebuild_source_unavailable | irrelevant | unknown_error | absent | terminal |
     /// R8/R9 a classified, exhausted model request preserves its cause and
     /// stays usable; it is not the separate ExecutionUnknown/terminal decision.
     /// R10-R13 known permanent model refusals stay terminal, never retry-exhausted.
     /// R14 unrecognized faults retain the existing generic fallback.
+    /// R15 a Session whose Environment source closed with nothing to rebuild
+    /// from failed for good: terminal, not retry-exhausted.
     /// R5-R7 distinguish rate, overload and hard usage causes at the existing
     /// classifier. All three have no MCP server field; a terminal Run with an
     /// exhausted retry budget must not be advertised as retrying.
@@ -383,6 +391,14 @@ mod tests {
                 "unknown_error",
                 None,
                 RetryStatus::Exhausted,
+            ),
+            (
+                "R15",
+                "session_environment_rebuild_source_unavailable",
+                "the closed Session Environment source has no retained volume or Repository to rebuild from",
+                "unknown_error",
+                None,
+                RetryStatus::Terminal,
             ),
         ];
         for (rule, code, message, kind, server, retry_status) in cases {

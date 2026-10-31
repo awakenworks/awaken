@@ -775,6 +775,21 @@ impl RepositoryEnvironmentBindingSink {
                 };
                 RunError::unavailable_classified(code, error.to_string())
             }
+            // A closed source with nothing to rebuild from is a permanent
+            // Session environment failure, reported once under its own code.
+            SessionEnvironmentReceiptRecoveryAction::Reject
+                if matches!(
+                    error,
+                    SessionEnvironmentReceiptError::Rejected(
+                        awaken_session_contract::SessionEnvironmentRejection::RebuildSourceUnavailable
+                    )
+                ) =>
+            {
+                RunError::classified(
+                    "session_environment_rebuild_source_unavailable",
+                    error.to_string(),
+                )
+            }
             SessionEnvironmentReceiptRecoveryAction::Reject => {
                 RunError::classified("session_environment_receipt_rejected", error.to_string())
             }
