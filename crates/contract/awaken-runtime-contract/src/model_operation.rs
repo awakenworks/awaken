@@ -810,15 +810,29 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 // zero-length one the removed `#[cfg(kani)]` fork used to produce.
 #[kani::unwind(8)]
 fn model_operation_history_preserves_distinct_subjects() {
-    // Production fold, two arbitrary nonzero u64 ordinals, equal/different
-    // bindings, and all evidence values. R1 new ordinal => retain both subjects;
-    // R2 same ordinal+binding => replace only that observation; R3 same ordinal
-    // with rebinding => reject with no mutation. Strings are fixed empty/one-byte
+    // Production fold, two nonzero u64 ordinals, equal/different bindings, and
+    // all evidence values. R1 new ordinal => retain both subjects; R2 same
+    // ordinal+binding => replace only that observation; R3 same ordinal with
+    // rebinding => reject with no mutation. Strings are fixed empty/one-byte
     // literals; decoding, arbitrary history length and provider truth are outside
     // this bounded implementation proof and remain executable/TCB boundaries.
-    let first: u64 = kani::any();
-    let second: u64 = kani::any();
-    kani::assume(first > 0 && second > 0);
+    //
+    // Ordinals are drawn from {1, 2, u64::MAX}, not from all nonzero u64. The
+    // fold reads them only through `binary_search_by_key`, i.e. through
+    // `Ord::cmp` of the two `NonZeroU64` values, and stores them unchanged;
+    // the oracle below reads them only through `==`, `>`, `<` and `max`, which
+    // return one of the two inputs. So the outcome depends on the pair only
+    // through which of <, =, > relates it, and every other input is drawn
+    // independently of the pair. The representatives realise all three
+    // relations ((1, 2), (1, 1), (2, 1)), also against the top ordinal
+    // ((2, MAX), (MAX, MAX), (MAX, 2)), so every nonzero pair behaves exactly
+    // as a representative pair. Two free 64-bit ordinals took up to 947s.
+    let ordinals = [1, 2, u64::MAX];
+    let first_index: usize = kani::any();
+    let second_index: usize = kani::any();
+    kani::assume(first_index < ordinals.len() && second_index < ordinals.len());
+    let first: u64 = ordinals[first_index];
+    let second: u64 = ordinals[second_index];
     let same_binding: bool = kani::any();
     let same_scope: bool = kani::any();
     let evidence = any_evidence(kani::any());
@@ -842,6 +856,19 @@ fn model_operation_history_preserves_distinct_subjects() {
     };
     let mut recorded = vec![original.clone()];
     let accepted = fold_recorded_operation(&mut recorded, incoming.clone());
+    kani::cover!(
+        accepted && first != second,
+        "R1 a new ordinal is retained beside the first"
+    );
+    kani::cover!(
+        accepted && first == second,
+        "R2 the same subject replaces its observation"
+    );
+    kani::cover!(!accepted, "R3 a rebinding at the same ordinal is rejected");
+    kani::cover!(
+        accepted && first > second,
+        "R1 a late lower ordinal is inserted first"
+    );
     if first == second {
         assert_eq!(accepted, same_binding && same_scope);
         assert_eq!(recorded.len(), 1);

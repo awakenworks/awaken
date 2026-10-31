@@ -187,16 +187,37 @@ fn absent_deadline_never_passes_for_any_now() {
 /// @obligation run_ingress.a_deadline_passes_once_it_is_reached
 #[kani::proof]
 fn bounded_deadline_passes_once_it_is_reached() {
-    // Causes: present deadline and independent u16 now/deadline values.
+    // Causes: present deadline and independent now/deadline values.
     // Effects: E1 before is live; E2 equal/after has passed. Decision rows
-    // deadline>now=>E1, deadline<=now=>E2. Full u64 wire extremes run through
-    // the adjacent executable table; arbitrary u64 pairs are not Kani-proved.
-    let now_ms = kani::any::<u16>() as u64;
-    let deadline_ms = kani::any::<u16>() as u64;
+    // deadline>now=>E1, deadline<=now=>E2.
+    //
+    // Both values are drawn from {0, 1, u64::MAX}, which realises <, = and >
+    // at the bottom and at the top of the u64 wire domain. That covers every
+    // u64 pair: `deadline_has_passed` compares the Unix-nanosecond images of
+    // the two values, and the lease kernel's lemma
+    // `unix_nanos_of_epoch_ms_is_strictly_monotone` (awaken-lease-contract)
+    // proves that image order equals wire order for every u64, so the
+    // verdict, like the oracle, reads only the order of the pair.
+    let representatives = [0, 1, u64::MAX];
+    let now_index: usize = kani::any();
+    let deadline_index: usize = kani::any();
+    kani::assume(now_index < representatives.len() && deadline_index < representatives.len());
+    let now_ms = representatives[now_index];
+    let deadline_ms = representatives[deadline_index];
+    let passed = deadline_has_passed(Some(deadline_ms), now_ms);
     assert_eq!(
-        deadline_has_passed(Some(deadline_ms), now_ms),
+        passed,
         deadline_ms <= now_ms,
-        "present deadline is inclusive",
+        "present deadline is inclusive"
+    );
+    kani::cover!(!passed, "a deadline ahead of now is live");
+    kani::cover!(
+        passed && deadline_ms == now_ms,
+        "the deadline instant has passed"
+    );
+    kani::cover!(
+        passed && deadline_ms < now_ms,
+        "a deadline behind now has passed"
     );
 }
 

@@ -39,11 +39,22 @@ pub fn realization_generation_authorizes(
 fn realization_generation_authority_requires_every_axis() {
     // G1-G64: all combinations of the immutable identity equalities and expiry
     // ordering. Strings and the content digest use two one-byte representatives
-    // of equality; expiry, epoch, and the generation's version retain
-    // arbitrary values (epochs are nonzero because no lease grants zero). The
-    // attachment identity is a coordinate of the complete generation witness,
-    // so it varies inside `generation` rather than beside it. Live root
-    // authority is a separate precondition, not a claim of this predicate.
+    // of equality; epoch and the generation's version retain arbitrary values
+    // (epochs are nonzero because no lease grants zero). The attachment
+    // identity is a coordinate of the complete generation witness, so it
+    // varies inside `generation` rather than beside it. Live root authority is
+    // a separate precondition, not a claim of this predicate.
+    //
+    // Expiries are drawn from {0, 1, u64::MAX}, not from all of u64. The
+    // predicate reads them only through `Lease::succession`, which compares
+    // the two `Expiry::from_epoch_ms` images with `>=`; the oracle compares
+    // the wire values with `>=`. The lease kernel's lemma
+    // `expiry_from_epoch_ms_is_strictly_monotone` (awaken-lease-contract)
+    // proves that image order equals wire order for every u64, so both sides
+    // depend on the pair only through which of <, =, > relates it. The
+    // representatives realise all three, at the bottom and at the top of the
+    // domain, and every other coordinate is drawn independently of the pair.
+    // Two full-width expiries did not finish within the batch deadline.
     let same_session: bool = kani::any();
     let same_attachment: bool = kani::any();
     let same_digest: bool = kani::any();
@@ -53,8 +64,12 @@ fn realization_generation_authority_requires_every_axis() {
     let current_epoch: u64 = kani::any();
     let asserted_epoch: u64 = kani::any();
     kani::assume(current_epoch != 0 && asserted_epoch != 0);
-    let current_expiry: u64 = kani::any();
-    let asserted_expiry: u64 = kani::any();
+    let expiries = [0, 1, u64::MAX];
+    let current_index: usize = kani::any();
+    let asserted_index: usize = kani::any();
+    kani::assume(current_index < expiries.len() && asserted_index < expiries.len());
+    let current_expiry: u64 = expiries[current_index];
+    let asserted_expiry: u64 = expiries[asserted_index];
     let current = McpGenerationRef::from_persisted(
         "a".into(),
         McpGeneration::new(
@@ -79,15 +94,33 @@ fn realization_generation_authority_requires_every_axis() {
         asserted_expiry,
     )
     .unwrap();
-    assert_eq!(
-        realization_generation_authorizes(&current, &asserted),
-        same_session
-            && same_attachment
-            && same_digest
-            && same_incarnation
-            && current_version == asserted_version
-            && current_epoch == asserted_epoch
-            && current_expiry >= asserted_expiry
+    let authorized = realization_generation_authorizes(&current, &asserted);
+    let same_tenure = same_session
+        && same_attachment
+        && same_digest
+        && same_incarnation
+        && current_version == asserted_version
+        && current_epoch == asserted_epoch;
+    assert_eq!(authorized, same_tenure && current_expiry >= asserted_expiry);
+    kani::cover!(
+        authorized && current_expiry > asserted_expiry,
+        "a renewal that extends the expiry authorizes"
+    );
+    kani::cover!(
+        authorized && current_expiry == asserted_expiry,
+        "the exact fence authorizes"
+    );
+    kani::cover!(
+        same_tenure && !authorized,
+        "a shortened expiry refuses the exact tenure"
+    );
+    kani::cover!(
+        !same_tenure && current_expiry >= asserted_expiry,
+        "an identity mismatch refuses a non-shortened expiry"
+    );
+    kani::cover!(
+        current_epoch > asserted_epoch && !authorized,
+        "a reassignment does not authorize its predecessor's assertion"
     );
 }
 

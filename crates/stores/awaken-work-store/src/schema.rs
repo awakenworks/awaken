@@ -429,31 +429,44 @@ pub(super) fn row_to_item(row: &SqliteRow) -> Result<WorkItem, sqlx::Error> {
 mod clock_proofs {
     use super::*;
 
-    fn check_deadline(now: u64, ttl: u64, requested: bool) {
-        // Causes: full-width time and TTL, requested/default TTL, zero TTL,
-        // multiplication/addition overflow, and the signed database ceiling.
-        // D1 absent request => 60 seconds; D2 explicit zero => one second;
-        // D3 positive request => unchanged. D4 exact deadline below i64::MAX;
-        // D5 larger mathematical result => i64::MAX, never wrap or go negative.
-        // A u128 sum/product is independent of production saturation and
-        // conversion. The raw helper's zero-TTL case is checked as well.
+    fn check_ttl_selection(now: u64, ttl: u64, requested: bool) {
+        // Causes: requested/default TTL, zero TTL, full-width time against the
+        // signed database ceiling. D1 absent request => 60 seconds; D2
+        // explicit zero => one second; D3 positive request => unchanged.
+        // D4/D5 for a bare reading: below i64::MAX exact, above clamped.
         let ceiling = i64::MAX as u128;
         let expected_ttl = if requested {
             if ttl == 0 { 1 } else { ttl }
         } else {
             60
         };
-        let actual_ttl = effective_ttl_seconds(requested.then_some(ttl));
-        assert_eq!(actual_ttl, expected_ttl);
+        assert_eq!(
+            effective_ttl_seconds(requested.then_some(ttl)),
+            expected_ttl
+        );
         assert_eq!(db_millis(now) as u128, u128::from(now).min(ceiling));
-        assert_eq!(
-            lease_expiry(now, ttl) as u128,
-            (u128::from(now) + u128::from(ttl) * 1000).min(ceiling)
-        );
-        assert_eq!(
-            lease_expiry(now, actual_ttl) as u128,
-            (u128::from(now) + u128::from(expected_ttl) * 1000).min(ceiling)
-        );
+    }
+
+    fn check_lease_expiry(now: u64, ttl: u64) {
+        // Causes: full-width time and TTL, multiplication/addition overflow,
+        // and the signed database ceiling. D4 exact deadline below i64::MAX;
+        // D5 larger mathematical result => i64::MAX, never wrap or go
+        // negative. A u128 sum/product is independent of production
+        // saturation and conversion. Zero TTL is one of the `u64` values.
+        let ceiling = i64::MAX as u128;
+        let exact = u128::from(now) + u128::from(ttl) * 1000;
+        assert_eq!(lease_expiry(now, ttl) as u128, exact.min(ceiling));
+    }
+
+    /// The composed deadline every claim and heartbeat persists: the selected
+    /// TTL through `lease_expiry`. The Kani harnesses prove the two halves
+    /// separately; the composition is an instance of
+    /// [`check_lease_expiry`], which holds for every `u64` TTL.
+    #[cfg(test)]
+    fn check_deadline(now: u64, ttl: u64, requested: bool) {
+        check_ttl_selection(now, ttl, requested);
+        check_lease_expiry(now, ttl);
+        check_lease_expiry(now, effective_ttl_seconds(requested.then_some(ttl)));
     }
 
     fn check_cutoff(now: u64, age: Option<u64>) {
@@ -471,10 +484,28 @@ mod clock_proofs {
 
     #[cfg(kani)]
     /// @obligation work.exact_boundary_reclaim
+    #[kani::proof]
+    fn work_lease_ttl_selection_is_exact() {
+        check_ttl_selection(kani::any(), kani::any(), kani::any());
+    }
+
+    /// `lease_expiry` is exact below the signed ceiling and clamps above it,
+    /// for every `u64` time and TTL. The deadline a claim persists is
+    /// `lease_expiry(now, effective_ttl_seconds(..))`; its selected TTL is one
+    /// `u64`, so that composition is an instance of this proof (with
+    /// `work_lease_ttl_selection_is_exact` fixing which TTL is selected) and
+    /// needs no second `lease_expiry` evaluation here.
+    #[cfg(kani)]
+    /// @obligation work.exact_boundary_reclaim
     /// @kani tier=nightly
     #[kani::proof]
     fn work_lease_deadlines_clamp_without_wrapping() {
-        check_deadline(kani::any(), kani::any(), kani::any());
+        let now: u64 = kani::any();
+        let ttl: u64 = kani::any();
+        check_lease_expiry(now, ttl);
+        let exact = u128::from(now) + u128::from(ttl) * 1000;
+        kani::cover!(exact < i64::MAX as u128, "D4 an exact deadline");
+        kani::cover!(exact > i64::MAX as u128, "D5 a clamped deadline");
     }
 
     #[cfg(kani)]

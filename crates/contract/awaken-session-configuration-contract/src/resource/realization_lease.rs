@@ -147,28 +147,71 @@ fn realization_renewal_requires_every_identity_axis() {
 /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 #[kani::proof]
 fn realization_renewal_requires_nonregressed_expiry() {
-    // C1 exact identity, C2 independent u16 asserted/current expiry, C3 now
-    // at the epoch. E1 current >= asserted and current > now authorizes;
-    // E2 shortening or already expired rejects. Rule C1+C2+C3=>E1/E2.
-    let current = kani::any::<u16>() as u64;
-    let asserted = kani::any::<u16>() as u64;
-    assert_eq!(
-        realization_lease_facts_authorize(true, true, true, current, asserted, 0),
-        current >= asserted && current > 0,
+    // C1 exact identity, C2 independent asserted/current expiry, C3 now at
+    // the epoch. E1 current >= asserted and current > now authorizes; E2
+    // shortening or already expired rejects. Rule C1+C2+C3=>E1/E2.
+    //
+    // Expiries are drawn from {0, 1, u64::MAX}, not from all of u64. The
+    // renewal law compares the raw expiries with `>=`, and liveness compares
+    // their Unix-nanosecond images, which the lease kernel's lemma
+    // `unix_nanos_of_epoch_ms_is_strictly_monotone` proves order-preserving
+    // for every u64; the oracle uses `>=` and `>`. So the verdict depends only
+    // on the order of (current, asserted, now = 0), and the representatives
+    // realise every such order: each of current and asserted at, just above
+    // and far above now, in every relation to each other, including the top.
+    let current = any_order_representative();
+    let asserted = any_order_representative();
+    let authorized = realization_lease_facts_authorize(true, true, true, current, asserted, 0);
+    assert_eq!(authorized, current >= asserted && current > 0);
+    kani::cover!(
+        authorized && current > asserted,
+        "an extended renewal authorizes"
     );
+    kani::cover!(
+        authorized && current == asserted,
+        "the exact expiry authorizes"
+    );
+    kani::cover!(
+        !authorized && current < asserted,
+        "a shortened expiry refuses"
+    );
+    kani::cover!(
+        !authorized && current == 0 && asserted == 0,
+        "an expired lease refuses"
+    );
+}
+
+/// {0, 1, u64::MAX}: realises every order relation between two or three
+/// epoch-millisecond values, at the bottom and at the top of the domain. The
+/// harnesses that draw from it state why their verdict reads only that order.
+#[cfg(kani)]
+fn any_order_representative() -> u64 {
+    let representatives = [0, 1, u64::MAX];
+    let index: usize = kani::any();
+    kani::assume(index < representatives.len());
+    representatives[index]
 }
 
 #[cfg(kani)]
 /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 #[kani::proof]
 fn realization_renewal_expires_at_exact_boundary() {
-    // C1 exact identity and nonregressed expiry, C2 independent u16 current
+    // C1 exact identity and nonregressed expiry, C2 independent current
     // expiry and now. E1 live strictly before; E2 equal/after rejects.
     // Decision rows now<current=>E1; now>=current=>E2.
-    let current = kani::any::<u16>() as u64;
-    let now = kani::any::<u16>() as u64;
-    assert_eq!(
-        realization_lease_facts_authorize(true, true, true, current, 0, now),
-        current > now,
+    //
+    // Times are drawn from {0, 1, u64::MAX} for the reason stated in
+    // `realization_renewal_requires_nonregressed_expiry`: with asserted = 0
+    // the verdict reads only the order of (current, now), and the
+    // representatives realise <, = and > at the bottom and the top.
+    let current = any_order_representative();
+    let now = any_order_representative();
+    let authorized = realization_lease_facts_authorize(true, true, true, current, 0, now);
+    assert_eq!(authorized, current > now);
+    kani::cover!(authorized, "live strictly before expiry");
+    kani::cover!(
+        !authorized && current == now,
+        "expired at the expiry instant"
     );
+    kani::cover!(!authorized && current < now, "expired after the expiry");
 }
