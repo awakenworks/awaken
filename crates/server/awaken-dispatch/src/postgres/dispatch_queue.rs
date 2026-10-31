@@ -1571,12 +1571,12 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
             row.try_get("active_attempt_epoch").map_err(store_error)?;
         let physical_binding: Option<serde_json::Value> =
             row.try_get("active_attempt_binding").map_err(store_error)?;
-        let closing: i64 = row.try_get("active_attempt_closing").map_err(store_error)?;
+        let closing: bool = row.try_get("active_attempt_closing").map_err(store_error)?;
         crate::dispatch::observed_physical_attempt_is_present(
             physical_owner.is_some(),
             physical_epoch.is_some(),
             physical_binding.is_some(),
-            closing != 0,
+            closing,
         )?;
         let adopted = crate::dispatch::pending_session_run_adoption(
             &stored,
