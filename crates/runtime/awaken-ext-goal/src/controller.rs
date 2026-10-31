@@ -138,6 +138,30 @@ struct WorkerExecution {
     message_start: usize,
 }
 
+/// What a controller may do with Runs, fixed by its constructor.
+///
+/// Decision table (`run_capability_decides_whether_a_controller_may_touch_runs`):
+/// | Rule | constructor | Effect of executing or settling a Run |
+/// |---|---|---|
+/// | X1 | `Controller::new` | the bound Run port answers |
+/// | X2 | `Controller::preparation` | refused: `Domain("Outcome preparation cannot execute a Run")` |
+#[derive(Clone, Copy)]
+enum RunCapability<'a> {
+    Executing(&'a dyn OutcomeRuns),
+    Preparation,
+}
+
+impl<'a> RunCapability<'a> {
+    fn runs(self) -> Result<&'a dyn OutcomeRuns, Error> {
+        match self {
+            Self::Executing(runs) => Ok(runs),
+            Self::Preparation => Err(Error::Domain(
+                "Outcome preparation cannot execute a Run".into(),
+            )),
+        }
+    }
+}
+
 /// One Outcome controller bound to its Worker Thread and ordinary Run ports.
 /// The object holds no mutable truth; every call rebuilds from committed Thread
 /// state, so a replacement process may construct another controller and resume.
@@ -145,7 +169,7 @@ pub struct Controller<'a> {
     thread_id: &'a ThreadId,
     reader: &'a dyn CommittedThreadView,
     state: ThreadOutcomeState<'a>,
-    executor: Option<&'a dyn OutcomeRuns>,
+    runs: RunCapability<'a>,
     run_context: RuntimeRunContext,
     grader: &'a dyn Grader,
 }
@@ -165,7 +189,7 @@ impl<'a> Controller<'a> {
             thread_id,
             reader,
             state: ThreadOutcomeState::new(thread_id, recovery, coordinator),
-            executor: Some(executor),
+            runs: RunCapability::Executing(executor),
             run_context,
             grader,
         }
@@ -185,7 +209,7 @@ impl<'a> Controller<'a> {
             thread_id,
             reader,
             state: ThreadOutcomeState::new(thread_id, recovery, coordinator),
-            executor: None,
+            runs: RunCapability::Preparation,
             run_context: RuntimeRunContext::new(),
             grader,
         }
@@ -525,8 +549,8 @@ impl<'a> Controller<'a> {
             vec![input],
         );
         let state = self
-            .executor
-            .ok_or_else(|| Error::Domain("Outcome preparation cannot execute a Run".into()))?
+            .runs
+            .runs()?
             .execute(activation, self.run_context.clone())
             .await
             .map_err(worker_execution_error)?;
@@ -542,8 +566,8 @@ impl<'a> Controller<'a> {
     async fn verdict(&self, run_id: &RunId, state: &RunState) -> Result<RunVerdict, Error> {
         let settlement = match classify_run(state, None) {
             Err(Undecided::NeedsSettlement) => self
-                .executor
-                .ok_or_else(|| Error::Domain("Outcome preparation cannot execute a Run".into()))?
+                .runs
+                .runs()?
                 .settlement(run_id)
                 .await
                 .map_err(|error| Error::Persistence(error.to_string()))?,
@@ -576,8 +600,8 @@ impl<'a> Controller<'a> {
                 acknowledgment_prompt(),
             )],
         );
-        self.executor
-            .ok_or_else(|| Error::Domain("Outcome preparation cannot execute a Run".into()))?
+        self.runs
+            .runs()?
             .execute(activation, self.run_context.clone())
             .await
             .map_err(worker_execution_error)
@@ -1632,6 +1656,22 @@ mod tests {
             ),
             None,
             "R4/E4"
+        );
+    }
+
+    #[test]
+    fn run_capability_decides_whether_a_controller_may_touch_runs() {
+        let world = World::new(&[]);
+        assert!(
+            RunCapability::Executing(&world).runs().is_ok(),
+            "X1: an executing controller reaches its Run port"
+        );
+        assert!(
+            matches!(
+                RunCapability::Preparation.runs(),
+                Err(Error::Domain(message)) if message == "Outcome preparation cannot execute a Run"
+            ),
+            "X2: a preparation controller refuses every Run"
         );
     }
 
