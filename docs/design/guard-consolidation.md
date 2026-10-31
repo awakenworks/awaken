@@ -34,6 +34,18 @@ as constants inside modules (for example 404 `ModelBinding::new` producers and
 `_cancel_safety_fitness.py`); they are listed in the inventory column
 "Baseline" as `inline`.
 
+## Decision: optional dependencies are reported, not violations
+
+User decision, 2026-10-31: `Option<Arc<dyn ..>>` is not a P5 violation. Most
+of these fields are dependencies a deployment may leave out (a store, a
+notifier, an observer), and an `Option` states that honestly.
+`principle_status.py` reports them in an informational row with no target
+(645 in production code; 620 in the plain `Option<Arc<dyn` spelling). V3
+changes only the sites that are roles chosen per deployment, which become
+required at construction or a closed enum. The P5 optional-role row
+(`Option<&dyn ..>`, `Option<&'a dyn ..>`, and `Option<&(dyn ..)>`) keeps its
+target of zero. Both patterns match across line breaks.
+
 ## Guards that do not run, or run on less than their input
 
 | Finding | Evidence | Effect |

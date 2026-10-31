@@ -9,7 +9,14 @@ hand count. This prints the plan's principle table from the tree:
 * P5 a `Weak<..>` back-reference;
 * P5 an optional role, `Option<&dyn ..>` with or without a lifetime;
 * P6 a typed failure flattened into text, `Internal(x.to_string())`;
-* D6 the number of crates whose metadata declares `layer = "contract"`.
+* D6 the number of crates whose metadata declares `layer = "contract"`;
+* `info` an optional dependency, `Option<Arc<dyn ..>>`. Informational, not a
+  violation and with no target (user decision 2026-10-31): most are
+  dependencies a deployment may leave out. V3 changes only the ones that are
+  roles chosen per deployment.
+
+Every pattern matches across line breaks: a type split over several lines
+counts the same as one written on one line.
 
 Code rows count production code only: the modules reachable from each crate's
 library and binary roots (`production_module_files`) with `cfg(test)` items
@@ -43,6 +50,8 @@ INPUT_GLOBS: tuple[str, ...] = (
 )
 
 SESSION_CONTEXT = "session"
+# A row that reports without a target: its count is not a violation.
+INFORMATIONAL = "info"
 TOP = 5
 
 # (principle, rule, pattern) over production source with comments removed.
@@ -52,9 +61,11 @@ CODE_RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
      re.compile(r"\.\s*(?:lock|read|write)\s*\(\s*\)\s*\.\s*(?:expect|unwrap)\s*\(")),
     ("P5", "`Weak<` back-references", re.compile(r"\bWeak\s*<")),
     ("P5", "optional roles `Option<&dyn ..>`",
-     re.compile(r"\bOption\s*<\s*&\s*(?:'\w+\s+)?(?:mut\s+)?dyn\b")),
+     re.compile(r"\bOption\s*<\s*&\s*(?:'\w+\s+)?(?:mut\s+)?\(?\s*dyn\b")),
     ("P6", "`Internal(x.to_string())`",
      re.compile(r"\bInternal\s*\(\s*[\w.]+\.to_string\s*\(\s*\)\s*\)")),
+    (INFORMATIONAL, "optional dependencies `Option<Arc<dyn ..>>` (informational, not a violation)",
+     re.compile(r"\bOption\s*<\s*(?:(?:std\s*::\s*)?sync\s*::\s*)?Arc\s*<\s*\(?\s*dyn\b")),
 )
 CONTRACT_RULE = ("D6", "contract crates")
 
@@ -159,7 +170,8 @@ def selftest() -> None:
     | S3 | `store.read("path").unwrap()` | 0 (an argument is not a lock read) |
     | S4 | a forbidden shape in a comment or a `cfg(test)` module | 0 |
     | S5 | `Weak<T>` field; `use std::sync::Weak;` | 1 Weak hit |
-    | S6 | `Option<&dyn R>`, `Option<&'a dyn R>`; `Option<Arc<dyn R>>` | 2 role hits |
+    | S6 | `Option<&dyn R>`, `Option<&'a dyn R>`, `Option<&(dyn R + Send)>`, one split over lines; `Option<Arc<dyn R>>` | 4 role hits |
+    | S6a | `Option<Arc<dyn R>>`, `Option<std::sync::Arc<dyn R>>`, one split over lines; `Option<&dyn R>`, `Arc<dyn R>` | 3 informational hits |
     | S7 | `Internal(e.to_string())`; `Internal(code)`, `Internal(format!(..))` | 1 P6 hit |
     | S8 | a module file no root reaches, a `tests/` file | not counted |
     | S9 | contract layer crates | counted by metadata, Session column listed |
@@ -175,14 +187,17 @@ def selftest() -> None:
         "#[cfg(test)]\nmod tests { fn t() { m.lock().unwrap(); let _: Weak<u8>; } }\n"  # S4
         "use std::sync::Weak;\nstruct S { parent: Weak<Inner> }\n"  # S5
         "trait T { fn a(&self) -> Option<&dyn R>; fn b<'a>(&'a self) -> Option<&'a dyn R>;\n"
-        "          fn c(&self) -> Option<Arc<dyn R>>; }\n"  # S6
+        "          fn c(&self) -> Option<Arc<dyn R>>; fn d(&self) -> Option<&(dyn R + Send)>;\n"
+        "          fn e<'a>(&'a self) -> Option<\n        &'a dyn R,\n    >; }\n"  # S6
+        "struct D { a: Option<std::sync::Arc<dyn R>>, b: Option<\n    Arc<\n        dyn R + Send>>, c: Arc<dyn R> }\n"  # S6a
         "fn g() { E::Internal(e.to_string()); E::Internal(code); E::Internal(format!(\"{e}\")); }\n"  # S7
     )
     expected = {
         "lock poison panics": 2,
         "`Weak<` back-references": 1,
-        "optional roles `Option<&dyn ..>`": 2,
+        "optional roles `Option<&dyn ..>`": 4,
         "`Internal(x.to_string())`": 1,
+        "optional dependencies `Option<Arc<dyn ..>>` (informational, not a violation)": 3,
     }
     assert dict(hits) == expected, f"S1-S7: {dict(hits)}"
 
