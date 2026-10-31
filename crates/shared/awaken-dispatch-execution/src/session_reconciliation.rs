@@ -187,6 +187,21 @@ impl SessionWorkerResolver {
                 Err(_) => tracing::warn!("exact Worker retention retry timed out"),
             }
         }
+        // Occupied slots: record each closed incarnation's process end while
+        // the provider still reports it. The per-record scan above sees only
+        // current incarnations, and a slot's owner may already be historical.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            source.record_occupied_worker_ends(dispatch.as_ref(), directory.as_ref(), now),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "occupied Worker process end not yet recorded")
+            }
+            Err(_) => tracing::warn!("occupied Worker process end recording timed out"),
+        }
         // A domain that died before its Registry insert has no record above;
         // the provider releases only ended, provably unregistered domains.
         match tokio::time::timeout(

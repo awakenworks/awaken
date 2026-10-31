@@ -49,10 +49,14 @@ struct StopSource {
     idle_observe_may_stop: Mutex<Vec<bool>>,
     admission_seal_calls: Mutex<Vec<WorkerIdentity>>,
     admission_seal_result: Mutex<Result<(), String>>,
+    owns_evidence: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
 impl WorkerExecutionStopSource for StopSource {
+    fn owns_worker_evidence(&self, _identity: &WorkerIdentity) -> bool {
+        *self.owns_evidence.lock().unwrap()
+    }
     async fn seal_closed_worker_admission(
         &self,
         identity: &WorkerIdentity,
@@ -416,6 +420,7 @@ impl Fixture {
             idle_observe_may_stop: Mutex::new(Vec::new()),
             admission_seal_calls: Mutex::new(Vec::new()),
             admission_seal_result: Mutex::new(Ok(())),
+            owns_evidence: Mutex::new(false),
         });
         let thread_id = request_thread_id(&tag);
         let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
@@ -1674,6 +1679,118 @@ async fn superseded_worker_closes_the_occupied_attempt_like_an_exact_exit() {
             "SU3 retired"
         );
     }
+}
+
+#[tokio::test]
+async fn maintenance_records_an_occupied_closed_incarnation_end_without_stopping_it() {
+    // Maintenance-tick table (record_occupied_worker_ends), one occupied slot:
+    // | Row | bound incarnation                                | effect                          |
+    // | O1  | provider does not own its evidence               | no observation, no receipt      |
+    // | O2  | lease still live                                 | no observation, not expired     |
+    // | O4  | closed; provider reports a supersession          | Superseded receipt recorded     |
+    // | O3  | the next pass, end already recorded              | no further provider read        |
+    // | O5  | closed; provider reports nothing                 | nothing recorded                |
+    // Every row observes only: no stop, no evidence release, and the slot and
+    // its entry stay exactly as they were.
+    async fn pass(f: &Fixture) -> Result<(), ApplicationError> {
+        awaken_dispatch::record_occupied_worker_ends(
+            f.store.as_ref(),
+            f.directory.as_ref(),
+            f.stop.as_ref(),
+            200,
+        )
+        .await
+    }
+    fn receipt_of(f: &Fixture) -> WorkerProcessExit {
+        WorkerProcessExit::ended(
+            f.binding.provider_id(),
+            f.binding.execution_ref(),
+            "k8s-container-superseded:v1:fixture",
+            awaken_worker_contract::WorkerProcessEnd::Superseded,
+        )
+        .unwrap()
+    }
+    async fn unchanged(f: &Fixture, row: &str) {
+        f.assert_occupied().await;
+        let slot = f.store.load_physical_attempt(&f.old.run_id).await.unwrap();
+        assert!(!slot.unwrap().closing, "{row} entry untouched");
+        assert!(f.stop.calls.lock().unwrap().is_empty(), "{row} no stop");
+        assert!(
+            f.stop.evidence_release_calls.lock().unwrap().is_empty()
+                && f.stop.idle_release_calls.lock().unwrap().is_empty(),
+            "{row} no release"
+        );
+    }
+
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    *f.stop.idle_observed_exit.lock().unwrap() = Some(receipt_of(&f));
+    pass(&f).await.unwrap();
+    assert!(
+        f.stop.idle_observe_may_stop.lock().unwrap().is_empty(),
+        "O1"
+    );
+    unchanged(&f, "O1").await;
+
+    let live = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 1_000, 5_000).await;
+    *live.stop.owns_evidence.lock().unwrap() = true;
+    *live.stop.idle_observed_exit.lock().unwrap() = Some(receipt_of(&live));
+    pass(&live).await.unwrap();
+    assert!(
+        live.stop.idle_observe_may_stop.lock().unwrap().is_empty(),
+        "O2"
+    );
+    let record = live
+        .directory
+        .incarnation(live.binding.worker())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        record.process_exit.is_none() && record.snapshot.state != WorkerState::Dead,
+        "O2 not expired, nothing recorded"
+    );
+    unchanged(&live, "O2").await;
+
+    *f.stop.owns_evidence.lock().unwrap() = true;
+    pass(&f).await.unwrap();
+    assert_eq!(
+        *f.stop.idle_observe_may_stop.lock().unwrap(),
+        vec![false],
+        "O4 observe only"
+    );
+    let recorded = f
+        .directory
+        .incarnation(f.binding.worker())
+        .await
+        .unwrap()
+        .unwrap()
+        .process_exit;
+    assert_eq!(recorded, Some(receipt_of(&f)), "O4");
+    unchanged(&f, "O4").await;
+    pass(&f).await.unwrap();
+    assert_eq!(f.stop.idle_observe_may_stop.lock().unwrap().len(), 1, "O3");
+    unchanged(&f, "O3").await;
+
+    let quiet = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    *quiet.stop.owns_evidence.lock().unwrap() = true;
+    pass(&quiet).await.unwrap();
+    assert_eq!(
+        *quiet.stop.idle_observe_may_stop.lock().unwrap(),
+        vec![false],
+        "O5"
+    );
+    assert!(
+        quiet
+            .directory
+            .incarnation(quiet.binding.worker())
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .is_none(),
+        "O5 nothing recorded"
+    );
+    unchanged(&quiet, "O5").await;
 }
 
 #[tokio::test]

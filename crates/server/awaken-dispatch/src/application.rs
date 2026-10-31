@@ -436,6 +436,15 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
             .release_unregistered_ended_worker_evidence(directory)
             .await
     }
+
+    async fn record_occupied_worker_ends(
+        &self,
+        dispatch: &dyn PhysicalAttemptReads,
+        directory: &dyn crate::WorkerDirectory,
+        now_ms: u64,
+    ) -> Result<(), ApplicationError> {
+        record_occupied_worker_ends(dispatch, directory, self.source.as_ref(), now_ms).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -550,6 +559,93 @@ pub async fn release_closed_idle_worker_evidence(
     source
         .release_closed_idle_worker_evidence(identity, record.create_ledger.as_ref())
         .await
+}
+
+/// Record, from the maintenance tick, the process end of each closed Worker
+/// incarnation that still occupies a physical attempt slot, while the provider
+/// still reports it. Without this the end is observed only when the next
+/// incarnation registers (which settles only the current record's predecessor)
+/// or when a successor is blocked behind the slot; by then Kubernetes may have
+/// dropped the exit from `lastState`. Observation never stops a process,
+/// releases evidence or touches the slot; the blocked-successor path still
+/// owns closure and reuses the recorded receipt.
+///
+/// | Row | bound incarnation of an occupied slot           | effect                        |
+/// |-----|-------------------------------------------------|-------------------------------|
+/// | O1  | the provider does not own its evidence          | skipped, no Registry write    |
+/// | O2  | lease still live                                | skipped, not expired          |
+/// | O3  | closed, end already recorded                    | skipped, no provider read     |
+/// | O4  | closed, provider reports an exact exit or a supersession | receipt recorded       |
+/// | O5  | closed, provider reports nothing (running, lost, gone) | nothing recorded, no stop |
+///
+/// Each incarnation is visited once per pass; one failure does not stop the
+/// pass and the first failure is returned for the caller's retry log.
+pub async fn record_occupied_worker_ends(
+    dispatch: &dyn PhysicalAttemptReads,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    now_ms: u64,
+) -> Result<(), ApplicationError> {
+    let mut visited: Vec<crate::WorkerIdentity> = Vec::new();
+    let mut first_error = None;
+    for summary in dispatch
+        .list_dispatches()
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+    {
+        if !summary.physical_attempt_active {
+            continue;
+        }
+        let attempt = dispatch
+            .load_physical_attempt(&summary.run_id)
+            .await
+            .map_err(|e| ApplicationError::unavailable(e.to_string()))?;
+        let Some(identity) = attempt
+            .as_ref()
+            .and_then(|attempt| attempt.binding.as_ref())
+            .map(|binding| binding.worker().clone())
+        else {
+            continue;
+        };
+        if visited.contains(&identity) || !source.owns_worker_evidence(&identity) {
+            continue;
+        }
+        visited.push(identity.clone());
+        if let Err(error) = record_closed_worker_end(directory, source, &identity, now_ms).await {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn record_closed_worker_end(
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    identity: &crate::WorkerIdentity,
+    now_ms: u64,
+) -> Result<(), ApplicationError> {
+    if !ensure_worker_closed(directory, identity, now_ms).await? {
+        return Ok(());
+    }
+    let Some(record) = directory
+        .incarnation(identity)
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+    else {
+        return Ok(());
+    };
+    if record.process_exit.is_some() {
+        return Ok(());
+    }
+    observe_closed_worker_exit(
+        directory,
+        source,
+        identity,
+        record.create_ledger.as_ref(),
+        false,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn observe_closed_worker_exit(

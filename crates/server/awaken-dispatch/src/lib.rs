@@ -81,7 +81,8 @@ pub use application::{
     ObservedAttemptStop, ObservedWorkerProcessExit, WorkerEvidenceReleaseAdapter,
     WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerProcessStopStatus,
     has_active_physical_attempt_for_owner, reconcile_closed_idle_worker_evidence,
-    release_closed_idle_worker_evidence, stop_committed_terminal_attempt, stop_expired_predecessor,
+    record_occupied_worker_ends, release_closed_idle_worker_evidence,
+    stop_committed_terminal_attempt, stop_expired_predecessor,
 };
 pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
 pub use awaken_dispatch_contract::operational::{
