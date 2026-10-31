@@ -61,8 +61,9 @@ pub struct PodProcessBinding {
     retention_finalizer: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     init_containers: Vec<ContainerProcessBinding>,
-    /// An Always-policy Pod needs accepted deletion intent as well as exact
-    /// exits. Absence preserves the original Never-policy binding contract.
+    /// Historical fact only: a binding frozen while Always-policy Worker Pods
+    /// were admitted keeps its original closure rule (accepted deletion intent
+    /// plus exact exits). `bind` never mints it again: one Pod is one process.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     restartable: bool,
 }
@@ -177,9 +178,10 @@ impl PodProcessObserver {
     }
     /// Obtain the exact running process coordinate through the existing control
     /// client. The caller must persist it before allowing any external effects.
-    /// Every ordinary container is included. Init, ephemeral, independently
-    /// restartable containers and prior restarts remain outside this proof
-    /// domain. An Always-policy Pod additionally requires retained evidence.
+    /// Every ordinary container is included. Only a `restartPolicy: Never` Pod
+    /// is admitted: an in-place restart would put a second process under the
+    /// same UID, Registry incarnation and Create ledger. Init, ephemeral and
+    /// independently restartable containers remain outside this proof domain.
     pub async fn bind_pod_process(
         &self,
         name: &str,
@@ -244,6 +246,8 @@ impl PodProcessObserver {
 
 fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
     let spec = pod.spec.as_ref()?;
+    // Always is read only to close historical restartable bindings; `bind`
+    // admits Never alone. The frozen policy is compared in `matching_statuses`.
     if !matches!(spec.restart_policy.as_deref(), Some("Never" | "Always"))
         || has_forbidden_sandbox_namespace_shape(spec)
         || spec.containers.is_empty()
@@ -426,8 +430,9 @@ fn bind(
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        let restartable = pod.spec.as_ref()?.restart_policy.as_deref() == Some("Always");
-        if restartable && !evidence_is_retained(pod) {
+        // One Pod is one process: a restarting Pod is never admitted, so a
+        // crash ends the Pod and its exact exit settles this incarnation.
+        if pod.spec.as_ref()?.restart_policy.as_deref() != Some("Never") {
             return None;
         }
         Some(PodProcessBinding {
@@ -441,7 +446,7 @@ fn bind(
                 .unwrap_or(WORKER_PROCESS_EVIDENCE_FINALIZER)
                 .into(),
             init_containers: completed_init_bindings(pod)?,
-            restartable,
+            restartable: false,
         })
     })();
     binding.ok_or_else(|| backend("Pod has no admissible private process binding"))

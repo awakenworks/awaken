@@ -6,12 +6,14 @@ use awaken_worker_fleet_kubernetes::{
 };
 
 #[tokio::test]
-async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
-    // Live rules DP0 unregistered Pod has no evidence finalizer; the canonical
-    // registration adapter retains the exact UID idempotently before binding.
-    // DP1 retained original Always Pod -> exact pre-effect binding;
-    // DP2 DELETE acceptance -> Unknown; DP3 accepted deletion + original runtime
-    // exit -> observed; DP4 only then release the owned evidence finalizer.
+async fn restarting_pod_is_never_bound_against_a_real_kubelet() {
+    // Live rules RP0 an unregistered Pod has no evidence finalizer; the
+    // canonical registration adapter retains the exact UID idempotently.
+    // RP1 a retained, Ready, original Always Pod (Deployment/StatefulSet shape)
+    // is still refused a process binding: one Pod is one process, so a
+    // container restart can never become a second process of this UID.
+    // RP2 the existing closed-idle retirement deletes it by exact UID and
+    // releases the owned finalizer; RP3 the API then removes the Pod.
     // This runs the production adapter against a real kubelet, without claiming
     // a Dispatch receipt, remote-effect termination, or a product E2E outcome.
     if !require_live_cluster() {
@@ -66,7 +68,7 @@ async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
             .unwrap_or_default()
             .iter()
             .any(|f| f == WORKER_PROCESS_EVIDENCE_FINALIZER),
-        "DP0"
+        "RP0"
     );
     observer
         .retain_pod_process_evidence(&name, &uid)
@@ -76,49 +78,32 @@ async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
         .retain_pod_process_evidence(&name, &uid)
         .await
         .unwrap();
-    let binding = wait_for_binding(&observer, &name, &uid).await;
-    assert_eq!(
-        serde_json::to_value(&binding).unwrap()["restartable"],
-        true,
-        "DP1"
+    let ready = kubectl(&[
+        "wait",
+        "--for=condition=Ready",
+        "-n",
+        &namespace,
+        &format!("pod/{name}"),
+        "--timeout=60s",
+    ]);
+    assert!(ready.status.success(), "RP1 original process is running");
+    assert!(
+        observer.bind_pod_process(&name, &uid).await.is_err(),
+        "RP1 restarting Pod refused"
     );
     let stopper = PodProcessStopper::new(observer);
-    assert_eq!(
-        stopper.request_stop(&binding).await.unwrap(),
-        PodProcessTermination::Unknown,
-        "DP2"
-    );
-    let receipt = stop_and_observe(&stopper, &binding).await;
-    assert_eq!(receipt.binding(), &binding, "DP3 exact subject");
-    let closed = pods.get(&name).await.unwrap();
-    assert_eq!(closed.metadata.uid.as_deref(), Some(uid.as_str()));
-    assert!(
-        closed.metadata.deletion_timestamp.is_some(),
-        "DP3 launch lifecycle closed"
-    );
-    assert!(
-        closed
-            .status
-            .unwrap()
-            .container_statuses
-            .unwrap()
-            .iter()
-            .all(|s| s.restart_count == 0
-                && s.state.as_ref().is_some_and(|s| s.terminated.is_some()))
-    );
-    stopper.release_evidence(&binding).await.unwrap();
+    stopper.retire_closed_idle_pod(&name, &uid).await.unwrap();
     // The existing Kubernetes wait owner observes API resource deletion; this
     // test must not introduce another poll loop or settle on a timer.
     let removed = kubectl(&[
         "wait",
         "--for=delete",
+        "-n",
+        &namespace,
         &format!("pod/{name}"),
         "--timeout=60s",
     ]);
-    assert!(
-        removed.status.success(),
-        "DP4 owned Pod removed after evidence release"
-    );
+    assert!(removed.status.success(), "RP2/RP3 retired and removed");
     assert!(matches!(pods.get(&name).await, Err(kube::Error::Api(error)) if error.code == 404));
 }
 

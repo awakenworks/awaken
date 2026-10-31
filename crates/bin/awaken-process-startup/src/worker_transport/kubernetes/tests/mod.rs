@@ -360,6 +360,7 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
         ("/metadata/uid", json!("uid-replacement")),
         ("/metadata/finalizers", json!([])),
         ("/spec/restartPolicy", json!("OnFailure")),
+        ("/spec/restartPolicy", json!("Always")),
         (
             "/spec/containers/0/securityContext/allowPrivilegeEscalation",
             json!(true),
@@ -416,26 +417,33 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
 }
 
 #[tokio::test]
-async fn deployment_binding_freezes_restart_policy_through_the_same_transport_owner() {
-    // D1 reviewed UID + Registry incarnation + retained original Deployment
-    // container => the existing binding source freezes Always. D2 removing the
-    // finalizer before admission => Unavailable, not an unbound fallback.
+async fn restarting_worker_pods_are_never_bound_through_the_same_transport_owner() {
+    // One Pod is one process. D1 reviewed UID + Registry incarnation + retained
+    // original container in a restartPolicy Never Pod => the existing binding
+    // source freezes it without any restartable fact. D2 the same retained Pod
+    // under Always (Deployment/StatefulSet) => Unavailable, never a binding a
+    // restarted container could reuse. No row issues a DELETE.
     let (transport, facts) = fixture();
     let source = transport.binding_source().unwrap();
     let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
     let mut pod = running();
-    pod["spec"]["restartPolicy"] = json!("Always");
     *facts.pod.lock().unwrap() = (StatusCode::OK, pod.clone());
     let binding = source.binding_for(&worker).await.unwrap();
     let coordinate: Value = serde_json::from_str(binding.execution_ref()).unwrap();
-    assert_eq!(coordinate["restartable"], true, "D1");
+    assert!(coordinate.get("restartable").is_none(), "D1");
     assert_eq!(
         coordinate["containers"][0]["container_id"],
         "containerd://exact"
     );
-    pod["metadata"]["finalizers"] = json!([]);
+    pod["spec"]["restartPolicy"] = json!("Always");
     *facts.pod.lock().unwrap() = (StatusCode::OK, pod);
-    assert!(source.binding_for(&worker).await.is_err(), "D2");
+    assert!(
+        matches!(
+            source.binding_for(&worker).await.unwrap_err().kind,
+            awaken_session_execution_contract::ApplicationErrorKind::Unavailable
+        ),
+        "D2"
+    );
     assert!(facts.deletes.lock().unwrap().is_empty());
 }
 

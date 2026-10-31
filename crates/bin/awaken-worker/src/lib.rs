@@ -36,40 +36,6 @@ use awaken_provisioning_contract::{SandboxProvider, SessionSandbox};
 use futures_util::FutureExt as _;
 use std::sync::Arc;
 
-#[cfg(feature = "container-k8s")]
-async fn request_registered_kubernetes_pod_replacement(worker_id: &str) -> Result<(), String> {
-    use awaken_worker_fleet_kubernetes::{PodProcessObserver, PodProcessStopper};
-    use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
-
-    let pod = KubernetesPodIdentity::from_worker_id(worker_id)?;
-    let client = awaken_worker_fleet_kubernetes::connect_control_client()
-        .await
-        .map_err(|error| error.to_string())?;
-    let observer =
-        PodProcessObserver::new(client, pod.namespace()).map_err(|error| error.to_string())?;
-    PodProcessStopper::new(observer)
-        .request_registered_pod_replacement(pod.name(), pod.uid())
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "container-k8s")]
-async fn await_registered_kubernetes_pod_replacement(worker_id: &str) {
-    let mut attempts = 0_u64;
-    loop {
-        match request_registered_kubernetes_pod_replacement(worker_id).await {
-            Ok(()) => break,
-            Err(error) => {
-                if attempts.is_multiple_of(10) {
-                    eprintln!("worker Pod replacement intent pending: {error}");
-                }
-                attempts = attempts.saturating_add(1);
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
-    }
-}
-
 mod acp_capability;
 mod admin;
 mod attempt_decorator;
@@ -1952,15 +1918,9 @@ impl WorkerNode {
             )
             .await;
         }
-        #[cfg(feature = "container-k8s")]
-        if k8s_create_client.is_some() && identity.worker_id.starts_with("k8s:") {
-            // One Pod UID is one Registry incarnation and one immutable Create
-            // ledger. Keep /livez serving while this drained process waits for
-            // a UID-fenced Kubernetes deletion intent; exiting sooner would
-            // let StatefulSet restart a second process under the same UID.
-            // This never emits a stop receipt or releases retained evidence.
-            await_registered_kubernetes_pod_replacement(&identity.worker_id).await;
-        }
+        // A registered Kubernetes Worker runs in a `restartPolicy: Never` Pod
+        // (the Coordinator binds no other): exiting ends that Pod, and its
+        // retained exact exit settles this incarnation. No self-deletion here.
         shutdown?;
         if authority_lost {
             return Err(std::io::Error::other(

@@ -409,82 +409,24 @@ async fn closed_idle_retirement_missing_or_unavailable_coordinates_never_mutate(
 }
 
 #[tokio::test]
-async fn registered_worker_replacement_retains_only_exact_delete_intent() {
-    // Causes: C1 exact retained running UID; C2 API accepts DELETE, loses its
-    // response, or races one resourceVersion change; C3 Pod is already deleting;
-    // C4 UID/retention/process projection is foreign or unbound. Effects:
-    // E1 one UID/RV-fenced intent, never an exit receipt; E2 replay observes
-    // the same intent without another DELETE; E3 C4 cannot mutate any Pod.
-    // Decision rules: W1=C1+C2(accept)->E1; W2=C1+C2(lost)->E1+E2;
-    // W3=C1+C2(conflict)->retry E1; W4=C3->E2; W5=C4->E3.
-    for fault in [Fault::None, Fault::AfterDelete, Fault::Conflict] {
-        let fixture = Fixture::new(fault);
-        let mut live = running();
-        live["spec"]["restartPolicy"] = json!("Always");
-        fixture.facts.lock().unwrap().pod = Some(retained(live));
-        fixture
-            .stopper()
-            .request_registered_pod_replacement("worker", "uid-a")
-            .await
-            .unwrap();
-        fixture
-            .stopper()
-            .request_registered_pod_replacement("worker", "uid-a")
-            .await
-            .unwrap();
-        let facts = fixture.facts.lock().unwrap();
-        assert_eq!(facts.accepted, 1, "W1..W4");
-        assert!(
-            facts
-                .pod
-                .as_ref()
-                .unwrap()
-                .metadata
-                .deletion_timestamp
-                .is_some()
-        );
-        for (method, body) in &facts.calls {
-            if method == "DELETE" {
-                assert_eq!(body["preconditions"]["uid"], "uid-a", "E1");
-            }
-        }
-    }
-    for corrupt in ["uid", "retention", "restart"] {
-        let fixture = Fixture::new(Fault::None);
-        let mut live = running();
-        live["spec"]["restartPolicy"] = json!("Always");
-        match corrupt {
-            "uid" => live["metadata"]["uid"] = json!("foreign"),
-            "retention" => live["metadata"]["finalizers"] = json!([]),
-            "restart" => live["status"]["containerStatuses"][0]["restartCount"] = json!(1),
-            _ => unreachable!(),
-        }
-        fixture.facts.lock().unwrap().pod = Some(decode(live));
-        assert!(
-            fixture
-                .stopper()
-                .request_registered_pod_replacement("worker", "uid-a")
-                .await
-                .is_err(),
-            "W5 {corrupt}"
-        );
-        assert_eq!(fixture.facts.lock().unwrap().accepted, 0, "E3 {corrupt}");
-    }
-}
-
-#[tokio::test]
-async fn deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
-    // C1 frozen retained Always Pod; C2 exact UID/RV; C3 deletion accepted;
-    // C4 original containers exited. P1(C1+C2) => one conditional DELETE and
-    // Unknown; P2(C1+C2+C3+!C4) => read-only Unknown; P3(C1..C4) => local exit.
-    // No response loss/retry may become a new stop operation or Dispatch write;
-    // those faults use the same existing stopper matrix below.
+async fn historical_deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
+    // C1 retained Always Pod frozen before restarting Pods stopped being
+    // admitted (historical binding); C2 exact UID/RV; C3 deletion accepted;
+    // C4 original containers exited. P0 the same Pod is no longer bindable;
+    // P1(C1+C2) => one conditional DELETE and Unknown; P2(C1+C2+C3+!C4) =>
+    // read-only Unknown; P3(C1..C4) => local exit. No response loss/retry may
+    // become a new stop operation or Dispatch write; those faults use the same
+    // existing stopper matrix below.
     let fixture = Fixture::new(Fault::None);
+    let binding = super::super::tests::historical_restartable(&fixture.binding().await);
     let mut live = running();
     live["spec"]["restartPolicy"] = json!("Always");
     fixture.facts.lock().unwrap().pod = Some(retained(live));
     let observer = fixture.observer();
-    let binding = observer.bind_pod_process("worker", "uid-a").await.unwrap();
+    assert!(
+        observer.bind_pod_process("worker", "uid-a").await.is_err(),
+        "P0 no new restartable binding"
+    );
     let stopper = PodProcessStopper::new(observer);
     assert_eq!(
         stopper.request_stop(&binding).await.unwrap(),
@@ -752,7 +694,7 @@ async fn sandbox_stop_preserves_create_and_continuation_retention_ownership() {
     // C2 current private process identity; C3 accepted DELETE; C4 exact exits.
     // G1=C1+C2 -> one UID/RV-fenced stop, still Unknown until C4. G2=G1+C4
     // -> local exit receipt and idempotent replay. G3 either resource guard
-    // never grants Worker replacement/authentication or Worker guard release.
+    // never grants Worker authentication or Worker guard release.
     // The existing resource lifecycle remains the sole guard/PVC harvest owner.
     for guard in [
         crate::CONTINUATION_CLEANUP_FINALIZER,
@@ -771,19 +713,6 @@ async fn sandbox_stop_preserves_create_and_continuation_retention_ownership() {
         let binding = fixture.binding().await;
         assert!(binding.evidence_was_retained(), "G1 {guard}");
         assert!(!binding.worker_evidence_was_retained(), "G3 {guard}");
-        assert!(
-            fixture
-                .stopper()
-                .request_registered_pod_replacement("worker", "uid-a")
-                .await
-                .is_err(),
-            "G3"
-        );
-        assert_eq!(
-            fixture.facts.lock().unwrap().accepted,
-            0,
-            "G3 no Worker mutation"
-        );
         assert_eq!(
             fixture.stopper().request_stop(&binding).await.unwrap(),
             PodProcessTermination::Unknown,
@@ -868,6 +797,117 @@ async fn an_already_exited_pod_must_be_closed_before_a_stop_receipt() {
             fixture.facts.lock().unwrap().accepted,
             1,
             "S13 no duplicate DELETE"
+        );
+    }
+}
+
+/// Kubelet status once the only process of a `restartPolicy: Never` Worker
+/// Pod has ended: the Pod phase is terminal and no restart follows.
+fn ended(phase: &str, reason: &str, exit_code: i32) -> k8s_openapi::api::core::v1::PodStatus {
+    let mut pod = terminal();
+    pod["status"]["phase"] = json!(phase);
+    let exit = &mut pod["status"]["containerStatuses"][0]["state"]["terminated"];
+    exit["reason"] = json!(reason);
+    exit["exitCode"] = json!(exit_code);
+    decode(pod).status.unwrap()
+}
+
+#[tokio::test]
+async fn worker_container_exit_settles_only_retained_exact_evidence_for_every_exit_kind() {
+    // Settlement decision table for one-process Worker Pods (restartPolicy
+    // Never). Exit cause X, as kubelet reports the only process ending:
+    // | X  | cause                          | phase     | reason    | code |
+    // | X1 | clean exit                     | Succeeded | Completed | 0    |
+    // | X2 | non-zero exit                  | Failed    | Error     | 1    |
+    // | X3 | OOM kill                       | Failed    | OOMKilled | 137  |
+    // | X4 | liveness kill                  | Failed    | Error     | 137  |
+    // | X5 | startup failure after binding  | Failed    | Error     | 1    |
+    // | X6 | container never started        | Failed    | StartError| 128  |
+    // Retention R1: Worker evidence finalizer present before binding; R2 absent.
+    // | Rule | X     | R  | settlement                                        |
+    // | S1   | X1-X5 | R1 | one UID/RV DELETE + Unknown, then exact exit receipt, idempotent |
+    // | S2   | X1-X5 | R2 | no write, no receipt: incarnation stays unsettled (fail closed) |
+    // | S3   | X6    | -  | never Running, never bound: nothing to settle      |
+    // Replacement in every row is the fleet controller's fresh Pod UID (k3d);
+    // restartCount stays 0, so no row binds a second process to the old UID.
+    let exits = [
+        ("X1", "Succeeded", "Completed", 0),
+        ("X2", "Failed", "Error", 1),
+        ("X3", "Failed", "OOMKilled", 137),
+        ("X4", "Failed", "Error", 137),
+        ("X5", "Failed", "Error", 1),
+    ];
+    for (row, phase, reason, code) in exits {
+        let fixture = Fixture::new(Fault::None);
+        let binding = fixture.binding().await;
+        assert!(binding.worker_evidence_was_retained(), "S1 {row}");
+        {
+            let mut facts = fixture.facts.lock().unwrap();
+            let pod = facts.pod.as_mut().unwrap();
+            pod.status = Some(ended(phase, reason, code));
+            pod.metadata.resource_version = Some("exited".into());
+        }
+        assert_eq!(
+            fixture.stopper().request_stop(&binding).await.unwrap(),
+            PodProcessTermination::Unknown,
+            "S1 {row}: exit alone is not closure"
+        );
+        for _ in 0..2 {
+            let PodProcessTermination::Observed(receipt) =
+                fixture.stopper().request_stop(&binding).await.unwrap()
+            else {
+                panic!("S1 {row}: exact retained exit must settle");
+            };
+            assert_eq!(receipt.binding(), &binding, "S1 {row}");
+        }
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!(facts.accepted, 1, "S1 {row}: one exact DELETE");
+        let statuses = facts.pod.as_ref().unwrap().status.as_ref().unwrap();
+        assert!(
+            statuses
+                .container_statuses
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|status| status.restart_count == 0),
+            "S1 {row}: no in-place restart"
+        );
+    }
+    for (row, phase, reason, code) in exits {
+        let fixture = Fixture::new(Fault::None);
+        fixture.facts.lock().unwrap().pod = Some(decode(running()));
+        let binding = fixture.binding().await;
+        assert!(!binding.evidence_was_retained(), "S2 {row}");
+        fixture.facts.lock().unwrap().pod.as_mut().unwrap().status =
+            Some(ended(phase, reason, code));
+        let before = fixture.facts.lock().unwrap().calls.len();
+        assert!(
+            fixture.stopper().request_stop(&binding).await.is_err(),
+            "S2 {row}: unretained evidence never settles"
+        );
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!(facts.calls.len(), before, "S2 {row}: no IO");
+        assert_eq!((facts.accepted, facts.released), (0, 0), "S2 {row}");
+    }
+    let mut never_started = running();
+    never_started["status"]["phase"] = json!("Failed");
+    never_started["status"]["containerStatuses"][0]["state"] = json!({"terminated":{
+        "containerID":"containerd://a", "exitCode":128, "reason":"StartError",
+        "startedAt":"2026-09-08T00:00:00Z", "finishedAt":"2026-09-08T00:00:00Z"
+    }});
+    for pod in [never_started.clone(), {
+        never_started["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
+        never_started
+    }] {
+        let fixture = Fixture::new(Fault::None);
+        fixture.facts.lock().unwrap().pod = Some(decode(pod));
+        assert!(
+            fixture
+                .observer()
+                .bind_pod_process("worker", "uid-a")
+                .await
+                .is_err(),
+            "S3 X6 never bound"
         );
     }
 }

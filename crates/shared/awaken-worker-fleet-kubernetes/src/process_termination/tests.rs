@@ -353,30 +353,65 @@ fn binding_must_precede_execution_and_cannot_be_reconstructed_from_terminal_stat
     );
 }
 
+/// A binding persisted while Always-policy Worker Pods were still admitted.
+/// `bind` can no longer mint one; only its stored wire form remains.
+pub(super) fn historical_restartable(binding: &PodProcessBinding) -> PodProcessBinding {
+    let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["restartable"] = json!(true);
+    serde_json::from_value(encoded).unwrap()
+}
+
 #[test]
-fn deployment_process_exit_requires_frozen_policy_retention_and_deletion() {
-    // Causes: C1 exact private original container set/UID/node/start; C2 Always
-    // policy frozen before effects; C3 retained binding and live finalizer;
-    // C4 accepted deletion intent; C5 every exact runtime exit; C6 zero restarts.
-    // E1(C1..C6) local exit observed; E2(!C3 before admission) bind rejected;
-    // E3(!C1|!C3|!C4|!C5|!C6 after admission) Unknown, no retirement.
-    // Rules D1 all => observed; D2 natural exit => Unknown; D3 deletion/live =>
-    // Unknown; D4 change one necessary cause => Unknown (MC/DC). D5 a legacy
-    // Never binding cannot acquire Always semantics by later Pod observation.
+fn restarting_pods_are_never_bound_and_historical_restartable_bindings_keep_their_closure() {
+    // One Pod is one process. Causes: P1 restartPolicy (Never / Always /
+    // OnFailure / absent); P2 Worker evidence retained before binding.
+    // Admission rules: A1 Never => bind (retained or not, as before);
+    // A2 Always, OnFailure or absent => reject, retained or not, so a
+    // restarted container can never become a second process of one UID.
+    // Historical rules for a binding persisted with `restartable` while Always
+    // was admitted. Causes: C1 exact private original container set/UID/node/
+    // start; C3 retained binding and live finalizer; C4 accepted deletion
+    // intent; C5 every exact runtime exit; C6 zero restarts. D1 all => observed;
+    // D2 natural exit without deletion => Unknown; D3 deleting but live =>
+    // Unknown; D4 change one necessary cause => Unknown (MC/DC); D5 a Never
+    // binding cannot acquire Always semantics by later Pod observation; D6 the
+    // historical wire form round-trips exactly.
+    for retained in [false, true] {
+        for (policy, admitted) in [
+            (json!("Never"), true),
+            (json!("Always"), false),
+            (json!("OnFailure"), false),
+            (Value::Null, false),
+        ] {
+            let mut live = running();
+            live["spec"]["restartPolicy"] = policy.clone();
+            if retained {
+                live["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
+            }
+            let bound = bind("ns", "worker", "uid-a", &decode(live));
+            assert_eq!(
+                bound.is_ok(),
+                admitted,
+                "A1/A2 {policy} retained={retained}"
+            );
+            if let Ok(binding) = bound {
+                assert!(!binding.restartable, "A1 bind never mints restartable");
+            }
+        }
+    }
+
     let mut live = running();
-    live["spec"]["restartPolicy"] = json!("Always");
-    assert!(
-        bind("ns", "worker", "uid-a", &decode(live.clone())).is_err(),
-        "D2 admission"
-    );
     live["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
-    let binding = bind("ns", "worker", "uid-a", &decode(live.clone())).unwrap();
+    let binding =
+        historical_restartable(&bind("ns", "worker", "uid-a", &decode(live.clone())).unwrap());
     let serialized = serde_json::to_value(&binding).unwrap();
-    assert_eq!(serialized["restartable"], true);
+    assert_eq!(serialized["restartable"], true, "D6");
     assert_eq!(
         serde_json::from_value::<PodProcessBinding>(serialized).unwrap(),
-        binding
+        binding,
+        "D6"
     );
+    live["spec"]["restartPolicy"] = json!("Always");
     let mut exited = terminal();
     exited["spec"]["restartPolicy"] = json!("Always");
     exited["metadata"]["finalizers"] = live["metadata"]["finalizers"].clone();
