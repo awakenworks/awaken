@@ -74,15 +74,9 @@ _UNREACHABLE_PUB = re.compile(r"#!\[\s*(?:warn|deny|forbid)\s*\([^)]*\bunreachab
 
 
 def _block_end(source: str, opening: int) -> int:
-    depth = 0
-    for index in range(opening, len(source)):
-        if source[index] == "{":
-            depth += 1
-        elif source[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return index
-    return len(source)
+    """Index of the brace closing ``source[opening]``, or ``len(source)``."""
+    end = _crate_boundary_workspace._balanced_end(source, opening, "{", "}")
+    return len(source) if end is None else end - 1
 
 
 def impl_spread(files: dict[str, str]) -> dict[str, tuple[int, int]]:
