@@ -115,9 +115,10 @@ impl SnapshotCommit {
 }
 
 /// A typed refusal raised inside the application by the Session aggregate or
-/// its budget ledger. Repeating the same command cannot repair it, so it is
-/// classified once, with [`SessionMutationError::Internal`]; unlike a fixed
-/// invariant message it keeps the refusal it came from.
+/// its budget ledger. It is classified once, by its conversion into
+/// [`SessionMutationError`]: an outage of the list-price authority is
+/// retryable [`SessionMutationError::Unavailable`]; every other refusal cannot
+/// be repaired by repeating the command and stays [`SessionMutationError::Invalid`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionStateViolation {
     /// The aggregate refused to validate or apply a snapshot.
@@ -147,7 +148,21 @@ pub enum SessionMutationError {
     /// The aggregate or budget ledger refused the transition: the same
     /// permanent class as `Internal`, carrying its typed source.
     #[error("Session mutation failed because durable state is invalid: {0}")]
-    Invalid(#[from] SessionStateViolation),
+    Invalid(SessionStateViolation),
+}
+
+/// The one classification of a Session state violation. An unavailable
+/// list-price authority is an outage the same command may retry; every other
+/// violation is permanent.
+impl From<SessionStateViolation> for SessionMutationError {
+    fn from(violation: SessionStateViolation) -> Self {
+        match violation {
+            SessionStateViolation::Budget(
+                error @ awaken_session_contract::ManagedListPriceError::Unavailable(_),
+            ) => Self::Unavailable(error.to_string()),
+            violation => Self::Invalid(violation),
+        }
+    }
 }
 
 impl From<SessionMutationError> for awaken_session_types::RunError {

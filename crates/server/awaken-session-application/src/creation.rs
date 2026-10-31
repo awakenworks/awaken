@@ -480,7 +480,15 @@ pub enum SessionCreationError {
     /// The Session aggregate refused the compiled root: the same permanent
     /// class as `Internal`, carrying its typed source.
     #[error("Session creation failed because durable state is invalid: {0}")]
-    Invalid(#[from] crate::SessionStateViolation),
+    Invalid(crate::SessionStateViolation),
+}
+
+/// Creation reuses the mutation boundary's single classification of a state
+/// violation, so a list-price outage stays retryable here too.
+impl From<crate::SessionStateViolation> for SessionCreationError {
+    fn from(violation: crate::SessionStateViolation) -> Self {
+        Self::mutation(violation.into())
+    }
 }
 
 impl SessionCreationError {

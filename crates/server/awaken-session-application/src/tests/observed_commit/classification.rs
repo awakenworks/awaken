@@ -438,3 +438,82 @@ fn mutation_control_conversion_preserves_each_authority_failure_class() {
         assert_eq!(serde_json::to_value(actual).unwrap(), expected);
     }
 }
+
+#[test]
+fn a_list_price_outage_is_the_one_retryable_state_violation() {
+    use awaken_session_contract::{ManagedListPriceError, SessionMutationValidationError};
+    // Cause: the Session state violation. Effect: its one classification at
+    // the mutation boundary, kept by creation and activity.
+    // | Rule | Violation | Mutation | RunError |
+    // | V1 | Budget(Unavailable) | Unavailable | Unavailable (retryable) |
+    // | V2 | Budget(MissingModel) | Invalid | Internal |
+    // | V3 | Budget(InvalidSnapshot) | Invalid | Internal |
+    // | V4 | Aggregate(..) | Invalid | Internal |
+    for (rule, violation, retryable) in [
+        (
+            "V1",
+            crate::SessionStateViolation::Budget(ManagedListPriceError::Unavailable(
+                "price authority down".into(),
+            )),
+            true,
+        ),
+        (
+            "V2",
+            crate::SessionStateViolation::Budget(ManagedListPriceError::MissingModel(
+                "model".into(),
+            )),
+            false,
+        ),
+        (
+            "V3",
+            crate::SessionStateViolation::Budget(ManagedListPriceError::InvalidSnapshot(
+                "list cost overflow".into(),
+            )),
+            false,
+        ),
+        (
+            "V4",
+            crate::SessionStateViolation::Aggregate(
+                SessionMutationValidationError::ReplacementRevisionMismatch,
+            ),
+            false,
+        ),
+    ] {
+        let mutation = SessionMutationError::from(violation.clone());
+        assert_eq!(
+            matches!(mutation, SessionMutationError::Unavailable(_)),
+            retryable,
+            "{rule} mutation class"
+        );
+        assert_eq!(
+            matches!(mutation, SessionMutationError::Invalid(_)),
+            !retryable,
+            "{rule} permanent violations keep their typed source"
+        );
+        let expected = if retryable {
+            RunErrorKind::Unavailable
+        } else {
+            RunErrorKind::Internal
+        };
+        assert_eq!(
+            awaken_session_types::RunError::from(mutation).kind,
+            expected,
+            "{rule} run error"
+        );
+        assert_eq!(
+            crate::SessionActivityError::mutation(violation.clone().into())
+                .run_error()
+                .kind,
+            expected,
+            "{rule} activity keeps the class"
+        );
+        assert_eq!(
+            matches!(
+                crate::SessionCreationError::from(violation),
+                crate::SessionCreationError::Unavailable(_)
+            ),
+            retryable,
+            "{rule} creation keeps the class"
+        );
+    }
+}

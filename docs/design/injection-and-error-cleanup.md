@@ -93,10 +93,11 @@ lane (V2) lands. It is not started in this batch.
 
 ## Open decisions
 
-- `ManagedListPriceError::Unavailable` names an outage, but it reaches
-  `SessionStateViolation::Budget` and keeps today's permanent class. The
-  lifecycle path computes usage purely, so the arm is unreachable there.
-  Reclassifying it as retryable would change behavior and needs a decision.
+- Resolved 2026-10-31 (user decision): `ManagedListPriceError::Unavailable` is
+  an outage, so the one conversion `SessionStateViolation` →
+  `SessionMutationError` classifies it as retryable `Unavailable`; creation and
+  activity reuse that conversion. Every other violation stays permanent
+  (`a_list_price_outage_is_the_one_retryable_state_violation`).
 - Families A and B change composition roots and lock layout. Each needs its own
   slice, sequenced after V0 and V2.
 
