@@ -179,7 +179,10 @@ Use each owning script:
 - contract shape: `python3 scripts/ci/check_contract_shape.py --tighten` records
   a fall (the hook does this with `--stage`); growth needs
   `python3 scripts/ci/check_contract_shape.py --write-baseline --reason "why"`.
-- modularity: `python3 scripts/ci/_modularity_fitness.py --tighten`.
+- modularity: `python3 scripts/ci/_modularity_fitness.py --tighten` records a
+  fall; raising a crate line ceiling or a long function's approved length needs
+  `python3 scripts/ci/_modularity_fitness.py --write-baseline --reason '<JSON>'`
+  (ADR-0091, 2026-10-31).
 - module-layer: `python3 scripts/ci/_module_layer_fitness.py --tighten`.
   `python3 scripts/ci/_module_layer_fitness.py --report` prints the original
   JSON measurements; it is a report, not a passing ratchet check.
