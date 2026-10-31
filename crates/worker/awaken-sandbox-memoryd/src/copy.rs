@@ -205,7 +205,7 @@ pub async fn materialize(
             .create_new(true)
             .open(&dest)
             .and_then(|mut file| file.write_all(memory.content.unwrap_or_default().as_bytes()))
-            .map_err(|e| FuseError::Internal(e.to_string()))?;
+            .map_err(FuseError::Io)?;
         let path = memory.path;
         snapshot.heads.insert(
             path.clone(),

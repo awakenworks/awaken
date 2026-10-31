@@ -100,7 +100,11 @@ enum OutcomeCommand<'a> {
         outcome_id: &'a str,
         definition: Definition,
     },
-    Resume,
+    /// Continuing the active Outcome drives its Worker Run through the
+    /// caller's executor; preparation never executes, so only this case has one.
+    Resume {
+        executor: &'a dyn awaken_runtime_contract::execution::RunExecutor,
+    },
 }
 
 enum OutcomeCommandResult {
@@ -113,7 +117,6 @@ impl WorkerPlacedSessions {
         &self,
         thread: &str,
         command: OutcomeCommand<'_>,
-        executor: Option<&dyn awaken_runtime_contract::execution::RunExecutor>,
     ) -> Result<OutcomeCommandResult, RunError> {
         let projection = self.ports.projections.installed(thread)?;
         let worker = self.ports.projections.primary_snapshot(thread)?;
@@ -131,17 +134,17 @@ impl WorkerPlacedSessions {
             sessions: self,
             workspace: projection.workspace().to_owned(),
         };
-        let controller = match executor {
-            Some(executor) => Controller::new(
+        let controller = match &command {
+            OutcomeCommand::Resume { executor } => Controller::new(
                 &thread_id,
                 commit.as_ref(),
                 commit.as_ref(),
                 commit.as_ref(),
-                executor,
+                *executor,
                 RuntimeRunContext::new(),
                 &grader,
             ),
-            None => Controller::preparation(
+            OutcomeCommand::Prepare { .. } => Controller::preparation(
                 &thread_id,
                 commit.as_ref(),
                 commit.as_ref(),
@@ -160,7 +163,7 @@ impl WorkerPlacedSessions {
                 .await
                 .map(OutcomeCommandResult::Prepared)
                 .map_err(outcome_controller_error),
-            OutcomeCommand::Resume => match controller.resume_active().await {
+            OutcomeCommand::Resume { .. } => match controller.resume_active().await {
                 Ok(Some(report)) => Ok(OutcomeCommandResult::Driven(Some(
                     OutcomeDrive::Completed(outcome_report(report)),
                 ))),
@@ -194,7 +197,6 @@ impl WorkerPlacedSessions {
                     outcome_id,
                     definition,
                 },
-                None,
             )
             .await?
         {
@@ -212,7 +214,7 @@ impl WorkerPlacedSessions {
         executor: &dyn awaken_runtime_contract::execution::RunExecutor,
     ) -> Result<Option<OutcomeDrive>, RunError> {
         match self
-            .execute_outcome_command(thread, OutcomeCommand::Resume, Some(executor))
+            .execute_outcome_command(thread, OutcomeCommand::Resume { executor })
             .await?
         {
             OutcomeCommandResult::Driven(progress) => Ok(progress),

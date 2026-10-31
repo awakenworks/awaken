@@ -81,6 +81,7 @@ fn creation_error(error: SessionCreationError) -> RunError {
         }
         SessionCreationError::Unavailable(message) => RunError::unavailable(message),
         SessionCreationError::Internal(message) => SessionMutationError::Internal(message).into(),
+        SessionCreationError::Invalid(violation) => SessionMutationError::Invalid(violation).into(),
     }
 }
 

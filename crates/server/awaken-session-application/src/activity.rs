@@ -49,6 +49,10 @@ pub enum SessionActivityError {
     Unavailable(String),
     #[error("Session activity durable state is invalid: {0}")]
     Internal(String),
+    /// The aggregate or budget ledger refused the activity transition: the
+    /// same permanent class as `Internal`, carrying its typed source.
+    #[error("Session activity durable state is invalid: {0}")]
+    Invalid(crate::SessionStateViolation),
 }
 
 use awaken_session_contract::SessionActivityAdmissionPlan as SessionActivityOpenPlan;
@@ -288,6 +292,7 @@ impl SessionActivityError {
             ),
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
             SessionMutationError::Internal(message) => Self::Internal(message),
+            SessionMutationError::Invalid(violation) => Self::Invalid(violation),
         }
     }
 
@@ -310,6 +315,7 @@ impl SessionActivityError {
             Self::Conflict => RunError::unavailable("Session activity changed concurrently"),
             Self::Unavailable(message) => RunError::unavailable(message),
             Self::Internal(message) => SessionMutationError::Internal(message).into(),
+            Self::Invalid(violation) => SessionMutationError::Invalid(violation).into(),
         }
     }
 }

@@ -16,6 +16,7 @@ use crate::terminal::pending_event_batch_error;
 use crate::{SessionActivityError, SessionAggregate};
 use crate::{
     SessionDispositionMutation, SessionMutationError, SessionMutations, SessionPreparationError,
+    SessionStateViolation,
 };
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_session_application_contract::LifecycleFactNotifier;
@@ -305,7 +306,7 @@ impl SessionLifecycle {
                 .max(usage.active_seconds);
             let mut usage_cursor =
                 ManagedBudgetUsageCursor::from_session_usage(&usage, Some(fallback_model.as_str()))
-                    .map_err(|error| SessionMutationError::Internal(error.to_string()))?;
+                    .map_err(SessionStateViolation::from)?;
             usage_cursor.active_seconds = active_seconds;
             if !usage_cursor.is_at_least(&session.usage_cursor) {
                 return Err(SessionMutationError::Internal(
@@ -316,14 +317,14 @@ impl SessionLifecycle {
             let budget_usage_changed = session
                 .budget()
                 .reconcile_cumulative_usage(usage_cursor)
-                .map_err(|error| SessionMutationError::Internal(error.to_string()))?;
+                .map_err(SessionStateViolation::from)?;
             let reached_now = was_admissible && !session.budget.can_admit_model_request();
             let reach_transition = if reached_now {
                 Some(
                     session
                         .budget()
                         .record_reach_transition()
-                        .map_err(|error| SessionMutationError::Internal(error.to_string()))?
+                        .map_err(SessionStateViolation::from)?
                         .ok_or_else(|| {
                             SessionMutationError::Internal(
                                 "reached Session budget did not append transition provenance"
