@@ -1246,3 +1246,55 @@ the startup retry table in `awaken-worker/src/startup_retry.rs`, and k3d stage
 6b of `e2e/k3d/distributed_control_e2e.sh` (hard-kill worker-0's container in
 place; same Pod UID, new incarnation registered, old exit 137 recorded from
 `lastState`, work continues).
+
+## Amendment 2026-11-01: a newer container of the same name supersedes the bound one
+
+The container-instance rule above left an Always incarnation Unknown whenever
+its exit was no longer in `state` or `lastState`. That happens routinely: a
+crash-looping container restarts again before the old incarnation's lease
+lapses, and kubelet keeps only the latest termination. The Unknown fate kept
+the incarnation's physical attempt slot occupied, Dispatch refused settlement
+while it was occupied, and the Thread (one physical attempt per Thread) was
+wedged until an operator deleted the Pod.
+
+Decision. The same Pod UID and container name reporting a newer instance (a
+different container ID whose `startedAt` is strictly later than the bound
+one's, in `state` or `lastState`) is a process-end receipt for the bound
+instance: `Superseded`. It rests on the fact this ADR already relies on:
+kubelet runs at most one instance per container name in a Pod, so the bound
+instance had stopped before the newer one started. It carries no exit code and
+proves only that process-bound work stopped. Per bound incarnation:
+
+| Observation (same Pod UID, same container name)          | Fate                   |
+|----------------------------------------------------------|------------------------|
+| `state`/`lastState` names the bound ID with an exact exit | Exited (exact receipt) |
+| the running instance is the bound ID                      | alive (stop deletes the Pod by exact UID/resourceVersion) |
+| a newer instance of the name started                      | Superseded             |
+| neither (only a synthetic status, no later start)        | Unknown                |
+| Pod gone, or another UID under the name                   | Unknown, quarantined   |
+
+A multi-container binding is Superseded when no bound container is running or
+lost and at least one is superseded (the others exited exactly). The Registry
+receipt (`WorkerProcessExit`) records the end kind; rows persisted before it
+existed decode as exact exits, and an exact exit still serializes without the
+new member. Dispatch accepts a Superseded receipt exactly where it accepts an
+exact exit: it closes the occupied attempt entry and releases provider
+evidence (a no-op while the newer instance owns the Pod). The slot still
+retires only on complete-scope evidence, and every external effect of the
+attempt stays Indeterminate. A Superseded Pod is never deleted. Never-policy
+Pods (Sandbox Pods) have no in-place successor and keep the exact-exit rule.
+
+When the bound Pod is gone or carries another UID, no exit or supersession can
+ever be observed. The stopper reports that loss (`ProcessEvidence::Lost`),
+the Worker stop source maps it to `WorkerProcessStopStatus::EvidenceLost`, and
+Dispatch treats it exactly as Unknown while emitting one warning on the
+`awaken::worker_process_quarantine` target naming the Worker incarnation, Run
+and epoch: the operator signal that the attempt is quarantined with
+Indeterminate effects.
+
+Evidence: `container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation`
+(rows C4, C5, C7 now Superseded; C8, C9 lost),
+`restartable_stop_settles_by_container_instance_and_never_harms_a_newer_one`
+(S4 Superseded without DELETE; S4b lost; S5/S5b quarantined),
+`process_exit_rows_decode_their_end_and_historical_rows_are_exact_exits`, and
+`superseded_worker_closes_the_occupied_attempt_like_an_exact_exit`.

@@ -17,7 +17,7 @@ use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_worker_contract::{WorkerRelayTargetError, WorkerRelayTargetObserver};
 use awaken_worker_fleet_kubernetes::{
     EndedRetainedWorkerPod, K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver,
-    PodProcessStopper, PodProcessTermination,
+    PodProcessStopper, PodProcessTermination, ProcessEvidence,
 };
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
@@ -564,18 +564,24 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         let observed = self.stopper.request_stop(&process).await.map_err(|_| {
             ApplicationError::unavailable("idle Worker stop observation unavailable")
         })?;
-        let PodProcessTermination::Observed(receipt) = observed else {
-            return Ok(None);
+        // An exact exit and a supersession by a newer container of the same
+        // name both end this incarnation's processes; the receipt says which.
+        let (evidence_ref, end) = match observed {
+            PodProcessTermination::Observed(receipt) => (
+                receipt.evidence_ref(),
+                awaken_worker_contract::WorkerProcessEnd::ExactExit,
+            ),
+            PodProcessTermination::Superseded(receipt) => (
+                receipt.evidence_ref(),
+                awaken_worker_contract::WorkerProcessEnd::Superseded,
+            ),
+            PodProcessTermination::Unknown => return Ok(None),
         };
         let reference = serde_json::to_string(&process)
             .map_err(|_| ApplicationError::internal("idle Worker process encoding failed"))?;
-        awaken_dispatch::WorkerProcessExit::new(
-            &self.provider_id,
-            reference,
-            receipt.evidence_ref(),
-        )
-        .map(Some)
-        .map_err(|error| ApplicationError::internal(error.to_string()))
+        awaken_dispatch::WorkerProcessExit::ended(&self.provider_id, reference, evidence_ref, end)
+            .map(Some)
+            .map_err(|error| ApplicationError::internal(error.to_string()))
     }
     async fn release_closed_idle_worker_evidence(
         &self,
@@ -650,12 +656,28 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         let (process, _) = self.process_for(execution)?;
         // Uses Coordinator credentials, not the dead Pod's now-revoked token.
         // Exact UID/resourceVersion CAS and retention are owned by the provider.
-        match self.stopper.request_stop(&process).await.map_err(|_| {
-            ApplicationError::unavailable("exact Kubernetes Worker stop observation is unavailable")
-        })? {
-            PodProcessTermination::Unknown => Ok(WorkerProcessStopStatus::Unknown),
-            PodProcessTermination::Observed(receipt) => {
+        match self
+            .stopper
+            .request_stop_observing_loss(&process)
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable(
+                    "exact Kubernetes Worker stop observation is unavailable",
+                )
+            })? {
+            (PodProcessTermination::Unknown, ProcessEvidence::Lost) => {
+                Ok(WorkerProcessStopStatus::EvidenceLost)
+            }
+            (PodProcessTermination::Unknown, ProcessEvidence::Retained) => {
+                Ok(WorkerProcessStopStatus::Unknown)
+            }
+            (PodProcessTermination::Observed(receipt), _) => {
                 execution.observed_exit(receipt.evidence_ref())
+            }
+            // A newer container of the same name runs in the same Pod UID:
+            // the old one stopped. The slot may close; effects stay unknown.
+            (PodProcessTermination::Superseded(receipt), _) => {
+                execution.observed_superseded(receipt.evidence_ref())
             }
         }
     }
@@ -720,7 +742,9 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
                     .await
                     .map_err(|error| ApplicationError::unavailable(error.to_string()))?
                 {
-                    PodProcessTermination::Unknown => {}
+                    // Sandbox Pods are Never-policy: no in-place successor
+                    // exists, and attempt closure keeps requiring exact exits.
+                    PodProcessTermination::Unknown | PodProcessTermination::Superseded(_) => {}
                     PodProcessTermination::Observed(_) => closed.push(domain.clone()),
                 }
             }

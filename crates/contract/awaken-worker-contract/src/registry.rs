@@ -314,33 +314,88 @@ impl WorkerCreateLedger {
     }
 }
 
+/// How the provider proved that one Worker incarnation's local processes ended.
+///
+/// | Provider observation of the bound process          | End          |
+/// |----------------------------------------------------|--------------|
+/// | exact exit (code, reason, finish) of every process | `ExactExit`  |
+/// | a newer instance of the same process slot started  | `Superseded` |
+///
+/// Both prove only that process-bound work stopped. Neither says anything about
+/// external effects, which stay Indeterminate; `Superseded` has no exit code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerProcessEnd {
+    /// The provider reported the exact runtime exit of every bound process.
+    /// Rows persisted before the end kind existed carry this value.
+    #[default]
+    ExactExit,
+    /// The provider runs at most one instance per process slot (Kubernetes:
+    /// one container per name in a Pod) and a newer instance of the bound
+    /// slot has started, so the bound process stopped. Its exit is not known.
+    Superseded,
+}
+
+impl WorkerProcessEnd {
+    #[must_use]
+    pub const fn is_exact_exit(&self) -> bool {
+        matches!(self, Self::ExactExit)
+    }
+}
+
 /// Durable, non-secret exit evidence for one exact Worker incarnation.
 ///
 /// Provider and execution coordinates are copied from the already-persisted
-/// attempt binding. `evidence_ref` identifies the provider observation. This
-/// receipt proves local process exit only; Dispatch still requires independent
-/// complete-attempt evidence before retiring any physical attempt.
+/// attempt binding. `evidence_ref` identifies the provider observation and
+/// `end` how it proved the end. This receipt proves local process end only;
+/// Dispatch still requires independent complete-attempt evidence before
+/// retiring any physical attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerProcessExit {
     provider_id: String,
     execution_ref: String,
     evidence_ref: String,
+    /// Absent in historical rows, which were all exact exits.
+    #[serde(default, skip_serializing_if = "WorkerProcessEnd::is_exact_exit")]
+    end: WorkerProcessEnd,
 }
 
 impl WorkerProcessExit {
+    /// An exact-exit receipt.
     pub fn new(
         provider_id: impl Into<String>,
         execution_ref: impl Into<String>,
         evidence_ref: impl Into<String>,
     ) -> Result<Self, RegistryError> {
+        Self::ended(
+            provider_id,
+            execution_ref,
+            evidence_ref,
+            WorkerProcessEnd::ExactExit,
+        )
+    }
+
+    /// A receipt for a process end proved the way `end` names.
+    pub fn ended(
+        provider_id: impl Into<String>,
+        execution_ref: impl Into<String>,
+        evidence_ref: impl Into<String>,
+        end: WorkerProcessEnd,
+    ) -> Result<Self, RegistryError> {
         let receipt = Self {
             provider_id: provider_id.into(),
             execution_ref: execution_ref.into(),
             evidence_ref: evidence_ref.into(),
+            end,
         };
         receipt.validate()?;
         Ok(receipt)
+    }
+
+    #[must_use]
+    pub const fn end(&self) -> WorkerProcessEnd {
+        self.end
     }
 
     pub fn validate(&self) -> Result<(), RegistryError> {
@@ -939,6 +994,7 @@ mod tests {
                         provider_id: String::new(),
                         execution_ref: "original-process".into(),
                         evidence_ref: "exit-fact".into(),
+                        end: WorkerProcessEnd::ExactExit,
                     }),
                 ] {
                     let expected = exact
@@ -998,6 +1054,65 @@ mod tests {
         assert!(
             matches!(read_closed_incarnation_exit(&source, &identity).await,
             Err(RegistryError::Persistence(detail)) if detail == "exact-read-unavailable")
+        );
+    }
+
+    #[test]
+    fn process_exit_rows_decode_their_end_and_historical_rows_are_exact_exits() {
+        // Persisted-row table. P1 a row written before the end kind existed
+        // (no `end` member) decodes as ExactExit; P2 an exact exit serializes
+        // without `end`, byte-identical to that historical shape; P3 a
+        // Superseded row round-trips with `"end":"superseded"`; P4 an unknown
+        // end value or extra member is refused, never read as an exit.
+        let historical = serde_json::json!({
+            "provider_id": "kubernetes",
+            "execution_ref": "binding",
+            "evidence_ref": "k8s-container-exit:v1:[]",
+        });
+        let decoded: WorkerProcessExit = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(decoded.end(), WorkerProcessEnd::ExactExit, "P1");
+        assert_eq!(
+            decoded,
+            WorkerProcessExit::new("kubernetes", "binding", "k8s-container-exit:v1:[]").unwrap(),
+            "P1 same receipt as a new exact exit"
+        );
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), historical, "P2");
+        let superseded = WorkerProcessExit::ended(
+            "kubernetes",
+            "binding",
+            "k8s-container-superseded:v1:[]",
+            WorkerProcessEnd::Superseded,
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&superseded).unwrap();
+        assert_eq!(encoded["end"], "superseded", "P3");
+        assert_eq!(
+            serde_json::from_value::<WorkerProcessExit>(encoded).unwrap(),
+            superseded,
+            "P3 round trip"
+        );
+        assert_ne!(superseded, decoded, "P3 a different receipt");
+        for (label, row) in [
+            ("unknown end", {
+                let mut row = historical.clone();
+                row["end"] = serde_json::json!("killed");
+                row
+            }),
+            ("extra member", {
+                let mut row = historical.clone();
+                row["exit_code"] = serde_json::json!(0);
+                row
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<WorkerProcessExit>(row).is_err(),
+                "P4 {label}"
+            );
+        }
+        assert!(
+            WorkerProcessExit::ended("kubernetes", "binding", " ", WorkerProcessEnd::Superseded)
+                .is_err(),
+            "a Superseded receipt still names its provider evidence"
         );
     }
 

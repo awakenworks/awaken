@@ -36,6 +36,8 @@ struct StopSource {
     directory: Arc<dyn WorkerDirectory>,
     calls: Mutex<Vec<AttemptExecutionBinding>>,
     result: Mutex<Result<Option<String>, String>>,
+    /// The provider proves the end by a newer instance, not an exact exit.
+    superseded: Mutex<bool>,
     replayed: Mutex<Option<WorkerProcessStopStatus>>,
     entered: Notify,
     release: Semaphore,
@@ -120,6 +122,9 @@ impl WorkerExecutionStopSource for StopSource {
             .map_err(ApplicationError::unavailable)?
         {
             None => Ok(WorkerProcessStopStatus::Unknown),
+            Some(reference) if *self.superseded.lock().unwrap() => {
+                command.observed_superseded(reference)
+            }
             Some(reference) => command.observed_exit(reference),
         }
     }
@@ -399,6 +404,7 @@ impl Fixture {
             directory: directory.clone(),
             calls: Mutex::new(Vec::new()),
             result: Mutex::new(Ok(None)),
+            superseded: Mutex::new(false),
             replayed: Mutex::new(None),
             entered: Notify::new(),
             release: Semaphore::new(0),
@@ -1577,6 +1583,97 @@ async fn durable_process_exit_survives_release_failure_and_worker_replacement() 
         None,
         "D2/E4"
     );
+}
+
+#[tokio::test]
+async fn superseded_worker_closes_the_occupied_attempt_like_an_exact_exit() {
+    // Dispatch consumer of a provider process end that is a supersession (a
+    // newer instance of the bound process slot started; no exit code):
+    // | Row | provider observation        | Registry receipt          | entry   | slot     |
+    // | SU1 | Unknown (Pod gone / lost)   | none                      | open    | occupied |
+    // | SU2 | Superseded, scope unknown   | Superseded, then released | closing | occupied |
+    // | SU3 | retry, scope proven         | reused, no second stop    | closing | retired  |
+    // SU2 is the exact-exit row with another receipt kind: the local process
+    // fact closes the entry, and only complete-scope evidence retires the slot,
+    // so the attempt's external effects stay Indeterminate until then.
+    let directories: Vec<Arc<dyn WorkerDirectory>> = vec![
+        Arc::new(MemoryWorkerDirectory::new()),
+        Arc::new(SqliteWorkerDirectory::open_in_memory().await.unwrap()),
+    ];
+    for directory in directories {
+        let f = Fixture::new(directory, true, 50, 5_000).await;
+        *f.stop.result.lock().unwrap() = Ok(None);
+        f.stop.release.add_permits(1);
+        assert_eq!(f.begin().await.1["admission"], "blocked", "SU1");
+        f.assert_occupied().await;
+        let open = f.store.load_physical_attempt(&f.old.run_id).await.unwrap();
+        assert!(!open.as_ref().unwrap().closing, "SU1 entry stays open");
+        assert!(
+            f.directory
+                .incarnation(f.binding.worker())
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_none(),
+            "SU1 no receipt"
+        );
+
+        *f.stop.superseded.lock().unwrap() = true;
+        *f.stop.result.lock().unwrap() = Ok(Some("k8s-container-superseded:v1:fixture".into()));
+        f.stop.release.add_permits(1);
+        assert_eq!(f.begin().await.1["admission"], "blocked", "SU2");
+        let receipt = f
+            .directory
+            .incarnation(f.binding.worker())
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .expect("SU2 durable receipt");
+        assert_eq!(
+            receipt.end(),
+            awaken_worker_contract::WorkerProcessEnd::Superseded,
+            "SU2 receipt kind"
+        );
+        assert_eq!(
+            receipt.evidence_ref(),
+            "k8s-container-superseded:v1:fixture"
+        );
+        assert_eq!(receipt.execution_ref(), f.binding.execution_ref());
+        let closing = f
+            .store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .expect("SU2 slot still occupied");
+        assert!(closing.closing, "SU2 entry closed");
+        assert_eq!(closing.claim, f.old);
+        assert_eq!(
+            *f.stop.evidence_release_calls.lock().unwrap(),
+            vec![f.binding.clone()],
+            "SU2 release after the durable receipt"
+        );
+
+        let probe = AttemptStopProbe::install(&f);
+        *probe.result.lock().unwrap() = Ok(Some("all-participants-terminal".into()));
+        probe.release.add_permits(1);
+        assert_eq!(f.begin().await.1["admission"], "blocked", "SU3");
+        assert_eq!(
+            f.stop.calls.lock().unwrap().len(),
+            2,
+            "SU3 the durable receipt is reused"
+        );
+        let Some(AttemptStopStatus::Stopped(stopped)) = probe.last.lock().unwrap().clone() else {
+            panic!("SU3 complete scope evidence");
+        };
+        assert_eq!(stopped.attempt().claim, f.old);
+        assert_eq!(
+            f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+            None,
+            "SU3 retired"
+        );
+    }
 }
 
 #[tokio::test]

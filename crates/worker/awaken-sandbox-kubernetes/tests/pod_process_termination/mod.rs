@@ -180,6 +180,10 @@ async fn stop_and_observe(
             match stopper.request_stop(binding).await {
                 Ok(PodProcessTermination::Observed(receipt)) => break *receipt,
                 Ok(PodProcessTermination::Unknown) => {}
+                // A Never-policy binding has no in-place successor.
+                Ok(PodProcessTermination::Superseded(receipt)) => {
+                    panic!("a Never binding cannot be superseded: {receipt:?}")
+                }
                 Err(error) => last_error = Some(error.to_string()),
             }
             tokio::time::sleep(Duration::from_millis(200)).await;

@@ -40,8 +40,8 @@ pub use network_labels::sandbox_network_labels;
 pub use process_termination::{
     CONTINUATION_CLEANUP_FINALIZER, EndedRetainedWorkerPod, ObservedContainerExit,
     ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,
-    PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
-    has_forbidden_sandbox_namespace_shape,
+    PodProcessTermination, ProcessEvidence, SupersededContainer, SupersededPodProcess,
+    WORKER_PROCESS_EVIDENCE_FINALIZER, has_forbidden_sandbox_namespace_shape,
 };
 
 #[cfg(any(test, feature = "test-support"))]
