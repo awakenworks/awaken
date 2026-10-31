@@ -145,34 +145,21 @@ pub fn verify_registered_worker_identity(
 }
 
 /// Verify that one authenticated Worker is the exact current incarnation that
-/// owns a dispatch claim. Local compatibility routers may omit a directory;
-/// registered production Resource routers always provide one.
+/// owns a dispatch claim. Every Resource router holds the Coordinator's Worker
+/// directory, so the claim owner is always judged against the current
+/// registration.
 pub async fn verify_claim_owner(
-    directory: Option<&dyn WorkerDirectory>,
+    directory: &dyn WorkerDirectory,
     worker: &VerifiedWorkerContext,
     identity: Option<&WorkerIdentity>,
     claim: &RunClaim,
     now_ms: u64,
 ) -> Result<(), String> {
-    if let Some(directory) = directory {
-        let identity =
-            identity.ok_or_else(|| "registered Worker identity is required".to_string())?;
-        verify_current_worker_identity(directory, worker, identity, now_ms, false).await?;
-        return (claim.owner == identity.lease_owner())
-            .then_some(())
-            .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string());
-    }
-    match identity {
-        Some(identity) => {
-            verify_worker_identity(worker, identity)?;
-            (claim.owner == identity.lease_owner())
-                .then_some(())
-                .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string())
-        }
-        None => (claim.owner == worker.worker_id())
-            .then_some(())
-            .ok_or_else(|| "dispatch claim owner does not match Worker".to_string()),
-    }
+    let identity = identity.ok_or_else(|| "registered Worker identity is required".to_string())?;
+    verify_current_worker_identity(directory, worker, identity, now_ms, false).await?;
+    (claim.owner == identity.lease_owner())
+        .then_some(())
+        .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string())
 }
 
 type HmacSha256 = Hmac<Sha256>;

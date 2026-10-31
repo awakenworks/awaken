@@ -407,15 +407,13 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
     let (directory, identity) = support::ready_worker("worker-repository").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
-    let service = Arc::new(
-        WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryRegistry { active: true }),
-            dispatch.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            awaken_time::system_clock(),
-        )
-        .with_worker_directory(directory.clone()),
-    );
+    let service = Arc::new(WorkerRepositoryBindingService::new(
+        Arc::new(ExactRepositoryRegistry { active: true }),
+        dispatch.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory.clone(),
+        awaken_time::system_clock(),
+    ));
     let address = support::serve(worker_repository_binding_router(service)).await;
     let verifier = HttpRepositoryBindingVerifier::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
@@ -491,15 +489,13 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
         "R4"
     );
 
-    let denied_service = Arc::new(
-        WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryRegistry { active: false }),
-            dispatch.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            awaken_time::system_clock(),
-        )
-        .with_worker_directory(directory),
-    );
+    let denied_service = Arc::new(WorkerRepositoryBindingService::new(
+        Arc::new(ExactRepositoryRegistry { active: false }),
+        dispatch.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        awaken_time::system_clock(),
+    ));
     let denied_address = support::serve(worker_repository_binding_router(denied_service)).await;
     let denied_verifier = HttpRepositoryBindingVerifier::new(
         WorkerUpstream::new(format!("http://{denied_address}"))
@@ -576,9 +572,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_transport_authorizer(authorizer.clone()),
     );
     let address = support::serve(worker_repository_binding_router(service)).await;
@@ -624,9 +620,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            directory,
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory)
         .with_transport_authorizer(Arc::new(DeniedAuthorizer)),
     );
     let denied_address = support::serve(worker_repository_binding_router(denied)).await;
@@ -655,9 +651,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
+            directory,
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory)
         .with_transport_authorizer(Arc::new(CancellingAuthorizer {
             dispatch,
             run_id: claim.run_id.clone(),
@@ -695,9 +691,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
                 Arc::new(ExactRepositoryRegistry { active: true }),
                 dispatch,
                 Arc::new(HeaderWorkerAuthenticator),
+                directory,
                 awaken_time::system_clock(),
             )
-            .with_worker_directory(directory)
             .with_transport_authorizer(Arc::new(FixedExpiryAuthorizer(expiry))),
         );
         let address = support::serve(worker_repository_binding_router(service)).await;
@@ -770,9 +766,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(control.clone()),
     );
     let address = support::serve(worker_repository_binding_router(direct)).await;
@@ -844,9 +840,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(control.clone())
         .with_transport_authorizer(authorizer.clone()),
     );
@@ -891,9 +887,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
                 Arc::new(ExactRepositoryRegistry { active: true }),
                 Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
                 Arc::new(HeaderWorkerAuthenticator),
+                directory.clone(),
                 awaken_time::system_clock(),
             )
-            .with_worker_directory(directory.clone())
             .with_session_control(control.clone())
             .with_transport_authorizer(Arc::new(FixedExpiryAuthorizer(expiry))),
         );
@@ -978,9 +974,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(control.clone())
         .with_transport_authorizer(Arc::new(FixedExpiryAuthorizer(Some(
             slow_publication_expiry,
@@ -1030,9 +1026,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(expired_control)
         .with_transport_authorizer(rejected_authorizer.clone()),
     );
@@ -1075,9 +1071,9 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
             Arc::new(ExactRepositoryRegistry { active: true }),
             Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(renewing_control)
         .with_transport_authorizer(Arc::new(RenewingTerminalAuthorizer {
             current_lease: renewing_current.clone(),
@@ -1156,15 +1152,13 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
         "P6 before authorizer"
     );
 
-    let unavailable = Arc::new(
-        WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryRegistry { active: true }),
-            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
-            Arc::new(HeaderWorkerAuthenticator),
-            awaken_time::system_clock(),
-        )
-        .with_worker_directory(directory),
-    );
+    let unavailable = Arc::new(WorkerRepositoryBindingService::new(
+        Arc::new(ExactRepositoryRegistry { active: true }),
+        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        awaken_time::system_clock(),
+    ));
     let address = support::serve(worker_repository_binding_router(unavailable)).await;
     let unavailable_verifier = HttpRepositoryBindingVerifier::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),

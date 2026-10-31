@@ -1186,9 +1186,9 @@ async fn mount_with_managed_over_and_models(
             execution.worker_file_content.clone(),
             dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
             worker_authenticator.clone(),
+            worker_directory.clone(),
             worker_clock.clone(),
         )
-        .with_worker_directory(worker_directory.clone())
         .with_session_file_authorization(session_application.queries())
         .with_session_control(session_application.resource_effect_authorization())
         .with_recovery(execution.worker_recovery.clone()),
@@ -1218,9 +1218,9 @@ async fn mount_with_managed_over_and_models(
         resource_registry,
         dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
         worker_authenticator.clone(),
+        worker_directory.clone(),
         worker_clock.clone(),
     )
-    .with_worker_directory(worker_directory.clone())
     .with_materialization_control(session_application.resource_effect_authorization())
     .with_publication_control(session_application.terminal_cleanups());
     let repository_service = match repository_transport_authorizer {
@@ -1239,9 +1239,9 @@ async fn mount_with_managed_over_and_models(
                     worker_skill_bundles,
                     dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                     worker_authenticator.clone(),
+                    worker_directory.clone(),
                     worker_clock.clone(),
                 )
-                .with_worker_directory(worker_directory.clone())
                 .with_session_control(session_application.resource_effect_authorization()),
             ),
         ));

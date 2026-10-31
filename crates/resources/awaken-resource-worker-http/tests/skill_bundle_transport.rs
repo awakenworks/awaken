@@ -110,15 +110,13 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
     let (directory, identity) = support::ready_worker("worker-skill").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let claim = claimed_dispatch(&dispatch, &frozen, &identity.lease_owner()).await;
-    let service = Arc::new(
-        WorkerSkillBundleService::new(
-            Arc::new(StoreSkillBundleSource::new(store)),
-            dispatch.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            awaken_time::system_clock(),
-        )
-        .with_worker_directory(directory),
-    );
+    let service = Arc::new(WorkerSkillBundleService::new(
+        Arc::new(StoreSkillBundleSource::new(store)),
+        dispatch.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        awaken_time::system_clock(),
+    ));
     let address = support::serve(worker_skill_bundle_router(service)).await;
     let source = HttpSkillBundleSource::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
