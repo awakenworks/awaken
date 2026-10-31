@@ -1092,7 +1092,7 @@ impl awaken_dispatch_contract::DispatchSettlement for SqliteDispatchStore {
         }
         if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
             let cancelled = cancellation_requested != 0;
-            insert_completion(&mut *tx, &run_id, request_fingerprint, &request, cancelled).await?;
+            insert_completion(&mut tx, &run_id, request_fingerprint, &request, cancelled).await?;
         }
         // The fence held; now reconcile the run's pending input.
         match plan {
