@@ -872,6 +872,10 @@ snapshots and independent-consumer qualification remain required evidence.
 
 The three compatibility exports are a bounded migration obligation: keep them
 until an explicitly reviewed SDK major release can retire the original paths.
+2026-10-31: retired in the pending `awaken-runtime-contract` `2.0.0`, the SDK
+major that already carries the Agent/Tool forwarding removals
+([SDK versioning](../design/sdk-versioning.md)); every caller imports
+`awaken_agent_contract::thread::usage`.
 No new contract crate, backend authority or persistence boundary is introduced.
 
 ## Amendment 2026-10-29: one owner of never-used Sandbox capacity

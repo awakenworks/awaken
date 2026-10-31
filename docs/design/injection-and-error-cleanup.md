@@ -1,6 +1,6 @@
 # Construction-Time Injection and Typed Errors
 
-Status: classification complete; (v) done, (iii) started, (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is sequenced with package G. Family B classified: one redundant edge removed, containment edges exempt with a removal condition.
+Status: classification complete; (v) done, (iv) decided by item L, (iii) started, (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is sequenced with package G. Family B classified: one redundant edge removed, containment edges exempt with a removal condition.
 Principles: P5 (interface segregation, construction-time injection) and P6
 (errors are values, classified once) of the architecture plan.
 
@@ -29,7 +29,7 @@ Family B, from 41 before it).
 | (i) cycle | replace with build order, an injected role port, or a split component | 31 | Family A: 14 converged (c); Family B: 6 done, 4 exempt (containment), 7 moved to (ii) |
 | (ii) legitimate weak | observer, lifetime that must not keep its target alive, or cache; exempt with a reason | 22 + 7 | exempt (Family B: 2 of the 7 done, a duplicate spelling) |
 | (iii) optional role | required at construction, or a closed enum naming each case | 59 | 4 |
-| (iv) SDK public API | defer to item L (SDK SemVer) | 15 | deferred |
+| (iv) SDK public API | decided by item L: kept as reviewed SDK shapes ([SDK versioning](sdk-versioning.md#optional-roles-in-the-sdk-api)) | 15 | kept |
 | (v) error flattening | typed variant that keeps its source, classified once | 13 | 13 |
 
 ## Typed errors (v)
@@ -269,7 +269,7 @@ quoted item; line numbers drift.
 | `crates/server/awaken-session-run-delivery/src/completion.rs` | `Weak<` ×1 | drop guard: removing a waiter must not keep the completion registry alive |
 | `crates/worker/awaken-sandbox-local/src/provider/execution.rs` | `Weak<` ×1 | observer: the execution scope signals live child processes it does not own |
 | `crates/server/awaken-session-application/src/mutation.rs` | `Internal(violation.to_string())` | the serialized realization-control failure carries class plus text across the Worker boundary |
-| (SDK) `crates/contract/awaken-runtime-contract`, `crates/contract/awaken-tool-contract`, `crates/runtime/awaken-runtime`, `crates/runtime/awaken-ext-mcp`, and `crates/server/awaken-session-executor/src/delegate.rs` (the SDK trait impl) | `Option<&dyn` | deferred to item L; remove from the allow-list when L lands |
+| (SDK) `crates/contract/awaken-runtime-contract`, `crates/contract/awaken-tool-contract`, `crates/runtime/awaken-runtime`, `crates/runtime/awaken-ext-mcp`, and `crates/server/awaken-session-executor/src/delegate.rs` (the SDK trait impl) | `Option<&dyn` | kept by item L: capability queries of open SDK traits and pure-function arguments whose `None` has one documented meaning ([SDK versioning](sdk-versioning.md#optional-roles-in-the-sdk-api)) |
 
 ## Sites
 
@@ -344,13 +344,13 @@ quoted item; line numbers drift.
 | `contract/awaken-dispatch-contract/src/commit_epoch.rs:186` | (iii) | planned | closed enum: recovery Required(&dyn RunRecoverySource) or NotApplicable |
 | `contract/awaken-provisioning-contract/src/sandbox/effect.rs:32` | (iii) | planned | closed: carry SandboxEffect (Unattached or Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
 | `contract/awaken-provisioning-contract/src/sandbox/runtime.rs:904` | (iii) | planned | closed: the provider/exporter declares its capability set at construction (enum of role sets), not a per-call query |
-| `contract/awaken-runtime-contract/src/auxiliary_agents.rs:67` | (iv) | deferred-L | pub fn freeze: absent publication source |
-| `contract/awaken-runtime-contract/src/delegation.rs:351` | (iv) | deferred-L | trait default: cancellation capability query |
-| `contract/awaken-runtime-contract/src/execution.rs:66` | (iv) | deferred-L | pub fn verify_attempt_ownership: direct callers have no verifier |
-| `contract/awaken-runtime-contract/src/permission/run_capability.rs:41` | (iv) | deferred-L | pub fn effective: absent policy |
-| `contract/awaken-runtime-contract/src/permission.rs:328` | (iv) | deferred-L | pub fn evaluate_run_policy: absent policy |
-| `contract/awaken-runtime-contract/src/resolver.rs:74` | (iv) | deferred-L | pub fn resolve_delegate_snapshot: absent publication source |
-| `contract/awaken-runtime-contract/src/resolver.rs:105` | (iv) | deferred-L | pub fn freeze_delegation_publications: absent publication source |
+| `contract/awaken-runtime-contract/src/auxiliary_agents.rs:67` | (iv) | kept (L) | pub fn freeze: absent publication source |
+| `contract/awaken-runtime-contract/src/delegation.rs:351` | (iv) | kept (L) | trait default of the cancellation capability query |
+| `contract/awaken-runtime-contract/src/execution.rs:66` | (iv) | kept (L) | pub fn verify_attempt_ownership: direct callers have no verifier |
+| `contract/awaken-runtime-contract/src/permission/run_capability.rs:41` | (iv) | kept (L) | pub fn effective: absent policy |
+| `contract/awaken-runtime-contract/src/permission.rs:328` | (iv) | kept (L) | pub fn evaluate_run_policy: absent policy |
+| `contract/awaken-runtime-contract/src/resolver.rs:74` | (iv) | kept (L) | pub fn resolve_delegate_snapshot: absent publication source |
+| `contract/awaken-runtime-contract/src/resolver.rs:105` | (iv) | kept (L) | pub fn freeze_delegation_publications: absent publication source |
 | `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:50` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
 | `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:118` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
 | `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:119` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
@@ -359,17 +359,17 @@ quoted item; line numbers drift.
 | `contract/awaken-session-configuration-contract/src/skill_delivery.rs:135` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
 | `contract/awaken-session-environment-contract/src/tool_export.rs:27` | (iii) | planned | closed: the provider/exporter declares its capability set at construction (enum of role sets), not a per-call query |
 | `contract/awaken-session-realization-contract/src/session_realization/canonical_publication.rs:82` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
-| `contract/awaken-tool-contract/src/tool.rs:914` | (iv) | deferred-L | trait default: DurableTaskTool capability query |
-| `contract/awaken-tool-contract/src/tool.rs:1219` | (iv) | deferred-L | trait default: DurableTaskExecutor capability query |
-| `contract/awaken-tool-contract/src/tool.rs:1372` | (iv) | deferred-L | SDK impl of the query above |
+| `contract/awaken-tool-contract/src/tool.rs:914` | (iv) | kept (L) | trait default of the DurableTaskTool capability query |
+| `contract/awaken-tool-contract/src/tool.rs:1219` | (iv) | kept (L) | trait default of the DurableTaskExecutor capability query |
+| `contract/awaken-tool-contract/src/tool.rs:1372` | (iv) | kept (L) | capability query, SDK impl of the query above |
 | `control/awaken-credential-vault/src/repo/credential_operations.rs:1188` | (iii) | done | closed enum SourceMaterialMutation {MetadataOnly, Stored{store, materials}}: a material write without its store is unrepresentable |
 | `control/awaken-environment-application/src/lib.rs:348` | (iii) | planned | required at construction: the Environment application always holds its policy store |
 | `runtime/awaken-ext-goal/src/controller.rs:148` | (iii) | planned | split Controller into a preparation controller and an executing controller (private field of an SDK crate) |
-| `runtime/awaken-ext-mcp/src/tool.rs:170` | (iv) | deferred-L | SDK impl of the DurableTaskTool query |
+| `runtime/awaken-ext-mcp/src/tool.rs:170` | (iv) | kept (L) | capability query, SDK impl of the DurableTaskTool query |
 | `runtime/awaken-runtime/src/engine/finalize.rs:89` | (iii) | planned | closed enum: finish with a committed reader or the context's own view (private; V0 owns the engine this batch) |
-| `runtime/awaken-runtime/src/engine/inference.rs:245` | (iv) | deferred-L | forwards RuntimeRunContext ownership to verify_attempt_ownership |
-| `runtime/awaken-runtime/src/engine/inference.rs:399` | (iv) | deferred-L | forwards RuntimeRunContext ownership to verify_attempt_ownership |
-| `runtime/awaken-runtime/src/engine/tool_execution.rs:945` | (iv) | deferred-L | SDK impl of the DurableTaskExecutor query |
+| `runtime/awaken-runtime/src/engine/inference.rs:245` | (iv) | kept (L) | forwards RuntimeRunContext ownership to verify_attempt_ownership |
+| `runtime/awaken-runtime/src/engine/inference.rs:399` | (iv) | kept (L) | forwards RuntimeRunContext ownership to verify_attempt_ownership |
+| `runtime/awaken-runtime/src/engine/tool_execution.rs:945` | (iv) | kept (L) | capability query, SDK impl of the DurableTaskExecutor query |
 | `runtime/awaken-runtime/src/engine/tool_execution.rs:1081` | (iii) | planned | closed: ToolExecutionTarget already names Sandbox; carry the executor in that variant (private; V0 owns the engine this batch) |
 | `server/awaken-coordinator/src/worker_observation_boundary.rs:265` | (iii) | planned | required at construction: the bootstrap closer holds the binding source |
 | `server/awaken-inference-endpoint/src/brokered_inference.rs:781` | (iii) | done | closed enum ResponseDelivery {Whole, Streamed(sink)} |
@@ -391,7 +391,7 @@ quoted item; line numbers drift.
 | `server/awaken-session-executor/src/application/realization_renewal.rs:195` | (iii) | planned | closed enum: renewal Local or Controlled(&dyn SessionRealizationControl) |
 | `server/awaken-session-executor/src/application/realization_renewal.rs:237` | (iii) | planned | same as above |
 | `server/awaken-session-executor/src/delegate.rs:242` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
-| `server/awaken-session-executor/src/delegate.rs:599` | (iv) | deferred-L | platform impl of the SDK cancellation query; follows its signature |
+| `server/awaken-session-executor/src/delegate.rs:599` | (iv) | kept (L) | capability query, platform impl of the SDK cancellation query; follows its signature |
 | `server/awaken-session-executor/src/outcome_controller.rs:114` | (iii) | done | executor moved into OutcomeCommand::Resume; Prepare never carries one |
 | `server/awaken-session-mcp/src/mcp/attachment.rs:100` | (iii) | planned | required at construction: the MCP attachment adapter owns its refresh factory |
 | `server/awaken-session-mcp/src/mcp/attachment.rs:101` | (iii) | planned | closed enum: platform egress Provisioned(&dyn ..) or Direct |

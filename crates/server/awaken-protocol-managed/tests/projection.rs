@@ -340,7 +340,7 @@ impl CommittedEvidence {
         // Both Budget and recovery observations must describe this one tally;
         // keeping it only on the old Budget port would contradict Host truth.
         use awaken_agent_contract::agent::state::StateKey as _;
-        let mut tally = awaken_runtime_contract::llm::ThreadUsage::default();
+        let mut tally = awaken_agent_contract::thread::usage::ThreadUsage::default();
         tally.record(
             "test-model",
             awaken_agent_contract::audit::model_request::TokenUsage {
@@ -350,7 +350,9 @@ impl CommittedEvidence {
                 cache_creation_tokens: usage.cache_creation_tokens,
             },
         );
-        state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(&tally));
+        state.push(awaken_agent_contract::thread::usage::ThreadUsageKey::write(
+            &tally,
+        ));
         let state_commit_cursors = vec![terminal_cursor; state.len()];
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
             commit_timestamps: Default::default(),

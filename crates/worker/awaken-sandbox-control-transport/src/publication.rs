@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use awaken_lease_contract::fence::SlotToken;
 use awaken_sandbox_control::SandboxControlPublishError;
+use awaken_sync::LeafLock;
 
 /// Opaque identity of one process-local Sandbox control publication.
 ///
@@ -76,8 +77,13 @@ impl SandboxControlPublicationTask {
 /// or any open state -> permanently closed. Provider-specific channel, socket,
 /// and cleanup state remains in `T`; durable Session authority stays outside
 /// this contract.
+///
+/// The slot state is a leaf lock: every critical section reads the slot state
+/// or replaces it whole, so a holder that panicked leaves a valid state.
+/// Disposal therefore stays absorbing after a panic, and a poisoned slot still
+/// admits only its exact current lease.
 pub struct SandboxControlPublicationSlot<T> {
-    state: std::sync::Mutex<PublicationSlotState<T>>,
+    state: LeafLock<PublicationSlotState<T>>,
 }
 
 enum PublicationSlotState<T> {
@@ -88,7 +94,7 @@ enum PublicationSlotState<T> {
 impl<T> Default for SandboxControlPublicationSlot<T> {
     fn default() -> Self {
         Self {
-            state: std::sync::Mutex::new(PublicationSlotState::Open(None)),
+            state: LeafLock::new(PublicationSlotState::Open(None)),
         }
     }
 }
@@ -99,7 +105,7 @@ impl<T> SandboxControlPublicationSlot<T> {
         &self,
         value: T,
     ) -> Result<SandboxControlPublicationLease, SandboxControlPublishError> {
-        let mut state = self.state.lock().map_err(|_| SandboxControlPublishError)?;
+        let mut state = self.state.lock();
         let PublicationSlotState::Open(active) = &mut *state else {
             return Err(SandboxControlPublishError);
         };
@@ -114,13 +120,10 @@ impl<T> SandboxControlPublicationSlot<T> {
     /// Whether `lease` still owns the sole active slot.
     #[must_use]
     pub fn owns(&self, lease: &SandboxControlPublicationLease) -> bool {
-        self.state.lock().is_ok_and(|state| {
-            matches!(
-                &*state,
-                PublicationSlotState::Open(Some((current, _)))
-                    if current == lease
-            )
-        })
+        matches!(
+            &*self.state.lock(),
+            PublicationSlotState::Open(Some((current, _))) if current == lease
+        )
     }
 
     /// Mutate provider-local state only while `lease` is the current owner.
@@ -148,7 +151,7 @@ impl<T> SandboxControlPublicationSlot<T> {
         allow_closed: bool,
         update: impl FnOnce(&mut T) -> R,
     ) -> Result<R, SandboxControlPublishError> {
-        let mut state = self.state.lock().map_err(|_| SandboxControlPublishError)?;
+        let mut state = self.state.lock();
         if !allow_closed && matches!(*state, PublicationSlotState::Closed(_)) {
             return Err(SandboxControlPublishError);
         }
@@ -165,9 +168,7 @@ impl<T> SandboxControlPublicationSlot<T> {
 
     /// Release only the exact current lease. A stale lease is inert.
     pub fn release(&self, lease: &SandboxControlPublicationLease) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
+        let mut state = self.state.lock();
         let PublicationSlotState::Open(active) = &mut *state else {
             return;
         };
@@ -178,16 +179,13 @@ impl<T> SandboxControlPublicationSlot<T> {
 
     /// Permanently close admission and retain the same cleanup participant for
     /// every closer, including a retry after a cancelled disposal future.
-    /// Poison recovery is deliberate here: disposal must remain absorbing even
-    /// after another local task panicked while holding the mutex.
+    /// Disposal remains absorbing even after another local task panicked while
+    /// holding the slot: the leaf lock recovers the state.
     pub fn close(&self) -> Option<T>
     where
         T: Clone,
     {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock();
         if let PublicationSlotState::Open(active) = &mut *state {
             *state = PublicationSlotState::Closed(active.take());
         }
@@ -201,10 +199,7 @@ impl<T> SandboxControlPublicationSlot<T> {
     /// forgetting the participant are one synchronous transition, so no closer
     /// can return before teardown or repeat an inode cleanup after completion.
     pub fn finish_close(&self, cleanup: impl FnOnce(&mut T)) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock();
         if let PublicationSlotState::Closed(active) = &mut *state {
             if let Some((_, value)) = active {
                 cleanup(value);
@@ -339,6 +334,31 @@ mod tests {
         slot.finish_close(|value| assert_eq!(*value, 7));
         slot.finish_close(|_| panic!("PS5 cleanup repeated"));
         assert_eq!(slot.close(), None);
+    }
+
+    #[test]
+    fn panic_under_an_open_slot_keeps_the_exact_owner() {
+        // PS6 C1=panic under the slot lock while the slot is open (leaf lock);
+        // E1=the current lease still owns and mutates; E2=a second reserve is
+        // refused while the owner is active; E3=after release a new reserve is
+        // admitted. The slot state is replaced whole, so poison carries no
+        // information about it.
+        let slot = SandboxControlPublicationSlot::default();
+        let lease = slot.reserve(1_u8).expect("PS6 reserve");
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _ = slot.with_current_mut(&lease, |_| panic!("synthetic update panic"));
+            })
+            .is_err()
+        );
+        assert!(slot.owns(&lease), "PS6/E1 owner kept");
+        let value = slot
+            .with_current_mut(&lease, |value| *value)
+            .expect("PS6/E1 owner mutates");
+        assert_eq!(value, 1, "PS6/E1 owner reads the value it reserved");
+        assert!(slot.reserve(2).is_err(), "PS6/E2 one active value");
+        slot.release(&lease);
+        assert!(slot.reserve(3).is_ok(), "PS6/E3 vacant slot readmits");
     }
 
     #[test]

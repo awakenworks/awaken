@@ -58,6 +58,7 @@ pub use awaken_acp_contract::{AcpLaunchEvent, AcpLaunchStage, LaunchObserver, Se
 // The concrete codec and process supervisor remain protocol-owned.
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::audit::model_request::TokenUsage;
+use awaken_agent_contract::thread::usage::{ThreadUsage, ThreadUsageKey};
 pub use awaken_protocol_acp::{Codec, Supervisor};
 use awaken_provisioning_contract::ProcessHandle;
 pub use awaken_provisioning_contract::{SandboxError, SecretBroker, SecretWritebackTarget};
@@ -67,7 +68,6 @@ use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
     verify_attempt_ownership,
 };
-use awaken_runtime_contract::llm::{ThreadUsage, ThreadUsageKey};
 use awaken_runtime_contract::permission::{
     GateAuthority, ToolPermissionPolicy, ToolPermissionRuling, ToolPermissionVerdict,
 };

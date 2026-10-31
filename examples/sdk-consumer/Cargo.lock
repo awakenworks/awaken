@@ -98,6 +98,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-process-win32",
  "awaken-runtime-contract",
+ "awaken-sync",
  "awaken-tool-contract",
  "awaken-web-policy-contract",
  "cap-std",
@@ -137,6 +138,7 @@ dependencies = [
 name = "awaken-process-win32"
 version = "1.0.0"
 dependencies = [
+ "awaken-sync",
  "process-wrap",
  "tokio",
  "windows-sys 0.61.2",
@@ -170,6 +172,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
+ "awaken-sync",
  "awaken-time",
  "awaken-tool-contract",
  "futures-util",
@@ -189,6 +192,7 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-sync",
  "awaken-time",
  "awaken-tool-contract",
  "futures-util",
@@ -231,6 +235,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-fs-durability",
  "awaken-store-inmem",
+ "awaken-sync",
  "awaken-time",
  "serde",
  "serde_json",
@@ -243,8 +248,13 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-sync",
  "awaken-time",
 ]
+
+[[package]]
+name = "awaken-sync"
+version = "1.0.0"
 
 [[package]]
 name = "awaken-time"
@@ -269,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-web-policy-contract"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",

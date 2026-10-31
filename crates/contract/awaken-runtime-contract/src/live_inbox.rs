@@ -36,9 +36,10 @@
 
 use std::collections::VecDeque;
 use std::pin::pin;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, MutexGuard};
 
 use awaken_agent_contract::agent::message::Message;
+use awaken_sync::InvariantLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -85,6 +86,7 @@ pub struct LiveInboxMessage {
 
 /// Outcome of [`LiveInbox::offer`]. `Closed` is a routing decision, not an
 /// error: the sender falls back to the durable pending-input path or drops.
+/// A poisoned inbox routes the same way: it accepts nothing more.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Offer {
@@ -106,6 +108,11 @@ pub enum EditError {
     /// The attempt is over; there is nothing left to edit.
     #[error("live inbox is closed")]
     Closed,
+    /// A holder panicked mid-update, so the queue may be half-written and
+    /// cannot be read or edited. Unlike `Closed`, this is a fault: the caller
+    /// cannot tell whether the attempt still runs.
+    #[error("live inbox state is unavailable")]
+    Unavailable,
 }
 
 /// Outcome of [`LiveInbox::wait_for_change`].
@@ -115,6 +122,8 @@ pub enum WaitOutcome {
     /// returned so the next wait can resume from it.
     Changed(u64),
     Cancelled,
+    /// The inbox state is poisoned; no further change can be observed.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -154,7 +163,10 @@ pub struct LiveInbox {
 
 #[derive(Default)]
 struct Shared {
-    state: Mutex<State>,
+    /// Invariant lock: `offer` moves the identity frontier, the queue and the
+    /// version together. A poisoned inbox admits nothing and reads as closed
+    /// and empty; `version` and `wait_for_change` report it as unavailable.
+    state: InvariantLock<State>,
     notify: Notify,
 }
 
@@ -163,11 +175,18 @@ impl LiveInbox {
         Self::default()
     }
 
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.shared
-            .state
-            .lock()
-            .expect("live-inbox state lock poisoned")
+    /// The inbox state, or `None` once a holder panicked mid-update.
+    ///
+    /// | Rule | Lock     | Mutations (`offer`, `wake`, edits, `close`) | Reads (`list`, `drain_at_boundary`, `is_closed`) | `version` / `wait_for_change` |
+    /// |---|---|---|---|---|
+    /// | P1 | readable | the lifecycle decides                        | the queue                                         | `Some(v)` / `Changed`, `Cancelled` |
+    /// | P2 | poisoned | refused: `Offer::Closed`, no-op, `EditError::Unavailable`, empty leftovers | empty, closed | `None` / `Unavailable` |
+    ///
+    /// P2 never folds a possibly half-written queue into the transcript: the
+    /// entries are best-effort input and the durable pending-input path stays
+    /// the at-least-once channel.
+    fn state(&self) -> Option<MutexGuard<'_, State>> {
+        self.shared.state.lock().ok()
     }
 
     fn bump_and_notify(state: &mut State, notify: &Notify) {
@@ -248,7 +267,9 @@ impl LiveInbox {
     /// queued-message surface uses [`MessageOrigin::External`] for an out-of-band
     /// injection so a consumer can tell it apart from the run's own input.
     pub fn offer_as(&self, origin: MessageOrigin, message: Message) -> Offer {
-        let mut state = self.state();
+        let Some(mut state) = self.state() else {
+            return Offer::Closed;
+        };
         if !state.lifecycle.admits_mutation() {
             return Offer::Closed;
         }
@@ -272,7 +293,11 @@ impl LiveInbox {
     /// landing point for `LiveCommand::Wake`. A wake racing the end of the
     /// attempt is normal, so waking a closed inbox is a no-op.
     pub fn wake(&self) {
-        let mut state = self.state();
+        let Some(mut state) = self.state() else {
+            // Let a waiter observe the poisoned state instead of sleeping on.
+            self.shared.notify.notify_waiters();
+            return;
+        };
         if !state.lifecycle.admits_mutation() {
             return;
         }
@@ -283,12 +308,14 @@ impl LiveInbox {
     /// queued-message surface. Ids in the snapshot stay targetable until the
     /// engine drains them.
     pub fn list(&self) -> Vec<LiveInboxMessage> {
-        self.state().entries.iter().cloned().collect()
+        self.state()
+            .map(|state| state.entries.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Delete one queued message, returning its content.
     pub fn remove(&self, id: LiveInboxMessageId) -> Result<Message, EditError> {
-        let mut state = self.state();
+        let mut state = self.state().ok_or(EditError::Unavailable)?;
         if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
@@ -304,7 +331,7 @@ impl LiveInbox {
 
     /// Replace one queued message's content, keeping its id and position.
     pub fn replace(&self, id: LiveInboxMessageId, message: Message) -> Result<(), EditError> {
-        let mut state = self.state();
+        let mut state = self.state().ok_or(EditError::Unavailable)?;
         if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
@@ -326,7 +353,7 @@ impl LiveInbox {
     /// (a concurrent offer, remove, or drain won the race): the caller
     /// re-lists and retries; the queue is left untouched.
     pub fn reorder(&self, order: &[LiveInboxMessageId]) -> Result<(), EditError> {
-        let mut state = self.state();
+        let mut state = self.state().ok_or(EditError::Unavailable)?;
         if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
@@ -341,14 +368,16 @@ impl LiveInbox {
     /// messages leave the editable window, and the engine folds them into
     /// the transcript, where the commit — not the queue — makes them true.
     pub fn drain_at_boundary(&self) -> Vec<LiveInboxMessage> {
-        Self::take_all_in_order(&mut self.state().entries)
+        self.state()
+            .map(|mut state| Self::take_all_in_order(&mut state.entries))
+            .unwrap_or_default()
     }
 
     /// Current change version. Bumped by every offer/wake/edit and by close,
     /// never by drain: the version tracks input-side changes the consumer
-    /// waits on, not its own consumption.
-    pub fn version(&self) -> u64 {
-        self.state().version
+    /// waits on, not its own consumption. `None` when the state is poisoned.
+    pub fn version(&self) -> Option<u64> {
+        self.state().map(|state| state.version)
     }
 
     /// Wait until the inbox changes past `seen` or the token cancels.
@@ -364,7 +393,9 @@ impl LiveInbox {
             // the check and the await is never missed.
             notified.as_mut().enable();
             {
-                let state = self.state();
+                let Some(state) = self.state() else {
+                    return WaitOutcome::Unavailable;
+                };
                 if state.version != seen {
                     return WaitOutcome::Changed(state.version);
                 }
@@ -382,7 +413,11 @@ impl LiveInbox {
     /// close, offers report `Closed` and edits fail.
     #[must_use = "undelivered messages must be routed or knowingly dropped"]
     pub fn close(&self) -> Vec<LiveInboxMessage> {
-        let mut state = self.state();
+        let Some(mut state) = self.state() else {
+            // A half-written queue is not handed on; waiters see the poison.
+            self.shared.notify.notify_waiters();
+            return Vec::new();
+        };
         if !state.lifecycle.admits_mutation() {
             return Vec::new();
         }
@@ -392,8 +427,10 @@ impl LiveInbox {
         leftovers
     }
 
+    /// Whether the inbox admits no further mutation: closed, or poisoned.
     pub fn is_closed(&self) -> bool {
-        self.state().lifecycle == InboxLifecycle::Closed
+        self.state()
+            .is_none_or(|state| state.lifecycle == InboxLifecycle::Closed)
     }
 }
 
@@ -411,6 +448,10 @@ mod tests {
             Offer::Accepted(id) => id,
             Offer::Closed => panic!("inbox unexpectedly closed"),
         }
+    }
+
+    fn current_version(inbox: &LiveInbox) -> u64 {
+        inbox.version().expect("an unpoisoned inbox has a version")
     }
 
     fn texts(entries: &[LiveInboxMessage]) -> Vec<String> {
@@ -542,14 +583,14 @@ mod tests {
         let _c = offered(&inbox, "c");
 
         let before = inbox.list();
-        let version = inbox.version();
+        let version = current_version(&inbox);
         assert_eq!(
             inbox.replace(LiveInboxMessageId(999), msg("missing")),
             Err(EditError::UnknownMessage),
             "R1"
         );
         assert_eq!(inbox.list(), before, "R1 queue stutter");
-        assert_eq!(inbox.version(), version, "R1 version stutter");
+        assert_eq!(current_version(&inbox), version, "R1 version stutter");
 
         inbox.replace(b, msg("b-edited")).expect("b is queued");
         let listed = inbox.list();
@@ -558,7 +599,7 @@ mod tests {
         assert_eq!(listed[2], before[2], "R2 trailing peer");
         assert_eq!(listed[1].id, before[1].id, "R2 identity");
         assert_eq!(listed[1].origin, before[1].origin, "R2 provenance");
-        assert_eq!(inbox.version(), version + 1, "R2 version");
+        assert_eq!(current_version(&inbox), version + 1, "R2 version");
     }
 
     #[test]
@@ -598,11 +639,11 @@ mod tests {
     #[test]
     fn exhausted_identity_space_refuses_offer_without_reusing_an_id() {
         let inbox = LiveInbox::new();
-        inbox.state().next_id = u64::MAX;
+        inbox.state().expect("unpoisoned").next_id = u64::MAX;
 
         assert_eq!(inbox.offer(msg("cannot-wrap")), Offer::Closed);
         assert!(inbox.list().is_empty());
-        assert_eq!(inbox.state().next_id, u64::MAX);
+        assert_eq!(inbox.state().expect("unpoisoned").next_id, u64::MAX);
     }
 
     #[test]
@@ -627,8 +668,8 @@ mod tests {
         let leftovers = inbox.close();
         assert_eq!(texts(&leftovers), ["a", "b"]);
         assert!(inbox.is_closed());
-        let closed_version = inbox.version();
-        let closed_next_id = inbox.state().next_id;
+        let closed_version = current_version(&inbox);
+        let closed_next_id = inbox.state().expect("unpoisoned").next_id;
 
         assert_eq!(inbox.offer(msg("late")), Offer::Closed);
         assert_eq!(inbox.remove(a), Err(EditError::Closed));
@@ -639,15 +680,105 @@ mod tests {
         // Waking or re-closing a finished attempt is a normal race, not a fault.
         inbox.wake();
         assert!(inbox.close().is_empty());
-        assert_eq!(inbox.version(), closed_version, "L2-L5 version stutter");
-        assert_eq!(inbox.state().next_id, closed_next_id, "L2-L5 id stutter");
+        assert_eq!(
+            current_version(&inbox),
+            closed_version,
+            "L2-L5 version stutter"
+        );
+        assert_eq!(
+            inbox.state().expect("unpoisoned").next_id,
+            closed_next_id,
+            "L2-L5 id stutter"
+        );
         assert!(inbox.list().is_empty(), "L2-L5 queue stutter");
+    }
+
+    /// Panic while holding the inbox state, as a crashed holder would.
+    fn poison(inbox: &LiveInbox) {
+        let holder = inbox.clone();
+        let crashed = std::thread::spawn(move || {
+            let _guard = holder.shared.state.lock().expect("first holder");
+            panic!("a holder panics mid-update");
+        })
+        .join();
+        assert!(crashed.is_err() && inbox.shared.state.is_poisoned());
+    }
+
+    #[tokio::test]
+    async fn poisoned_inbox_admits_nothing_and_reports_unavailable() {
+        // Decision table of `LiveInbox::state`, row P2 (P1 is every other
+        // test here). Cause: a holder panicked mid-update. Effects: every
+        // mutation is refused through its existing outcome, no queued entry is
+        // folded or handed on, and the two readers that cannot answer
+        // truthfully say so.
+        //
+        // | Rule | Operation | Result |
+        // |---|---|---|
+        // | P2a | offer | `Offer::Closed` (durable fallback) |
+        // | P2b | wake | no-op |
+        // | P2c | remove / replace / reorder | `EditError::Unavailable` |
+        // | P2d | list / drain_at_boundary / close | empty |
+        // | P2e | is_closed | true |
+        // | P2f | version | `None` |
+        // | P2g | wait_for_change | `WaitOutcome::Unavailable` |
+        let inbox = LiveInbox::new();
+        let queued = offered(&inbox, "queued");
+        let seen = current_version(&inbox);
+        poison(&inbox);
+
+        assert_eq!(inbox.offer(msg("late")), Offer::Closed, "P2a");
+        inbox.wake();
+        assert_eq!(
+            inbox.remove(queued),
+            Err(EditError::Unavailable),
+            "P2c remove"
+        );
+        assert_eq!(
+            inbox.replace(queued, msg("edited")),
+            Err(EditError::Unavailable),
+            "P2c replace"
+        );
+        assert_eq!(
+            inbox.reorder(&[queued]),
+            Err(EditError::Unavailable),
+            "P2c reorder"
+        );
+        assert!(inbox.list().is_empty(), "P2d list");
+        assert!(inbox.drain_at_boundary().is_empty(), "P2d drain");
+        assert!(inbox.is_closed(), "P2e");
+        assert_eq!(inbox.version(), None, "P2f");
+        let cancel = CancellationToken::new();
+        assert_eq!(
+            inbox.wait_for_change(seen, &cancel).await,
+            WaitOutcome::Unavailable,
+            "P2g"
+        );
+        assert!(inbox.close().is_empty(), "P2d close");
+    }
+
+    #[tokio::test]
+    async fn a_waiter_blocked_before_the_poison_ends_with_unavailable() {
+        // Whether the waiter registers before or after the poison, it ends:
+        // either its own state read refuses, or `close` wakes it to refuse.
+        let inbox = LiveInbox::new();
+        let seen = current_version(&inbox);
+        let waiter = {
+            let inbox = inbox.clone();
+            let cancel = CancellationToken::new();
+            tokio::spawn(async move { inbox.wait_for_change(seen, &cancel).await })
+        };
+        poison(&inbox);
+        assert!(inbox.close().is_empty());
+        assert_eq!(
+            waiter.await.expect("waiter finished"),
+            WaitOutcome::Unavailable
+        );
     }
 
     #[tokio::test]
     async fn wake_wakes_a_waiter_without_queueing_content() {
         let inbox = LiveInbox::new();
-        let seen = inbox.version();
+        let seen = current_version(&inbox);
         let waiter = {
             let inbox = inbox.clone();
             let cancel = CancellationToken::new();
@@ -657,14 +788,14 @@ mod tests {
         tokio::task::yield_now().await;
         inbox.wake();
         let outcome = waiter.await.expect("waiter not cancelled");
-        assert_eq!(outcome, WaitOutcome::Changed(inbox.version()));
+        assert_eq!(outcome, WaitOutcome::Changed(current_version(&inbox)));
         assert!(inbox.list().is_empty());
     }
 
     #[tokio::test]
     async fn change_between_snapshot_and_wait_is_not_missed() {
         let inbox = LiveInbox::new();
-        let seen = inbox.version();
+        let seen = current_version(&inbox);
         // The bump lands before wait_for_change is even called — the version
         // check, not the notification, must catch it.
         let _ = offered(&inbox, "raced");
@@ -680,7 +811,9 @@ mod tests {
         cancel.cancel();
         // Even with a pending change, cancellation wins.
         let _ = offered(&inbox, "pending");
-        let outcome = inbox.wait_for_change(inbox.version(), &cancel).await;
+        let outcome = inbox
+            .wait_for_change(current_version(&inbox), &cancel)
+            .await;
         assert_eq!(outcome, WaitOutcome::Cancelled);
 
         let quiet = LiveInbox::new();
@@ -688,7 +821,9 @@ mod tests {
         let waiter = {
             let quiet = quiet.clone();
             let token = token.clone();
-            tokio::spawn(async move { quiet.wait_for_change(quiet.version(), &token).await })
+            tokio::spawn(
+                async move { quiet.wait_for_change(current_version(&quiet), &token).await },
+            )
         };
         tokio::task::yield_now().await;
         token.cancel();
@@ -770,7 +905,7 @@ mod tests {
     #[tokio::test]
     async fn waiter_sees_close_as_a_change() {
         let inbox = LiveInbox::new();
-        let seen = inbox.version();
+        let seen = current_version(&inbox);
         let waiter = {
             let inbox = inbox.clone();
             let cancel = CancellationToken::new();
