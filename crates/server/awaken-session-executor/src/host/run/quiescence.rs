@@ -51,9 +51,10 @@ impl crate::SessionRuns {
             .threads
             .quiesce_terminal_delegations(
                 thread,
-                resident
-                    .as_ref()
-                    .map(|resident| resident as &dyn awaken_session_run_delivery::ResidentAttempt),
+                match &resident {
+                    Some(resident) => awaken_session_run_delivery::RootAttempt::Resident(resident),
+                    None => awaken_session_run_delivery::RootAttempt::Elsewhere,
+                },
             )
             .await?)
     }

@@ -192,7 +192,10 @@ impl WorkerPlacedSessions {
         let control = self.threads.durable_run_control()?;
         for run_id in executable {
             control
-                .persist_recoverable_cancellation(&run_id, None)
+                .persist_recoverable_cancellation(
+                    &run_id,
+                    awaken_dispatch_execution::durable_control::RunResidence::Elsewhere,
+                )
                 .await?;
         }
         Ok(())

@@ -8,6 +8,7 @@ use super::*;
 
 mod quiescence;
 
+use awaken_dispatch_execution::durable_control::RunResidence;
 use awaken_session_run_delivery::StepCommitExpectation;
 #[cfg(test)]
 use awaken_session_run_delivery::client_result_for_ticket;
@@ -126,7 +127,7 @@ impl crate::SessionRuns {
                 // the claim-fenced Runtime commit and settlement.
                 self.threads
                     .durable_run_control()?
-                    .persist_cancellation(run_id, Some(ctx.live_control()))
+                    .persist_cancellation(run_id, RunResidence::Resident(ctx.live_control()))
                     .await?;
             } else {
                 // A standalone Host has no autonomous pool. Preserve its direct
@@ -170,14 +171,10 @@ impl crate::SessionRuns {
                     .durable_run_control()?
                     .persist_recoverable_cancellation(
                         &run_id,
-                        resident.as_ref().map(|ctx| {
-                            ctx.runtime.as_ref()
-                                as &(
-                                     dyn awaken_runtime_contract::control::LiveRunControl
-                                         + Send
-                                         + Sync
-                                 )
-                        }),
+                        match resident.as_ref() {
+                            Some(ctx) => RunResidence::Resident(&*ctx.runtime),
+                            None => RunResidence::Elsewhere,
+                        },
                     )
                     .await?;
             }

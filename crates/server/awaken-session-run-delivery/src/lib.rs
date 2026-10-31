@@ -132,8 +132,8 @@ pub use session_skills::{
 pub use session_worker::session_dispatch_worker;
 pub use settled_step::settled_step;
 pub use thread_coordination::{
-    ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, SessionLowering,
-    check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
+    ChildRunInputs, CoordinatedThreads, CoordinationAuthorities, ResidentAttempt, RootAttempt,
+    SessionLowering, check_pending, dispatch_admission_error, validate_awaiting_tool_authority,
 };
 pub use thread_resume::{
     decision_input, durable_resume_input, manual_resume_input, resume_result, resume_wants_client,
