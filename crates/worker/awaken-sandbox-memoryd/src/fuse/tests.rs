@@ -480,6 +480,16 @@ fn errno_maps_every_fault_class() {
     assert_eq!(MemoryFuse::errno(FuseError::TooLarge), EIO);
     assert_eq!(MemoryFuse::errno(FuseError::Internal("x".into())), EIO);
     assert_eq!(
+        MemoryFuse::errno(FuseError::Io(std::io::Error::other("x"))),
+        EIO
+    );
+    assert_eq!(
+        MemoryFuse::errno(FuseError::NonUtf8(
+            String::from_utf8(vec![0xFF]).unwrap_err()
+        )),
+        EIO
+    );
+    assert_eq!(
         MemoryFuse::errno(FuseError::Mem(MemErr::Storage("x".into()))),
         EIO
     );

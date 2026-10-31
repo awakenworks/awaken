@@ -42,7 +42,15 @@ pub enum FuseError {
     /// Content over the size cap (surfaced as `EIO`; the store also rejects it).
     #[error("content exceeds {MAX_MEMORY_BYTES} bytes")]
     TooLarge,
-    /// An internal fault — non-UTF-8 buffer, runtime construction, mount config.
+    /// A local I/O operation the mount depends on failed: creating the async
+    /// runtime, spawning the FUSE session or writing a copy-mode file.
+    #[error("internal: {0}")]
+    Io(#[from] std::io::Error),
+    /// Buffered or spliced bytes are not UTF-8; the memory store holds text.
+    #[error("internal: {0}")]
+    NonUtf8(#[from] std::string::FromUtf8Error),
+    /// A violated memoryd invariant (an invalid head, a negative offset)
+    /// described by its own fixed message.
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -57,6 +65,8 @@ impl From<FuseError> for awaken_provisioning_contract::SandboxError {
             FuseError::DirtyFileLimitExceeded => Self::NotReady(detail),
             FuseError::NotFound(_) => Self::NotFound(detail),
             FuseError::TooLarge => Self::Invalid(detail),
+            FuseError::Io(cause) => Self::backend("memory FUSE", cause),
+            FuseError::NonUtf8(cause) => Self::backend("memory FUSE", cause),
             FuseError::Internal(cause) => Self::backend("memory FUSE", cause),
         }
     }
@@ -82,7 +92,7 @@ pub fn splice_bytes(original: &str, offset: i64, data: &[u8]) -> Result<String, 
         bytes.resize(end, 0);
     }
     bytes[offset..end].copy_from_slice(data);
-    String::from_utf8(bytes).map_err(|e| FuseError::Internal(e.to_string()))
+    String::from_utf8(bytes).map_err(FuseError::NonUtf8)
 }
 
 /// The immediate children of `dir` rolled up one level from a flat memory listing:
@@ -151,12 +161,44 @@ mod tests {
     }
 
     #[test]
+    fn local_faults_keep_their_source_and_one_backend_class() {
+        // Cause -> effect: an I/O fault, a non-UTF-8 buffer and a fixed
+        // invariant message each keep their own variant, render the same
+        // `internal:` text, and map to the one memory-FUSE backend failure
+        // whose detail is the source's own text.
+        use awaken_provisioning_contract::SandboxError;
+        let io = std::io::Error::other("mount refused");
+        let utf8 = String::from_utf8(vec![0xFF]).unwrap_err();
+        let utf8_text = utf8.to_string();
+        for (error, detail) in [
+            (FuseError::from(io), "mount refused".to_string()),
+            (FuseError::from(utf8), utf8_text),
+            (
+                FuseError::Internal("invariant".into()),
+                "invariant".to_string(),
+            ),
+        ] {
+            assert_eq!(error.to_string(), format!("internal: {detail}"));
+            match SandboxError::from(error) {
+                SandboxError::Backend {
+                    operation,
+                    detail: mapped,
+                } => {
+                    assert_eq!(operation, "memory FUSE");
+                    assert_eq!(mapped, detail);
+                }
+                other => panic!("local fault left the backend class: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn splice_rejects_a_non_utf8_result() {
         // The memory store is text; writing raw non-UTF-8 bytes must fail closed rather
         // than materialize an invalid string.
         assert!(matches!(
             splice_bytes("hello", 0, &[0xFF, 0xFE]),
-            Err(FuseError::Internal(_))
+            Err(FuseError::NonUtf8(_))
         ));
     }
 
