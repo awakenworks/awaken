@@ -58,6 +58,16 @@ pub enum awaken_ext_background_task::TaskNotificationFormat
 pub awaken_ext_background_task::TaskNotificationFormat::Json
 pub awaken_ext_background_task::TaskNotificationFormat::Tagged
 pub awaken_ext_background_task::TaskNotificationFormat::Text
+pub enum awaken_ext_background_task::TaskObservation
+pub awaken_ext_background_task::TaskObservation::Ended
+pub awaken_ext_background_task::TaskObservation::Ended::end: awaken_ext_background_task::BackgroundTaskEnd
+pub awaken_ext_background_task::TaskObservation::Waiting
+pub awaken_ext_background_task::TaskObservation::Waiting::renew_lease: bool
+pub awaken_ext_background_task::TaskObservation::Waiting::wait: awaken_ext_background_task::BackgroundWait
+pub enum awaken_ext_background_task::TaskObservationCodecError
+pub awaken_ext_background_task::TaskObservationCodecError::Decode(alloc::string::String)
+pub awaken_ext_background_task::TaskObservationCodecError::EmptyHolder
+pub awaken_ext_background_task::TaskObservationCodecError::Version(u64)
 pub struct awaken_ext_background_task::BackgroundInvocation
 pub awaken_ext_background_task::BackgroundInvocation::call: awaken_tool_contract::tool::ToolCall
 pub struct awaken_ext_background_task::BackgroundTask
@@ -114,6 +124,7 @@ pub type awaken_ext_background_task::BackgroundTaskScope::Holder = alloc::string
 pub type awaken_ext_background_task::BackgroundTaskScope::Subject = awaken_ext_background_task::BackgroundTaskId
 pub struct awaken_ext_background_task::BackgroundTaskSupervisor
 impl awaken_ext_background_task::BackgroundTaskSupervisor
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::accept_delivered(&self, &awaken_ext_background_task::TaskObservationRecord) -> bool
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::cancel(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskTenure)
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::clock(&self) -> &dyn awaken_time::clock::WallClock
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::complete(&self, awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskCompletion)
@@ -156,8 +167,18 @@ pub struct awaken_ext_background_task::TaskNotifications
 pub awaken_ext_background_task::TaskNotifications::default: awaken_ext_background_task::TaskNotificationRule
 pub awaken_ext_background_task::TaskNotifications::events: alloc::collections::btree::map::BTreeMap<awaken_ext_background_task::TaskNotificationEvent, awaken_ext_background_task::TaskNotificationRule>
 pub awaken_ext_background_task::TaskNotifications::tools: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::collections::btree::map::BTreeMap<awaken_ext_background_task::TaskNotificationEvent, awaken_ext_background_task::TaskNotificationRule>>
+pub struct awaken_ext_background_task::TaskObservationRecord
+impl awaken_ext_background_task::TaskObservationRecord
+pub fn awaken_ext_background_task::TaskObservationRecord::decode(&serde_json::value::Value) -> core::result::Result<Self, awaken_ext_background_task::TaskObservationCodecError>
+pub fn awaken_ext_background_task::TaskObservationRecord::encode(&self) -> serde_json::value::Value
+pub fn awaken_ext_background_task::TaskObservationRecord::ended(&awaken_ext_background_task::BackgroundTaskCompletion) -> Self
+pub fn awaken_ext_background_task::TaskObservationRecord::observation(&self) -> &awaken_ext_background_task::TaskObservation
+pub fn awaken_ext_background_task::TaskObservationRecord::task_id(&self) -> &awaken_ext_background_task::BackgroundTaskId
+pub fn awaken_ext_background_task::TaskObservationRecord::tenure(&self) -> awaken_ext_background_task::TaskTenure
+pub fn awaken_ext_background_task::TaskObservationRecord::waiting(&awaken_ext_background_task::BackgroundTaskWaitCandidate) -> Self
 pub const awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID: &str
 pub const awaken_ext_background_task::BACKGROUND_TASK_STATE_PREFIX: &str
+pub const awaken_ext_background_task::TASK_OBSERVATION_VERSION: u32
 pub fn awaken_ext_background_task::background_task_manifest() -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_background_task::config_schema() -> serde_json::value::Value
 pub fn awaken_ext_background_task::management_tool_ids() -> [&'static str; 4]

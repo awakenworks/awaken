@@ -92,7 +92,7 @@ awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai", version
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission", version = "2.0.0" }
 awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http", version = "1.1.0" }
 awaken-authority-clock = { path = "crates/runtime/awaken-authority-clock" }
-awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire", version = "0.1.1" }
+awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire", version = "0.2.0" }
 awaken-mcp-server-core = { path = "crates/server/awaken-mcp-server-core" }
 awaken-mcp-server-testkit = { path = "crates/server/awaken-mcp-server-testkit" }
 awaken-ext-mcp = { path = "crates/runtime/awaken-ext-mcp", version = "0.2.0" }
