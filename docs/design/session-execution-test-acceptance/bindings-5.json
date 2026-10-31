@@ -53,22 +53,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 449,
+        "line": 503,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 452
+        "line": 506
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 454
+        "line": 508
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 458
+        "line": 512
       }
     ],
     "execution_witnesses": [
@@ -114,18 +114,18 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 469,
+        "line": 523,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 479
+        "line": 533
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 483
+        "line": 537
       }
     ],
     "execution_witnesses": [
@@ -171,7 +171,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 527,
+        "line": 581,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
@@ -203,11 +203,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 535
+        "line": 589
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 536
+        "line": 590
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
@@ -220,7 +220,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 490,
+        "line": 544,
         "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
       }
     ],
@@ -252,11 +252,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 511
+        "line": 565
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
-        "line": 515
+        "line": 569
       }
     ]
   },
@@ -562,7 +562,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 428,
+        "line": 429,
         "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
       }
     ],
@@ -595,7 +595,7 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 435
+        "line": 436
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
@@ -608,7 +608,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 444,
+        "line": 445,
         "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
       }
     ],
@@ -651,11 +651,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 451
+        "line": 452
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 455
+        "line": 456
       }
     ]
   },
