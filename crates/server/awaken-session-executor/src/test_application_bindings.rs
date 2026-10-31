@@ -101,6 +101,12 @@ impl SessionRunBackgroundApplication for UnusedApplications {
     ) -> Result<RunId, RunApplicationError> {
         panic!("unused background submission role was invoked")
     }
+    async fn submit_task_attention(
+        &self,
+        _: awaken_session_application_contract::TaskAttention,
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
+        panic!("unused Task attention role was invoked")
+    }
 }
 fn unused() -> Arc<UnusedApplications> {
     static PORTS: OnceLock<Arc<UnusedApplications>> = OnceLock::new();

@@ -39,6 +39,7 @@ fn admit_command(session: &str, operation: &str) -> AdmitSessionRun {
         traceparent: None,
         execution_requirements: Default::default(),
         replacement: Default::default(),
+        private_task_input: None,
     }
 }
 

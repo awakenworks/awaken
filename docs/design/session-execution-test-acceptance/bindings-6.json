@@ -293,22 +293,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 159,
+        "line": 160,
         "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 170
+        "line": 171
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 180
+        "line": 181
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 184
+        "line": 185
       }
     ],
     "execution_witnesses": [
@@ -344,22 +344,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 321,
+        "line": 322,
         "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 344
-      },
-      {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 349
+        "line": 345
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
         "line": 350
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
+        "line": 351
       }
     ],
     "execution_witnesses": [
@@ -393,7 +393,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 368,
+        "line": 369,
         "file_sha256": "829bf259a89df842c720387b89039e36ccde69932c4cc4619f333933da0fc559"
       }
     ],
@@ -425,11 +425,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 389
+        "line": 390
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 397
+        "line": 398
       }
     ]
   },
@@ -438,7 +438,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 405,
+        "line": 406,
         "file_sha256": "a1bfa02b3bf0088adb9a36052ce3fd85217704f66541ba9b4f13fd8e5c73b09e"
       }
     ],
@@ -470,15 +470,15 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 429
+        "line": 430
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 439
+        "line": 440
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 444
+        "line": 445
       }
     ]
   },

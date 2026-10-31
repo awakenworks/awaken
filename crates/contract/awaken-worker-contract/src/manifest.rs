@@ -20,6 +20,10 @@ pub const PREPARED_SESSION_DISPATCH_CAPABILITY: &str = "prepared-session-dispatc
 /// Worker decodes and recovers the raw tool-result journal lifecycle. It
 /// grants neither replay permission nor quiescence evidence.
 pub const TOOL_RESULT_JOURNAL_CAPABILITY: &str = "tool-result-journal/v1";
+/// Worker decodes the private Task input a Run carries, offers it to its Task
+/// owner before execution, and delivers its own Task observations as Task
+/// attention to the Coordinator. It grants no Run claim and no Task tenure.
+pub const BACKGROUND_TASK_CONTROL_CAPABILITY: &str = "background-task-control/v1";
 
 /// Worker has an explicitly installed in-process executor for a published Host
 /// candidate. This is a realization capability, not a snapshot wire scheme.

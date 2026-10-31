@@ -768,6 +768,7 @@ mod tests {
                 required_worker_capabilities: Default::default(),
             },
             replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+            private_task_input: None,
         }
     }
 
@@ -909,6 +910,26 @@ mod tests {
                 .contains(stored.bundle_sha256.as_str()),
             "C5 the envelope pins the bundle digest"
         );
+        assert_eq!(row.private_task_input, None, "C5 no Task input");
+
+        // R7 (remote Task control): a Task attention's private input rides on
+        // the row unchanged.
+        install(&delivery, "attention", vec![memory_input(4)], Vec::new());
+        let input = awaken_session_application_contract::PrivateTaskInput::new(vec![
+            serde_json::json!({"version": 1, "task_id": "task"}),
+        ])
+        .expect("R7 input");
+        let mut attention = command("attention", "Background task has news.");
+        attention.private_task_input = Some(input.clone());
+        assert_eq!(
+            delivery.reserve_session_run(attention).await.expect("R7"),
+            SessionRunReservation::Reserved,
+            "R7"
+        );
+        let row = reserved(&delivery, "attention")
+            .await
+            .expect("R7 reserved row");
+        assert_eq!(row.private_task_input, Some(input), "R7 carried unchanged");
     }
 
     async fn delivery_without_store() -> WorkerPlacedSessions {

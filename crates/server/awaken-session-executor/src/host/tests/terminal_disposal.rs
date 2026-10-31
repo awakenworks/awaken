@@ -1064,6 +1064,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
                 required_worker_capabilities: Default::default(),
             },
         replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+        private_task_input: None,
     };
     let request = awaken_dispatch_contract::RunDispatch::new(activation)
         .for_session(session.clone())

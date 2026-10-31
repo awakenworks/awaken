@@ -230,6 +230,12 @@ pub fn remote_worker_placement(
             .required_capabilities
             .insert(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_string());
     }
+    // Same persisted codec demand for the private Task input and attention.
+    if awaken_dispatch_contract::RunDispatch::requires_background_task_control(models) {
+        placement
+            .required_capabilities
+            .insert(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY.to_string());
+    }
     placement
 }
 

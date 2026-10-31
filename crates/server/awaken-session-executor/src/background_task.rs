@@ -865,6 +865,7 @@ mod tests {
         agent: Option<String>,
         messages: Vec<Message>,
         traceparent: Option<String>,
+        input: Option<awaken_session_application_contract::PrivateTaskInput>,
     }
 
     struct RecordingAttentionApplication {
@@ -892,25 +893,12 @@ mod tests {
     }
 
     #[async_trait]
-    impl SessionRunBackgroundApplication for RecordingAttentionApplication {
-        async fn submit_session_run_background(
-            &self,
-            operation_id: &str,
-            thread: &str,
-            agent: Option<String>,
-            messages: Vec<Message>,
-            traceparent: Option<String>,
-        ) -> Result<RunId, awaken_session_application_contract::RunApplicationError> {
+    impl RecordingAttentionApplication {
+        fn record(&self, call: AttentionCall) -> Result<(), awaken_session_types::RunError> {
             self.calls
                 .lock()
                 .expect("attention calls mutex poisoned")
-                .push(AttentionCall {
-                    operation_id: operation_id.to_string(),
-                    thread: thread.to_string(),
-                    agent,
-                    messages,
-                    traceparent,
-                });
+                .push(call);
             if self.definitive_rejection {
                 return Err(awaken_session_types::RunError::bad_request(
                     "definitive test rejection",
@@ -927,10 +915,54 @@ mod tests {
                     "transient test failure",
                 ));
             }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl SessionRunBackgroundApplication for RecordingAttentionApplication {
+        async fn submit_session_run_background(
+            &self,
+            operation_id: &str,
+            thread: &str,
+            agent: Option<String>,
+            messages: Vec<Message>,
+            traceparent: Option<String>,
+        ) -> Result<RunId, awaken_session_application_contract::RunApplicationError> {
+            self.record(AttentionCall {
+                operation_id: operation_id.to_string(),
+                thread: thread.to_string(),
+                agent,
+                messages,
+                traceparent,
+                input: None,
+            })?;
             Ok(awaken_session_execution_contract::session_run_id(
                 &awaken_session_types::SessionId::from(thread),
                 operation_id,
             ))
+        }
+
+        async fn submit_task_attention(
+            &self,
+            attention: awaken_session_application_contract::TaskAttention,
+        ) -> Result<
+            awaken_session_application_contract::TaskAttentionAck,
+            awaken_session_application_contract::RunApplicationError,
+        > {
+            let run_id = awaken_session_execution_contract::session_run_id(
+                &awaken_session_types::SessionId::from(attention.thread.as_str()),
+                &attention.operation_id,
+            );
+            self.record(AttentionCall {
+                operation_id: attention.operation_id,
+                thread: attention.thread,
+                agent: None,
+                messages: vec![attention.message],
+                traceparent: None,
+                input: attention.input,
+            })?;
+            Ok(awaken_session_application_contract::TaskAttentionAck { run_id })
         }
     }
 

@@ -62,6 +62,10 @@ pub struct AdmitSessionRun {
     /// Explicit newest-wins intent. This is typed domain input, not an HTTP or
     /// queue option inferred from the presence of an awaiting ticket.
     pub replacement: SessionRunReplacement,
+    /// Task observations the admitted Run carries privately to its StepStart.
+    /// Only BackgroundTask attention sets it; it is part of the command
+    /// identity, so a replay with another observation is a reused Run id.
+    pub private_task_input: Option<awaken_session_application_contract::PrivateTaskInput>,
 }
 
 impl AdmitSessionRun {
@@ -69,8 +73,7 @@ impl AdmitSessionRun {
     /// Runtime projection is applied to it.
     #[must_use]
     pub fn command_fingerprint(&self) -> SessionRunCommandFingerprint {
-        let digest = awaken_agent_contract::content_fingerprint(&(
-            "session-command-v1",
+        let command = (
             &self.session_id,
             &self.agent_id,
             &self.operation_id,
@@ -80,7 +83,28 @@ impl AdmitSessionRun {
             self.execution_requirements.tool_capability_narrowing,
             &self.execution_requirements.required_worker_capabilities,
             self.replacement,
-        ))
+        );
+        // A command without private Task input keeps its original v1 digest,
+        // so a retry across this change matches its persisted reservation.
+        let digest = match &self.private_task_input {
+            None => awaken_agent_contract::content_fingerprint(&(
+                "session-command-v1",
+                command.0,
+                command.1,
+                command.2,
+                command.3,
+                command.4,
+                command.5,
+                command.6,
+                command.7,
+                command.8,
+            )),
+            Some(input) => awaken_agent_contract::content_fingerprint(&(
+                "session-command-task-v1",
+                command,
+                input,
+            )),
+        }
         .expect("Session Run command identity has no fallible serializable value");
         SessionRunCommandFingerprint::from_sha256_hex(&digest)
             .expect("content_fingerprint yields a lowercase SHA-256 hex digest")
@@ -406,6 +430,7 @@ mod tests {
                 required_worker_capabilities: ["managed".to_string()].into_iter().collect(),
             },
             replacement: SessionRunReplacement::PreservePrior,
+            private_task_input: None,
         }
     }
 
@@ -593,7 +618,8 @@ mod tests {
     fn session_command_fingerprint_covers_the_complete_admission_decision_table() {
         // Cause/effect graph: C1 every immutable command coordinate is exact
         // or one of session, agent, operation, run, messages, data subject,
-        // tool narrowing, required capabilities, and replacement changes; C2
+        // tool narrowing, required capabilities, replacement and private Task
+        // input changes; C2
         // only trace context changes. Effects: E1 exact/C2 retries retain one
         // current compact identity; E2 every C1 change gets another identity.
         // Constraint: mutable Runtime projections do not exist in this input.
@@ -646,12 +672,31 @@ mod tests {
             .required_worker_capabilities
             .insert("repository-credentials".into());
         changes.push(changed);
-        let mut changed = original;
+        let mut changed = original.clone();
         changed.replacement = SessionRunReplacement::SupersedePrior;
         changes.push(changed);
+        // K2/K3 of remote Task control: the private Task input is identity;
+        // two different observations are two different commands.
+        for observation in ["first", "second"] {
+            let mut changed = original.clone();
+            changed.private_task_input = Some(
+                awaken_session_application_contract::PrivateTaskInput::new(vec![
+                    serde_json::json!({ "observation": observation }),
+                ])
+                .unwrap(),
+            );
+            changes.push(changed);
+        }
 
-        for changed in changes {
+        for (index, changed) in changes.iter().enumerate() {
             assert_ne!(fingerprint, changed.command_fingerprint(), "F3/E2");
+            for other in &changes[index + 1..] {
+                assert_ne!(
+                    changed.command_fingerprint(),
+                    other.command_fingerprint(),
+                    "F3/E2: each change is its own identity"
+                );
+            }
         }
     }
 

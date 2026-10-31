@@ -105,6 +105,12 @@ impl SessionRunBackgroundApplication for Port {
     ) -> Result<RunId, RunApplicationError> {
         panic!("unused background submission role was invoked")
     }
+    async fn submit_task_attention(
+        &self,
+        _: awaken_session_application_contract::TaskAttention,
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
+        panic!("unused Task attention role was invoked")
+    }
 }
 
 fn address<T: ?Sized>(value: &Arc<T>) -> *const () {

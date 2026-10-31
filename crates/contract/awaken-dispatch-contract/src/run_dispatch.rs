@@ -190,6 +190,12 @@ pub struct RunDispatch {
     /// the canonical cold path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_environment_shape: Option<SandboxCapacityShapeId>,
+    /// Task observations this Run folds at StepStart, carried privately from
+    /// the Task holder through the Session application. The claiming process
+    /// offers them to its Task owner before execution; they grant no Task
+    /// tenure. Ordinary Runs and older rows omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_task_input: Option<awaken_session_application_contract::PrivateTaskInput>,
     /// Exact Environment/deployment request for inference credential plaintext.
     /// Claim admission validates it against every selected published candidate
     /// and the selected Worker's installed capabilities before persisting the
@@ -206,6 +212,11 @@ pub struct RunDispatch {
     )]
     pub placement: PlacementRequirements,
 }
+
+/// The BackgroundTask extension's plugin id as frozen into a snapshot's
+/// `plugin_ids` (`awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID`; the
+/// Session executor's tests hold the two equal).
+const BACKGROUND_TASK_PLUGIN_ID: &str = "background_task";
 
 /// Closed classification of the Session coordinates carried by one dispatch.
 ///
@@ -319,6 +330,7 @@ impl RunDispatch {
             session_runtime: None,
             agent_publications: Vec::new(),
             preferred_environment_shape: None,
+            private_task_input: None,
             inference_plaintext_holder: None,
             placement: PlacementRequirements::default(),
         }
@@ -523,6 +535,17 @@ impl RunDispatch {
         })
     }
 
+    /// A Run whose frozen Agent enables BackgroundTask, or that carries Task
+    /// observations, needs a Worker that decodes the private Task input and
+    /// delivers Task attention. This is codec support, not Task tenure.
+    pub fn requires_background_task_control(
+        spec: &awaken_runtime_contract::resolved::ResolvedSpec,
+    ) -> bool {
+        spec.plugin_ids
+            .iter()
+            .any(|id| id == BACKGROUND_TASK_PLUGIN_ID)
+    }
+
     fn required_worker_codecs(
         &self,
         include_runtime_journal: bool,
@@ -532,7 +555,10 @@ impl RunDispatch {
         let journal = (include_runtime_journal
             && Self::requires_tool_result_journal(&self.activation.snapshot.resolved_spec))
         .then_some(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY);
-        [prepared, journal].into_iter().flatten()
+        let task_control = (self.private_task_input.is_some()
+            || Self::requires_background_task_control(&self.activation.snapshot.resolved_spec))
+        .then_some(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY);
+        [prepared, journal, task_control].into_iter().flatten()
     }
 
     fn bind_worker_codec_requirements(&mut self) {
@@ -1200,6 +1226,82 @@ mod tests {
                 .is_none(),
             "P3 ordinary unchanged"
         );
+    }
+
+    #[test]
+    fn background_task_rows_demand_task_control_and_refuse_other_input_versions() {
+        use awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY as TASK;
+        // C1: a row whose snapshot enables BackgroundTask, or that carries
+        // private Task input, demands the Task control codec; a plain row does
+        // not. C2/C3: the carried input round-trips at version 1, a row with
+        // any other input version does not decode, and a row without input
+        // keeps its exact bytes (no `private_task_input` key).
+        let worker_bound = |row: RunDispatch| {
+            row.with_placement(PlacementRequirements::remote_preferred())
+                .with_worker_codec_requirements()
+        };
+        let plain = worker_bound(RunDispatch::new(activation()));
+        assert!(
+            !plain.placement.required_capabilities.contains(TASK),
+            "C1 plain"
+        );
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("private_task_input")
+                .is_none(),
+            "C2 absent input is omitted"
+        );
+
+        let mut enabled = activation();
+        enabled
+            .snapshot
+            .resolved_spec
+            .plugin_ids
+            .push(BACKGROUND_TASK_PLUGIN_ID.into());
+        assert!(RunDispatch::requires_background_task_control(
+            &enabled.snapshot.resolved_spec
+        ));
+        let enabled = worker_bound(RunDispatch::new(enabled));
+        assert!(
+            enabled.placement.required_capabilities.contains(TASK),
+            "C1 plugin"
+        );
+
+        let mut carried = RunDispatch::new(activation());
+        let input = awaken_session_application_contract::PrivateTaskInput::new(vec![
+            serde_json::json!({"version": 1}),
+        ])
+        .unwrap();
+        carried.private_task_input = Some(input.clone());
+        let carried = worker_bound(carried);
+        assert!(
+            carried.placement.required_capabilities.contains(TASK),
+            "C1 input"
+        );
+        let mut stripped = carried.clone();
+        stripped.placement.required_capabilities.remove(TASK);
+        assert!(
+            stripped.validate_worker_codec_requirements().is_err(),
+            "C1 a stripped demand is refused"
+        );
+
+        let wire = serde_json::to_value(&carried).unwrap();
+        assert_eq!(wire["private_task_input"]["version"], 1, "C2");
+        let decoded: RunDispatch = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded.private_task_input, Some(input), "C2");
+        for version in [
+            serde_json::json!(0),
+            serde_json::json!(2),
+            serde_json::Value::Null,
+        ] {
+            let mut historical = wire.clone();
+            historical["private_task_input"]["version"] = version;
+            assert!(
+                serde_json::from_value::<RunDispatch>(historical).is_err(),
+                "C3 other input version"
+            );
+        }
     }
 
     #[test]

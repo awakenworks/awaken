@@ -53,6 +53,7 @@ fn command() -> AdmitSessionRun {
         traceparent: None,
         execution_requirements: SessionRunExecutionRequirements::default(),
         replacement: SessionRunReplacement::SupersedePrior,
+        private_task_input: None,
     }
 }
 

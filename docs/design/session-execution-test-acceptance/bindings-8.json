@@ -53,22 +53,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 397,
+        "line": 398,
         "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 388
+        "line": 389
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 391
+        "line": 392
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 393
+        "line": 394
       }
     ],
     "execution_witnesses": [
@@ -104,22 +104,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 419,
+        "line": 420,
         "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 388
+        "line": 389
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 391
+        "line": 392
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 393
+        "line": 394
       }
     ],
     "execution_witnesses": [
@@ -155,22 +155,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 448,
+        "line": 449,
         "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 452
+        "line": 453
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 466
+        "line": 467
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 489
+        "line": 490
       }
     ],
     "execution_witnesses": [
@@ -487,22 +487,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 153,
+        "line": 154,
         "file_sha256": "49602567bc68457a514474cd74327e2afcc49cd4827c8bfc0af9dfbc5acfc7e3"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 159
-      },
-      {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 160
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 171
+        "line": 161
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "line": 172
       }
     ],
     "execution_witnesses": [
@@ -538,22 +538,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 231,
+        "line": 232,
         "file_sha256": "49602567bc68457a514474cd74327e2afcc49cd4827c8bfc0af9dfbc5acfc7e3"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 236
+        "line": 237
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 240
+        "line": 241
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 243
+        "line": 244
       }
     ],
     "execution_witnesses": [
