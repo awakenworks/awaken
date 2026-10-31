@@ -523,9 +523,15 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationOutcome::Conflict,
         "SR10/E2 completed operation identity is immutable"
     );
+    // A current producer row always requires its Worker codecs, so the
+    // completed set is never empty; the rule is that a capability absent from
+    // the completed row cannot become required by a replay.
     assert!(
-        request.placement.required_capabilities.is_empty(),
-        "SR10 empty-to-present completed capability precondition"
+        !request
+            .placement
+            .required_capabilities
+            .contains("new-required-capability-after-completion"),
+        "SR10 absent-to-present completed capability precondition"
     );
     let mut completed_changed_capabilities = request.clone();
     completed_changed_capabilities
@@ -539,7 +545,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .await
             .expect("SR10 completed capability conflict classification"),
         SessionRunReservationOutcome::Conflict,
-        "SR10/E2 completed empty-to-present required capability is immutable"
+        "SR10/E2 completed absent-to-present required capability is immutable"
     );
     if capabilities.completion_events {
         let completion = store
