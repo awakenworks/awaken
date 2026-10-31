@@ -228,3 +228,24 @@ without adding verification, which is why the grade validator also rejects a
 direct grade whose bounds still contain an obsolete abstract-row claim. And the
 Verified profile therefore stays blocked until one of the two capabilities above
 exists — not until more harnesses are written.
+
+## Crate-boundary program results (2026-10-30)
+
+Moved here from `STATUS.md`; scope and limits are in [the proof
+scope](../formal/README.md) and [verification
+boundaries](../formal/VERIFICATION_BOUNDARIES.md). Kani profiles bind loops by
+Rust symbol per harness artifact. The bound assignment and generation
+selections passed (63 and 342 checks); the generation run kept its original
+domain and timeout, and the earlier generation admission refusal never started
+the solver. The finite Activity/budget composition passed its complete
+configured TLC baselines and mutation/reachability controls, and the Activity
+proof passed 55 TLAPS obligations.
+
+The Outcome/phase change, since landed on main, passed four complete configured
+TLC models and 312 TLAPS obligations on its candidate model bytes; these are
+model results, not Rust execution. The heartbeat checkpoint has a source-level
+exhaustive-error compatibility repair whose native, Kani and API qualification
+is pending, and earlier Kani timeouts stay inconclusive. Kubernetes Pod values
+that do not finish in CBMC keep exhaustive native tables. These results
+establish bounded Rust or model properties only; the composition model does not
+prove Rust/SQL refinement, unbounded liveness or product acceptance.
