@@ -165,7 +165,7 @@ async fn caller_owned_run_identity_is_exact(
 
     let mut collision = request.clone();
     collision.activation.thread_id = ThreadId(format!("{ns}-collision-thread"));
-    collision.placement = PlacementRequirements::remote_required();
+    collision = current_remote_required(collision);
     assert!(store.enqueue(collision.clone()).await.is_err(), "I2 live");
     clock.set(89_999);
     assert!(
@@ -677,9 +677,9 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     let incompatible_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "other-worker");
     let mut invalid =
         credential_dispatch(ns, "poison-invalid", "poison-invalid", &incompatible_holder);
-    invalid.placement = PlacementRequirements::remote_required();
+    invalid = current_remote_required(invalid);
     let mut valid = credential_dispatch(ns, "poison-valid", "poison-valid", &holder);
-    valid.placement = PlacementRequirements::remote_required();
+    valid = current_remote_required(valid);
     store
         .enqueue_with(
             invalid.clone(),
@@ -720,7 +720,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
         "Q2 exact claim preserves the admission failure"
     );
     let mut placed = credential_dispatch(ns, "poison-placed", "poison-placed", &holder);
-    placed.placement = PlacementRequirements::remote_required();
+    placed = current_remote_required(placed);
     store
         .enqueue(placed.clone())
         .await
@@ -749,10 +749,10 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
 
     let mut remote_cancel =
         remote_credential_dispatch(ns, "poison-remote-cancel", "poison-remote-cancel", &holder);
-    remote_cancel.placement = PlacementRequirements::remote_required();
+    remote_cancel = current_remote_required(remote_cancel);
     let mut nonremote_cancel =
         credential_dispatch(ns, "poison-local-cancel", "poison-local-cancel", &holder);
-    nonremote_cancel.placement = PlacementRequirements::remote_required();
+    nonremote_cancel = current_remote_required(nonremote_cancel);
     nonremote_cancel.inference_plaintext_holder = None;
     store
         .enqueue_with(
@@ -800,14 +800,14 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
         "poison-remote-placed-cancel",
         &holder,
     );
-    remote_placed_cancel.placement = PlacementRequirements::remote_required();
+    remote_placed_cancel = current_remote_required(remote_placed_cancel);
     let mut nonremote_placed_cancel = credential_dispatch(
         ns,
         "poison-local-placed-cancel",
         "poison-local-placed-cancel",
         &holder,
     );
-    nonremote_placed_cancel.placement = PlacementRequirements::remote_required();
+    nonremote_placed_cancel = current_remote_required(nonremote_placed_cancel);
     nonremote_placed_cancel.inference_plaintext_holder = None;
     store
         .enqueue_with(
@@ -864,14 +864,14 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
         "poison-remote-local-cancel",
         &holder,
     );
-    remote_local_cancel.placement = PlacementRequirements::remote_required();
+    remote_local_cancel = current_remote_required(remote_local_cancel);
     let mut nonremote_local_cancel = credential_dispatch(
         ns,
         "poison-local-local-cancel",
         "poison-local-local-cancel",
         &holder,
     );
-    nonremote_local_cancel.placement = PlacementRequirements::remote_required();
+    nonremote_local_cancel = current_remote_required(nonremote_local_cancel);
     nonremote_local_cancel.inference_plaintext_holder = None;
     store
         .enqueue_with(
@@ -1215,7 +1215,8 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .expect("settle recovered credential run");
 
     let remote = credential_dispatch(ns, "credential-remote", "credential-remote-thread", &holder)
-        .with_placement(PlacementRequirements::remote_required());
+        .with_placement(PlacementRequirements::remote_required())
+        .with_worker_codec_requirements();
     let remote_id = remote.run_id().clone();
     store
         .enqueue(remote)
@@ -1253,7 +1254,8 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
 
     let mut cancellation =
         credential_dispatch(ns, "credential-cancel", "credential-cancel-thread", &holder)
-            .with_placement(PlacementRequirements::remote_required());
+            .with_placement(PlacementRequirements::remote_required())
+            .with_worker_codec_requirements();
     cancellation.inference_plaintext_holder = None;
     let cancellation_id = cancellation.run_id().clone();
     store
@@ -1291,7 +1293,8 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         "credential-remote-cancel-thread",
         &holder,
     )
-    .with_placement(PlacementRequirements::remote_required());
+    .with_placement(PlacementRequirements::remote_required())
+    .with_worker_codec_requirements();
     let remote_cancel_id = remote_cancel.run_id().clone();
     store
         .enqueue(remote_cancel)

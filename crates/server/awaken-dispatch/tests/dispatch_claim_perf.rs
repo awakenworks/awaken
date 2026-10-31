@@ -300,7 +300,9 @@ async fn capability_incompatible_front_queue_claim_latency() {
     placement.required_capabilities.insert("gpu".into());
     harness::seed_placement_candidate_prefix(
         &pool,
-        RunDispatch::new(harness::activation("gpu-template")).with_placement(placement),
+        RunDispatch::new(harness::activation("gpu-template"))
+            .with_placement(placement)
+            .with_worker_codec_requirements(),
         rows,
         "gpu-measure-",
         100,
@@ -313,7 +315,8 @@ async fn capability_incompatible_front_queue_claim_latency() {
                     &format!("legal-{index}"),
                     &format!("legal-thread-{index}"),
                 ))
-                .with_placement(PlacementRequirements::remote_required()),
+                .with_placement(PlacementRequirements::remote_required())
+                .with_worker_codec_requirements(),
             )
             .await
             .unwrap();
@@ -411,7 +414,9 @@ async fn concurrent_incompatible_front_claim_throughput() {
             placement.required_capabilities.insert("gpu".into());
             harness::seed_placement_candidate_prefix(
                 &pool,
-                RunDispatch::new(harness::activation("template")).with_placement(placement),
+                RunDispatch::new(harness::activation("template"))
+                    .with_placement(placement)
+                    .with_worker_codec_requirements(),
                 rows,
                 "gpu-contention-",
                 100,
@@ -433,7 +438,9 @@ async fn concurrent_incompatible_front_claim_throughput() {
                 &format!("valid-thread-{index}"),
             ));
             if worker.is_some() {
-                request = request.with_placement(PlacementRequirements::remote_required());
+                request = request
+                    .with_placement(PlacementRequirements::remote_required())
+                    .with_worker_codec_requirements();
             }
             store.enqueue(request).await.unwrap();
         }

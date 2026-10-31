@@ -109,7 +109,8 @@ impl ExecutionFixture {
             .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
                 "workspace-e2e".into(),
             ))
-            .with_placement(PlacementRequirements::remote_preferred());
+            .with_placement(PlacementRequirements::remote_preferred())
+            .with_worker_codec_requirements();
         let run = request.activation.run_id.clone();
         self.queue.enqueue(request).await?;
         self.claim(&run, suffix).await?;
@@ -121,9 +122,7 @@ impl ExecutionFixture {
         suffix: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let worker = WorkerIdentity::new("credential-fixture", "boot", 1);
-        let mut manifest = awaken_dispatch::WorkerManifest::default();
-        manifest.runtime_protocol.min = 1;
-        manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        let manifest = awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest();
         let snapshot = awaken_dispatch::WorkerSnapshot {
             identity: worker.clone(),
             state: awaken_dispatch::WorkerState::Ready,

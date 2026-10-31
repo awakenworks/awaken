@@ -44,6 +44,22 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
     .with_worker_codec_requirements()
 }
 
+/// Re-place a current-producer row on registered Workers only. Replacing the
+/// placement value discards the codec marks `dispatch` published, so the row
+/// re-declares the current Worker codecs; a test that models a historical
+/// unmarked row builds it explicitly instead of through this constructor.
+fn current_remote_required(request: RunDispatch) -> RunDispatch {
+    current_placed(request, PlacementRequirements::remote_required())
+}
+
+/// Re-place a current-producer row under exact requirements, re-declaring the
+/// current Worker codecs the replaced placement value carried.
+fn current_placed(request: RunDispatch, placement: PlacementRequirements) -> RunDispatch {
+    request
+        .with_placement(placement)
+        .with_worker_codec_requirements()
+}
+
 /// Attach the current Session command identity after the fixture has applied
 /// every application-owned requirement and before tests mutate Runtime
 /// projections. The deterministic operation id is test-only input, not a

@@ -2271,12 +2271,13 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch + awaken_dispatch
     // not satisfy the run's pinned GPU capability can still claim cancellation,
     // and the replaceable ranking policy is not consulted for that control task.
     use awaken_dispatch::{
-        LeastLoadedPolicy, PlacementRequirements, WorkerIdentity, WorkerManifest, WorkerSnapshot,
-        WorkerState,
+        LeastLoadedPolicy, PlacementRequirements, WorkerIdentity, WorkerSnapshot, WorkerState,
     };
     let mut gpu = PlacementRequirements::remote_required();
     gpu.required_capabilities.insert("gpu".to_string());
-    let manifest = WorkerManifest::default();
+    // A current Worker (wire codecs) that lacks only the pinned GPU capability:
+    // control claims bypass placement, never the mandatory codec rule.
+    let manifest = awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest();
     let worker = WorkerSnapshot {
         identity: WorkerIdentity::new("control-worker", "boot-1", 1),
         capability_fingerprint: manifest.fingerprint().unwrap(),
@@ -2293,7 +2294,8 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch + awaken_dispatch
         store
             .enqueue(
                 RunDispatch::new(activation_on(run, &format!("{run}-thread")))
-                    .with_placement(gpu.clone()),
+                    .with_placement(gpu.clone())
+                    .with_worker_codec_requirements(),
             )
             .await
             .unwrap();

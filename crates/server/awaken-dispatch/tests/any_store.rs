@@ -19,7 +19,7 @@ use awaken_dispatch::{
     AnyCoordinatorDispatch, DispatchCursor, DispatchOperation, DispatchOperationalFeed,
     DispatchOutcome, DispatchTestHarness, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
     PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements, RankedWorker,
-    RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
+    RunDispatch, SubmitOptions, WorkerIdentity, WorkerSnapshot, WorkerState,
 };
 use awaken_dispatch::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -123,7 +123,9 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     cpu.required_capabilities.insert("cpu".to_string());
     store
         .enqueue_with(
-            RunDispatch::new(activation_on("gpu-run", "gpu-thread")).with_placement(gpu),
+            RunDispatch::new(activation_on("gpu-run", "gpu-thread"))
+                .with_placement(gpu)
+                .with_worker_codec_requirements(),
             SubmitOptions {
                 priority: 100,
                 ..SubmitOptions::default()
@@ -132,7 +134,11 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
         .await
         .unwrap();
     store
-        .enqueue(RunDispatch::new(activation_on("cpu-run", "cpu-thread")).with_placement(cpu))
+        .enqueue(
+            RunDispatch::new(activation_on("cpu-run", "cpu-thread"))
+                .with_placement(cpu)
+                .with_worker_codec_requirements(),
+        )
         .await
         .unwrap();
 
@@ -189,15 +195,16 @@ async fn exact_backend_capability_claim_conformance(
                     &format!("{backend}-{index}"),
                     &format!("thread-{index}"),
                 ))
-                .with_placement(placement),
+                .with_placement(placement)
+                .with_worker_codec_requirements(),
             )
             .await
             .unwrap();
     }
 
     let worker = |id: &str, backend: &str| {
-        let mut manifest = worker_snapshot(id, "boot", 1).manifest;
-        manifest.capabilities.clear();
+        // A current Worker offering exactly one backend beside its wire codecs.
+        let mut manifest = awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest();
         manifest.capabilities.insert(backend.to_owned());
         WorkerSnapshot {
             identity: WorkerIdentity::new(id, "boot", 1),
@@ -248,12 +255,11 @@ async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
 }
 
 fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
-    // Placement/recovery rows vary capability and incarnation, not protocol.
-    // Explicit current support keeps those causes independently observable;
-    // default/legacy denial is covered by the protocol admission matrix.
-    let mut manifest = WorkerManifest::default();
-    manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    // Placement/recovery rows vary capability and incarnation, not protocol or
+    // wire codec. A current Worker (protocol and codecs) keeps those causes
+    // independently observable; default/legacy denial is covered by the
+    // protocol admission matrix and the codec rollout table.
+    let mut manifest = awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest();
     manifest.capabilities.insert("cpu".to_string());
     let capability_fingerprint = manifest.fingerprint().unwrap();
     WorkerSnapshot {
@@ -311,7 +317,8 @@ async fn policy_claim_conformance(
     store
         .enqueue(
             RunDispatch::new(activation_on("policy-run", "policy-thread"))
-                .with_placement(requirements),
+                .with_placement(requirements)
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
@@ -354,7 +361,9 @@ async fn replacement_policy_cannot_override_never_replace() {
     requirements.recovery = WorkerRecoveryMode::NeverReplace;
     store
         .enqueue(
-            RunDispatch::new(activation_on("pinned", "pinned-thread")).with_placement(requirements),
+            RunDispatch::new(activation_on("pinned", "pinned-thread"))
+                .with_placement(requirements)
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
@@ -408,7 +417,11 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
     never.required_capabilities.insert("cpu".to_string());
     never.recovery = WorkerRecoveryMode::NeverReplace;
     store
-        .enqueue(RunDispatch::new(activation_on("never", "never-thread")).with_placement(never))
+        .enqueue(
+            RunDispatch::new(activation_on("never", "never-thread"))
+                .with_placement(never)
+                .with_worker_codec_requirements(),
+        )
         .await
         .unwrap();
     let original = worker_snapshot("worker", "boot-a", 1);
@@ -443,7 +456,8 @@ async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
     store
         .enqueue(
             RunDispatch::new(activation_on("continuous", "continuous-thread"))
-                .with_placement(continuity),
+                .with_placement(continuity)
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
