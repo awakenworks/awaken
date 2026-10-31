@@ -10,6 +10,13 @@
 //! local proof deadline from the authority-provided TTL. Worker-incarnation and
 //! Run-claim supervisors share it so the two distinct aggregates cannot drift
 //! into different liveness arithmetic.
+//!
+//! It also owns the one renewal law both supervisors apply to every attempt
+//! (the Worker's initial heartbeat included): a renewal request may run for the
+//! whole remaining proof, a reply that arrives inside it is applied, an
+//! unanswered request is retried while proof remains, and only an exhausted
+//! proof or an explicit refusal ends local authority. Ending authority is never
+//! a durable cancellation; see [`AuthorityEnd`].
 
 use awaken_time::mono::Instant;
 use std::time::Duration;
@@ -54,6 +61,41 @@ impl AuthorityProofStarted {
     }
 }
 
+/// What one renewal request (a Worker heartbeat or a Run-claim renewal)
+/// returned to its supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewalReply {
+    /// The authority applied the renewal.
+    Applied,
+    /// The authority explicitly refused it: this owner no longer holds the lease.
+    Refused,
+    /// No answer: a transport error, or the request ran out of remaining proof.
+    Unanswered,
+}
+
+/// Why process-local authority ended. Neither cause is a durable cancellation:
+/// the supervisor stops and abandons the work bound to the lost authority
+/// without committing a terminal outcome for it, so the durable owner's
+/// recovery decides what happens to that work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityEnd {
+    /// The authority refused a renewal; another owner may already hold it.
+    AuthorityLost,
+    /// No renewal was applied before the conservative local proof ran out.
+    ProofExpired,
+}
+
+/// The supervisor's next step after one renewal reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewalDecision {
+    /// Apply the receipt, anchored at the request start.
+    Apply,
+    /// The previous proof still covers the work: retry after this delay.
+    RetryAfter(Duration),
+    /// Stop and abandon; never commit the bound work as cancelled.
+    Stop(AuthorityEnd),
+}
+
 /// Validated timing derived from one positive durable lease TTL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthorityLeaseTiming {
@@ -91,6 +133,10 @@ impl AuthorityLeaseTiming {
         self.renew_interval
     }
 
+    /// The nominal request budget: the bound for auxiliary requests (probes,
+    /// acknowledgements) and the delivery term of publication budgets. A
+    /// renewal that outlives it is slow, not lost; renewal requests are bounded
+    /// by [`Self::renewal_request_budget`] instead.
     #[must_use]
     pub const fn request_timeout(self) -> Duration {
         self.request_timeout
@@ -123,6 +169,36 @@ impl AuthorityLeaseTiming {
     ) -> Option<Duration> {
         let remaining = self.remaining_proof_after(started.elapsed_at(now)?);
         (!remaining.is_zero()).then_some(remaining)
+    }
+
+    /// How long one renewal request may run: the whole remaining proof, never
+    /// more than one proof window. A reply inside it can still be applied, so
+    /// cutting the request short would only discard a valid renewal. `None`
+    /// means the proof is exhausted and no request may be started.
+    #[must_use]
+    pub fn renewal_request_budget(self, remaining_proof: Duration) -> Option<Duration> {
+        (!remaining_proof.is_zero()).then_some(remaining_proof.min(self.proof_window))
+    }
+
+    /// The one renewal law, applied to `reply` with the previous proof's
+    /// remainder observed when the reply arrived.
+    ///
+    /// | Rule | Reply | Previous proof left | Decision |
+    /// | R1 | Applied | > 0 | Apply (a slow reply inside the proof counts) |
+    /// | R2 | Applied | 0 | Stop(ProofExpired) |
+    /// | R3 | Unanswered | > 0 | RetryAfter(min(retry delay, proof left)) |
+    /// | R4 | Unanswered | 0 | Stop(ProofExpired) |
+    /// | R5 | Refused | any | Stop(AuthorityLost) |
+    #[must_use]
+    pub fn decide_renewal(self, remaining_proof: Duration, reply: RenewalReply) -> RenewalDecision {
+        match reply {
+            RenewalReply::Refused => RenewalDecision::Stop(AuthorityEnd::AuthorityLost),
+            _ if remaining_proof.is_zero() => RenewalDecision::Stop(AuthorityEnd::ProofExpired),
+            RenewalReply::Applied => RenewalDecision::Apply,
+            RenewalReply::Unanswered => {
+                RenewalDecision::RetryAfter(self.retry_delay.min(remaining_proof))
+            }
+        }
     }
 }
 
@@ -180,6 +256,99 @@ mod tests {
                 timing.remaining_proof_at(started, now),
                 remaining_micros.map(Duration::from_micros)
             );
+        }
+    }
+
+    #[test]
+    fn a_renewal_request_may_use_the_whole_remaining_proof() {
+        // Cause: the previous proof's remainder when a renewal request starts
+        // (Worker heartbeat, initial heartbeat or Run-claim renewal).
+        // | Rule | TTL | proof left | budget |
+        // | B1 | 30_000ms | 20s (fresh) | 20s, not the 5s nominal request bound |
+        // | B2 | 30_000ms | 10s (regular renewal point) | 10s |
+        // | B3 | 30_000ms | 1us | 1us |
+        // | B4 | 30_000ms | 0 | None: no request may start |
+        // | B5 | 30_000ms | 25s (corrupt caller) | 20s, never past one proof window |
+        let timing = AuthorityLeaseTiming::from_ttl_ms(30_000);
+        for (rule, remaining, budget) in [
+            ("B1", Duration::from_secs(20), Some(Duration::from_secs(20))),
+            ("B2", Duration::from_secs(10), Some(Duration::from_secs(10))),
+            (
+                "B3",
+                Duration::from_micros(1),
+                Some(Duration::from_micros(1)),
+            ),
+            ("B4", Duration::ZERO, None),
+            ("B5", Duration::from_secs(25), Some(Duration::from_secs(20))),
+        ] {
+            assert_eq!(timing.renewal_request_budget(remaining), budget, "{rule}");
+        }
+        assert!(
+            timing
+                .renewal_request_budget(Duration::from_secs(20))
+                .unwrap()
+                > timing.request_timeout(),
+            "B1: the nominal request bound no longer cuts a renewal short"
+        );
+    }
+
+    #[test]
+    fn renewal_decision_table_is_exhaustive() {
+        // Every reply crossed with an exhausted, a tiny and a large previous
+        // proof (rows R1-R5 of `decide_renewal`). Fail-closed rows: R2, R4, R5.
+        // R1 is the slow-reply row: a reply after the 5s nominal bound with
+        // proof left is applied. R3 is the initial-heartbeat row: an
+        // unanswered first heartbeat with registration proof left retries.
+        let timing = AuthorityLeaseTiming::from_ttl_ms(30_000);
+        let tiny = Duration::from_millis(300);
+        let large = Duration::from_secs(14);
+        for (rule, reply, remaining, decision) in [
+            ("R1", RenewalReply::Applied, tiny, RenewalDecision::Apply),
+            ("R1", RenewalReply::Applied, large, RenewalDecision::Apply),
+            (
+                "R2",
+                RenewalReply::Applied,
+                Duration::ZERO,
+                RenewalDecision::Stop(AuthorityEnd::ProofExpired),
+            ),
+            (
+                "R3",
+                RenewalReply::Unanswered,
+                tiny,
+                RenewalDecision::RetryAfter(tiny),
+            ),
+            (
+                "R3",
+                RenewalReply::Unanswered,
+                large,
+                RenewalDecision::RetryAfter(Duration::from_secs(1)),
+            ),
+            (
+                "R4",
+                RenewalReply::Unanswered,
+                Duration::ZERO,
+                RenewalDecision::Stop(AuthorityEnd::ProofExpired),
+            ),
+            (
+                "R5",
+                RenewalReply::Refused,
+                Duration::ZERO,
+                RenewalDecision::Stop(AuthorityEnd::AuthorityLost),
+            ),
+            (
+                "R5",
+                RenewalReply::Refused,
+                tiny,
+                RenewalDecision::Stop(AuthorityEnd::AuthorityLost),
+            ),
+            (
+                "R5",
+                RenewalReply::Refused,
+                large,
+                RenewalDecision::Stop(AuthorityEnd::AuthorityLost),
+            ),
+        ] {
+            assert_eq!(timing.decide_renewal(remaining, reply), decision, "{rule}");
         }
     }
 

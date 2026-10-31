@@ -871,6 +871,7 @@ pub struct FlakyDispatchStore {
     depth_release: Option<Arc<tokio::sync::Semaphore>>,
     renewal_attempts: AtomicUsize,
     fail_renewals: AtomicUsize,
+    lost_renewal_responses: AtomicUsize,
     renewal_gate: Option<Arc<tokio::sync::Semaphore>>,
     renewal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     fail_retry_exhaustion_claims: AtomicUsize,
@@ -902,6 +903,7 @@ impl FlakyDispatchStore {
             depth_release: None,
             renewal_attempts: AtomicUsize::new(0),
             fail_renewals: AtomicUsize::new(0),
+            lost_renewal_responses: AtomicUsize::new(0),
             renewal_gate: None,
             renewal_response_gate: None,
             fail_retry_exhaustion_claims: AtomicUsize::new(0),
@@ -975,6 +977,13 @@ impl FlakyDispatchStore {
 
     pub fn with_renewal_failures(self, failures: usize) -> Self {
         self.fail_renewals.store(failures, Ordering::SeqCst);
+        self
+    }
+
+    /// Apply the next `lost` renewals in the store, then lose their responses
+    /// as an unavailable transport would.
+    pub fn with_lost_renewal_responses(self, lost: usize) -> Self {
+        self.lost_renewal_responses.store(lost, Ordering::SeqCst);
         self
     }
 
@@ -1066,6 +1075,17 @@ impl awaken_dispatch_contract::DispatchExecution for FlakyDispatchStore {
             ));
         }
         let result = self.inner.renew_lease(claim, lease_ms).await;
+        if self
+            .lost_renewal_responses
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(awaken_dispatch::DispatchError::Unavailable(
+                "injected lost renewal response".to_string(),
+            ));
+        }
         if let Some(gate) = &self.renewal_response_gate {
             gate.acquire()
                 .await

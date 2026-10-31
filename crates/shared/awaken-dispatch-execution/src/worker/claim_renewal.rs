@@ -137,7 +137,6 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
     let claim = claim.clone();
     let timing = AuthorityLeaseTiming::from_ttl_ms(lease_ms);
     let interval = timing.renew_interval();
-    let request_timeout = timing.request_timeout();
     let retry_delay = timing.retry_delay();
     // Stop locally before another node may legitimately recover the lease. This
     // is a conservative proof window, not a second durable expiry authority.
@@ -168,9 +167,14 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                 }
                 _ = tokio::time::sleep_until(next_attempt) => {
                     let attempt_started = mono::now();
-                    let attempt_timeout = request_timeout.min(
+                    // A renewal may run for the whole remaining proof: a slow
+                    // reply inside it still renews the claim. An exhausted
+                    // proof starts no request; the deadline arm above ends it.
+                    let Some(attempt_timeout) = timing.renewal_request_budget(
                         proof_deadline.saturating_duration_since(attempt_started),
-                    );
+                    ) else {
+                        continue;
+                    };
                     while next_regular_renewal <= attempt_started {
                         next_regular_renewal += interval;
                     }

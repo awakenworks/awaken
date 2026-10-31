@@ -1626,8 +1626,9 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
     // H1 receipt is released only after the deregistration request reaches the
     // fixture, rather than by guessing when the client request timer expires. Remote
     // delivery before cancellation is allowed; it cannot revive the local task.
-    // The bounded startup request now expires BEFORE the delayed receipt can
-    // be installed. This HTTP row owns timeout/withdrawal ordering, not receipt
+    // The startup request is bounded by the remaining registration proof and
+    // expires BEFORE the delayed receipt can be installed; no retry follows
+    // because that proof is exhausted. This HTTP row owns timeout/withdrawal ordering, not receipt
     // arithmetic (the WorkerAuthorityProof decision table owns that boundary).
     for cancelled in [false, true] {
         // H1 owns a genuinely expired receipt; H2 owns cancellation while a
