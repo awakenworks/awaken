@@ -5,8 +5,10 @@ use std::{
     io,
     mem::{MaybeUninit, size_of},
     os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
+
+use awaken_sync::InvariantLock;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -22,7 +24,7 @@ mod members;
 #[derive(Debug)]
 struct JobOwner {
     handle: OwnedHandle,
-    termination: Mutex<Option<io::Result<members::Members>>>,
+    termination: InvariantLock<Option<io::Result<members::Members>>>,
 }
 
 fn copy_error(error: &io::Error) -> io::Error {
@@ -63,7 +65,7 @@ impl Job {
         }
         Ok(Self(Arc::new(JobOwner {
             handle,
-            termination: Mutex::new(None),
+            termination: InvariantLock::new(None),
         })))
     }
 

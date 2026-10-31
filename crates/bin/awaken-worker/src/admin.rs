@@ -164,7 +164,7 @@ mod tests {
             authority: Default::default(),
             roles: awaken_session_executor::WorkerRoles::of(
                 &host,
-                awaken_session_run_delivery::SessionApplications::Standalone,
+                awaken_session_execution_contract::SessionApplications::Standalone,
             )
             .unwrap(),
             control: awaken_coordinator_client::WorkerControlClient::new(

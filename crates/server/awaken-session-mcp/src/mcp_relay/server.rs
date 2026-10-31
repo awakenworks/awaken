@@ -51,20 +51,24 @@ impl RelayServer {
             axum::serve(listener, app)
                 .with_graceful_shutdown(async move {
                     shutdown.cancelled().await;
+                    // A poisoned route map serves no request (`forward`
+                    // refuses it), so there is no call to wait for.
                     let fences = routes
                         .lock()
-                        .expect("MCP relay routes mutex poisoned")
-                        .values()
-                        .map(|route| route.call_fence.clone())
-                        .collect::<Vec<_>>();
+                        .map(|routes| {
+                            routes
+                                .values()
+                                .map(|route| route.call_fence.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
                     futures_util::future::join_all(
                         fences.iter().map(|fence| fence.close_and_wait()),
                     )
                     .await;
-                    routes
-                        .lock()
-                        .expect("MCP relay routes mutex poisoned")
-                        .clear();
+                    if let Ok(mut routes) = routes.lock() {
+                        routes.clear();
+                    }
                 })
                 .await
         });

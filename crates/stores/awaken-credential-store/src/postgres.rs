@@ -1178,7 +1178,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map(|row| {
             let Json(intent): Json<CredentialMutationIntent> =
                 row.try_get("data").map_err(storage)?;
-            Ok(intent)
+            Ok::<_, CredentialError>(intent)
         })
         .transpose()?;
         if let Some(durable) = durable {
@@ -1200,7 +1200,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?
         .map(|row| {
             let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok(source)
+            Ok::<_, CredentialError>(source)
         })
         .transpose()?;
         let before_matches = if intent.is_distinct_replacement() {
@@ -1218,7 +1218,7 @@ impl CredentialRepo for PostgresCredentialRepo {
             .map_err(storage)?
             .map(|row| {
                 let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-                Ok(source)
+                Ok::<_, CredentialError>(source)
             })
             .transpose()?;
             current_after.is_none() && current_before.as_ref() == Some(before)
@@ -1326,7 +1326,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?
         .map(|row| {
             let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok(source)
+            Ok::<_, CredentialError>(source)
         })
         .transpose()?;
         let current_before = if let Some(before) = intent
@@ -1343,7 +1343,7 @@ impl CredentialRepo for PostgresCredentialRepo {
             .map_err(storage)?
             .map(|row| {
                 let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-                Ok(source)
+                Ok::<_, CredentialError>(source)
             })
             .transpose()?
         } else {
@@ -1449,7 +1449,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map(|row| {
             let Json(intent): Json<CredentialMutationIntent> =
                 row.try_get("data").map_err(storage)?;
-            Ok(intent)
+            Ok::<_, CredentialError>(intent)
         })
         .transpose()?;
         // Successful claim already requires Writing; full snapshot equality
@@ -1496,7 +1496,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?
         .map(|row| {
             let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok(source)
+            Ok::<_, CredentialError>(source)
         })
         .transpose()?;
         let abort = intent.admit_abort(&durable, current_after.as_ref())?;
@@ -1528,7 +1528,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map(|row| {
             let Json(intent): Json<CredentialMutationIntent> =
                 row.try_get("data").map_err(storage)?;
-            Ok(intent)
+            Ok::<_, CredentialError>(intent)
         })
         .transpose()?;
         let Some(durable) = durable else {
@@ -1543,7 +1543,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?
         .map(|row| {
             let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok(source)
+            Ok::<_, CredentialError>(source)
         })
         .transpose()?;
         intent.admit_completion(&durable, current_after.as_ref())?;

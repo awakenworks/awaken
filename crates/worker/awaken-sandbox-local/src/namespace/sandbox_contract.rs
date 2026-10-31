@@ -35,11 +35,7 @@ impl pc::Sandbox for NamespaceSandbox {
                     realization_fingerprint: realization.fingerprint().clone(),
                     effect_fence: realization.effect_fence().clone(),
                     physical_incarnation: realization.physical_incarnation().to_owned(),
-                    owned_paths: self
-                        .owned_paths
-                        .lock()
-                        .expect("owned paths lock poisoned")
-                        .clone(),
+                    owned_paths: self.owned_paths.lock().clone(),
                 },
             )
             .with_memory_materializations(
@@ -95,7 +91,7 @@ impl pc::Sandbox for NamespaceSandbox {
             .release_unconfirmed(|| self.require_root_identity().map(|_| ()))
             .await?;
         let (destination_exists, live_memory_exists) = {
-            let layout = self.layout.read().expect("namespace layout lock poisoned");
+            let layout = self.layout.read().map_err(layout_poisoned)?;
             (
                 layout.iter().any(|mount| mount.dest == req.mount_path),
                 layout.iter().any(|mount| {
@@ -137,7 +133,7 @@ impl pc::Sandbox for NamespaceSandbox {
                 self.memory_materializations.lock().map_err(|_| {
                     pc::SandboxError::backend("attach", "Memory materializations lock poisoned")
                 })?;
-            let mut layout = self.layout.write().expect("namespace layout lock poisoned");
+            let mut layout = self.layout.write().map_err(layout_poisoned)?;
             layout.retain(|mount| mount.dest != req.mount_path);
             layout.push(rendered);
             if let Some(materialization) = materialization {
@@ -171,7 +167,7 @@ impl pc::Sandbox for NamespaceSandbox {
             0o600,
         )
         .map_err(|error| pc::SandboxError::backend("attach", error))?;
-        let mut layout = self.layout.write().expect("namespace layout lock poisoned");
+        let mut layout = self.layout.write().map_err(layout_poisoned)?;
         layout.retain(|mount| mount.dest != req.mount_path);
         layout.push(RenderMount {
             host,

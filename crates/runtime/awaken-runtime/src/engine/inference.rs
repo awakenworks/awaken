@@ -808,31 +808,31 @@ impl DeltaSink for ResponseConsumerSink<'_> {
 
 struct ContinuationSink<'a> {
     inner: &'a dyn DeltaSink,
-    text: std::sync::Mutex<String>,
-    tools: std::sync::Mutex<Vec<PartialToolCall>>,
+    text: awaken_sync::LeafLock<String>,
+    tools: awaken_sync::LeafLock<Vec<PartialToolCall>>,
 }
 
 impl<'a> ContinuationSink<'a> {
     fn new(inner: &'a dyn DeltaSink) -> Self {
         Self {
             inner,
-            text: std::sync::Mutex::new(String::new()),
-            tools: std::sync::Mutex::new(Vec::new()),
+            text: awaken_sync::LeafLock::new(String::new()),
+            tools: awaken_sync::LeafLock::new(Vec::new()),
         }
     }
 
     /// The current attempt's captured partial.
     fn snapshot(&self) -> Snapshot {
         Snapshot {
-            text: self.text.lock().expect("continuation buffer").clone(),
-            tools: self.tools.lock().expect("continuation tools").clone(),
+            text: self.text.lock().clone(),
+            tools: self.tools.lock().clone(),
         }
     }
 
     /// Reset per-attempt capture before a fresh attempt streams.
     fn reset(&self) {
-        self.text.lock().expect("continuation buffer").clear();
-        self.tools.lock().expect("continuation tools").clear();
+        self.text.lock().clear();
+        self.tools.lock().clear();
     }
 }
 
@@ -840,10 +840,7 @@ impl<'a> ContinuationSink<'a> {
 impl DeltaSink for ContinuationSink<'_> {
     async fn on_text(&self, chunk: &str) {
         // Guard drops at the statement end, never held across the await below.
-        self.text
-            .lock()
-            .expect("continuation buffer")
-            .push_str(chunk);
+        self.text.lock().push_str(chunk);
         self.inner.on_text(chunk).await;
     }
 
@@ -856,7 +853,7 @@ impl DeltaSink for ContinuationSink<'_> {
         // per call id to rebuild the running raw JSON — a later parse decides whether
         // the call had finished when a mid-stream drop lands mid-arguments.
         {
-            let mut tools = self.tools.lock().expect("continuation tools");
+            let mut tools = self.tools.lock();
             match tools.iter_mut().find(|t| t.call_id == call_id) {
                 Some(existing) => {
                     existing.tool_id = tool_id.to_string();

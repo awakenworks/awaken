@@ -29,7 +29,6 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -38,6 +37,7 @@ use awaken_mcp_wire::{
     CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult,
     ListToolsResult, McpTask, McpToolDefinition, TaskIdParams, TaskMetadata,
 };
+use awaken_sync::{LeafLock, LeafRwLock};
 use futures::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -89,7 +89,7 @@ pub struct McpHttpFailure {
 /// without a trace never reads a failed response's body.
 #[derive(Debug, Default)]
 pub struct McpRequestTrace {
-    state: Mutex<(Option<String>, Option<McpHttpFailure>)>,
+    state: LeafLock<(Option<String>, Option<McpHttpFailure>)>,
 }
 
 impl McpRequestTrace {
@@ -100,13 +100,13 @@ impl McpRequestTrace {
 
     /// The JSON-RPC method of the most recent request attempted.
     pub fn last_method(&self) -> Option<String> {
-        self.state.lock().unwrap().0.clone()
+        self.state.lock().0.clone()
     }
 
     /// The HTTP response that ended the most recent request, when it failed
     /// with one. `None` when it succeeded or failed without a response.
     pub fn last_failure(&self) -> Option<McpHttpFailure> {
-        self.state.lock().unwrap().1.clone()
+        self.state.lock().1.clone()
     }
 
     fn attempt(&self, body: &Value) {
@@ -114,11 +114,11 @@ impl McpRequestTrace {
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        *self.state.lock().unwrap() = (method, None);
+        *self.state.lock() = (method, None);
     }
 
     fn fail(&self, failure: McpHttpFailure) {
-        self.state.lock().unwrap().1 = Some(failure);
+        self.state.lock().1 = Some(failure);
     }
 }
 
@@ -164,7 +164,7 @@ struct HttpShared {
     url: String,
     /// Rotatable: `set_credential` and a successful refresh replace it in
     /// place, so in-flight retries and the SSE listener pick up the new value.
-    credential: RwLock<Credential>,
+    credential: LeafRwLock<Credential>,
     /// Custom headers sent on every request, alongside the credential header.
     headers: Vec<(String, String)>,
     /// Host hook consulted once per 401/403 before the failure is surfaced.
@@ -175,7 +175,7 @@ struct HttpShared {
     control_request_timeout: Duration,
     /// Independently bounded deadline for effectful `tools/call` requests.
     tool_call_timeout: Duration,
-    session_id: Mutex<Option<String>>,
+    session_id: LeafLock<Option<String>>,
     sinks: Arc<NotificationSinks>,
     request_handler: Option<Arc<dyn ServerRequestHandler>>,
     /// JSON-RPC responses may arrive on the standalone GET stream rather than
@@ -211,12 +211,12 @@ impl HttpShared {
             }
             request = request.header(name, value);
         }
-        if let Some((name, value)) = self.credential.read().unwrap().header()
+        if let Some((name, value)) = self.credential.read().header()
             && !is_runtime_identity_header(&name)
         {
             request = request.header(name, value);
         }
-        if let Some(session) = self.session_id.lock().unwrap().clone() {
+        if let Some(session) = self.session_id.lock().clone() {
             request = request.header(SESSION_HEADER, session);
         }
         with_runtime_execution_header(request, &self.url)
@@ -248,7 +248,7 @@ impl HttpShared {
         };
         match refresher.refresh(challenge).await {
             Some(fresh) => {
-                *self.credential.write().unwrap() = fresh;
+                *self.credential.write() = fresh;
                 true
             }
             None => false,
@@ -261,7 +261,7 @@ impl HttpShared {
             .get(SESSION_HEADER)
             .and_then(|v| v.to_str().ok())
         {
-            *self.session_id.lock().unwrap() = Some(session.to_string());
+            *self.session_id.lock() = Some(session.to_string());
         }
     }
 
@@ -560,13 +560,13 @@ impl HttpTransportBuilder {
             shared: Arc::new(HttpShared {
                 client: http_client_for(&self.url),
                 url: self.url,
-                credential: RwLock::new(self.credential),
+                credential: LeafRwLock::new(self.credential),
                 headers: self.headers,
                 refresher: self.refresher,
                 trace: self.trace,
                 control_request_timeout: self.control_request_timeout,
                 tool_call_timeout: self.tool_call_timeout,
-                session_id: Mutex::new(None),
+                session_id: LeafLock::new(None),
                 sinks: Arc::new(NotificationSinks::new()),
                 request_handler: handler,
                 pending_responses: tokio::sync::Mutex::new(HashMap::new()),
@@ -576,7 +576,7 @@ impl HttpTransportBuilder {
             }),
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
-            listener: Mutex::new(None),
+            listener: LeafLock::new(None),
         }
     }
 
@@ -621,12 +621,12 @@ pub struct HttpTransport {
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
     /// Background GET SSE listener; aborted on drop.
-    listener: Mutex<Option<JoinHandle<()>>>,
+    listener: LeafLock<Option<JoinHandle<()>>>,
 }
 
 impl Drop for HttpTransport {
     fn drop(&mut self) {
-        if let Some(handle) = self.listener.lock().unwrap().take() {
+        if let Some(handle) = self.listener.lock().take() {
             handle.abort();
         }
     }
@@ -669,7 +669,7 @@ impl HttpTransport {
     /// Replace the credential used from the next request on — the host calls
     /// this when its vault rotates a token outside the 401 path.
     pub fn set_credential(&self, credential: Credential) {
-        *self.shared.credential.write().unwrap() = credential;
+        *self.shared.credential.write() = credential;
     }
 
     fn spawn_listener(&self) {
@@ -677,7 +677,7 @@ impl HttpTransport {
         let handle = tokio::spawn(async move {
             listen(shared).await;
         });
-        *self.listener.lock().unwrap() = Some(handle);
+        *self.listener.lock() = Some(handle);
     }
 
     async fn initialize(&self) -> Result<(), McpTransportError> {
@@ -969,6 +969,7 @@ impl McpToolTransport for HttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn request_body_is_jsonrpc_2() {

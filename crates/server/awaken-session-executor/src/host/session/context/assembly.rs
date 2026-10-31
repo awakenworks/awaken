@@ -295,7 +295,7 @@ pub(super) async fn assemble(
         Arc::new(
             crate::application::attempt_context::SessionContextAttemptExecutor::new(
                 attempt_executor,
-                Arc::downgrade(&host.installed_sessions),
+                &host.installed_sessions,
                 thread,
                 host.clock.clone(),
             ),
@@ -323,7 +323,7 @@ pub(super) async fn assemble(
     let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
         Arc::new(crate::run_exec::ArtifactHarvestAttemptExecutor::new(
             attempt_executor,
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         ));
     // The foreground delivery seam (slice C/D): a Run's execution goes through
     // the selected delivery path rather than calling the Runtime loop directly. Direct

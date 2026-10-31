@@ -17,6 +17,7 @@ name = "awaken-scenario-host"
 path = "src/main.rs"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-tool-relay.workspace = true
 awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
@@ -169,6 +170,7 @@ awaken-run-executor-a2a = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-session-application-contract.workspace = true
+awaken-session-execution-contract.workspace = true
 awaken-store-inmem = { workspace = true }
 awaken-webhook = { workspace = true, features = ["test-support"] }
 awaken-worker-contract = { workspace = true }

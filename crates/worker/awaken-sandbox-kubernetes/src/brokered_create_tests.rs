@@ -95,7 +95,7 @@ async fn create_admission_modes_cannot_overlap_or_switch_after_first_direct_effe
         "A2 provider ledger owns admission"
     );
     assert!(
-        brokered.creation_attempts.lock().unwrap().is_empty(),
+        brokered.creation_attempts.lock().is_empty(),
         "A2 no parallel gate"
     );
 }

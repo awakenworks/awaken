@@ -8,8 +8,8 @@
 //! `awaken-environment-contract`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -21,13 +21,14 @@ use awaken_environment_contract::{
     EnvironmentStoreError,
 };
 
+use awaken_sync::{InvariantLock, LeafLock};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
 
 pub struct InMemoryEnvRegistry {
-    state: Mutex<InMemoryEnvRegistryState>,
+    state: InvariantLock<InMemoryEnvRegistryState>,
     fail_acknowledgements: AtomicUsize,
-    intent_filters: Mutex<Vec<EnvironmentRegistrationIntentFilter>>,
+    intent_filters: LeafLock<Vec<EnvironmentRegistrationIntentFilter>>,
     /// The one source of every observation timestamp this reference registry
     /// writes — the same seam the durable siblings carry.
     clock: Arc<dyn WallClock>,
@@ -48,9 +49,9 @@ impl InMemoryEnvRegistry {
     #[must_use]
     pub fn new(clock: Arc<dyn WallClock>) -> Self {
         Self {
-            state: Mutex::new(InMemoryEnvRegistryState::default()),
+            state: InvariantLock::new(InMemoryEnvRegistryState::default()),
             fail_acknowledgements: AtomicUsize::new(0),
-            intent_filters: Mutex::new(Vec::new()),
+            intent_filters: LeafLock::new(Vec::new()),
             clock,
         }
     }
@@ -63,7 +64,7 @@ impl InMemoryEnvRegistry {
     /// Test-support observation of startup `All` versus steady-state `Pending`.
     #[must_use]
     pub fn registration_intent_filters(&self) -> Vec<EnvironmentRegistrationIntentFilter> {
-        self.intent_filters.lock().unwrap().clone()
+        self.intent_filters.lock().clone()
     }
 
     fn state(
@@ -270,12 +271,7 @@ impl EnvironmentRegistrationOutbox for InMemoryEnvRegistry {
         &self,
         filter: EnvironmentRegistrationIntentFilter,
     ) -> Result<Vec<EnvironmentRegistrationIntent>, EnvironmentStoreError> {
-        self.intent_filters
-            .lock()
-            .map_err(|_| {
-                EnvironmentStoreError::Backend("Environment intent filter mutex poisoned".into())
-            })?
-            .push(filter);
+        self.intent_filters.lock().push(filter);
         Ok(self
             .state()?
             .intents

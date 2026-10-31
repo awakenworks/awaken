@@ -582,7 +582,6 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
     let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
@@ -646,7 +645,6 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__slow_reap_hand".into(), Vec::new());
     let environment = Arc::new(
         SandboxEnvironmentProvider::container(
@@ -709,7 +707,6 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
     let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
@@ -809,7 +806,6 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__slow_reap_hand".into(), Vec::new());
     let environment = Arc::new(
         SandboxEnvironmentProvider::container(
@@ -952,7 +948,6 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     failed_provider
         .shared
         .lock()
-        .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
     let failed = SandboxEnvironmentProvider::container_with_hand_idle(
         failed_provider.clone(),
@@ -1119,7 +1114,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         "fixture",
     ]);
 
-    let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let shared = Arc::new(awaken_sync::LeafLock::new(std::collections::HashMap::new()));
     let container = FakeContainer {
         handle: current_fake_container_handle(&spec()),
         disposals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -1157,11 +1152,10 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
             .to_string()
             .contains("current providers require")
     );
-    assert!(shared.lock().unwrap().is_empty(), "E1 no container effect");
+    assert!(shared.lock().is_empty(), "E1 no container effect");
 
     shared
         .lock()
-        .unwrap()
         .insert("__fail_repository_import".into(), Vec::new());
     let import_plan = pc::RepositoryRealizationPlan {
         repository_id: "repo".into(),
@@ -1189,7 +1183,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
     );
 
     {
-        let mut state = shared.lock().unwrap();
+        let mut state = shared.lock();
         state.remove("__fail_repository_import");
         state.insert("__fail_repository_export".into(), Vec::new());
     }
@@ -1233,7 +1227,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
     // | R8 | 42 | canonical different local HEAD | Rejected(LocalCommitMismatch) |
     let third = "3".repeat(40);
     {
-        let mut state = shared.lock().unwrap();
+        let mut state = shared.lock();
         state.remove("__fail_repository_export");
         state.insert(
             "__repository_export_observation".into(),
@@ -1257,7 +1251,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         ) if observed_commit == third
     ));
     {
-        let mut state = shared.lock().unwrap();
+        let mut state = shared.lock();
         state.insert(
             "__repository_export_observation".into(),
             format!("LOCAL:{third}\n").into_bytes(),
@@ -1414,14 +1408,13 @@ async fn terminal_recovery_observation_failures_and_timeouts_retain_the_same_bin
         provider
             .shared
             .lock()
-            .unwrap()
             .insert("__fail_dispose".into(), Vec::new());
         assert!(
             environment.lifecycle().dispose().await.is_err(),
             "RS4 provider failure"
         );
         assert!(hand.has_tracked_binding().await, "RS4 no premature forget");
-        provider.shared.lock().unwrap().remove("__fail_dispose");
+        provider.shared.lock().remove("__fail_dispose");
         environment.lifecycle().dispose().await.unwrap();
         assert!(
             !hand.has_tracked_binding().await,

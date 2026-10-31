@@ -210,7 +210,7 @@ mod tests {
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
         });
-        assert!(state.list_sessions().is_empty(), "D2 cold cache");
+        assert!(state.list_sessions().unwrap().is_empty(), "D2 cold cache");
         let replayed = state
             .create_deployment_session_with_initial_events(
                 "deployment-run-receipt",
@@ -232,7 +232,7 @@ mod tests {
         assert_eq!(replayed.id, created.id, "D2/E2");
         assert_eq!(replayed.title, created.title, "D2/E2");
         assert_eq!(replayed.status, created.status, "D2/E2");
-        assert_eq!(state.list_sessions().len(), 1, "D2/E2");
+        assert_eq!(state.list_sessions().unwrap().len(), 1, "D2/E2");
 
         for (rule, owner, launch) in [
             ("D3", "workspace-a", "launch-b"),

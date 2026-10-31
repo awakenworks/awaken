@@ -44,7 +44,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
     assert_eq!(error.code, "mcp_stale_ownership");
     assert!(host.run_assembly.mcp_projection(&generation).is_none());
     assert!(
-        seen.lock().unwrap().is_empty(),
+        seen.lock().is_empty(),
         "unknown assignment cannot enter transport I/O"
     );
 
@@ -59,7 +59,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         .expect("original direct projection");
     assert_eq!(projection.receipt, direct);
     assert!(projection.server.is_some());
-    let requests_before = seen.lock().unwrap().len();
+    let requests_before = seen.lock().len();
     assert_eq!(
         managed
             .run_assembly
@@ -70,7 +70,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         "mcp_stale_ownership"
     );
     assert_eq!(
-        seen.lock().unwrap().len(),
+        seen.lock().len(),
         requests_before,
         "an existing projection grants no assigned-root fallback"
     );
@@ -101,7 +101,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
         direct
     );
     assert_eq!(
-        seen.lock().unwrap().len(),
+        seen.lock().len(),
         requests_before,
         "exact replay retains the original transport"
     );
@@ -134,7 +134,7 @@ async fn assigned_staging_requires_a_root_and_direct_assertions_never_override_a
             .code,
         "mcp_stale_ownership"
     );
-    assert_eq!(seen.lock().unwrap().len(), requests_before);
+    assert_eq!(seen.lock().len(), requests_before);
     assert_eq!(
         host.run_assembly
             .mcp_projection(&generation)

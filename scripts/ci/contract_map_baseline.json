@@ -1,7 +1,7 @@
 {
   "$comment": "Shrink-only ratchet of scripts/ci/_contract_map_fitness.py (ADR-0091). Numbers may only fall; write it with `python3 scripts/ci/_contract_map_fitness.py --write-baseline`; raising one needs --reason, kept in growth_reasons.",
   "contract-crates": {
-    "contract crates": 30
+    "contract crates": 31
   },
   "optional-role": {
     "AcpToolExporter::attached_channels": 1,
@@ -123,6 +123,9 @@
     "SourceDisposedReceipt": 4
   },
   "growth_reasons": {
+    "contract-crates": {
+      "contract crates": "{\"reason\": \"awaken-sync is the depth-0 leaf that owns the lock-poisoning law (docs/design/lock-poisoning.md); contract crates hold locks, so it takes the contract layer\", \"approved_by\": \"architecture plan v5 item V2, user-confirmed 2026-10-31\", \"date\": \"2026-10-31\", \"remove_when\": \"std::sync::nonpoison is stable and the invariant half moves into an existing SDK contract\"}"
+    },
     "foreign-persistence-port": {
       "SandboxCheckpointStore <- awaken-session-realization": "R extraction onto main822: move existing SandboxCheckpointStore byte-custody use into the canonical resource component; Host still names its existing assembly/provider method arguments. Record that exact usage instead of claiming debt removal. Incoming main MemoryExecutionContent and narrow Memory roles are preserved; the former MemoryRepository trait/usage records stay deleted, with no compatibility route."
     },

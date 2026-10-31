@@ -14,7 +14,7 @@
 //! (ADR-0036 D2/D7).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -22,6 +22,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_sync::LeafLock;
 use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool, parse_tool_args_or_error_output,
 };
@@ -37,7 +38,7 @@ use crate::spec::{SkillContext, SkillSpec, truncate_chars};
 /// `list_skills` tool reads them. Cheap to clone (shared handle).
 #[derive(Clone, Default)]
 pub struct PathActivations {
-    touched: Arc<Mutex<BTreeSet<String>>>,
+    touched: Arc<LeafLock<BTreeSet<String>>>,
 }
 
 impl PathActivations {
@@ -47,17 +48,12 @@ impl PathActivations {
 
     /// Record a touched path.
     pub fn record(&self, path: impl Into<String>) {
-        if let Ok(mut set) = self.touched.lock() {
-            set.insert(path.into());
-        }
+        self.touched.lock().insert(path.into());
     }
 
     /// The paths touched so far.
     pub fn touched(&self) -> Vec<String> {
-        self.touched
-            .lock()
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default()
+        self.touched.lock().iter().cloned().collect()
     }
 }
 
@@ -93,7 +89,7 @@ pub struct RecordingGate {
 /// by an earlier layer.
 #[derive(Clone, Default)]
 pub struct ActiveSkillTools {
-    layers: Arc<Mutex<Vec<BTreeSet<String>>>>,
+    layers: Arc<LeafLock<Vec<BTreeSet<String>>>>,
 }
 
 impl ActiveSkillTools {
@@ -105,19 +101,15 @@ impl ActiveSkillTools {
         if patterns.is_empty() {
             return;
         }
-        if let Ok(mut layers) = self.layers.lock() {
-            layers.push(patterns.iter().cloned().collect());
-        }
+        self.layers.lock().push(patterns.iter().cloned().collect());
     }
 
     pub fn allows(&self, tool_id: &str) -> bool {
-        self.layers.lock().is_ok_and(|layers| {
-            layers.iter().all(|layer| {
-                layer.iter().any(|pattern| {
-                    glob::Pattern::new(pattern)
-                        .map(|pattern| pattern.matches(tool_id))
-                        .unwrap_or(false)
-                })
+        self.layers.lock().iter().all(|layer| {
+            layer.iter().any(|pattern| {
+                glob::Pattern::new(pattern)
+                    .map(|pattern| pattern.matches(tool_id))
+                    .unwrap_or(false)
             })
         })
     }

@@ -27,7 +27,6 @@
 //! glob from drifting apart.
 
 use std::collections::BTreeSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_provisioning_contract as pc;
@@ -279,7 +278,7 @@ impl DisposalSeal {
 #[derive(Default)]
 pub(crate) struct ExecAttempts {
     state: AtomicU64,
-    orphaned: Mutex<BTreeSet<String>>,
+    orphaned: awaken_sync::LeafLock<BTreeSet<String>>,
 }
 
 impl ExecAttempts {
@@ -375,31 +374,20 @@ impl ExecAttempts {
     /// an [`pc::EffectClaim::in_process`] retention, so it runs exactly when a
     /// spawn was dropped unsettled.
     pub(crate) fn retain_orphan(&self, attempt: String) {
-        self.orphaned
-            .lock()
-            .expect("exec attempt record mutex")
-            .insert(attempt);
+        self.orphaned.lock().insert(attempt);
     }
 
     /// The attempts currently on record as orphaned.
     #[cfg(test)]
     pub(crate) fn orphaned(&self) -> Vec<String> {
-        self.orphaned
-            .lock()
-            .expect("exec attempt record mutex")
-            .iter()
-            .cloned()
-            .collect()
+        self.orphaned.lock().iter().cloned().collect()
     }
 
     /// Forget the record after the container reaped. Reaping is by enumeration
     /// of the container's own pid files, so it covers every orphan at once;
     /// clearing the whole set is the honest projection of that.
     pub(crate) fn clear_orphans(&self) {
-        self.orphaned
-            .lock()
-            .expect("exec attempt record mutex")
-            .clear();
+        self.orphaned.lock().clear();
     }
 }
 

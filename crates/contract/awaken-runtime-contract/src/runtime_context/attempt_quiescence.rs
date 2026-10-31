@@ -5,7 +5,8 @@
 //! barrier closes entry and retains unknown evidence without asserting a
 //! remote provider stopped.
 
-use std::sync::{Arc, Mutex};
+use awaken_sync::LeafLock;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tokio_util::task::task_tracker::TaskTrackerToken;
@@ -20,7 +21,7 @@ const fn return_is_confirmed(active: usize, uncertain: bool) -> bool {
 #[derive(Default)]
 struct Barrier {
     tasks: TaskTracker,
-    entry: Mutex<()>,
+    entry: LeafLock<()>,
     uncertainty: CancellationToken,
     model_result_unknown: CancellationToken,
 }
@@ -83,7 +84,7 @@ impl AttemptQuiescence {
         response_only: bool,
     ) -> T {
         let participant = {
-            let _entry = self.barrier.entry.lock().expect("attempt barrier poisoned");
+            let _entry = self.barrier.entry.lock();
             entry_is_open(self.barrier.tasks.is_closed()).then(|| self.barrier.tasks.token())
         };
         // Reject outside the mutex; stale entry cannot poison an old barrier.
@@ -143,7 +144,7 @@ impl AttemptQuiescence {
     /// TaskTracker and CancellationToken own wake-up correctness.
     pub async fn close_and_wait(&self) -> bool {
         {
-            let _entry = self.barrier.entry.lock().expect("attempt barrier poisoned");
+            let _entry = self.barrier.entry.lock();
             self.barrier.tasks.close();
         }
         tokio::select! {

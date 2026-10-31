@@ -18,9 +18,11 @@
 //! workspace reset and is deliberately out of scope.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use awaken_sync::{InvariantLock, LeafLock};
 
 use awaken_time::mono::{self, Instant};
 
@@ -93,6 +95,11 @@ struct WarmScope {
     leased: bool,
 }
 
+/// A poisoned ready set refuses the operation that needed it.
+fn warm_poisoned(poisoned: awaken_sync::LockPoisoned) -> pc::SandboxError {
+    pc::SandboxError::backend("warm pool", poisoned)
+}
+
 fn mint_warm_scope(
     leases: Option<&WarmLeaseLedger>,
     incarnation: &str,
@@ -132,12 +139,15 @@ async fn retire<R: ContainerRuntime + 'static>(
 /// reports running.
 async fn renew_capacity<R: ContainerRuntime + 'static>(
     leases: &WarmLeaseLedger,
-    warm: &Mutex<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>,
+    warm: &InvariantLock<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>,
     inner: &ContainerProvider<R>,
 ) {
     let lost = leases.renew_held();
     let probes = {
-        let mut map = warm.lock().expect("warm pool mutex");
+        // A poisoned ready set is never handed out again: skip this round.
+        let Ok(mut map) = warm.lock() else {
+            return;
+        };
         let mut probes = Vec::new();
         for entry in map.values_mut() {
             // A lost record belongs to the reclaimer that claimed it; this pool
@@ -157,7 +167,9 @@ async fn renew_capacity<R: ContainerRuntime + 'static>(
             continue;
         }
         let vanished = {
-            let mut map = warm.lock().expect("warm pool mutex");
+            let Ok(mut map) = warm.lock() else {
+                return;
+            };
             map.values_mut().find_map(|entry| {
                 let index = entry.ready.iter().position(|sandbox| sandbox.id == scope)?;
                 Some(entry.ready.remove(index))
@@ -218,10 +230,10 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     size: usize,
     total_size: usize,
     idle_ttl: Duration,
-    warm: Arc<Mutex<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>>,
+    warm: Arc<InvariantLock<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>>,
     /// Serialize explicit startup warmup per exact shape. Adaptive replenishment
     /// still remains off-path; its cap check disposes any concurrent excess.
-    prewarm_gates: Mutex<HashMap<pc::SandboxCapacityShapeId, Arc<tokio::sync::Mutex<()>>>>,
+    prewarm_gates: LeafLock<HashMap<pc::SandboxCapacityShapeId, Arc<tokio::sync::Mutex<()>>>>,
     /// Set by [`shutdown`](Self::shutdown) so in-flight replenishment stops adding
     /// containers after the drain — otherwise a replenish that lands mid-drain would
     /// leak a warm container past teardown.
@@ -235,7 +247,7 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     /// dropped unsettled. A create that returned — `Ok` or `Err` — settles and
     /// never records, because a returned container is in hand and a returned
     /// error owns whatever it half-created.
-    unreceipted_scopes: Arc<Mutex<BTreeSet<String>>>,
+    unreceipted_scopes: Arc<LeafLock<BTreeSet<String>>>,
     /// This pool's incarnation, mixed into every warm scope. See
     /// [`next_warm_scope`].
     incarnation: String,
@@ -243,7 +255,7 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     /// [`Self::with_capacity_leases`].
     leases: Option<Arc<WarmLeaseLedger>>,
     /// The renewal/reclamation loop, stopped at the end of [`Self::shutdown`].
-    maintenance: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    maintenance: LeafLock<Option<tokio::task::JoinHandle<()>>>,
     /// Completed maintenance rounds, observable by tests without timing.
     maintenance_rounds: tokio::sync::watch::Sender<u64>,
 }
@@ -273,15 +285,15 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             size,
             total_size,
             idle_ttl,
-            warm: Arc::new(Mutex::new(HashMap::new())),
-            prewarm_gates: Mutex::new(HashMap::new()),
+            warm: Arc::new(InvariantLock::new(HashMap::new())),
+            prewarm_gates: LeafLock::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
             in_flight_creates: Arc::new(AtomicUsize::new(0)),
             create_changed: Arc::new(tokio::sync::Notify::new()),
-            unreceipted_scopes: Arc::new(Mutex::new(BTreeSet::new())),
+            unreceipted_scopes: Arc::new(LeafLock::new(BTreeSet::new())),
             incarnation: crate::runtime_owner_id(),
             leases: None,
-            maintenance: Mutex::new(None),
+            maintenance: LeafLock::new(None),
             maintenance_rounds: tokio::sync::watch::channel(0).0,
         }
     }
@@ -309,10 +321,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         leases.reclaim(&self.inner).await?;
         if config.maintained() {
             let handle = self.spawn_lease_maintenance(&leases, config.policy());
-            *self
-                .maintenance
-                .lock()
-                .expect("warm lease maintenance mutex") = Some(handle);
+            *self.maintenance.lock() = Some(handle);
         }
         Ok(self)
     }
@@ -414,7 +423,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// in-process claim, which covers cancellation but not process death.
     fn claimed_warm_create<'a>(
         inner: &'a ContainerProvider<R>,
-        unreceipted_scopes: &Arc<Mutex<BTreeSet<String>>>,
+        unreceipted_scopes: &Arc<LeafLock<BTreeSet<String>>>,
         warm: WarmScope,
         warm_spec: &'a pc::SandboxSpec,
     ) -> pc::ClaimedEffect<'a, ContainerSandbox<R>> {
@@ -425,10 +434,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let scopes = unreceipted_scopes.clone();
         let scope = warm.scope;
         let in_flight = move || {
-            scopes
-                .lock()
-                .expect("warm unreceipted scope mutex")
-                .insert(scope);
+            scopes.lock().insert(scope);
         };
         let claim = if warm.leased {
             pc::EffectClaim::durable(WARM_LEASE_RECONCILER, in_flight)
@@ -443,12 +449,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// Warm scopes currently on record as created-by-nobody. Read by
     /// [`Self::shutdown`] and by the cancellation tests.
     pub(crate) fn unreceipted_warm_scopes(&self) -> Vec<String> {
-        self.unreceipted_scopes
-            .lock()
-            .expect("warm unreceipted scope mutex")
-            .iter()
-            .cloned()
-            .collect()
+        self.unreceipted_scopes.lock().iter().cloned().collect()
     }
 
     /// Dispose every warm scope on record, clearing each only once the runtime
@@ -463,10 +464,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     Some(claim) => Some(claim),
                     // A reclaimer holds the record: the removal is its own.
                     None => {
-                        self.unreceipted_scopes
-                            .lock()
-                            .expect("warm unreceipted scope mutex")
-                            .remove(&scope);
+                        self.unreceipted_scopes.lock().remove(&scope);
                         continue;
                     }
                 },
@@ -477,10 +475,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 .await
                 .is_ok();
             if removed {
-                self.unreceipted_scopes
-                    .lock()
-                    .expect("warm unreceipted scope mutex")
-                    .remove(&scope);
+                self.unreceipted_scopes.lock().remove(&scope);
             }
             if let (Some(leases), Some(claim)) = (self.leases.as_deref(), claim) {
                 leases.finish_disposal(&claim, removed);
@@ -521,7 +516,6 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let gate = self
             .prewarm_gates
             .lock()
-            .expect("warm prewarm gate mutex")
             .entry(key.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
@@ -529,7 +523,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         loop {
             let (ready, expired) = {
                 let now = mono::now();
-                let mut map = self.warm.lock().expect("warm pool mutex");
+                let mut map = self.warm.lock().map_err(warm_poisoned)?;
                 let expired_keys = map
                     .iter()
                     .filter(|(shape, entry)| {
@@ -571,40 +565,44 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     return Err(error);
                 }
             };
-            let (excess, evicted) = {
-                let mut map = self.warm.lock().expect("warm pool mutex");
-                let mut evicted = Vec::new();
-                let mut total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
-                while total >= self.total_size {
-                    let oldest = map
-                        .iter()
-                        .filter(|(shape, entry)| *shape != &key && !entry.ready.is_empty())
-                        .min_by_key(|(_, entry)| entry.last_desired)
-                        .map(|(shape, _)| shape.clone());
-                    let Some(oldest) = oldest else {
-                        break;
-                    };
-                    if let Some(candidate) =
-                        map.get_mut(&oldest).and_then(|entry| entry.ready.pop())
-                    {
-                        evicted.push(candidate);
-                        total -= 1;
+            // A poisoned ready set admits nothing: the create is retired and
+            // the refusal returned once it is.
+            let (excess, evicted, poisoned) = match self.warm.lock() {
+                Err(poisoned) => (Some(sandbox), Vec::new(), Some(poisoned)),
+                Ok(mut map) => {
+                    let mut evicted = Vec::new();
+                    let mut total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
+                    while total >= self.total_size {
+                        let oldest = map
+                            .iter()
+                            .filter(|(shape, entry)| *shape != &key && !entry.ready.is_empty())
+                            .min_by_key(|(_, entry)| entry.last_desired)
+                            .map(|(shape, _)| shape.clone());
+                        let Some(oldest) = oldest else {
+                            break;
+                        };
+                        if let Some(candidate) =
+                            map.get_mut(&oldest).and_then(|entry| entry.ready.pop())
+                        {
+                            evicted.push(candidate);
+                            total -= 1;
+                        }
                     }
-                }
-                let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
-                    template: spec.clone(),
-                    ready: Vec::new(),
-                    last_desired: mono::now(),
-                });
-                entry.last_desired = mono::now();
-                if self.closed.load(Ordering::SeqCst)
-                    || entry.ready.len() >= target
-                    || total >= self.total_size
-                {
-                    (Some(sandbox), evicted)
-                } else {
-                    entry.ready.push(sandbox);
-                    (None, evicted)
+                    let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
+                        template: spec.clone(),
+                        ready: Vec::new(),
+                        last_desired: mono::now(),
+                    });
+                    entry.last_desired = mono::now();
+                    if self.closed.load(Ordering::SeqCst)
+                        || entry.ready.len() >= target
+                        || total >= self.total_size
+                    {
+                        (Some(sandbox), evicted, None)
+                    } else {
+                        entry.ready.push(sandbox);
+                        (None, evicted, None)
+                    }
                 }
             };
             for sandbox in evicted {
@@ -612,6 +610,9 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             }
             if let Some(excess) = excess {
                 retire(self.leases.as_deref(), excess).await;
+                if let Some(poisoned) = poisoned {
+                    return Err(warm_poisoned(poisoned));
+                }
                 if self.closed.load(Ordering::SeqCst) {
                     return Err(pc::SandboxError::gone(
                         "warm container capacity is shut down",
@@ -627,11 +628,8 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     pub fn ready_len(&self, spec: &pc::SandboxSpec) -> usize {
         poolable_shape(spec)
             .and_then(|k| {
-                self.warm
-                    .lock()
-                    .expect("warm pool mutex")
-                    .get(&k)
-                    .map(|e| e.ready.len())
+                // A poisoned ready set offers no capacity.
+                self.warm.lock().ok()?.get(&k).map(|e| e.ready.len())
             })
             .unwrap_or(0)
     }
@@ -642,17 +640,15 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let Some(key) = poolable_shape(spec) else {
             return;
         };
+        // A poisoned ready set is left untouched (its records expire to reclamation).
         let ready = self
             .warm
             .lock()
-            .expect("warm pool mutex")
-            .remove(&key)
+            .ok()
+            .and_then(|mut map| map.remove(&key))
             .map(|entry| entry.ready)
             .unwrap_or_default();
-        self.prewarm_gates
-            .lock()
-            .expect("warm prewarm gate mutex")
-            .remove(&key);
+        self.prewarm_gates.lock().remove(&key);
         for sandbox in ready {
             retire(self.leases.as_deref(), sandbox).await;
         }
@@ -664,9 +660,11 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     pub async fn shutdown(&self) {
         self.closed.store(true, Ordering::SeqCst);
         loop {
-            let batch: Vec<ContainerSandbox<R>> = {
-                let mut map = self.warm.lock().expect("warm pool mutex");
-                map.drain().flat_map(|(_, e)| e.ready).collect()
+            // A poisoned ready set is not drained: its records are abandoned
+            // below and reclamation removes the containers.
+            let batch: Vec<ContainerSandbox<R>> = match self.warm.lock() {
+                Ok(mut map) => map.drain().flat_map(|(_, e)| e.ready).collect(),
+                Err(_) => Vec::new(),
             };
             for sandbox in batch {
                 retire(self.leases.as_deref(), sandbox).await;
@@ -689,9 +687,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 if self
                     .warm
                     .lock()
-                    .expect("warm pool mutex")
-                    .values()
-                    .all(|entry| entry.ready.is_empty())
+                    .map_or(true, |map| map.values().all(|entry| entry.ready.is_empty()))
                 {
                     break;
                 }
@@ -702,12 +698,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         // L5: every record for a container this drain disposed is already
         // released. What is still held names capacity whose removal failed; it
         // stops being renewed so a later reclaimer finishes it.
-        if let Some(handle) = self
-            .maintenance
-            .lock()
-            .expect("warm lease maintenance mutex")
-            .take()
-        {
+        if let Some(handle) = self.maintenance.lock().take() {
             handle.abort();
         }
         if let Some(leases) = &self.leases {
@@ -749,7 +740,10 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 }
                 // How many are missing + the shape to build, read under the lock.
                 let template = {
-                    let map = warm.lock().expect("warm pool mutex");
+                    // A poisoned ready set stops replenishment (fail closed).
+                    let Ok(map) = warm.lock() else {
+                        return;
+                    };
                     match map.get(&key) {
                         Some(e) if e.ready.len() < size => e.template.clone(),
                         _ => return,
@@ -770,16 +764,20 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 match in_flight.await {
                     Ok(sandbox) => {
                         // Re-check the cap under the lock; dispose an over-cap create.
-                        let over = {
-                            let mut map = warm.lock().expect("warm pool mutex");
-                            let total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
-                            match map.get_mut(&key) {
-                                Some(e) if e.ready.len() < size && total < total_size => {
-                                    e.ready.push(sandbox);
-                                    None
+                        let over = match warm.lock() {
+                            Ok(mut map) => {
+                                let total =
+                                    map.values().map(|entry| entry.ready.len()).sum::<usize>();
+                                match map.get_mut(&key) {
+                                    Some(e) if e.ready.len() < size && total < total_size => {
+                                        e.ready.push(sandbox);
+                                        None
+                                    }
+                                    _ => Some(sandbox),
                                 }
-                                _ => Some(sandbox),
                             }
+                            // A poisoned ready set admits nothing: retire the create.
+                            Err(_) => Some(sandbox),
                         };
                         if let Some(excess) = over {
                             retire(leases.as_deref(), excess).await;
@@ -879,7 +877,7 @@ impl<R: ContainerRuntime + 'static> SandboxProvider for WarmContainerPool<R> {
         pc::ClaimedEffect::new(claim, async move {
             let environment = loop {
                 let warm = {
-                    let mut map = self.warm.lock().expect("warm pool mutex");
+                    let mut map = self.warm.lock().map_err(warm_poisoned)?;
                     let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                         template: spec.clone(),
                         ready: Vec::new(),
@@ -997,6 +995,7 @@ mod lease_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RealizationPhase {

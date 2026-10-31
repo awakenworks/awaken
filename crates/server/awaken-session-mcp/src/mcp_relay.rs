@@ -22,9 +22,11 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::net::SocketAddr;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
+
+use awaken_sync::InvariantLock;
 
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
@@ -56,7 +58,7 @@ struct Route {
 }
 
 type RouteKey = (String, String, u64);
-type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
+type Routes = Arc<InvariantLock<HashMap<RouteKey, Route>>>;
 /// An operation-local selection of one existing physical route insertion.
 /// This carries no root authority and never discovers a later replacement.
 pub(crate) struct CapturedRelayRoute {
@@ -73,7 +75,11 @@ impl CapturedRelayRoute {
     }
 
     pub(crate) fn remove_if_current(&self) {
-        let mut routes = self.routes.lock().expect("MCP relay routes mutex poisoned");
+        // A poisoned route map serves no request (`forward` refuses it), so
+        // the removal is skipped.
+        let Ok(mut routes) = self.routes.lock() else {
+            return;
+        };
         if routes.get(&self.key).is_some_and(|route| {
             route.generation.tenure() == self.generation.tenure()
                 && route.capability == self.capability
@@ -266,7 +272,7 @@ impl McpRelay {
         clock: Arc<dyn awaken_time::WallClock>,
         outbound_proxy: Option<Arc<dyn McpRelayOutboundProxy>>,
     ) -> std::io::Result<Self> {
-        let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
+        let routes: Routes = Arc::new(InvariantLock::new(HashMap::new()));
         let bind = exposure.map_or_else(
             || "127.0.0.1:0".parse().expect("literal MCP relay address"),
             awaken_session_environment_contract::ContainerMcpRelayExposure::bind,
@@ -353,7 +359,9 @@ impl McpRelay {
         server: &McpTransportMaterial,
     ) -> Option<CapturedRelayRoute> {
         let url = server.http_url()?;
-        let mut routes = self.routes.lock().unwrap();
+        let Ok(mut routes) = self.routes.lock() else {
+            return None;
+        };
         if self.server.is_closing() {
             return None;
         }
@@ -384,7 +392,9 @@ impl McpRelay {
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<CapturedRelayRoute> {
-        let routes = self.routes.lock().expect("MCP relay routes mutex poisoned");
+        let Ok(routes) = self.routes.lock() else {
+            return None;
+        };
         let key = route_key(generation);
         let route = routes
             .get(&key)
@@ -393,7 +403,9 @@ impl McpRelay {
     }
 
     pub(crate) fn capture_routes(&self, thread: &str) -> Vec<CapturedRelayRoute> {
-        let routes = self.routes.lock().expect("MCP relay routes mutex poisoned");
+        let Ok(routes) = self.routes.lock() else {
+            return Vec::new();
+        };
         routes
             .iter()
             .filter(|(key, _)| key.0 == thread)
@@ -419,7 +431,9 @@ impl McpRelay {
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
-        let mut routes = self.routes.lock().unwrap();
+        let Ok(mut routes) = self.routes.lock() else {
+            return false;
+        };
         if self.server.is_closing() {
             return false;
         }
@@ -452,7 +466,9 @@ impl McpRelay {
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) {
-        let mut routes = self.routes.lock().unwrap();
+        let Ok(mut routes) = self.routes.lock() else {
+            return;
+        };
         let key = route_key(generation);
         if routes
             .get(&key)
@@ -472,7 +488,7 @@ impl McpRelay {
     ) -> Option<awaken_ext_mcp::transport::McpCallFence> {
         self.routes
             .lock()
-            .expect("MCP relay routes mutex poisoned")
+            .ok()?
             .get(&route_key(generation))
             .filter(|route| route.generation.tenure() == generation.tenure())
             .map(|route| route.call_fence.clone())
@@ -481,10 +497,9 @@ impl McpRelay {
     /// Remove residual bearer-bearing routes only after canonical per-
     /// generation drain has succeeded for the whole Session.
     pub fn remove_routes(&self, thread: &str) {
-        self.routes
-            .lock()
-            .expect("MCP relay routes mutex poisoned")
-            .retain(|(route_session, _, _), _| route_session != thread);
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.retain(|(route_session, _, _), _| route_session != thread);
+        }
     }
 
     /// The loopback URL a sandboxed CLI dials for `(thread, name)` — the value written into
@@ -497,7 +512,7 @@ impl McpRelay {
         let capability = self
             .routes
             .lock()
-            .expect("MCP relay routes mutex poisoned")
+            .ok()?
             .get(&route_key(generation))
             .filter(|route| route.generation.tenure() == generation.tenure())?
             .capability
@@ -533,7 +548,11 @@ async fn forward(
 ) -> Response {
     let route_key = (session, attachment, generation);
     let routes = &state.routes;
-    let Some(route) = routes.lock().unwrap().get(&route_key).cloned() else {
+    let Some(route) = routes
+        .lock()
+        .ok()
+        .and_then(|routes| routes.get(&route_key).cloned())
+    else {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     };
     if !state.admits(&route, &capability) {
@@ -628,7 +647,9 @@ async fn forward(
                 return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
             }
             let refreshed = {
-                let mut routes = routes.lock().unwrap();
+                let Ok(mut routes) = routes.lock() else {
+                    return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+                };
                 let Some(current) = routes.get_mut(&route_key) else {
                     return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
                 };
@@ -702,6 +723,7 @@ async fn forward(
 mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransportBuilder, McpToolTransport};
+    use std::sync::Mutex;
 
     #[test]
     fn relay_admits_only_a_readable_live_root() {
@@ -770,7 +792,7 @@ mod tests {
             fails: false,
         });
         let state = RelayState {
-            routes: Arc::new(Mutex::new(HashMap::new())),
+            routes: Arc::new(InvariantLock::new(HashMap::new())),
             stopping: awaken_runtime_contract::CancellationToken::new(),
             authority: Arc::new(|_, _| true),
             clock: awaken_time::system_clock(),
@@ -1286,7 +1308,7 @@ mod tests {
             .unwrap();
         assert_eq!(later.status(), reqwest::StatusCode::BAD_REQUEST, "R3");
 
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         for expected in [
             "initialize",
             "notifications/initialized",

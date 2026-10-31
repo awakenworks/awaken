@@ -2,13 +2,14 @@
 // @formal reason: This source implements the repository-controlled permission product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use awaken_agent_contract::{RedactedString, RedactedStringSource};
 use awaken_iam_contract::{
     AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
 };
 use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote};
+use awaken_sync::InvariantRwLock;
 use base64::Engine as _;
 
 use super::off_event_loop;
@@ -43,7 +44,7 @@ struct RemoteGateState {
 /// hosted Management workload. User and workload credentials remain distinct:
 /// the former authenticates the request, while the latter carries PDP calls.
 pub struct RemoteManagementAuthz {
-    gate: RwLock<RemoteGateState>,
+    gate: InvariantRwLock<RemoteGateState>,
     user_token_source: Option<Arc<RedactedStringSource>>,
     config: RemoteGateConfig,
     /// The process's one wall clock: the instant every presented credential is
@@ -157,7 +158,7 @@ impl RemoteManagementAuthz {
             && user_token.is_some();
         let gate = build_gate(&config, user_token.as_ref())?;
         Ok(Arc::new(Self {
-            gate: RwLock::new(RemoteGateState {
+            gate: InvariantRwLock::new(RemoteGateState {
                 gate,
                 user_carrier_token: if user_is_carrier { user_token } else { None },
             }),

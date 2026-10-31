@@ -74,10 +74,12 @@ pub type ChildCommitAfterHistorySnapshot = (
 pub struct RehydrateFake {
     pub reads: ReadControl,
     pub commit_times_by_thread: Arc<
-        std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, u64>>>,
+        awaken_sync::LeafLock<
+            std::collections::HashMap<String, std::collections::BTreeMap<u64, u64>>,
+        >,
     >,
     pub restored: Arc<
-        std::sync::Mutex<
+        awaken_sync::LeafLock<
             Vec<(
                 String,
                 String,
@@ -85,53 +87,60 @@ pub struct RehydrateFake {
             )>,
         >,
     >,
-    pub restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
-    pub restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
-    pub delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
+    pub restored_environments: Arc<awaken_sync::LeafLock<Vec<(String, String, String)>>>,
+    pub restored_runtimes: Arc<awaken_sync::LeafLock<Vec<RestoredRuntime>>>,
+    pub delegated: Arc<awaken_sync::LeafLock<Vec<DelegatedRun>>>,
     pub coordinated:
-        Arc<std::sync::Mutex<Vec<awaken_session_execution_contract::CoordinatedThreadLink>>>,
-    pub lifecycle: Arc<std::sync::Mutex<Vec<awaken_agent_contract::RunLifecycleEvent>>>,
+        Arc<awaken_sync::LeafLock<Vec<awaken_session_execution_contract::CoordinatedThreadLink>>>,
+    pub lifecycle: Arc<awaken_sync::LeafLock<Vec<awaken_agent_contract::RunLifecycleEvent>>>,
     /// Test-only interleaving control for lifecycle projection: when set, a
     /// root recovery read exposes this older backend watermark while the
     /// lifecycle feed may already contain newer commits.
-    pub root_store_cursor_override: Arc<std::sync::Mutex<Option<u64>>>,
+    pub root_store_cursor_override: Arc<awaken_sync::LeafLock<Option<u64>>>,
     pub pending_by_thread: Arc<
-        std::sync::Mutex<
+        awaken_sync::LeafLock<
             std::collections::HashMap<String, awaken_session_application_contract::Pending>,
         >,
     >,
     pub disposition_by_thread: Arc<
-        std::sync::Mutex<
+        awaken_sync::LeafLock<
             std::collections::HashMap<(String, String), awaken_agent_contract::ThreadDisposition>,
         >,
     >,
-    pub archive_commits: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    pub archive_commits: Arc<awaken_sync::LeafLock<Vec<(String, String)>>>,
     pub thread_tool_replies: Arc<
-        std::sync::Mutex<Vec<awaken_session_execution_contract::SessionThreadToolReplyCommand>>,
+        awaken_sync::LeafLock<
+            Vec<awaken_session_execution_contract::SessionThreadToolReplyCommand>,
+        >,
     >,
-    pub delegate_ids: Arc<std::sync::Mutex<Vec<String>>>,
-    pub custom_tools: Arc<std::sync::Mutex<Vec<awaken_session_configuration_contract::CustomTool>>>,
-    pub order: Arc<std::sync::Mutex<Vec<&'static str>>>,
-    pub committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
-    pub committed_by_thread: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Message>>>>,
+    pub delegate_ids: Arc<awaken_sync::LeafLock<Vec<String>>>,
+    pub custom_tools:
+        Arc<awaken_sync::LeafLock<Vec<awaken_session_configuration_contract::CustomTool>>>,
+    pub order: Arc<awaken_sync::LeafLock<Vec<&'static str>>>,
+    pub committed: Arc<awaken_sync::LeafLock<Option<Vec<Message>>>>,
+    pub committed_by_thread:
+        Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<Message>>>>,
     /// Explicit Run records used by canonical coordination fixtures whose
     /// accepted root transcript is committed before any root lifecycle edge.
     pub run_ids_by_thread: Arc<
-        std::sync::Mutex<std::collections::HashMap<String, awaken_agent_contract::agent::run::Id>>,
+        awaken_sync::LeafLock<
+            std::collections::HashMap<String, awaken_agent_contract::agent::run::Id>,
+        >,
     >,
     /// Exact fake commit coordinates aligned with `committed_by_thread`.
     /// Absent entries mean the fixture committed its configured messages in
     /// one atomic prefix, not that production may omit the coordinates.
     pub message_cursors_by_thread:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u64>>>>,
+        Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<u64>>>>,
     pub state_by_thread: Arc<
-        std::sync::Mutex<
+        awaken_sync::LeafLock<
             std::collections::HashMap<String, Vec<awaken_agent_contract::agent::state::Command>>,
         >,
     >,
-    pub state_cursors_by_thread: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u64>>>>,
+    pub state_cursors_by_thread:
+        Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<u64>>>>,
     pub outcome_projections: Arc<
-        std::sync::Mutex<
+        awaken_sync::LeafLock<
             std::collections::HashMap<
                 (String, String),
                 awaken_session_execution_contract::CommittedOutcomeProjection,
@@ -139,25 +148,28 @@ pub struct RehydrateFake {
         >,
     >,
     pub usage_by_thread: Arc<
-        std::sync::Mutex<std::collections::HashMap<String, awaken_session_contract::SessionUsage>>,
+        awaken_sync::LeafLock<
+            std::collections::HashMap<String, awaken_session_contract::SessionUsage>,
+        >,
     >,
     /// Test-only commit interleaving: return the current child transcript, then
     /// atomically expose the supplied newer transcript/lifecycle facts. This
     /// models a terminal commit racing a projector read without a second fake.
     pub child_commit_after_history_snapshot:
-        Arc<std::sync::Mutex<Option<ChildCommitAfterHistorySnapshot>>>,
-    pub pending: Arc<std::sync::Mutex<Option<awaken_session_application_contract::Pending>>>,
+        Arc<awaken_sync::LeafLock<Option<ChildCommitAfterHistorySnapshot>>>,
+    pub pending: Arc<awaken_sync::LeafLock<Option<awaken_session_application_contract::Pending>>>,
     /// `RunStateChanged.await_target` of an Awaiting commit that opened a
     /// ticket, by lifecycle cursor; absent models a commit left unaudited.
-    pub await_targets: Arc<std::sync::Mutex<crate::AwaitTargets>>,
+    pub await_targets: Arc<awaken_sync::LeafLock<crate::AwaitTargets>>,
     /// Every state command each Thread has exposed, with the commit it first
     /// appeared at: committed state is append-only, so a later snapshot
     /// keeps an earlier value and its coordinate.
-    pub state_log: Arc<std::sync::Mutex<std::collections::HashMap<String, crate::StateLog>>>,
+    pub state_log: Arc<awaken_sync::LeafLock<std::collections::HashMap<String, crate::StateLog>>>,
     /// Awaiting commits that model a legacy audit row without a target.
-    pub unaudited_awaits:
-        Arc<std::sync::Mutex<std::collections::HashSet<awaken_agent_contract::RunLifecycleCursor>>>,
-    pub ended: Arc<std::sync::Mutex<Vec<String>>>,
+    pub unaudited_awaits: Arc<
+        awaken_sync::LeafLock<std::collections::HashSet<awaken_agent_contract::RunLifecycleCursor>>,
+    >,
+    pub ended: Arc<awaken_sync::LeafLock<Vec<String>>>,
     pub reject_mcp_publication: Arc<std::sync::atomic::AtomicBool>,
     pub reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -196,15 +208,13 @@ impl RehydrateFake {
         let mut messages = self
             .committed_by_thread
             .lock()
-            .unwrap()
             .get(session_id)
             .cloned()
-            .or_else(|| self.committed.lock().unwrap().clone())
+            .or_else(|| self.committed.lock().clone())
             .unwrap_or_default();
         let mut cursors = self
             .message_cursors_by_thread
             .lock()
-            .unwrap()
             .get(session_id)
             .filter(|cursors| cursors.len() == messages.len())
             .cloned()
@@ -251,25 +261,18 @@ impl RehydrateFake {
         cursors.extend([source_commit_cursor, source_commit_cursor]);
         self.message_cursors_by_thread
             .lock()
-            .unwrap()
             .insert(session_id.to_string(), cursors);
         self.committed_by_thread
             .lock()
-            .unwrap()
             .insert(session_id.to_string(), messages);
         self.run_ids_by_thread
             .lock()
-            .unwrap()
             .insert(session_id.to_string(), root_run_id);
-        self.coordinated.lock().unwrap().push(link);
+        self.coordinated.lock().push(link);
     }
 
     pub(crate) fn commit_staged_child_prefix_after_snapshot(&self, thread_id: &str) {
-        let staged = self
-            .child_commit_after_history_snapshot
-            .lock()
-            .unwrap()
-            .take();
+        let staged = self.child_commit_after_history_snapshot.lock().take();
         if let Some((target_thread, messages, lifecycle)) = staged {
             if target_thread == thread_id {
                 let message_cursor = lifecycle
@@ -280,15 +283,13 @@ impl RehydrateFake {
                     .expect("staged child message has its atomic lifecycle commit");
                 self.message_cursors_by_thread
                     .lock()
-                    .unwrap()
                     .insert(target_thread.clone(), vec![message_cursor; messages.len()]);
                 self.committed_by_thread
                     .lock()
-                    .unwrap()
                     .insert(target_thread, messages);
-                self.lifecycle.lock().unwrap().extend(lifecycle);
+                self.lifecycle.lock().extend(lifecycle);
             } else {
-                *self.child_commit_after_history_snapshot.lock().unwrap() =
+                *self.child_commit_after_history_snapshot.lock() =
                     Some((target_thread, messages, lifecycle));
             }
         }
@@ -368,8 +369,8 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
         let adopts_environment = mode.adopts_resident_environment();
         if let Some(init) = crate::complete_session_projection_init(thread, &projection, &mode)? {
-            self.order.lock().unwrap().push("runtime");
-            self.restored_runtimes.lock().unwrap().push((
+            self.order.lock().push("runtime");
+            self.restored_runtimes.lock().push((
                 thread.to_string(),
                 init.runtime,
                 0,
@@ -439,13 +440,13 @@ impl awaken_session_execution_contract::ChildRunCoordination for RehydrateFake {
         thread_id: &str,
     ) -> Result<(), awaken_session_types::RunError> {
         let key = (session_id.to_string(), thread_id.to_string());
-        let mut dispositions = self.disposition_by_thread.lock().unwrap();
+        let mut dispositions = self.disposition_by_thread.lock();
         if dispositions.get(&key) != Some(&awaken_agent_contract::ThreadDisposition::Archived) {
             dispositions.insert(
                 key.clone(),
                 awaken_agent_contract::ThreadDisposition::Archived,
             );
-            self.archive_commits.lock().unwrap().push(key);
+            self.archive_commits.lock().push(key);
         }
         Ok(())
     }
@@ -584,7 +585,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RehydrateFake {
         if delivery.fence != expected_fence {
             return Err(RunError::bad_request("reply fence is stale"));
         }
-        let removed = self.pending_by_thread.lock().unwrap().remove(&thread_id.0);
+        let removed = self.pending_by_thread.lock().remove(&thread_id.0);
         if removed.as_ref().map(|pending| pending.tool_use_id.as_str())
             != Some(command.tool_use_id.as_str())
         {
@@ -592,7 +593,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RehydrateFake {
                 "reply does not match the coordinated child pending ticket",
             ));
         }
-        self.thread_tool_replies.lock().unwrap().push(command);
+        self.thread_tool_replies.lock().push(command);
         Ok(())
     }
 
@@ -680,8 +681,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
     }
 
     async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.order.lock().unwrap().push("delegations");
-        Ok(self.delegated.lock().unwrap().clone())
+        self.order.lock().push("delegations");
+        Ok(self.delegated.lock().clone())
     }
 
     async fn coordinated_threads(
@@ -693,8 +694,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
             .on_read("coordination")
             .await
             .map_err(scripted_read_failure)?;
-        self.order.lock().unwrap().push("coordination");
-        Ok(self.coordinated.lock().unwrap().clone())
+        self.order.lock().push("coordination");
+        Ok(self.coordinated.lock().clone())
     }
 
     async fn session_thread_tool_reply_fence(
@@ -705,7 +706,6 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
         let pending = self
             .pending_by_thread
             .lock()
-            .unwrap()
             .get(&thread_id.0)
             .cloned()
             .filter(|pending| pending.tool_use_id == command.tool_use_id)
@@ -717,7 +717,6 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
             awaken_session_execution_contract::SessionThreadTarget::Child(_) => self
                 .coordinated
                 .lock()
-                .unwrap()
                 .iter()
                 .find(|link| link.thread_id == thread_id)
                 .and_then(|link| link.latest_run_id.clone())

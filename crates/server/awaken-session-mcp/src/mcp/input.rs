@@ -8,8 +8,8 @@ use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_mcp::notification::{
     McpNotificationConfig, McpNotificationHandler, McpSelectedInput,
 };
-use awaken_session_application_contract::SessionRunBackgroundApplication;
 use awaken_session_configuration_contract::mcp::McpGenerationRef;
+use awaken_session_execution_contract::SessionApplicationBinding;
 use serde_json::{Value, json};
 
 use crate::mcp::{McpError, McpGenerationAuthority, McpSessions};
@@ -31,15 +31,16 @@ pub trait McpInputHost: McpGenerationAuthority {
 }
 
 /// Where admitted MCP application input goes: the Session Run admission
-/// owner and the Host whose authority every delivery rechecks.
+/// owner, reached through the executor's application binding, and the Host
+/// whose authority every delivery rechecks.
 pub struct McpInputRecipients {
-    pub application: Weak<dyn SessionRunBackgroundApplication>,
+    pub application: SessionApplicationBinding,
     pub host: Weak<dyn McpInputHost>,
 }
 
 struct SessionMcpInput {
     host: Weak<dyn McpInputHost>,
-    application: Weak<dyn SessionRunBackgroundApplication>,
+    application: SessionApplicationBinding,
     generation: McpGenerationRef,
     server: String,
     policy: McpNotificationConfig,
@@ -105,7 +106,7 @@ impl McpNotificationHandler for SessionMcpInput {
         let Some(host) = self.host.upgrade() else {
             return;
         };
-        let Some(application) = self.application.upgrade() else {
+        let Ok(application) = self.application.background_runs() else {
             return;
         };
         // The recipient is frozen by the exact connection owner, never chosen

@@ -8,7 +8,7 @@
 //! remain addressable after current availability changes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLockReadGuard, RwLockWriteGuard};
 
 use async_trait::async_trait;
 use awaken_executable_agent_contract::{
@@ -26,6 +26,7 @@ use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
     CatalogFingerprint, ExecutableAgentSnapshot, PublishedAgentSnapshotSource,
 };
+use awaken_sync::InvariantRwLock;
 
 mod http;
 mod postgres;
@@ -164,7 +165,7 @@ fn installed_lifecycle_revision_never_rolls_back() {
 /// Coordinator's current/exact/fingerprint read projection.
 #[derive(Default)]
 pub struct ExecutableAgentCatalog {
-    state: RwLock<CatalogState>,
+    state: InvariantRwLock<CatalogState>,
 }
 
 impl ExecutableAgentCatalog {
@@ -173,54 +174,87 @@ impl ExecutableAgentCatalog {
         Self::default()
     }
 
+    /// Fail-closed: a poisoned catalog admits no current registration.
     pub fn current(
         &self,
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<ExecutableAgentRegistration> {
-        self.state
-            .read()
-            .expect("executable Agent catalog")
-            .current
-            .get(&(workspace_id.to_owned(), agent_id.to_owned()))
-            .and_then(|entry| entry.registration.clone())
+        self.try_current(workspace_id, agent_id).ok().flatten()
     }
 
+    /// Fail-closed: a poisoned catalog resolves no revision.
     pub fn at_revision(
         &self,
         workspace_id: &str,
         agent_id: &str,
         source_revision: u64,
     ) -> Option<ExecutableAgentRegistration> {
-        self.state
-            .read()
-            .expect("executable Agent catalog")
+        self.try_at_revision(workspace_id, agent_id, source_revision)
+            .ok()
+            .flatten()
+    }
+
+    /// Fail-closed: a poisoned catalog resolves no fingerprint.
+    pub fn exact(&self, workspace_id: &str, fingerprint: &str) -> Option<ExecutableAgentSnapshot> {
+        let state = self.read_state().ok()?;
+        state
+            .fingerprints
+            .get(&(workspace_id.to_owned(), fingerprint.to_owned()))
+            .cloned()
+    }
+
+    /// Fail-closed: a poisoned catalog reports every Agent unavailable.
+    #[must_use]
+    pub fn is_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
+        let Ok(state) = self.read_state() else {
+            return true;
+        };
+        state
+            .current
+            .get(&(workspace_id.to_owned(), agent_id.to_owned()))
+            .is_some_and(|entry| entry.registration.is_none())
+    }
+
+    fn read_state(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, CatalogState>, ExecutableAgentRegistrationError> {
+        self.state.read().map_err(catalog_poisoned)
+    }
+
+    fn write_state(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, CatalogState>, ExecutableAgentRegistrationError> {
+        self.state.write().map_err(catalog_poisoned)
+    }
+
+    fn try_current(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        Ok(self
+            .read_state()?
+            .current
+            .get(&(workspace_id.to_owned(), agent_id.to_owned()))
+            .and_then(|entry| entry.registration.clone()))
+    }
+
+    fn try_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        Ok(self
+            .read_state()?
             .revisions
             .get(&(
                 workspace_id.to_owned(),
                 agent_id.to_owned(),
                 source_revision,
             ))
-            .cloned()
-    }
-
-    pub fn exact(&self, workspace_id: &str, fingerprint: &str) -> Option<ExecutableAgentSnapshot> {
-        self.state
-            .read()
-            .expect("executable Agent catalog")
-            .fingerprints
-            .get(&(workspace_id.to_owned(), fingerprint.to_owned()))
-            .cloned()
-    }
-
-    #[must_use]
-    pub fn is_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.state
-            .read()
-            .expect("executable Agent catalog")
-            .current
-            .get(&(workspace_id.to_owned(), agent_id.to_owned()))
-            .is_some_and(|entry| entry.registration.is_none())
+            .cloned())
     }
 
     fn register_locked(
@@ -365,23 +399,28 @@ impl ExecutableAgentCatalog {
         &self,
         evidence: PublicationTimeEvidence,
     ) -> Result<(), ExecutableAgentRegistrationError> {
-        let mut state = self.state.write().expect("executable Agent catalog");
+        let mut state = self.write_state()?;
         Self::record_publication_time_locked(&mut state, evidence)
     }
 
-    fn has_time_amendment(&self, workspace: &str, agent: &str, revision: u64) -> bool {
-        self.state
-            .read()
-            .expect("executable Agent catalog")
-            .time_amendments
-            .contains(&(workspace.to_owned(), agent.to_owned(), revision))
+    fn has_time_amendment(
+        &self,
+        workspace: &str,
+        agent: &str,
+        revision: u64,
+    ) -> Result<bool, ExecutableAgentRegistrationError> {
+        Ok(self.read_state()?.time_amendments.contains(&(
+            workspace.to_owned(),
+            agent.to_owned(),
+            revision,
+        )))
     }
 
     fn preview_registration(
         &self,
         registration: ExecutableAgentRegistration,
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
-        let mut state = self.state.read().expect("executable Agent catalog").clone();
+        let mut state = self.read_state()?.clone();
         Self::register_locked(&mut state, registration)
     }
 
@@ -419,7 +458,7 @@ impl ExecutableAgentCatalog {
         &self,
         withdrawal: ExecutableAgentWithdrawal,
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
-        let mut state = self.state.read().expect("executable Agent catalog").clone();
+        let mut state = self.read_state()?.clone();
         Self::withdraw_locked(&mut state, withdrawal)
     }
 }
@@ -431,7 +470,7 @@ impl ExecutableAgentRegistrationSource for ExecutableAgentCatalog {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
-        Ok(self.current(workspace_id, agent_id))
+        self.try_current(workspace_id, agent_id)
     }
 
     async fn registration_at_revision(
@@ -440,7 +479,7 @@ impl ExecutableAgentRegistrationSource for ExecutableAgentCatalog {
         agent_id: &str,
         source_revision: u64,
     ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
-        Ok(self.at_revision(workspace_id, agent_id, source_revision))
+        self.try_at_revision(workspace_id, agent_id, source_revision)
     }
 }
 
@@ -450,7 +489,7 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
-        let state = self.state.read().expect("executable Agent catalog");
+        let state = self.read_state()?;
         let mut registrations = state
             .current
             .iter()
@@ -468,7 +507,7 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
-        let state = self.state.read().expect("executable Agent catalog");
+        let state = self.read_state()?;
         Ok(project_current_model_publications(
             state.current.iter().filter_map(|((workspace, _), entry)| {
                 (workspace == workspace_id)
@@ -525,7 +564,7 @@ impl ReferenceIndexedExecutableAgentRegistrar {
     ) -> Result<(), ExecutableAgentRegistrationError> {
         let _mutation = self.mutation.lock().await;
         let current = {
-            let state = self.catalog.state.read().expect("executable Agent catalog");
+            let state = self.catalog.read_state()?;
             state
                 .current
                 .iter()
@@ -600,6 +639,10 @@ fn agent_reference_records(
     records.sort();
     records.dedup();
     records
+}
+
+fn catalog_poisoned(_: awaken_sync::LockPoisoned) -> ExecutableAgentRegistrationError {
+    ExecutableAgentRegistrationError::Storage("executable Agent catalog lock poisoned".into())
 }
 
 fn registration_storage(error: ResourcePurgeError) -> ExecutableAgentRegistrationError {
@@ -685,11 +728,7 @@ impl ExecutableAgentRegistrar for LocalExecutableAgentRegistrar {
         &self,
         registration: ExecutableAgentRegistration,
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
-        let mut state = self
-            .catalog
-            .state
-            .write()
-            .expect("executable Agent catalog");
+        let mut state = self.catalog.write_state()?;
         ExecutableAgentCatalog::register_locked(&mut state, registration)
     }
 
@@ -697,11 +736,7 @@ impl ExecutableAgentRegistrar for LocalExecutableAgentRegistrar {
         &self,
         withdrawal: ExecutableAgentWithdrawal,
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
-        let mut state = self
-            .catalog
-            .state
-            .write()
-            .expect("executable Agent catalog");
+        let mut state = self.catalog.write_state()?;
         ExecutableAgentCatalog::withdraw_locked(&mut state, withdrawal)
     }
 }

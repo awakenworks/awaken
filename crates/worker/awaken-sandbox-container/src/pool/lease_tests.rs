@@ -944,7 +944,7 @@ async fn l5_the_maintenance_loop_renews_every_held_record() {
     );
     owner.shutdown().await;
     assert!(
-        owner.maintenance.lock().unwrap().is_none(),
+        owner.maintenance.lock().is_none(),
         "L5 shutdown stops the loop"
     );
     peer.shutdown().await;

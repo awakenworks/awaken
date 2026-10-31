@@ -14,6 +14,7 @@ description = "Reusable MCP server conformance suite for host adapters"
 separation = "test-support"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-mcp-server-core.workspace = true
 awaken-mcp-wire.workspace = true
 async-trait.workspace = true

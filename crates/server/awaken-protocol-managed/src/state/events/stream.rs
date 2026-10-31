@@ -15,7 +15,7 @@ impl ManagedState {
     /// subscriber into `Lagged`; an overflow wakes the same durable projection
     /// catch-up rather than dropping committed facts.
     fn live_sender(&self, session_id: &str) -> broadcast::Sender<Event> {
-        let mut live = self.live.lock().unwrap();
+        let mut live = self.live.lock();
         live.entry(session_id.to_string())
             .or_insert_with(|| broadcast::channel(LIVE_CHANNEL_CAPACITY).0)
             .clone()
@@ -40,7 +40,7 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<(Vec<Event>, broadcast::Receiver<Event>, u64), StateError> {
         let rx = self.live_sender(session_id).subscribe();
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         Ok((record.events.clone(), rx, record.cache_revision))
     }
@@ -50,7 +50,7 @@ impl ManagedState {
         session_id: &str,
         after: (u64, usize),
     ) -> Result<CommittedDeliveryPage, StateError> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         Ok(record.delivery_page(after, Self::STREAM_DELIVERY_PAGE_SIZE))
     }
@@ -58,7 +58,7 @@ impl ManagedState {
     /// One emission edge for a fully validated committed delta. Publication
     /// and terminal deletion both use the same delivery admission beforehand.
     pub(in crate::state) fn broadcast_committed_delta(&self, session_id: &str, events: &[Event]) {
-        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
+        if let Some(tx) = self.live.lock().get(session_id) {
             for event in events {
                 let _ = tx.send(event.clone());
             }
@@ -114,7 +114,7 @@ impl ManagedState {
         include: impl Fn(&Event) -> bool,
         could_match_without_time: impl Fn(&Event) -> bool,
     ) -> Result<ListEventsResponse, StateError> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         Self::project_event_page_with_time(
             record,

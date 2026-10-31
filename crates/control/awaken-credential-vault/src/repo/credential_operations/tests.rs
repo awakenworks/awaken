@@ -366,14 +366,14 @@ async fn ambiguous_row_commit_is_reconciled_from_the_durable_intent() {
     // loses the response. The command reports the ambiguous storage error and
     // performs no inline delete; recovery observes committed truth, completes
     // the exact pending fact, and preserves the referenced material.
-    assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
+    assert_eq!(store.map.lock().len(), 1);
     assert_eq!(
         recover_credential_mutations(&store, &repo, awaken_time::system_clock().as_ref())
             .await
             .unwrap(),
         1
     );
-    assert_eq!(store.map.lock().expect("secret store mutex").len(), 1);
+    assert_eq!(store.map.lock().len(), 1);
     assert_eq!(repo.list("ws").await.unwrap().len(), 1);
     assert!(repo.pending_mutations().await.unwrap().is_empty());
 }

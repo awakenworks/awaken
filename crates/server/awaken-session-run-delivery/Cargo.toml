@@ -17,8 +17,10 @@ separation = "coordinator-side"
 # construction. Callers supply the Runtime and attempt capabilities; this
 # crate links no Session realization, Sandbox or credential realization.
 [dependencies]
+awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
+awaken-worker-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-session-application-contract.workspace = true

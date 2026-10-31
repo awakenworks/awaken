@@ -6,12 +6,12 @@
 //! version registry beside it. Authorization stays outside this crate: operations
 //! receive an already-trusted Workspace id and enforce only intrinsic ownership.
 
+#[cfg(any(test, feature = "test-support"))]
+use awaken_sync::LeafLock;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
@@ -266,7 +266,7 @@ fn skill_version_retirement_is_visibility_only_and_total() {
 #[derive(Default)]
 pub struct InMemorySkillStore {
     // workspace_id → (id → complete aggregate)
-    inner: Mutex<BTreeMap<String, BTreeMap<SkillId, SkillAggregate>>>,
+    inner: LeafLock<BTreeMap<String, BTreeMap<SkillId, SkillAggregate>>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -284,7 +284,6 @@ impl SkillStore for InMemorySkillStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .iter()
             .filter(|(_, skills)| skills.values().any(|skill| !skill.deleted))
             .map(|(workspace_id, _)| workspace_id.clone())
@@ -297,7 +296,7 @@ impl SkillStore for InMemorySkillStore {
         initial_version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
         definition.validate_initial_version(&initial_version)?;
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let workspace = inner.entry(definition.workspace_id.clone()).or_default();
         if workspace.contains_key(&definition.id) {
             return Err(SkillStoreError::AlreadyExists(definition.id.to_string()));
@@ -320,7 +319,7 @@ impl SkillStore for InMemorySkillStore {
         skill_id: &str,
         version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let aggregate = inner
             .get_mut(workspace_id)
             .and_then(|workspace| workspace.get_mut(&SkillId::from(skill_id)))
@@ -336,7 +335,6 @@ impl SkillStore for InMemorySkillStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .get(workspace_id)
             .and_then(|ws| ws.get(&SkillId::from(skill_id)))
             .filter(|aggregate| !aggregate.deleted)
@@ -350,7 +348,6 @@ impl SkillStore for InMemorySkillStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .get(workspace_id)
             .map(|ws| {
                 ws.values()
@@ -368,7 +365,6 @@ impl SkillStore for InMemorySkillStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .get(workspace_id)
             .map(|workspace| {
                 workspace
@@ -395,7 +391,6 @@ impl SkillStore for InMemorySkillStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .get(workspace_id)
             .and_then(|ws| ws.get(&SkillId::from(skill_id)))
             .and_then(|aggregate| aggregate.versions.get(&version).cloned()))
@@ -409,7 +404,6 @@ impl SkillStore for InMemorySkillStore {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .get(workspace_id)
             .and_then(|ws| ws.get(&SkillId::from(skill_id)))
             .filter(|aggregate| !aggregate.deleted)
@@ -430,7 +424,7 @@ impl SkillStore for InMemorySkillStore {
         skill_id: &str,
         version: u64,
     ) -> Result<bool, SkillStoreError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let Some(aggregate) = inner
             .get_mut(workspace_id)
             .and_then(|workspace| workspace.get_mut(&SkillId::from(skill_id)))
@@ -451,7 +445,7 @@ impl SkillStore for InMemorySkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<bool, SkillStoreError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let Some(aggregate) = inner
             .get_mut(workspace_id)
             .and_then(|workspace| workspace.get_mut(&SkillId::from(skill_id)))
@@ -470,7 +464,7 @@ impl SkillStore for InMemorySkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<u64, SkillStoreError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let Some(workspace) = inner.get_mut(workspace_id) else {
             return Ok(0);
         };

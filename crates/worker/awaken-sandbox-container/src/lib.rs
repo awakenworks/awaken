@@ -1224,7 +1224,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// once from the canonical MemoryMount; adoption reuses only the validated
     /// durable handle projection and never reconstructs heads from current bytes.
     memory_materializations: Vec<pc::MemoryMaterializationEvidence>,
-    owned_paths: std::sync::Mutex<Vec<String>>,
+    owned_paths: awaken_sync::LeafLock<Vec<String>>,
     /// Exact request-bound wire handle for a restored target. Ordinary P-aware
     /// create/adopt paths retain their existing V1/V2 projection below.
     adopted_handle: Option<pc::SandboxHandle>,
@@ -1302,7 +1302,7 @@ impl<R: ContainerRuntime + 'static> SessionSandbox for ContainerSandbox<R> {
     }
 
     fn record_owned_path(&self, path: &str) -> Result<(), pc::SandboxError> {
-        let mut owned = self.owned_paths.lock().expect("owned paths lock poisoned");
+        let mut owned = self.owned_paths.lock();
         if !owned.iter().any(|current| current == path) {
             owned.push(path.to_string());
         }
@@ -1329,7 +1329,7 @@ impl<R: ContainerRuntime + 'static> SessionSandbox for ContainerSandbox<R> {
 }
 
 struct ContainerCleanupState {
-    staging: std::sync::Mutex<Option<StagingGuard>>,
+    staging: awaken_sync::InvariantLock<Option<StagingGuard>>,
     secret_writebacks: Vec<SecretWriteback>,
     secret_broker: Option<Arc<dyn pc::SecretBroker>>,
     memory: tokio::sync::Mutex<Option<Vec<StagedMemoryMount>>>,
@@ -1344,7 +1344,7 @@ impl ContainerCleanupState {
         staging: Option<StagingGuard>,
     ) -> Self {
         Self {
-            staging: std::sync::Mutex::new(staging),
+            staging: awaken_sync::InvariantLock::new(staging),
             secret_writebacks: Vec::new(),
             secret_broker,
             memory: tokio::sync::Mutex::new(None),
@@ -1356,7 +1356,7 @@ impl ContainerCleanupState {
 
     fn physical_cleanup_only() -> Self {
         Self {
-            staging: std::sync::Mutex::new(None),
+            staging: awaken_sync::InvariantLock::new(None),
             secret_writebacks: Vec::new(),
             secret_broker: None,
             memory: tokio::sync::Mutex::new(None),
@@ -1402,7 +1402,7 @@ impl ContainerCleanupState {
         }
         let writeback_done = secret_writebacks.is_empty();
         Ok(Self {
-            staging: std::sync::Mutex::new(staging),
+            staging: awaken_sync::InvariantLock::new(staging),
             secret_writebacks,
             secret_broker,
             memory: tokio::sync::Mutex::new(None),
@@ -1568,7 +1568,10 @@ impl ContainerCleanupState {
             })?;
         }
         drop(memory);
-        let mut staging = self.staging.lock().expect("staging mutex poisoned");
+        let mut staging = self
+            .staging
+            .lock()
+            .map_err(|poisoned| pc::SandboxError::backend("release staging", poisoned))?;
         admit(&mut || {
             if let Some(staging) = staging.take() {
                 staging.remove();
@@ -1610,11 +1613,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                         previous,
                         adoption_fingerprint: adoption_fingerprint.clone(),
                         realization_fingerprint: realization_fingerprint.clone(),
-                        owned_paths: self
-                            .owned_paths
-                            .lock()
-                            .expect("owned paths lock poisoned")
-                            .clone(),
+                        owned_paths: self.owned_paths.lock().clone(),
                     },
                 )
                 .with_memory_materializations(self.memory_materializations.clone())

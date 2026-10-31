@@ -103,7 +103,7 @@ pub const DEFAULT_LEASE_MS: u64 = 30_000;
 /// engine drives the in-memory reference and the Postgres backend unchanged.
 pub struct DispatchWorker<S> {
     runtime: Arc<Runtime>,
-    attempt_executor: std::sync::RwLock<Arc<dyn RunAttemptExecutor>>,
+    attempt_executor: awaken_sync::LeafRwLock<Arc<dyn RunAttemptExecutor>>,
     store: Arc<S>,
     ports: ExecutionAuthority,
     exec: WorkerContext,
@@ -474,17 +474,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Install the session's selected executor before its first claim. The lock
     /// is read only long enough to clone the `Arc`; no executor call holds it.
     pub fn install_attempt_executor(&self, executor: Arc<dyn RunAttemptExecutor>) {
-        *self
-            .attempt_executor
-            .write()
-            .expect("attempt executor lock poisoned") = executor;
+        *self.attempt_executor.write() = executor;
     }
 
     pub(crate) fn attempt_executor(&self) -> Arc<dyn RunAttemptExecutor> {
-        self.attempt_executor
-            .read()
-            .expect("attempt executor lock poisoned")
-            .clone()
+        self.attempt_executor.read().clone()
     }
 
     /// Replace the selected recovery cache without changing its load authority.
@@ -1928,7 +1922,7 @@ fn construct_dispatch_worker<S: Dispatch + 'static>(
     let attempt_executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
     DispatchWorker {
         runtime,
-        attempt_executor: std::sync::RwLock::new(attempt_executor),
+        attempt_executor: awaken_sync::LeafRwLock::new(attempt_executor),
         store,
         ports,
         exec: WorkerContext::new(commit.clone()).with_reader(reader.clone()),

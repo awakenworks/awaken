@@ -123,7 +123,7 @@ fn listener_owner_cleanup_covers_exit_and_disposal_decision_table() {
                         panic!("injected invalidation thread failure");
                     }
                     run_invalidation_listener(
-                        Arc::new(Mutex::new(ContentLruCache::new(4))),
+                        Arc::new(LeafLock::new(ContentLruCache::new(4))),
                         "s".into(),
                         rx,
                         thread_stop,
@@ -226,7 +226,7 @@ fn listener_setup_unwind_keeps_the_same_cleanup_owner() {
     let thread_stop = stop.clone();
     let worker = std::thread::spawn(move || {
         run_invalidation_listener(
-            Arc::new(Mutex::new(ContentLruCache::new(4))),
+            Arc::new(LeafLock::new(ContentLruCache::new(4))),
             "s".into(),
             rx,
             thread_stop,
@@ -251,9 +251,9 @@ fn invalidation_listener_drops_matching_paths_only() {
     use awaken_resource_contract::LocalInvalidator;
     use awaken_resource_contract::MemoryInvalidator;
 
-    let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
-    cache.lock().unwrap().put(memory("/a.md", "one"));
-    cache.lock().unwrap().put(memory("/b.md", "two"));
+    let cache = Arc::new(LeafLock::new(ContentLruCache::new(8)));
+    cache.lock().put(memory("/a.md", "one"));
+    cache.lock().put(memory("/b.md", "two"));
 
     let bus = LocalInvalidator::new(16);
     let rx = bus.subscribe();
@@ -270,27 +270,21 @@ fn invalidation_listener_drops_matching_paths_only() {
 
     // Wait for the listener to observe the invalidation (poll cadence is 20ms).
     let mut waited = Duration::ZERO;
-    while cache.lock().unwrap().get("/a.md").is_some() && waited < Duration::from_secs(2) {
+    while cache.lock().get("/a.md").is_some() && waited < Duration::from_secs(2) {
         std::thread::sleep(Duration::from_millis(10));
         waited += Duration::from_millis(10);
     }
-    assert!(
-        cache.lock().unwrap().get("/a.md").is_none(),
-        "matching path dropped"
-    );
-    assert!(
-        cache.lock().unwrap().get("/b.md").is_some(),
-        "other store untouched"
-    );
+    assert!(cache.lock().get("/a.md").is_none(), "matching path dropped");
+    assert!(cache.lock().get("/b.md").is_some(), "other store untouched");
 
     bus.publish("s", "/");
     let mut waited = Duration::ZERO;
-    while cache.lock().unwrap().get("/b.md").is_some() && waited < Duration::from_secs(2) {
+    while cache.lock().get("/b.md").is_some() && waited < Duration::from_secs(2) {
         std::thread::sleep(Duration::from_millis(10));
         waited += Duration::from_millis(10);
     }
     assert!(
-        cache.lock().unwrap().get("/b.md").is_none(),
+        cache.lock().get("/b.md").is_none(),
         "the root sentinel clears every cached path in the store"
     );
 
@@ -321,7 +315,7 @@ fn fuse_constructs_with_a_seeded_root() {
 #[test]
 fn attr_reports_the_records_timestamps_not_now() {
     let fs = test_fs();
-    let (ino, node) = fs.intern_memory(&memory("/a.md", "hi"));
+    let (ino, node) = fs.intern_memory(&memory("/a.md", "hi")).unwrap();
     let attr = MemoryFuse::attr(ino, &node);
     assert_eq!(
         attr.crtime,
@@ -349,16 +343,20 @@ fn content_lru_cache_evicts_oldest_and_refreshes_on_get() {
 #[test]
 fn open_fd_count_tracks_allocated_handles() {
     let fs = test_fs();
-    let a = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration::new("m1", 1, sha256_hex("one")),
-        buffer: b"one".to_vec(),
-        dirty: false,
-    });
-    let b = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration::new("m2", 1, sha256_hex("two")),
-        buffer: b"two".to_vec(),
-        dirty: false,
-    });
+    let a = fs
+        .allocate_fh(OpenFile {
+            generation: MemoryGeneration::new("m1", 1, sha256_hex("one")),
+            buffer: b"one".to_vec(),
+            dirty: false,
+        })
+        .unwrap();
+    let b = fs
+        .allocate_fh(OpenFile {
+            generation: MemoryGeneration::new("m2", 1, sha256_hex("two")),
+            buffer: b"two".to_vec(),
+            dirty: false,
+        })
+        .unwrap();
     assert_eq!(fs.mount_state.open_fds.load(Ordering::SeqCst), 2);
     fs.remove_fh(a);
     assert_eq!(fs.mount_state.open_fds.load(Ordering::SeqCst), 1);
@@ -370,18 +368,22 @@ fn open_fd_count_tracks_allocated_handles() {
 fn dirty_fd_budget_fails_closed_at_the_limit() {
     let fs = test_fs();
     for index in 0..MAX_DIRTY_OPEN_FILES {
-        let fh = fs.allocate_fh(OpenFile {
-            generation: MemoryGeneration::new(format!("m{index}"), 1, sha256_hex("clean")),
-            buffer: Vec::new(),
-            dirty: false,
-        });
+        let fh = fs
+            .allocate_fh(OpenFile {
+                generation: MemoryGeneration::new(format!("m{index}"), 1, sha256_hex("clean")),
+                buffer: Vec::new(),
+                dirty: false,
+            })
+            .unwrap();
         fs.write_fh_bytes(fh, 0, b"x").expect("dirty fd admitted");
     }
-    let blocked = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration::new("blocked", 1, sha256_hex("blocked")),
-        buffer: Vec::new(),
-        dirty: false,
-    });
+    let blocked = fs
+        .allocate_fh(OpenFile {
+            generation: MemoryGeneration::new("blocked", 1, sha256_hex("blocked")),
+            buffer: Vec::new(),
+            dirty: false,
+        })
+        .unwrap();
     assert!(
         matches!(
             fs.write_fh_bytes(blocked, 0, b"x"),
@@ -850,9 +852,9 @@ fn a_lagged_listener_clears_the_whole_cache() {
     // A listener that fell behind by more than the bus capacity has missed
     // invalidations, so it cannot know which paths are stale — it clears the
     // whole cache rather than risk serving a stale entry.
-    let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
-    cache.lock().unwrap().put(memory("/a.md", "a"));
-    cache.lock().unwrap().put(memory("/b.md", "b"));
+    let cache = Arc::new(LeafLock::new(ContentLruCache::new(8)));
+    cache.lock().put(memory("/a.md", "a"));
+    cache.lock().put(memory("/b.md", "b"));
 
     // Capacity-2 bus; publish far more than that BEFORE the listener drains, so
     // its first `try_recv` observes `Lagged`.
@@ -868,15 +870,15 @@ fn a_lagged_listener_clears_the_whole_cache() {
     };
 
     let mut waited = Duration::ZERO;
-    while cache.lock().unwrap().get("/a.md").is_some() && waited < Duration::from_secs(2) {
+    while cache.lock().get("/a.md").is_some() && waited < Duration::from_secs(2) {
         std::thread::sleep(Duration::from_millis(10));
         waited += Duration::from_millis(10);
     }
     assert!(
-        cache.lock().unwrap().get("/a.md").is_none(),
+        cache.lock().get("/a.md").is_none(),
         "a lagged listener clears the cache"
     );
-    assert!(cache.lock().unwrap().get("/b.md").is_none());
+    assert!(cache.lock().get("/b.md").is_none());
 
     stop.store(true, Ordering::SeqCst);
     listener.join().unwrap();
@@ -901,16 +903,10 @@ fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
 
     // Seed /note.md and let host B cache it (as if B had just read it).
     let seed = rt.block_on(fs_a.create("s", "/note.md", "v1")).unwrap();
-    let cache_b = Arc::new(Mutex::new(ContentLruCache::new(8)));
-    cache_b.lock().unwrap().put(seed.clone());
+    let cache_b = Arc::new(LeafLock::new(ContentLruCache::new(8)));
+    cache_b.lock().put(seed.clone());
     assert_eq!(
-        cache_b
-            .lock()
-            .unwrap()
-            .get("/note.md")
-            .unwrap()
-            .content
-            .as_deref(),
+        cache_b.lock().get("/note.md").unwrap().content.as_deref(),
         Some("v1"),
         "B has cached the seed content"
     );
@@ -930,14 +926,12 @@ fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
     // B's cache drops the stale path (bounded poll on the real condition — the file's
     // established idiom for the async listener, not a fixed ordering sleep).
     let mut waited = Duration::ZERO;
-    while cache_b.lock().unwrap().entries.contains_key("/note.md")
-        && waited < Duration::from_secs(2)
-    {
+    while cache_b.lock().entries.contains_key("/note.md") && waited < Duration::from_secs(2) {
         std::thread::sleep(Duration::from_millis(10));
         waited += Duration::from_millis(10);
     }
     assert!(
-        !cache_b.lock().unwrap().entries.contains_key("/note.md"),
+        !cache_b.lock().entries.contains_key("/note.md"),
         "the peer mount dropped the written path from its cache"
     );
 
@@ -998,7 +992,7 @@ fn a_closed_bus_stops_the_listener_without_the_stop_flag() {
     use awaken_resource_contract::LocalInvalidator;
     // Dropping the sender closes the bus; the listener observes `Closed` and exits
     // on its own (the drop-without-explicit-unmount path relies on this).
-    let cache = Arc::new(Mutex::new(ContentLruCache::new(4)));
+    let cache = Arc::new(LeafLock::new(ContentLruCache::new(4)));
     let bus = LocalInvalidator::new(4);
     let rx = bus.subscribe();
     let stop = Arc::new(AtomicBool::new(false));
@@ -1174,20 +1168,18 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         .block_on(ports.memory_queries().get_by_path(store, "/note.md"))
         .unwrap()
         .unwrap();
-    let cache = Arc::new(Mutex::new(ContentLruCache::new(8)));
+    let cache = Arc::new(LeafLock::new(ContentLruCache::new(8)));
     let assert_store_cache_cleared = |operation: &str| {
         let started = std::time::Instant::now();
-        while !cache.lock().unwrap().entries.is_empty()
-            && started.elapsed() < Duration::from_secs(2)
-        {
+        while !cache.lock().entries.is_empty() && started.elapsed() < Duration::from_secs(2) {
             std::thread::yield_now();
         }
         assert!(
-            cache.lock().unwrap().entries.is_empty(),
+            cache.lock().entries.is_empty(),
             "{operation} clears raw membership for the entire store, independently of TTL"
         );
     };
-    cache.lock().unwrap().put(seed.clone());
+    cache.lock().put(seed.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let listener = InvalidationListener {
         stop: stop.clone(),
@@ -1216,13 +1208,13 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
     let started = std::time::Instant::now();
-    while cache.lock().unwrap().entries.contains_key("/note.md")
+    while cache.lock().entries.contains_key("/note.md")
         && started.elapsed() < Duration::from_secs(2)
     {
         std::thread::yield_now();
     }
     assert!(
-        !cache.lock().unwrap().entries.contains_key("/note.md"),
+        !cache.lock().entries.contains_key("/note.md"),
         "listener removed raw membership; TTL cannot pass this assertion"
     );
     let current = rt
@@ -1230,7 +1222,7 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         .unwrap()
         .unwrap();
     assert_eq!(current.content.as_deref(), Some("v2"));
-    cache.lock().unwrap().put(current.clone());
+    cache.lock().put(current.clone());
     let (status, _) = rt.block_on(request("PATCH", &uri, json!({"content":"loser", "precondition":{"type":"content_sha256", "content_sha256":seed.content_sha256}})));
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(
@@ -1240,7 +1232,7 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         ),
         "failed CAS emits nothing"
     );
-    assert!(cache.lock().unwrap().entries.contains_key("/note.md"));
+    assert!(cache.lock().entries.contains_key("/note.md"));
     let (status, _) = rt.block_on(request(
         "PATCH",
         &uri,
@@ -1257,10 +1249,9 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         .block_on(ports.memory_queries().get_by_path(store, "/moved.md"))
         .unwrap()
         .unwrap();
-    cache.lock().unwrap().put(moved);
+    cache.lock().put(moved);
     cache
         .lock()
-        .unwrap()
         .put(memory("/unrelated.md", "cached peer path"));
     rt.block_on(
         ports
@@ -1278,10 +1269,9 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
         .block_on(ports.memory_queries().get_by_path(store, "/renamed.md"))
         .unwrap()
         .unwrap();
-    cache.lock().unwrap().put(renamed);
+    cache.lock().put(renamed);
     cache
         .lock()
-        .unwrap()
         .put(memory("/unrelated.md", "cached peer path"));
     let versions = rt
         .block_on(ports.memory_versions().list_versions(store))

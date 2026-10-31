@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["async-nats", "sqlx"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true

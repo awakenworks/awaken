@@ -3,7 +3,7 @@
 // @formal reason: law, exact local Arc and handle, original provider proof and generation-scoped
 // @formal reason: BackgroundRuns activity. Source-retention decision tables exercise this adapter;
 // @formal reason: provider/storage facts and async scheduling remain external proof boundaries.
-// Startup capability lifetimes still use the SessionApplications composition owner.
+// Startup capability lifetimes are owned by the composition root's lifecycle.
 //! Claiming-Worker roles over the executor's selected components.
 
 use std::sync::Arc;
@@ -11,12 +11,14 @@ use std::sync::Arc;
 use awaken_dispatch_contract::CompletionSink;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_dispatch_execution::{ProcessDispatch, WorkerResolver};
+use awaken_session_execution_contract::{
+    SessionApplicationBindingError, SessionApplicationLifetime, SessionApplications,
+};
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_run_delivery::SessionDispatchLifecycle;
 
 /// An execution service handle that owns every selected application port.
-pub type SessionExecutionLifecycle =
-    SessionDispatchLifecycle<awaken_session_run_delivery::SessionApplicationLifetime>;
+pub type SessionExecutionLifecycle = SessionDispatchLifecycle<SessionApplicationLifetime>;
 
 /// The execution roles a database-less Worker composition selects.
 #[derive(Clone)]
@@ -26,9 +28,11 @@ pub struct WorkerRoles {
     runs: Arc<crate::SessionRuns>,
 }
 
-/// Select the shared process lifecycle over the executor's original authority,
-/// lazy resolver and auxiliary registry. Coordinator-only roots construct the
-/// same component directly, without an executor.
+/// Complete the executor's one Session application binding and select the
+/// shared process lifecycle over the executor's original authority, lazy
+/// resolver and auxiliary registry. This is the only place a composition root
+/// binds the application; Coordinator-only roots construct the same component
+/// directly, without an executor and without a binding.
 ///
 /// Execution cannot start through the old unchecked Host-only constructor:
 ///
@@ -43,10 +47,10 @@ pub struct WorkerRoles {
 pub fn session_dispatch_lifecycle(
     host: &crate::ExecutorComponents,
     completion: Arc<dyn CompletionSink>,
-    applications: awaken_session_run_delivery::SessionApplications,
-) -> Result<SessionExecutionLifecycle, crate::SessionApplicationBindingError> {
-    use crate::SessionApplicationBindingError as E;
-    use awaken_session_run_delivery::SessionApplicationMode as M;
+    applications: SessionApplications,
+) -> Result<SessionExecutionLifecycle, SessionApplicationBindingError> {
+    use SessionApplicationBindingError as E;
+    use awaken_session_execution_contract::SessionApplicationMode as M;
     if host.dispatch.has_started_services() {
         return Err(E::ServicesAlreadyStarted);
     }
@@ -78,11 +82,9 @@ pub fn session_dispatch_lifecycle(
     }
     // Keep strong owners outside the publication callback. Even a rejected
     // custom port is dropped only after the process configuration guard ends.
-    let (connections, lifetime) = applications.connect();
-    host.dispatch
-        .configure_before_services_start(|| {
-            host.session_application.select_connections(connections)
-        })
+    let lifetime = host
+        .dispatch
+        .configure_before_services_start(|| host.session_application.bind(&applications))
         .ok_or(E::ServicesAlreadyStarted)??;
     Ok(retained_lifecycle(host, completion, lifetime))
 }
@@ -91,7 +93,7 @@ pub fn session_dispatch_lifecycle(
 pub(crate) fn selected_test_lifecycle(
     host: &crate::ExecutorComponents,
     completion: Arc<dyn CompletionSink>,
-) -> Result<SessionExecutionLifecycle, crate::SessionApplicationBindingError> {
+) -> Result<SessionExecutionLifecycle, SessionApplicationBindingError> {
     Ok(retained_lifecycle(
         host,
         completion,
@@ -102,7 +104,7 @@ pub(crate) fn selected_test_lifecycle(
 fn retained_lifecycle(
     host: &crate::ExecutorComponents,
     completion: Arc<dyn CompletionSink>,
-    lifetime: awaken_session_run_delivery::SessionApplicationLifetime,
+    lifetime: SessionApplicationLifetime,
 ) -> SessionExecutionLifecycle {
     let assembly = host.run_assembly.clone();
     let authority = assembly.authority.as_ref();
@@ -146,8 +148,8 @@ impl WorkerRoles {
     /// Local, standalone and claimed execution share this same mechanism.
     pub fn of(
         host: &crate::ExecutorComponents,
-        applications: awaken_session_run_delivery::SessionApplications,
-    ) -> Result<Self, crate::SessionApplicationBindingError> {
+        applications: SessionApplications,
+    ) -> Result<Self, SessionApplicationBindingError> {
         Ok(Self {
             lifecycle: session_dispatch_lifecycle(
                 host,

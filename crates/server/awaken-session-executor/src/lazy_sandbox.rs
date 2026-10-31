@@ -7,10 +7,12 @@ use awaken_tool_contract::tool::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
 };
 
-/// Held in the Session's installed Session, so it reaches the installed Session registry and
-/// the realization executor weakly: the installed Session must not keep its own owners alive.
+/// Held in the Session's installed Session, so it reaches its one owner, the
+/// realization executor, weakly: the installed Session must not keep the
+/// executor that owns the installed-Session registry alive. It reads its own
+/// Session through that executor's view of the registry; it holds no second
+/// handle to the registry itself.
 pub(crate) struct DeferredSandboxExecutor {
-    installed_sessions: Weak<crate::InstalledSessions>,
     realization_executor: Weak<crate::realization_executor::RealizationExecutor>,
     thread: String,
 }
@@ -37,12 +39,9 @@ pub(crate) fn bind_deferred_executor(
         })?
         .unwrap_or(false);
     if needed {
-        let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
-            Arc::new(DeferredSandboxExecutor::new(
-                Arc::downgrade(&host.installed_sessions),
-                Arc::downgrade(&host.realization_executor),
-                thread,
-            ));
+        let executor: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
+            DeferredSandboxExecutor::new(&host.realization_executor, thread),
+        );
         host.installed_sessions
             .modify_run(thread, |run| run.deferred_executor = Some(executor))?;
     }
@@ -50,22 +49,33 @@ pub(crate) fn bind_deferred_executor(
 }
 
 impl DeferredSandboxExecutor {
+    /// Borrow the owner; the executor decides the edge is weak.
     pub(crate) fn new(
-        installed_sessions: Weak<crate::InstalledSessions>,
-        realization_executor: Weak<crate::realization_executor::RealizationExecutor>,
+        realization_executor: &Arc<crate::realization_executor::RealizationExecutor>,
         thread: impl Into<String>,
     ) -> Self {
         Self {
-            installed_sessions,
-            realization_executor,
+            realization_executor: Arc::downgrade(realization_executor),
             thread: thread.into(),
         }
     }
 
-    fn installed_sessions(&self) -> Result<Arc<crate::InstalledSessions>, ToolError> {
-        self.installed_sessions
-            .upgrade()
-            .ok_or_else(|| ToolError::DefinitiveFailure("Session host is unavailable".into()))
+    /// Serve a pinned Skill `read` from this Session's own projection, read
+    /// through the owner's view of the installed Sessions. `None` when the
+    /// Session is absent or the path is not a pinned Skill file; a released
+    /// owner or a poisoned registry refuses.
+    fn read_pinned_skill(
+        &self,
+        args: &awaken_ext_builtin_tools::ReadArgs,
+    ) -> Result<Option<Result<String, ToolError>>, ToolError> {
+        Ok(self
+            .realization_executor()?
+            .sessions()
+            .modify_session(&self.thread, |session| {
+                crate::skills::read_pinned_skill(session, args)
+            })
+            .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
+            .flatten())
     }
 
     fn realization_executor(
@@ -85,15 +95,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
     ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
         if call.tool_id == "read" {
             let args = awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
-            if self
-                .installed_sessions()?
-                .read(&self.thread, |installed| {
-                    crate::skills::read_pinned_skill(installed, &args)
-                })
-                .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
-                .flatten()
-                .is_some()
-            {
+            if self.read_pinned_skill(&args)?.is_some() {
                 return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::worker());
             }
         }
@@ -139,14 +141,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
         if call.tool_id == "read" {
             let args: awaken_ext_builtin_tools::ReadArgs =
                 awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
-            if let Some(result) = self
-                .installed_sessions()?
-                .read(&self.thread, |installed| {
-                    crate::skills::read_pinned_skill(installed, &args)
-                })
-                .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
-                .flatten()
-            {
+            if let Some(result) = self.read_pinned_skill(&args)? {
                 return result.map(|content| ToolOutput::ok(&call.call_id, content));
             }
         }
@@ -158,3 +153,6 @@ impl ToolExecutor for DeferredSandboxExecutor {
         environment.agent_tools().tool_executor().invoke(call).await
     }
 }
+
+#[cfg(test)]
+mod tests;

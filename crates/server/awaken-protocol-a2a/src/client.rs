@@ -20,10 +20,11 @@
 //! [`CredentialRefresher`] is consulted once per failed request (the OAuth
 //! flow that produces a fresh bearer runs host-side, behind that callback).
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
+use awaken_sync::LeafRwLock;
 use serde_json::json;
 
 #[cfg(test)]
@@ -220,7 +221,7 @@ pub async fn agent_card(transport: &dyn Transport) -> Result<AgentCard, ClientEr
 /// it to [`ClientError::Unauthorized`] with the challenge attached.
 pub struct HttpTransport {
     base_url: String,
-    credential: RwLock<Credential>,
+    credential: LeafRwLock<Credential>,
     /// Custom headers sent on every request, alongside the credential header.
     headers: Vec<(String, String)>,
     refresher: Option<Arc<dyn CredentialRefresher>>,
@@ -232,7 +233,7 @@ impl HttpTransport {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            credential: RwLock::new(Credential::None),
+            credential: LeafRwLock::new(Credential::None),
             headers: Vec::new(),
             refresher: None,
         }
@@ -247,7 +248,7 @@ impl HttpTransport {
     /// Authenticate with `credential` — a bearer or an arbitrary header (the
     /// card's `http`/`apiKey` header schemes).
     pub fn with_credential(self, credential: Credential) -> Self {
-        *self.credential.write().unwrap() = credential;
+        *self.credential.write() = credential;
         self
     }
 
@@ -266,13 +267,13 @@ impl HttpTransport {
     /// Replace the credential used from the next request on — the host calls
     /// this when it rotates a token outside the 401 path.
     pub fn set_credential(&self, credential: Credential) {
-        *self.credential.write().unwrap() = credential;
+        *self.credential.write() = credential;
     }
 
     /// Custom headers + the current credential header.
     fn current_headers(&self) -> Vec<(String, String)> {
         let mut headers = self.headers.clone();
-        if let Some(pair) = self.credential.read().unwrap().header() {
+        if let Some(pair) = self.credential.read().header() {
             headers.push(pair);
         }
         headers
@@ -351,7 +352,7 @@ impl Transport for HttpTransport {
         let Some(fresh) = refresher.refresh(&challenge).await else {
             return Ok(response);
         };
-        *self.credential.write().unwrap() = fresh;
+        *self.credential.write() = fresh;
         self.attempt(method, path, body, self.current_headers())
             .await
     }

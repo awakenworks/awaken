@@ -12,11 +12,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::HandResult;
 use async_trait::async_trait;
+use awaken_sync::InvariantLock;
 use tokio_util::sync::CancellationToken;
 
 const LOSSLESS_STEM_ID_LIMIT: usize = 96;
@@ -125,14 +125,14 @@ const fn ledger_begin_disposition(phase: LedgerEntryPhase) -> LedgerBeginDisposi
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryOperationLedger {
-    entries: Mutex<HashMap<String, Entry>>,
+    entries: awaken_sync::LeafLock<HashMap<String, Entry>>,
 }
 
 #[async_trait]
 #[cfg(any(test, feature = "test-support"))]
 impl HandOperationLedger for InMemoryOperationLedger {
     async fn begin(&self, operation_id: &str) -> Result<LedgerAdmission, String> {
-        let mut entries = self.entries.lock().expect("hand ledger poisoned");
+        let mut entries = self.entries.lock();
         Ok(
             match (
                 ledger_begin_disposition(ledger_entry_phase(entries.get(operation_id))),
@@ -161,7 +161,7 @@ impl HandOperationLedger for InMemoryOperationLedger {
 
     async fn wait(&self, operation_id: &str) -> Result<Option<HandResult>, String> {
         let mut result = {
-            let entries = self.entries.lock().expect("hand ledger poisoned");
+            let entries = self.entries.lock();
             match entries.get(operation_id) {
                 Some(Entry::Completed(result)) => return Ok(Some(result.clone())),
                 Some(Entry::Executing(result, _)) => result.subscribe(),
@@ -175,18 +175,12 @@ impl HandOperationLedger for InMemoryOperationLedger {
     }
 
     async fn observe(&self, operation_id: &str, cancel: bool) -> Result<HandResult, String> {
-        let entries = self
-            .entries
-            .lock()
-            .map_err(|_| "hand local ledger poisoned".to_string())?;
+        let entries = self.entries.lock();
         Ok(observe_entry(entries.get(operation_id), cancel))
     }
 
     async fn cancellation(&self, operation_id: &str) -> Result<CancellationToken, String> {
-        let entries = self
-            .entries
-            .lock()
-            .map_err(|_| "hand local ledger poisoned".to_string())?;
+        let entries = self.entries.lock();
         match entries.get(operation_id) {
             Some(Entry::Executing(_, cancellation)) => Ok(cancellation.clone()),
             _ => Err("hand operation has no live cancellation binding".into()),
@@ -195,7 +189,7 @@ impl HandOperationLedger for InMemoryOperationLedger {
 
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
         let result_watch = {
-            let mut entries = self.entries.lock().expect("hand ledger poisoned");
+            let mut entries = self.entries.lock();
             if !ledger_completion_admitted(ledger_entry_phase(entries.get(operation_id))) {
                 return Err("hand operation completion has no matching live claim".to_string());
             }
@@ -229,7 +223,7 @@ pub struct FsOperationLedger {
     /// Process-local join points and completed results. Durable storage never
     /// contains a `HandResult`: an ACP or tool process in the same container can
     /// share the Hand's uid and must not be able to read credentials or output.
-    local_entries: Mutex<HashMap<String, Entry>>,
+    local_entries: InvariantLock<HashMap<String, Entry>>,
 }
 
 impl FsOperationLedger {
@@ -261,7 +255,7 @@ impl FsOperationLedger {
             max_entries,
             durable_entries: AtomicUsize::new(durable_entries),
             admission: tokio::sync::Mutex::new(()),
-            local_entries: Mutex::new(HashMap::new()),
+            local_entries: InvariantLock::new(HashMap::new()),
         })
     }
 

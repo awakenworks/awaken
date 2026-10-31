@@ -127,8 +127,7 @@ impl ManagedState {
         // rebuilt from this durable root and the fenced Thread evidence.
         let memo = self
             .sessions
-            .lock()
-            .unwrap()
+            .lock()?
             .get(session_id)
             .cloned()
             .ok_or(StateError::NotFound)?

@@ -15,12 +15,13 @@
 
 use sha2::Digest;
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
     CredentialDescriptor, CredentialMaterialDelivery, CredentialSourceId,
 };
+use awaken_sync::LeafRwLock;
 use awaken_time::WallClock;
 use sha2::Sha256;
 
@@ -124,7 +125,7 @@ pub struct VaultApplication {
     secrets: Arc<dyn SecretStore>,
     repository: Arc<dyn ManagedCredentialRepository>,
     credential_access: Arc<crate::VaultCredentialAccess>,
-    rollout_target: RwLock<Option<Arc<dyn ManagedCredentialRolloutTarget>>>,
+    rollout_target: LeafRwLock<Option<Arc<dyn ManagedCredentialRolloutTarget>>>,
     /// The one wall clock this owner samples: object creation/update/archive
     /// and deletion-request instants, validation instants, and the `now` of
     /// exact credential access. Tests install a fixed clock.
@@ -150,7 +151,7 @@ impl VaultApplication {
             secrets,
             repository,
             credential_access,
-            rollout_target: RwLock::new(None),
+            rollout_target: LeafRwLock::new(None),
             clock,
         }
     }
@@ -179,14 +180,11 @@ impl VaultApplication {
     /// Install the service-owned rolling replacement edge after process
     /// composition has constructed both Control and Session applications.
     pub fn set_rollout_target(&self, target: Arc<dyn ManagedCredentialRolloutTarget>) {
-        *self.rollout_target.write().expect("Vault rollout target") = Some(target);
+        *self.rollout_target.write() = Some(target);
     }
 
     fn rollout_target(&self) -> Option<Arc<dyn ManagedCredentialRolloutTarget>> {
-        self.rollout_target
-            .read()
-            .expect("Vault rollout target")
-            .clone()
+        self.rollout_target.read().clone()
     }
 
     /// Best-effort one delivery pass. Durable events remain pending when no

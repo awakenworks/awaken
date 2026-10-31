@@ -2,7 +2,8 @@
 //! Runtime-host adapters for fixed Agent coordination and durable child settlement.
 //!
 //! Both adapters route through the Session application's existing authority. A
-//! co-located Host holds only its weak application edge; a database-less Worker
+//! co-located Host reaches it through the executor's one
+//! [`SessionApplicationBinding`]; a database-less Worker
 //! uses the current dispatch claim and the existing authenticated
 //! [`awaken_session_execution_contract::ClaimedSessionCoordinationControl`] transport.
 
@@ -19,14 +20,14 @@ use awaken_runtime_contract::llm::{
     Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
 use awaken_session_execution_contract::{
-    ClaimedSessionCoordinationControl, SessionAgentCoordination, SessionAgentMessageCommand,
-    SessionAgentMessageReceipt, SessionAgentRosterEntry, SessionAgentTarget,
+    ClaimedSessionCoordinationControl, SessionAgentMessageCommand, SessionAgentMessageReceipt,
+    SessionAgentRosterEntry, SessionAgentTarget, SessionApplicationBinding,
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 use awaken_tool_contract::tool::ToolError;
 
 #[cfg(test)]
-use awaken_session_execution_contract::SessionAgentBoundaryCommand;
+use awaken_session_execution_contract::{SessionAgentBoundaryCommand, SessionAgentCoordination};
 
 pub(crate) type ClaimedCoordination = dyn ClaimedSessionCoordinationControl<RunClaim>;
 
@@ -47,7 +48,7 @@ fn model_admission_error(
 
 #[derive(Clone)]
 pub(crate) enum CoordinationEndpoint {
-    Local(Weak<dyn SessionAgentCoordination>),
+    Local(SessionApplicationBinding),
     Remote {
         control: Arc<ClaimedCoordination>,
         installed_sessions: Weak<crate::installed_session::InstalledSessions>,
@@ -59,14 +60,14 @@ impl crate::RunCapabilities {
     /// expired local application remains a failed local endpoint; it never
     /// falls through to a different remote authority.
     pub(crate) fn coordination_endpoint(&self) -> Option<CoordinationEndpoint> {
-        match self.session_application.mode()? {
-            awaken_session_run_delivery::SessionApplicationMode::Local => self
-                .session_application
-                .agent_coordination()
-                .cloned()
-                .map(CoordinationEndpoint::Local),
-            awaken_session_run_delivery::SessionApplicationMode::Standalone => None,
-            awaken_session_run_delivery::SessionApplicationMode::ClaimedWorker => self
+        use awaken_session_execution_contract::SessionApplicationMode as M;
+        // An unbound binding selects no endpoint, exactly as Standalone does.
+        match self.session_application.mode().ok()? {
+            M::Local => Some(CoordinationEndpoint::Local(
+                self.session_application.clone(),
+            )),
+            M::Standalone => None,
+            M::ClaimedWorker => self
                 .worker
                 .session_coordination_control
                 .as_ref()
@@ -88,12 +89,14 @@ impl crate::RunCapabilities {
 }
 
 impl CoordinationEndpoint {
+    /// The Session's current claim, read from the installed Sessions the
+    /// endpoint upgraded (`None` once they are released, which fails closed).
     fn current_claim(
-        installed_sessions: &Weak<crate::installed_session::InstalledSessions>,
+        installed_sessions: Option<Arc<crate::installed_session::InstalledSessions>>,
         session_id: &str,
         source_run_id: &str,
     ) -> Result<(Arc<crate::installed_session::InstalledSessions>, RunClaim), ToolError> {
-        let installed_sessions = installed_sessions.upgrade().ok_or_else(|| {
+        let installed_sessions = installed_sessions.ok_or_else(|| {
             ToolError::DefinitiveFailure("Session coordination owner is unavailable".into())
         })?;
         let claim = installed_sessions
@@ -121,8 +124,8 @@ impl CoordinationEndpoint {
     ) -> Result<Vec<SessionAgentRosterEntry>, ToolError> {
         match self {
             Self::Local(application) => application
-                .upgrade()
-                .ok_or_else(|| {
+                .agent_coordination()
+                .map_err(|_| {
                     ToolError::DefinitiveFailure(
                         "Session coordination application is unavailable".into(),
                     )
@@ -135,8 +138,11 @@ impl CoordinationEndpoint {
                 installed_sessions,
             } => {
                 // Retain the original owner until this control future finishes.
-                let (_owner, claim) =
-                    Self::current_claim(installed_sessions, session_id.as_str(), source_run_id)?;
+                let (_owner, claim) = Self::current_claim(
+                    installed_sessions.upgrade(),
+                    session_id.as_str(),
+                    source_run_id,
+                )?;
                 control
                     .list_session_agents(&claim, session_id.as_str())
                     .await
@@ -158,8 +164,8 @@ impl CoordinationEndpoint {
         }
         match self {
             Self::Local(application) => application
-                .upgrade()
-                .ok_or_else(|| {
+                .agent_coordination()
+                .map_err(|_| {
                     LlmError::Provider("Session coordination application is unavailable".into())
                 })?
                 .admit_session_model_request(session_id, &request.thread_id, &request.run_id)
@@ -196,7 +202,7 @@ impl CoordinationEndpoint {
     ) -> Result<SessionAgentMessageReceipt, ToolError> {
         match self {
             Self::Local(application) => {
-                let application = application.upgrade().ok_or_else(|| {
+                let application = application.agent_coordination().map_err(|_| {
                     ToolError::DefinitiveFailure(
                         "Session coordination application is unavailable".into(),
                     )
@@ -219,7 +225,7 @@ impl CoordinationEndpoint {
             } => {
                 // Retain the original owner until this control future finishes.
                 let (_owner, claim) = Self::current_claim(
-                    installed_sessions,
+                    installed_sessions.upgrade(),
                     command.session_id.as_str(),
                     source_run_id,
                 )?;
@@ -408,12 +414,12 @@ impl HostDispatchSettlementObserver {
     }
 
     fn local_observer(
-        application: &Weak<dyn SessionAgentCoordination>,
+        application: &SessionApplicationBinding,
     ) -> Result<awaken_session_run_delivery::SessionDispatchObserver, DispatchSettlementError> {
         application
-            .upgrade()
+            .agent_coordination()
             .map(awaken_session_run_delivery::SessionDispatchObserver::new)
-            .ok_or_else(|| {
+            .map_err(|_| {
                 DispatchSettlementError("Session coordination application is unavailable".into())
             })
     }
@@ -720,7 +726,9 @@ mod tests {
                     message_gate: Some(gate.clone()),
                     ..Default::default()
                 });
-            let endpoint = CoordinationEndpoint::Local(Arc::downgrade(&application));
+            let endpoint = CoordinationEndpoint::Local(
+                crate::test_application_bindings::coordination_binding(application.clone()),
+            );
             let command = SessionAgentMessageCommand {
                 session_id: "session".into(),
                 source_thread_id: ThreadId("root".into()),
@@ -909,14 +917,18 @@ mod tests {
             .with_session_control(Arc::new(RemoteControl::default())))
         .build()
         .expect("validated Host dependencies");
-        let shared = host.session_application_bindings().clone();
-        assert!(shared.require_agent_coordination().is_err(), "B1");
+        let shared = host.session_application_binding().clone();
+        assert_eq!(
+            shared.agent_coordination().err(),
+            Some(awaken_session_execution_contract::SessionApplicationBindingError::Unbound),
+            "B1"
+        );
         crate::test_application_bindings::select_coordination(&host, local_port.clone())
             .expect("test coordination port binds once");
-        assert!(shared.require_agent_coordination().is_ok(), "B2");
+        assert!(shared.agent_coordination().is_ok(), "B2");
         // O1a live Local -> the sole factory selects Local once, then both
-        // existing roles project the same allocation. Retained observer Weak
-        // cannot keep the application alive after its final owner drops.
+        // existing roles project the same allocation. A retained observer's
+        // binding cannot keep the application alive after its final owner drops.
         let observer = host
             .run_assembly
             .capabilities
@@ -930,7 +942,15 @@ mod tests {
         drop(observer);
         drop(local_port);
         drop(local);
-        assert!(shared.require_agent_coordination().is_err(), "B3");
+        assert_eq!(
+            shared.agent_coordination().err(),
+            Some(
+                awaken_session_execution_contract::SessionApplicationBindingError::RequiredApplicationUnavailable(
+                    "agent coordination"
+                )
+            ),
+            "B3"
+        );
 
         assert!(
             matches!(
@@ -1079,7 +1099,7 @@ mod tests {
         let application = Arc::new(RecordingSessionAgentCoordination::default());
         let application_port: Arc<dyn SessionAgentCoordination> = application.clone();
         let observer = HostDispatchSettlementObserver::new(CoordinationEndpoint::Local(
-            Arc::downgrade(&application_port),
+            crate::test_application_bindings::coordination_binding(application_port.clone()),
         ));
         let dispatch = RunDispatch::new(RunActivation::new(
             run.clone(),

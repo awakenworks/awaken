@@ -21,6 +21,7 @@ isolates = ["sqlx"]
 # store-unaware (it only sees SkillFile data via its SkillSource port).
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-sql-storage = { workspace = true, optional = true }
 # Port-only contract: the SkillStore trait + SkillStoreError live here; this crate
 # implements them and re-exports for backward-compatible paths.

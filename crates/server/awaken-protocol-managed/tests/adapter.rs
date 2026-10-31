@@ -658,7 +658,10 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
         replay["error"]["message"], "session_create_terminal_conflict",
         "F1/E1 stable machine-readable message"
     );
-    assert!(restarted.list_sessions().is_empty(), "F1/E3 no rehydration");
+    assert!(
+        restarted.list_sessions().unwrap().is_empty(),
+        "F1/E3 no rehydration"
+    );
 
     let body = raw_call(&app, "GET", &format!("/v1/sessions/{id}"), Body::empty())
         .await

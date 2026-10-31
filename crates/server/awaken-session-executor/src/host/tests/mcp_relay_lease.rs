@@ -64,7 +64,7 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         reqwest::StatusCode::OK,
         "R1"
     );
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(seen.lock().len(), 1);
     for incarnation in [false, true] {
         let mut foreign = generation.clone();
         foreign = foreign
@@ -152,11 +152,7 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         reqwest::StatusCode::NOT_FOUND,
         "R4"
     );
-    assert_eq!(
-        seen.lock().unwrap().len(),
-        1,
-        "no unauthorized upstream effects"
-    );
+    assert_eq!(seen.lock().len(), 1, "no unauthorized upstream effects");
 }
 
 /// A relay route is keyed by (Session, attachment, version) because that is

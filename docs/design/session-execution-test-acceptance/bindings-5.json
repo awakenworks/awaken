@@ -520,15 +520,15 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 329
+        "line": 328
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 344
+        "line": 342
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 364
+        "line": 362
       }
     ],
     "execution_witnesses": [
@@ -562,7 +562,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 430,
+        "line": 428,
         "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
       }
     ],
@@ -595,11 +595,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 437
+        "line": 435
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 438
+        "line": 436
       }
     ]
   },
@@ -608,7 +608,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 446,
+        "line": 444,
         "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
       }
     ],
@@ -651,11 +651,11 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 453
+        "line": 451
       },
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
-        "line": 457
+        "line": 455
       }
     ]
   },

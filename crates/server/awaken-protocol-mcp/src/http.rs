@@ -24,10 +24,11 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_mcp_server_core::{NotifySink, NullSink};
+use awaken_sync::LeafRwLock;
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -67,7 +68,7 @@ struct HttpState {
     service: Arc<McpToolService>,
     bearer_token: Option<String>,
     /// Sessions opened by `initialize` and not yet DELETEd.
-    sessions: RwLock<HashMap<String, Arc<McpToolService>>>,
+    sessions: LeafRwLock<HashMap<String, Arc<McpToolService>>>,
     /// Server->client notifications fanned out to every standing GET stream.
     notifications: broadcast::Sender<Value>,
 }
@@ -77,7 +78,7 @@ struct HttpState {
 pub fn router(service: Arc<McpToolService>, config: McpHttpConfig) -> Router {
     let state = Arc::new(HttpState {
         bearer_token: config.bearer_token,
-        sessions: RwLock::new(HashMap::new()),
+        sessions: LeafRwLock::new(HashMap::new()),
         notifications: broadcast::channel(64).0,
         service: Arc::clone(&service),
     });
@@ -143,13 +144,7 @@ async fn handle_post(
     // stdio. Notifications must resolve it too, including cancellation. A
     // headerless request is stateless and cannot cancel another client's call.
     let service = if !is_initialize && let Some(session) = header_value(&headers, SESSION_HEADER) {
-        let Some(service) = state
-            .sessions
-            .read()
-            .expect("session lock")
-            .get(&session)
-            .cloned()
-        else {
+        let Some(service) = state.sessions.read().get(&session).cloned() else {
             return (StatusCode::NOT_FOUND, "unknown session").into_response();
         };
         service
@@ -178,11 +173,7 @@ async fn handle_post(
     let mut response = core_reply(reply);
     if successful_initialize {
         let session = uuid::Uuid::new_v4().simple().to_string();
-        state
-            .sessions
-            .write()
-            .expect("session lock")
-            .insert(session.clone(), service);
+        state.sessions.write().insert(session.clone(), service);
         response.headers_mut().insert(
             SESSION_HEADER,
             session
@@ -248,11 +239,7 @@ async fn handle_delete(State(state): State<Arc<HttpState>>, headers: HeaderMap) 
         return rejection;
     }
     if let Some(session) = header_value(&headers, SESSION_HEADER) {
-        state
-            .sessions
-            .write()
-            .expect("session lock")
-            .remove(&session);
+        state.sessions.write().remove(&session);
     }
     StatusCode::NO_CONTENT.into_response()
 }

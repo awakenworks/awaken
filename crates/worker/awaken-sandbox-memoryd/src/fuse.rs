@@ -8,11 +8,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use awaken_sync::{InvariantLock, LeafLock};
 use awaken_time::WallClock;
 
 use awaken_resource_contract::{MemErr, Memory, MemoryFilesystem, MemoryGeneration};
@@ -61,7 +62,7 @@ pub struct MemoryMountHandle {
 /// ownership cannot extend the mount/listener lifetime or evict expired entries.
 #[cfg(test)]
 #[derive(Clone)]
-pub(crate) struct MountedCacheWitness(std::sync::Weak<Mutex<ContentLruCache>>);
+pub(crate) struct MountedCacheWitness(std::sync::Weak<LeafLock<ContentLruCache>>);
 
 #[cfg(test)]
 impl MountedCacheWitness {
@@ -70,7 +71,6 @@ impl MountedCacheWitness {
             .upgrade()
             .expect("real kernel cache remains mounted")
             .lock()
-            .expect("cache mutex is healthy")
             .entries
             .contains_key(path)
     }
@@ -169,7 +169,7 @@ fn listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once() {
 /// lagged listener has missed invalidations, so it clears the whole cache to be
 /// safe rather than serve a possibly-stale entry).
 fn run_invalidation_listener(
-    cache: Arc<Mutex<ContentLruCache>>,
+    cache: Arc<LeafLock<ContentLruCache>>,
     store_id: String,
     mut rx: broadcast::Receiver<Invalidation>,
     stop: Arc<AtomicBool>,
@@ -177,9 +177,8 @@ fn run_invalidation_listener(
     while !stop.load(Ordering::SeqCst) {
         match rx.try_recv() {
             Ok((store, path)) => {
-                if store == store_id
-                    && let Ok(mut cache) = cache.lock()
-                {
+                if store == store_id {
+                    let mut cache = cache.lock();
                     if path == "/" {
                         cache.clear();
                     } else {
@@ -189,9 +188,7 @@ fn run_invalidation_listener(
             }
             Err(broadcast::error::TryRecvError::Empty) => std::thread::sleep(INVALIDATION_POLL),
             Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                if let Ok(mut cache) = cache.lock() {
-                    cache.clear();
-                }
+                cache.lock().clear();
             }
             Err(broadcast::error::TryRecvError::Closed) => break,
         }
@@ -327,8 +324,8 @@ pub struct MemoryFuse {
     store_id: String,
     runtime: Runtime,
     mount_time: u128,
-    inodes: Mutex<InodeTable>,
-    content_cache: Arc<Mutex<ContentLruCache>>,
+    inodes: InvariantLock<InodeTable>,
+    content_cache: Arc<LeafLock<ContentLruCache>>,
     mount_state: Arc<MountState>,
 }
 
@@ -475,8 +472,8 @@ impl MemoryFuse {
             store_id,
             runtime: Runtime::new().map_err(FuseError::Io)?,
             mount_time,
-            inodes: Mutex::new(table),
-            content_cache: Arc::new(Mutex::new(ContentLruCache::new(CONTENT_CACHE_CAPACITY))),
+            inodes: InvariantLock::new(table),
+            content_cache: Arc::new(LeafLock::new(ContentLruCache::new(CONTENT_CACHE_CAPACITY))),
             mount_state,
         })
     }
@@ -517,15 +514,15 @@ impl MemoryFuse {
         size: u64,
         created: u128,
         updated: u128,
-    ) -> (u64, Node) {
-        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+    ) -> Result<(u64, Node), FuseError> {
+        let mut table = self.inodes.lock()?;
         if let Some(ino) = table.by_path.get(&path).copied() {
             let node = table.by_ino.get_mut(&ino).expect("inode node");
             node.kind = kind;
             node.size = size;
             node.created = created;
             node.updated = updated;
-            return (ino, node.clone());
+            return Ok((ino, node.clone()));
         }
         let ino = table.next;
         table.next += 1;
@@ -538,10 +535,10 @@ impl MemoryFuse {
         };
         table.by_path.insert(path, ino);
         table.by_ino.insert(ino, node.clone());
-        (ino, node)
+        Ok((ino, node))
     }
 
-    fn intern_memory(&self, memory: &Memory) -> (u64, Node) {
+    fn intern_memory(&self, memory: &Memory) -> Result<(u64, Node), FuseError> {
         self.intern(
             memory.path.clone(),
             FileType::RegularFile,
@@ -551,7 +548,7 @@ impl MemoryFuse {
         )
     }
 
-    fn intern_dir(&self, path: &str) -> (u64, Node) {
+    fn intern_dir(&self, path: &str) -> Result<(u64, Node), FuseError> {
         self.intern(
             path.to_string(),
             FileType::Directory,
@@ -562,12 +559,7 @@ impl MemoryFuse {
     }
 
     fn node(&self, ino: u64) -> Option<Node> {
-        self.inodes
-            .lock()
-            .expect("inode table mutex poisoned")
-            .by_ino
-            .get(&ino)
-            .cloned()
+        self.inodes.lock().ok()?.by_ino.get(&ino).cloned()
     }
 
     fn child_path(parent: &str, name: &OsStr) -> Option<String> {
@@ -584,10 +576,13 @@ impl MemoryFuse {
 
     fn lookup_path(&self, path: &str) -> Result<(u64, Node), FuseError> {
         if path == "/" {
-            return Ok((ROOT_INO, self.node(ROOT_INO).expect("root node")));
+            let root = self
+                .node(ROOT_INO)
+                .ok_or_else(|| FuseError::NotFound(format!("inode {ROOT_INO}")))?;
+            return Ok((ROOT_INO, root));
         }
         if let Some(memory) = self.cache_get(path) {
-            return Ok(self.intern_memory(&memory));
+            return self.intern_memory(&memory);
         }
         match self
             .runtime
@@ -595,7 +590,7 @@ impl MemoryFuse {
         {
             Ok(Some(memory)) => {
                 self.cache_put(memory.clone());
-                Ok(self.intern_memory(&memory))
+                self.intern_memory(&memory)
             }
             Ok(None) => {
                 // Not a file — a synthetic directory iff something lives under it.
@@ -606,7 +601,7 @@ impl MemoryFuse {
                 if children.is_empty() {
                     Err(FuseError::NotFound(path.to_string()))
                 } else {
-                    Ok(self.intern_dir(path))
+                    self.intern_dir(path)
                 }
             }
             Err(error) => Err(error.into()),
@@ -619,47 +614,35 @@ impl MemoryFuse {
             .ok_or_else(|| FuseError::NotFound(format!("inode {ino}")))
     }
 
-    fn allocate_fh(&self, open: OpenFile) -> u64 {
-        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+    fn allocate_fh(&self, open: OpenFile) -> Result<u64, FuseError> {
+        let mut table = self.inodes.lock()?;
         let fh = table.next_fh;
         table.next_fh += 1;
         table.open_files.insert(fh, open);
         self.mount_state.open_fds.fetch_add(1, Ordering::SeqCst);
-        fh
+        Ok(fh)
     }
 
     /// A shared handle to the content cache, so a peer-projection invalidation listener
     /// can drop stale paths after the fuse is moved into the kernel session.
-    fn cache_handle(&self) -> Arc<Mutex<ContentLruCache>> {
+    fn cache_handle(&self) -> Arc<LeafLock<ContentLruCache>> {
         self.content_cache.clone()
     }
 
     fn cache_get(&self, path: &str) -> Option<Memory> {
-        self.content_cache
-            .lock()
-            .expect("content cache mutex poisoned")
-            .get(path)
+        self.content_cache.lock().get(path)
     }
 
     fn cache_put(&self, memory: Memory) {
-        self.content_cache
-            .lock()
-            .expect("content cache mutex poisoned")
-            .put(memory);
+        self.content_cache.lock().put(memory);
     }
 
     fn cache_remove_path(&self, path: &str) {
-        self.content_cache
-            .lock()
-            .expect("content cache mutex poisoned")
-            .remove_path(path);
+        self.content_cache.lock().remove_path(path);
     }
 
     fn cache_clear_prefix(&self, prefix: &str) {
-        self.content_cache
-            .lock()
-            .expect("content cache mutex poisoned")
-            .clear_path_prefix(prefix);
+        self.content_cache.lock().clear_path_prefix(prefix);
     }
 
     fn open_file_for_path(&self, path: &str, flags: i32) -> Result<u64, FuseError> {
@@ -685,7 +668,7 @@ impl MemoryFuse {
             generation: memory.generation(),
             buffer,
             dirty: false,
-        });
+        })?;
         if truncate && let Err(error) = self.mark_fh_dirty(fh) {
             self.remove_fh(fh);
             return Err(error);
@@ -697,18 +680,18 @@ impl MemoryFuse {
         let memory = self
             .runtime
             .block_on(self.fs.create_as(&self.store_id, path, "", None))?;
-        let (ino, node) = self.intern_memory(&memory);
+        let (ino, node) = self.intern_memory(&memory)?;
         let fh = self.allocate_fh(OpenFile {
             generation: memory.generation(),
             buffer: Vec::new(),
             dirty: false,
-        });
+        })?;
         self.cache_put(memory);
         Ok((fh, ino, node))
     }
 
     fn mark_fh_dirty(&self, fh: u64) -> Result<(), FuseError> {
-        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+        let mut table = self.inodes.lock()?;
         Self::dirty_open_file_mut(&mut table, fh).map(|_| ())
     }
 
@@ -721,7 +704,7 @@ impl MemoryFuse {
         let Some(memory_id) = memory_id else {
             return Ok(false);
         };
-        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+        let mut table = self.inodes.lock()?;
         let fhs: Vec<u64> = table
             .open_files
             .iter()
@@ -770,7 +753,7 @@ impl MemoryFuse {
                 let size = mem.map(|m| m.content_size).unwrap_or(0);
                 let updated = mem.map(|m| m.updated_unix_nanos).unwrap_or(self.mount_time);
                 self.intern(path, FileType::RegularFile, size, updated, updated)
-            };
+            }?;
             entries.push((child_ino, child.kind, name));
         }
         Ok(entries)
@@ -794,7 +777,7 @@ impl MemoryFuse {
             return Ok(node);
         };
         if let Some(fh) = fh {
-            let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+            let mut table = self.inodes.lock()?;
             Self::dirty_open_file_mut(&mut table, fh)?
                 .buffer
                 .resize(size, 0);
@@ -827,7 +810,7 @@ impl MemoryFuse {
                 .await
         })?;
         self.cache_put(memory.clone());
-        Ok(self.intern_memory(&memory).1)
+        Ok(self.intern_memory(&memory)?.1)
     }
 
     fn dirty_open_file_mut(table: &mut InodeTable, fh: u64) -> Result<&mut OpenFile, FuseError> {
@@ -856,7 +839,7 @@ impl MemoryFuse {
     }
 
     fn read_fh_bytes(&self, fh: u64, offset: i64, size: u32) -> Result<Vec<u8>, FuseError> {
-        let table = self.inodes.lock().expect("inode table mutex poisoned");
+        let table = self.inodes.lock()?;
         let open = table
             .open_files
             .get(&fh)
@@ -869,7 +852,7 @@ impl MemoryFuse {
     }
 
     fn write_fh_bytes(&self, fh: u64, offset: i64, data: &[u8]) -> Result<(), FuseError> {
-        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+        let mut table = self.inodes.lock()?;
         let open = Self::dirty_open_file_mut(&mut table, fh)?;
         let content = String::from_utf8(open.buffer.clone()).map_err(FuseError::NonUtf8)?;
         open.buffer = splice_bytes(&content, offset, data)?.into_bytes();
@@ -878,7 +861,7 @@ impl MemoryFuse {
 
     fn flush_fh(&self, fh: u64) -> Result<(), FuseError> {
         let open = {
-            let table = self.inodes.lock().expect("inode table mutex poisoned");
+            let table = self.inodes.lock()?;
             table
                 .open_files
                 .get(&fh)
@@ -911,7 +894,7 @@ impl MemoryFuse {
             Err(error) => return Err(error.into()),
         };
         {
-            let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+            let mut table = self.inodes.lock()?;
             if let Some(current) = table.open_files.get_mut(&fh) {
                 current.generation = updated.generation();
                 current.dirty = false;
@@ -919,13 +902,16 @@ impl MemoryFuse {
             Self::mark_fh_clean(&mut table, fh);
         }
         self.cache_put(updated.clone());
-        self.intern_memory(&updated);
+        self.intern_memory(&updated)?;
         Ok(())
     }
 
     fn remove_fh(&self, fh: u64) {
         let removed = {
-            let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+            // Poisoned inode table: skip this best-effort release (fail closed).
+            let Ok(mut table) = self.inodes.lock() else {
+                return;
+            };
             Self::mark_fh_clean(&mut table, fh);
             table.open_files.remove(&fh)
         };
@@ -941,7 +927,7 @@ impl MemoryFuse {
         let generation = memory.generation();
         self.cache_remove_path(old_path);
         self.cache_put(memory.clone());
-        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+        let mut table = self.inodes.lock()?;
         if let Some(ino) = table.by_path.remove(old_path) {
             table.by_path.insert(memory.path.clone(), ino);
             if let Some(node) = table.by_ino.get_mut(&ino) {
@@ -991,7 +977,13 @@ impl Filesystem for MemoryFuse {
 
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
         if let Some(fh) = fh {
-            let table = self.inodes.lock().expect("inode table mutex poisoned");
+            let table = match self.inodes.lock() {
+                Ok(table) => table,
+                Err(poisoned) => {
+                    reply.error(Self::errno(poisoned.into()));
+                    return;
+                }
+            };
             if let (Some(node), Some(open)) = (table.by_ino.get(&ino), table.open_files.get(&fh)) {
                 let mut node = node.clone();
                 node.size = open.buffer.len() as u64;
@@ -1253,8 +1245,10 @@ impl Filesystem for MemoryFuse {
             return;
         };
         // Directories are synthetic (implied by memory paths); no store write.
-        let (ino, node) = self.intern_dir(&path);
-        reply.entry(&TTL, &Self::attr(ino, &node), 0);
+        match self.intern_dir(&path) {
+            Ok((ino, node)) => reply.entry(&TTL, &Self::attr(ino, &node), 0),
+            Err(error) => reply.error(Self::errno(error)),
+        }
     }
 
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {

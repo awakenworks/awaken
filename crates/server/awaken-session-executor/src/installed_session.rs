@@ -11,8 +11,9 @@
 use crate::frozen_inputs::FrozenSessionInputs;
 use crate::realization_error::{RealizationError, RealizationLock};
 
+use awaken_sync::InvariantLock;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::realization_state::SessionRealization;
 /// A poisoned installed-Session registry, as the neutral Run failure a
@@ -292,7 +293,7 @@ impl InstalledSession {
 
 #[derive(Default)]
 pub(crate) struct InstalledSessions {
-    installed_sessions: Mutex<HashMap<String, InstalledSession>>,
+    installed_sessions: InvariantLock<HashMap<String, InstalledSession>>,
 }
 
 /// One closed root and the original local Run controls selected with it in
@@ -407,7 +408,7 @@ impl InstalledSessions {
 
     /// The registry itself, for tests that hold or poison its lock.
     #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn test_map(&self) -> &Mutex<HashMap<String, InstalledSession>> {
+    pub(crate) fn test_map(&self) -> &InvariantLock<HashMap<String, InstalledSession>> {
         &self.installed_sessions
     }
 
@@ -552,7 +553,7 @@ impl InstalledSessions {
 
     /// Read one installed Session; `None` when it is not installed. A
     /// poisoned registry is refused, never read through or recreated.
-    pub fn read<R>(
+    pub(crate) fn read<R>(
         &self,
         session: &str,
         f: impl FnOnce(&InstalledSession) -> R,
@@ -561,7 +562,7 @@ impl InstalledSessions {
     }
 
     /// Change one installed Session; `None` when it is not installed.
-    pub fn modify<R>(
+    pub(crate) fn modify<R>(
         &self,
         session: &str,
         f: impl FnOnce(&mut InstalledSession) -> R,
@@ -605,7 +606,7 @@ impl InstalledSessions {
         Ok(removed)
     }
 
-    pub fn realization_leases(
+    pub(crate) fn realization_leases(
         &self,
     ) -> Result<
         Vec<(
@@ -631,7 +632,7 @@ impl InstalledSessions {
             .collect())
     }
 
-    pub fn session_ids(&self) -> Result<Vec<String>, RealizationLock> {
+    pub(crate) fn session_ids(&self) -> Result<Vec<String>, RealizationLock> {
         Ok(self
             .installed_sessions
             .lock()

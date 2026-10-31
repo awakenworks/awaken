@@ -12,6 +12,7 @@ layer = "application"
 authority = "config-resolver"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
 awaken-agent-config.workspace = true
 awaken-runtime-contract.workspace = true

@@ -8,7 +8,7 @@ use std::future::Future;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use awaken_fs_durability::DirectoryIdentity;
@@ -101,15 +101,12 @@ const fn retain_memory_owner(
 
 #[derive(Clone, Default)]
 pub(crate) struct MemoryMountRegistry {
-    participants: Arc<Mutex<HashMap<PathBuf, MemoryMountOwner>>>,
+    participants: Arc<awaken_sync::LeafLock<HashMap<PathBuf, MemoryMountOwner>>>,
 }
 
 impl MemoryMountRegistry {
     pub(crate) fn owner(&self, root: &Path) -> MemoryMountOwner {
-        let mut participants = self
-            .participants
-            .lock()
-            .expect("Memory participants lock poisoned");
+        let mut participants = self.participants.lock();
         // Only reclaim empty owners with no wrapper/waiter. A pending mount or
         // failed teardown is never evicted, even if its original caller vanished.
         participants.retain(|_, owner| {

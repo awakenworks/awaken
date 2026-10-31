@@ -524,7 +524,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             }
         };
         assert_eq!(invoke().await.unwrap().status(), reqwest::StatusCode::OK);
-        let before = seen.lock().unwrap().len();
+        let before = seen.lock().len();
         assert_eq!(before, 1, "B reaches the real upstream before old finish");
         drop(release);
         let retired = tokio::time::timeout(std::time::Duration::from_secs(5), finish)
@@ -533,7 +533,7 @@ async fn successful_retirement_cannot_remove_a_successor_session_relay_route() {
             .unwrap()
             .unwrap();
         let status = invoke().await.unwrap().status();
-        let after = seen.lock().unwrap().len();
+        let after = seen.lock().len();
         assert_eq!(
             retired, 1,
             "actual true retirement must contribute exactly one"

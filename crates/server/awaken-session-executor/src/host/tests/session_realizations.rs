@@ -218,12 +218,9 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         owner: "worker".into(),
         epoch: 3,
     };
-    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
-        Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-            Arc::downgrade(&host.run_assembly.installed_sessions),
-            Arc::downgrade(&host.realization_executor),
-            thread,
-        ));
+    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
+        crate::lazy_sandbox::DeferredSandboxExecutor::new(&host.realization_executor, thread),
+    );
     host.run_assembly
         .installed_sessions
         .install_run(thread, |run| {

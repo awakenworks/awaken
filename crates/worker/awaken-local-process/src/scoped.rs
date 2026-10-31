@@ -112,7 +112,7 @@ pub struct ScopedProcess {
     _namespace: OwnedFd,
     init: OwnedFd,
     control: UnixStream,
-    control_writer: std::sync::Mutex<()>,
+    control_writer: awaken_sync::InvariantLock<()>,
     io: process_io::ProcessIo,
     identity: ProcessExecutionIdentity,
 }
@@ -179,7 +179,7 @@ impl ScopedProcess {
                 _namespace: namespace,
                 init,
                 control,
-                control_writer: std::sync::Mutex::new(()),
+                control_writer: awaken_sync::InvariantLock::new(()),
                 io,
                 identity,
             })

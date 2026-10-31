@@ -283,13 +283,20 @@ mod tests {
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
         });
-        assert!(restarted.list_sessions().is_empty(), "R2 starts cold");
+        assert!(
+            restarted.list_sessions().unwrap().is_empty(),
+            "R2 starts cold"
+        );
         let replayed = restarted
             .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")
             .await
             .expect("R2 rehydrates durable truth");
         assert_eq!(replayed.id, created.id, "R2 preserves identity");
-        assert_eq!(restarted.list_sessions().len(), 1, "R2 projects once");
+        assert_eq!(
+            restarted.list_sessions().unwrap().len(),
+            1,
+            "R2 projects once"
+        );
 
         let mismatch = restarted
             .create_session_idempotent(request("Changed"), "workspace-a", "issue-a")
@@ -298,7 +305,11 @@ mod tests {
             matches!(mismatch, Err(StateError::IdempotencyMismatch)),
             "R3 rejects changed input"
         );
-        assert_eq!(restarted.list_sessions().len(), 1, "R3 does not replace");
+        assert_eq!(
+            restarted.list_sessions().unwrap().len(),
+            1,
+            "R3 does not replace"
+        );
         assert_eq!(
             repo.get(&awaken_session_types::SessionId::from(created.id))
                 .await

@@ -248,12 +248,14 @@ pub async fn drive_retained_session_events(
 pub async fn drive_completed_user_dispatches(
     state: &awaken_protocol_managed::ManagedState,
     session_id: &str,
-    completions: &Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
+    completions: &awaken_sync::LeafLock<
+        Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>,
+    >,
 ) {
     // Run only the canonical supervisor, then deliver exact activation facts.
     // No scan of active epochs can substitute for a simulated Applied receipt.
     drive_retained_session_events(state, session_id).await;
-    let boundaries = std::mem::take(&mut *completions.lock().unwrap());
+    let boundaries = std::mem::take(&mut *completions.lock());
     for boundary in boundaries {
         assert_eq!(boundary.session_id, session_id, "fixture exact Session");
         finalize_applied_user_dispatch(state, boundary).await;

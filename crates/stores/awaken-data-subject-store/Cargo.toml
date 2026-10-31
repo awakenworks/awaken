@@ -17,6 +17,7 @@ isolates = ["sqlx"]
 # storage is compiled only for tests or the explicit `test-support` feature.
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-sql-storage = { workspace = true, optional = true }
 awaken-data-subject-application.workspace = true
 async-trait.workspace = true

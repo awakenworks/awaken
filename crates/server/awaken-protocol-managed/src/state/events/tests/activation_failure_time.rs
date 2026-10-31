@@ -46,7 +46,7 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
             }
             let runtime = RehydrateFake::default();
             if let Some(run) = source_run_id {
-                runtime.lifecycle.lock().unwrap().push(lifecycle(
+                runtime.lifecycle.lock().push(lifecycle(
                     1,
                     &id,
                     &run,
@@ -61,7 +61,6 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
                 runtime
                     .commit_times_by_thread
                     .lock()
-                    .unwrap()
                     .insert(id.clone(), std::collections::BTreeMap::from([(1, 200)]));
             }
             crate::state::test_support::create_session_fixture(

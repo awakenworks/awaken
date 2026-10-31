@@ -19,7 +19,7 @@
 //! updates are flushed before the final result is returned, so a client never
 //! sees progress after the response.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
@@ -29,6 +29,7 @@ use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
+use awaken_sync::LeafRwLock;
 use awaken_tool_contract::tool::{ToolCall, ToolError, ToolOutput};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -49,7 +50,7 @@ pub struct AwakenMcpContext {
 
 struct AwakenMcpHost {
     source: Arc<dyn ToolExportSource>,
-    gate: RwLock<Option<Arc<dyn ToolGateHook>>>,
+    gate: LeafRwLock<Option<Arc<dyn ToolGateHook>>>,
 }
 
 /// Compatibility facade over the runtime-neutral server core.
@@ -69,7 +70,7 @@ impl McpToolService {
         let tools_list_changed = source.changes().is_some();
         let host = Arc::new(AwakenMcpHost {
             source: Arc::clone(&source),
-            gate: RwLock::new(None),
+            gate: LeafRwLock::new(None),
         });
         Self {
             core: McpServer::new(name, version, Arc::clone(&host))
@@ -95,7 +96,7 @@ impl McpToolService {
     /// error results, never silent execution).
     #[must_use]
     pub fn with_gate(self, gate: Arc<dyn ToolGateHook>) -> Self {
-        *self.host.gate.write().expect("MCP gate lock") = Some(gate);
+        *self.host.gate.write() = Some(gate);
         self
     }
 
@@ -243,7 +244,7 @@ impl AwakenMcpHost {
         context: &AwakenMcpContext,
         call: &ToolCall,
     ) -> Option<CallToolResult> {
-        let gate = self.gate.read().expect("MCP gate lock").clone()?;
+        let gate = self.gate.read().clone()?;
         // This surface reports the outcome only; the basis rides the audit
         // fact the runtime commits, not an MCP tool result.
         match gate.gate(call, &context.store).await.outcome {

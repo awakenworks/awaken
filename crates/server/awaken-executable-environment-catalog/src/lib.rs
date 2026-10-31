@@ -2,7 +2,7 @@
 //! Coordinator-owned projection of Control's executable Environment revisions.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLockReadGuard};
 
 use async_trait::async_trait;
 use awaken_environment_contract::EnvironmentRevision;
@@ -12,6 +12,7 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationSource, ExecutableEnvironmentWithdrawal,
     ExecutableEnvironmentWithdrawalOutcome,
 };
+use awaken_sync::InvariantRwLock;
 
 mod http;
 mod postgres;
@@ -41,7 +42,7 @@ struct CatalogState {
 
 #[derive(Default)]
 pub struct ExecutableEnvironmentCatalog {
-    state: RwLock<CatalogState>,
+    state: InvariantRwLock<CatalogState>,
 }
 
 impl ExecutableEnvironmentCatalog {
@@ -64,36 +65,70 @@ impl ExecutableEnvironmentCatalog {
         Self::register_locked(&mut state, registration)
     }
 
+    /// Fail-closed: a poisoned catalog admits no current registration.
     pub fn current(&self, environment_id: &str) -> Option<ExecutableEnvironmentRegistration> {
-        self.state
-            .read()
-            .expect("executable Environment catalog")
-            .current
-            .get(environment_id)
-            .and_then(|entry| entry.registration.clone())
+        self.try_current(environment_id).ok().flatten()
     }
 
+    /// Fail-closed: a poisoned catalog lists no current registration.
     pub fn current_all(&self) -> Vec<ExecutableEnvironmentRegistration> {
-        self.state
-            .read()
-            .expect("executable Environment catalog")
-            .current
-            .values()
-            .filter_map(|entry| entry.registration.clone())
-            .collect()
+        self.try_current_all().unwrap_or_default()
     }
 
+    /// Fail-closed: a poisoned catalog resolves no revision.
     pub fn at_revision(
         &self,
         environment_id: &str,
         revision: EnvironmentRevision,
     ) -> Option<ExecutableEnvironmentRegistration> {
-        self.state
-            .read()
-            .expect("executable Environment catalog")
+        self.try_at_revision(environment_id, revision)
+            .ok()
+            .flatten()
+    }
+
+    fn read_state(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, CatalogState>, ExecutableEnvironmentRegistrationError> {
+        self.state.read().map_err(|_| {
+            ExecutableEnvironmentRegistrationError::Storage("catalog lock poisoned".into())
+        })
+    }
+
+    fn try_current(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+    {
+        Ok(self
+            .read_state()?
+            .current
+            .get(environment_id)
+            .and_then(|entry| entry.registration.clone()))
+    }
+
+    fn try_current_all(
+        &self,
+    ) -> Result<Vec<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+    {
+        Ok(self
+            .read_state()?
+            .current
+            .values()
+            .filter_map(|entry| entry.registration.clone())
+            .collect())
+    }
+
+    fn try_at_revision(
+        &self,
+        environment_id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+    {
+        Ok(self
+            .read_state()?
             .revisions
             .get(&(environment_id.to_string(), revision))
-            .cloned()
+            .cloned())
     }
 
     /// Retain one immutable fact without granting current admission.
@@ -203,11 +238,7 @@ impl ExecutableEnvironmentCatalog {
         registration: ExecutableEnvironmentRegistration,
     ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
     {
-        let mut state = self
-            .state
-            .read()
-            .expect("executable Environment catalog")
-            .clone();
+        let mut state = self.read_state()?.clone();
         Self::register_locked(&mut state, registration)
     }
 
@@ -216,11 +247,7 @@ impl ExecutableEnvironmentCatalog {
         withdrawal: ExecutableEnvironmentWithdrawal,
     ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
     {
-        let mut state = self
-            .state
-            .read()
-            .expect("executable Environment catalog")
-            .clone();
+        let mut state = self.read_state()?.clone();
         Self::withdraw_locked(&mut state, withdrawal)
     }
 }
@@ -256,7 +283,7 @@ impl ExecutableEnvironmentRegistrationSource for ExecutableEnvironmentCatalog {
         &self,
     ) -> Result<Vec<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
     {
-        Ok(self.current_all())
+        self.try_current_all()
     }
 
     async fn current_registration(
@@ -264,7 +291,7 @@ impl ExecutableEnvironmentRegistrationSource for ExecutableEnvironmentCatalog {
         environment_id: &str,
     ) -> Result<Option<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
     {
-        Ok(self.current(environment_id))
+        self.try_current(environment_id)
     }
 
     async fn registration_at_revision(
@@ -273,7 +300,7 @@ impl ExecutableEnvironmentRegistrationSource for ExecutableEnvironmentCatalog {
         revision: EnvironmentRevision,
     ) -> Result<Option<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
     {
-        Ok(self.at_revision(environment_id, revision))
+        self.try_at_revision(environment_id, revision)
     }
 }
 

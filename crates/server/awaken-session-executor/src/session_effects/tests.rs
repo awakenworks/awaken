@@ -54,7 +54,7 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
             .mcp_projection(&stage.generation)
             .is_none()
     );
-    assert!(seen.lock().unwrap().is_empty());
+    assert!(seen.lock().is_empty());
     let receipt = run.stage_mcp_attachment(stage.clone()).await.unwrap();
     run.publish_mcp_generation(stage.generation.clone())
         .await
@@ -90,7 +90,7 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
         .run_assembly
         .begin_session_realization_revocation()
         .expect("installed Sessions");
-    let requests_before = seen.lock().unwrap().len();
+    let requests_before = seen.lock().len();
     for effects in [session, run as &dyn McpAttachmentRealizer] {
         assert_eq!(
             effects
@@ -101,7 +101,7 @@ async fn ordinary_run_and_managed_session_use_distinct_mcp_admission() {
             "mcp_stale_ownership"
         );
     }
-    assert_eq!(seen.lock().unwrap().len(), requests_before);
+    assert_eq!(seen.lock().len(), requests_before);
 }
 
 #[derive(Default)]
@@ -205,7 +205,7 @@ async fn configured_realizer_is_exclusive_for_both_mcp_roles() {
             .mcp_projection(&stage.generation)
             .is_none()
     );
-    assert!(seen.lock().unwrap().is_empty());
+    assert!(seen.lock().is_empty());
 }
 
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn retained_direct_mcp_effects_keep_required_execution_owner_until_drained
         vec![stage.clone()]
     );
     assert!(
-        !seen.lock().unwrap().is_empty(),
+        !seen.lock().is_empty(),
         "actual original transport handled staging"
     );
     effects

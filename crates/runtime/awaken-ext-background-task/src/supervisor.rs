@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use awaken_time::WallClock;
 
-#[cfg(all(test, feature = "loom"))]
-use loom::sync::Mutex;
 #[cfg(not(all(test, feature = "loom")))]
-use std::sync::Mutex;
+use awaken_sync::LeafLock;
+#[cfg(all(test, feature = "loom"))]
+use loom_lock::LeafLock;
 
 use tokio_util::sync::CancellationToken;
 
@@ -102,7 +102,7 @@ pub struct BackgroundTaskSupervisor {
     /// One mutually-exclusive process projection per durable task. A single
     /// lock makes Active -> Completed atomic, so duplicate terminal delivery
     /// cannot register between two parallel maps.
-    entries: Mutex<BTreeMap<BackgroundTaskId, SupervisorEntry>>,
+    entries: LeafLock<BTreeMap<BackgroundTaskId, SupervisorEntry>>,
 }
 
 impl BackgroundTaskSupervisor {
@@ -111,7 +111,7 @@ impl BackgroundTaskSupervisor {
         Self {
             worker_id: worker_id.into(),
             clock,
-            entries: Mutex::new(BTreeMap::new()),
+            entries: LeafLock::new(BTreeMap::new()),
         }
     }
 
@@ -134,10 +134,7 @@ impl BackgroundTaskSupervisor {
     /// epochs cannot relaunch; a strictly newer committed epoch supersedes the
     /// old projection, including an Active executor that never returned.
     pub fn register(&self, id: &BackgroundTaskId, fence: &TaskTenure) -> Option<CancellationToken> {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned");
+        let mut entries = self.entries.lock();
         if let Some(entry) = entries.get(id)
             && fence.epoch() <= entry.fence().epoch()
         {
@@ -154,10 +151,7 @@ impl BackgroundTaskSupervisor {
     #[must_use]
     pub fn is_active(&self, id: &BackgroundTaskId, fence: &TaskTenure) -> bool {
         matches!(
-            self.entries
-                .lock()
-                .expect("background supervisor mutex poisoned")
-                .get(id),
+            self.entries.lock().get(id),
             Some(SupervisorEntry::Active { fence: active, .. }) if active == fence
         )
     }
@@ -166,11 +160,7 @@ impl BackgroundTaskSupervisor {
         if let Some(SupervisorEntry::Active {
             fence: active,
             token,
-        }) = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned")
-            .get(id)
+        }) = self.entries.lock().get(id)
             && active == fence
         {
             token.cancel();
@@ -181,10 +171,7 @@ impl BackgroundTaskSupervisor {
     /// candidate. The candidate stays in the same one-slot deduplication guard
     /// until a post-commit observer confirms that Thread State owns it.
     pub fn wait(&self, id: BackgroundTaskId, candidate: BackgroundTaskWaitCandidate) {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned");
+        let mut entries = self.entries.lock();
         if matches!(entries.get(&id), Some(SupervisorEntry::Active { fence, .. }) if *fence == candidate.fence)
         {
             entries.insert(id, SupervisorEntry::Waiting(candidate));
@@ -193,12 +180,7 @@ impl BackgroundTaskSupervisor {
 
     #[must_use]
     pub fn wait_candidate(&self, id: &BackgroundTaskId) -> Option<BackgroundTaskWaitCandidate> {
-        match self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned")
-            .get(id)
-        {
+        match self.entries.lock().get(id) {
             Some(SupervisorEntry::Waiting(candidate)) => Some(candidate.clone()),
             Some(SupervisorEntry::Active { .. } | SupervisorEntry::Completed(_)) | None => None,
         }
@@ -213,10 +195,7 @@ impl BackgroundTaskSupervisor {
         id: &BackgroundTaskId,
         fence: &TaskTenure,
     ) -> Option<CancellationToken> {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned");
+        let mut entries = self.entries.lock();
         let matches = matches!(
             entries.get(id),
             Some(SupervisorEntry::Waiting(candidate)) if candidate.fence == *fence
@@ -232,10 +211,7 @@ impl BackgroundTaskSupervisor {
     /// Atomically replace one registered launch with its first completion.
     /// An unregistered or already-completed delivery is stale and ignored.
     pub fn complete(&self, id: BackgroundTaskId, completion: BackgroundTaskCompletion) {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned");
+        let mut entries = self.entries.lock();
         let may_complete = match entries.get(&id) {
             Some(entry @ (SupervisorEntry::Active { .. } | SupervisorEntry::Waiting(_))) => {
                 entry.fence() == &completion.fence
@@ -252,12 +228,7 @@ impl BackgroundTaskSupervisor {
     /// or a strictly newer committed attempt supersedes this candidate.
     #[must_use]
     pub fn completion(&self, id: &BackgroundTaskId) -> Option<BackgroundTaskCompletion> {
-        match self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned")
-            .get(id)
-        {
+        match self.entries.lock().get(id) {
             Some(SupervisorEntry::Completed(completion)) => Some(completion.clone()),
             Some(SupervisorEntry::Active { .. } | SupervisorEntry::Waiting(_)) | None => None,
         }
@@ -273,10 +244,7 @@ impl BackgroundTaskSupervisor {
         id: &BackgroundTaskId,
         committed: Option<&TaskTenure>,
     ) -> Option<BackgroundTaskCompletion> {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned");
+        let mut entries = self.entries.lock();
         let Some(SupervisorEntry::Completed(completion)) = entries.get(id) else {
             return None;
         };
@@ -294,10 +262,7 @@ impl BackgroundTaskSupervisor {
     /// newer epoch. An older durable snapshot cannot evict a newer completion;
     /// a replacement between observation and locking must remain untouched.
     pub fn retire(&self, id: &BackgroundTaskId, fence: &TaskTenure, committed: &TaskTenure) {
-        let mut entries = self
-            .entries
-            .lock()
-            .expect("background supervisor mutex poisoned");
+        let mut entries = self.entries.lock();
         if fence.epoch() < committed.epoch()
             && entries.get(id).is_some_and(|entry| entry.fence() == fence)
         {
@@ -309,10 +274,27 @@ impl BackgroundTaskSupervisor {
     /// Unlike stale-candidate retirement this needs no attempt fence: Ended is
     /// absorbing and has no live attempt. Never call this from a stale callback.
     pub fn retire_terminal(&self, id: &BackgroundTaskId) {
-        self.entries
-            .lock()
-            .expect("background supervisor mutex poisoned")
-            .remove(id);
+        self.entries.lock().remove(id);
+    }
+}
+
+/// Loom's model checker needs its own mutex. This mirrors
+/// `awaken_sync::LeafLock`'s recovering acquisition, so the model runs the
+/// production critical sections unchanged.
+#[cfg(all(test, feature = "loom"))]
+mod loom_lock {
+    pub(super) struct LeafLock<T>(loom::sync::Mutex<T>);
+
+    impl<T> LeafLock<T> {
+        pub(super) fn new(value: T) -> Self {
+            Self(loom::sync::Mutex::new(value))
+        }
+
+        pub(super) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
     }
 }
 
@@ -381,7 +363,7 @@ mod tests {
                     let fence = fixtures::tenure(owner, epoch);
                     assert_eq!(supervisor.register(&id(), &fence).is_some(), epoch > 2);
                     assert!(!token.is_cancelled());
-                    let entries = supervisor.entries.lock().unwrap();
+                    let entries = supervisor.entries.lock();
                     let entry = entries.get(&id()).unwrap();
                     let current = completion(2).fence;
                     assert_eq!(entry.fence(), if epoch > 2 { &fence } else { &current });
@@ -422,10 +404,7 @@ mod tests {
                     &completion(2).fence,
                     &fixtures::tenure("other", epoch),
                 );
-                assert_eq!(
-                    supervisor.entries.lock().unwrap().contains_key(&id()),
-                    epoch <= 2
-                );
+                assert_eq!(supervisor.entries.lock().contains_key(&id()), epoch <= 2);
             }
         }
     }
@@ -491,7 +470,7 @@ mod tests {
                                 _ => Some(phase),
                             }
                         };
-                        let entries = supervisor.entries.lock().unwrap();
+                        let entries = supervisor.entries.lock();
                         let observed = entries.get(&id).map(|entry| {
                             assert_eq!(entry.fence(), &current);
                             match entry {

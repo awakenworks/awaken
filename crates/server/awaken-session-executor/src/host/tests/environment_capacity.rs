@@ -626,7 +626,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         "W9 zero disposal I/O"
     );
     assert!(
-        unused.observations.lock().unwrap().is_empty(),
+        unused.observations.lock().is_empty(),
         "W9 zero observation I/O"
     );
 }

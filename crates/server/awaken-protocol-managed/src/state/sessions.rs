@@ -364,7 +364,7 @@ impl ManagedState {
             Vec::new(),
         );
         let session = record.session_projection();
-        self.sessions.lock().unwrap().insert(id.clone(), record);
+        self.sessions.lock()?.insert(id.clone(), record);
         Ok(session)
     }
 
@@ -397,9 +397,11 @@ impl ManagedState {
     /// persistence layer remains the fence.
     #[must_use]
     pub fn owner_scope(&self, session_id: &str) -> Option<String> {
+        // A poisoned cache supplies no owner: the guard falls through to the
+        // durable owner (`resolve_owner`) or answers `NotFound`.
         self.sessions
             .lock()
-            .unwrap()
+            .ok()?
             .get(session_id)
             .map(|record| record.owner_scope().to_owned())
     }
@@ -498,7 +500,7 @@ impl ManagedState {
         ),
         StateError,
     > {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         sessions
             .get(id)
             .map(|record| {
@@ -512,14 +514,14 @@ impl ManagedState {
     }
 
     /// `GET /v1/sessions` — every session, ascending id (deterministic).
-    pub fn list_sessions(&self) -> Vec<Session> {
-        let sessions = self.sessions.lock().unwrap();
+    pub fn list_sessions(&self) -> Result<Vec<Session>, StateError> {
+        let sessions = self.sessions.lock()?;
         let mut out: Vec<Session> = sessions
             .values()
             .map(SessionRecord::session_projection)
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
-        out
+        Ok(out)
     }
 
     /// Sessions owned by `scope` — the tenancy-fenced list (ADR-0051), so a
@@ -527,15 +529,15 @@ impl ManagedState {
     /// its owner from the same durable root, so filtering and projection read
     /// one coherent snapshot. Mirrors the per-id ownership guard, which the
     /// collection route does not pass through.
-    pub fn list_sessions_scoped(&self, scope: &str) -> Vec<Session> {
-        let sessions = self.sessions.lock().unwrap();
+    pub fn list_sessions_scoped(&self, scope: &str) -> Result<Vec<Session>, StateError> {
+        let sessions = self.sessions.lock()?;
         let mut out: Vec<Session> = sessions
             .values()
             .filter(|record| record.owner_scope() == scope)
             .map(SessionRecord::session_projection)
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
-        out
+        Ok(out)
     }
 
     /// Build the collection projection from durable Workspace truth, overlaying
@@ -564,7 +566,7 @@ impl ManagedState {
             .sessions_by_owner(scope)
             .await
             .map_err(StateError::from)?;
-        let cached = self.sessions.lock().unwrap();
+        let cached = self.sessions.lock()?;
         let mut out = Vec::with_capacity(persisted.len());
         for session in persisted {
             let session_id = session.session_id.clone();
@@ -611,7 +613,7 @@ impl ManagedState {
             .await
             .map_err(Self::map_preparation_error)?;
         {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock()?;
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
             let mut event = super::events::session_deletion_event(&transition.owner_scope, id);
             let delta = super::events::committed_delivery_delta(

@@ -9,7 +9,8 @@
 //! model as part of the production read side.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+
+use awaken_sync::InvariantLock;
 
 use crate::stores::{
     AgentInputAdmission, AgentInputBindingRepository, AgentInputRepositoryError,
@@ -21,7 +22,7 @@ use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
 /// Process-local reference implementation of [`InferenceProfileStore`].
 #[derive(Default)]
-pub struct InMemoryProfileStore(Mutex<HashMap<String, InferenceProfile>>);
+pub struct InMemoryProfileStore(InvariantLock<HashMap<String, InferenceProfile>>);
 
 impl InMemoryProfileStore {
     #[must_use]
@@ -57,7 +58,7 @@ impl InferenceProfileStore for InMemoryProfileStore {
 /// Process-local reference implementation of [`WebhookStore`].
 #[derive(Default)]
 pub struct InMemoryWebhookStore {
-    state: Mutex<InMemoryWebhookState>,
+    state: InvariantLock<InMemoryWebhookState>,
 }
 
 #[derive(Default)]
@@ -263,7 +264,9 @@ impl WebhookStore for InMemoryWebhookStore {
 
 /// Process-local reference implementation of [`AgentInputBindingRepository`].
 #[derive(Default)]
-pub struct InMemoryAgentInputBindingRepository(Mutex<HashMap<(String, String), AgentInputConfig>>);
+pub struct InMemoryAgentInputBindingRepository(
+    InvariantLock<HashMap<(String, String), AgentInputConfig>>,
+);
 
 impl InMemoryAgentInputBindingRepository {
     #[must_use]

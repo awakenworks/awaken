@@ -9,11 +9,10 @@
 //! [`McpConformanceDriver`] over its facade and runs the same suite; no awaken
 //! runtime vocabulary enters these assertions.
 
-use std::sync::Mutex;
-
 use async_trait::async_trait;
 use awaken_mcp_server_core::{McpHttpBody, McpHttpMethod, McpHttpReply, NotifySink};
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
+use awaken_sync::LeafLock;
 use serde_json::{Value, json};
 
 /// Black-box request driver supplied by each adapter. The fixture must expose
@@ -60,23 +59,20 @@ pub trait McpHttpConformanceDriver: Send + Sync {
 /// adapter-specific tests.
 #[derive(Default)]
 pub struct RecordingSink {
-    seen: Mutex<Vec<(String, Value)>>,
+    seen: LeafLock<Vec<(String, Value)>>,
 }
 
 impl RecordingSink {
     #[must_use]
     pub fn snapshot(&self) -> Vec<(String, Value)> {
-        self.seen.lock().expect("notification recorder").clone()
+        self.seen.lock().clone()
     }
 }
 
 #[async_trait]
 impl NotifySink for RecordingSink {
     async fn notify(&self, method: &str, params: Value) {
-        self.seen
-            .lock()
-            .expect("notification recorder")
-            .push((method.to_string(), params));
+        self.seen.lock().push((method.to_string(), params));
     }
 }
 

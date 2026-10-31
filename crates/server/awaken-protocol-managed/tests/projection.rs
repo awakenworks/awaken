@@ -112,7 +112,7 @@ async fn send_user(app: &Router, id: &str, text: &str) -> serde_json::Value {
 }
 
 type CompletedDispatches =
-    Arc<Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>>;
+    Arc<awaken_sync::LeafLock<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>>;
 
 async fn app_with_runtime(runtime: ScriptFake) -> (Arc<ManagedState>, Router, CompletedDispatches) {
     let completions = runtime.completions.clone();
@@ -707,7 +707,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for ScriptFake {
                 ),
             });
         }
-        self.completions.lock().unwrap().push(
+        self.completions.lock().push(
             awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: delivery.session_id.clone(),
                 source_thread_id: ThreadId(delivery.session_id.into_string()),

@@ -140,8 +140,7 @@ impl ManagedState {
         loop {
             let base = self
                 .sessions
-                .lock()
-                .unwrap()
+                .lock()?
                 .get(session_id)
                 .cloned()
                 .ok_or(StateError::NotFound)?;
@@ -160,7 +159,7 @@ impl ManagedState {
         base_cache_revision: u64,
         mut candidate: SessionRecord,
     ) -> Result<bool, StateError> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock()?;
         let current = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         let projection_changed = !current.same_projected_content(&candidate)?;
         match decide_projection_publish(

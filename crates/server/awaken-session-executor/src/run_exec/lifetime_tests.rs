@@ -155,7 +155,7 @@ async fn session_projection_without_owner_refuses_start_and_resume_but_preserves
     let probe = Arc::new(AttemptProbe::new(false, false));
     let executor = SessionContextAttemptExecutor::new(
         probe.clone(),
-        Arc::downgrade(&installed_sessions),
+        &installed_sessions,
         "lifetime-thread",
         awaken_time::system_clock(),
     );
@@ -201,7 +201,7 @@ async fn session_projection_active_future_holds_original_installed_sessions_unti
             let probe = Arc::new(AttemptProbe::new(true, fails));
             let executor = SessionContextAttemptExecutor::new(
                 probe.clone(),
-                Arc::downgrade(&installed_sessions),
+                &installed_sessions,
                 "lifetime-thread",
                 awaken_time::system_clock(),
             );
@@ -253,7 +253,7 @@ async fn artifact_decorator_without_harvest_owner_refuses_effects_even_if_instal
     let owner = host.realization_executor.effects().artifacts().clone();
     let weak_owner = Arc::downgrade(&owner);
     let probe = Arc::new(AttemptProbe::new(false, false));
-    let executor = ArtifactHarvestAttemptExecutor::new(probe.clone(), Arc::downgrade(&owner));
+    let executor = ArtifactHarvestAttemptExecutor::new(probe.clone(), &owner);
     drop(owner);
     drop(host);
     assert!(
@@ -302,8 +302,7 @@ async fn artifact_decorator_active_future_holds_owner_through_attempt_success_or
             let owner = host.realization_executor.effects().artifacts().clone();
             let weak_owner = Arc::downgrade(&owner);
             let probe = Arc::new(AttemptProbe::new(true, fails));
-            let executor =
-                ArtifactHarvestAttemptExecutor::new(probe.clone(), Arc::downgrade(&owner));
+            let executor = ArtifactHarvestAttemptExecutor::new(probe.clone(), &owner);
             let mut running = start(&executor, is_resume);
             entered(&probe, &mut running).await;
             drop(owner);
@@ -445,8 +444,7 @@ async fn artifact_decorator_holds_same_owner_until_real_publication_finishes() {
                 .thread_workspace("lifetime-thread")
                 .expect("healthy registry");
             let probe = Arc::new(AttemptProbe::new(false, fails));
-            let executor =
-                ArtifactHarvestAttemptExecutor::new(probe.clone(), Arc::downgrade(&owner));
+            let executor = ArtifactHarvestAttemptExecutor::new(probe.clone(), &owner);
             let mut running = start(&executor, is_resume);
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 tokio::select! {
@@ -530,13 +528,11 @@ async fn abandoning_the_original_attempt_drops_both_decorator_owners_and_inner_f
         let owner = host.realization_executor.effects().artifacts().clone();
         let weak_owner = Arc::downgrade(&owner);
         let probe = Arc::new(AttemptProbe::new(true, false));
-        let inner: Arc<dyn RunAttemptExecutor> = Arc::new(ArtifactHarvestAttemptExecutor::new(
-            probe.clone(),
-            Arc::downgrade(&owner),
-        ));
+        let inner: Arc<dyn RunAttemptExecutor> =
+            Arc::new(ArtifactHarvestAttemptExecutor::new(probe.clone(), &owner));
         let executor = SessionContextAttemptExecutor::new(
             inner,
-            Arc::downgrade(&host.run_assembly.installed_sessions),
+            &host.run_assembly.installed_sessions,
             "lifetime-thread",
             host.run_assembly.clock(),
         );

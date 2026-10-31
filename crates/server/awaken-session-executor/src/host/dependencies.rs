@@ -21,10 +21,6 @@ use awaken_session_configuration_contract::SkillBundleSource;
 mod environment;
 mod tools;
 
-mod session_application;
-
-pub use session_application::{SessionApplicationBindingError, SessionApplicationBindings};
-
 /// Immutable Session execution ports selected once at process startup.
 /// Managed and claimed dispatch adapters both read this exact Host-owned value.
 #[derive(Default)]

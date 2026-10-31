@@ -5,12 +5,13 @@ use awaken_container_contract::{CreateTicketRequest, TicketResult, TicketStatus}
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::KubernetesGuardedClaimHandle;
+use awaken_sync::LeafLock;
 use awaken_worker_fleet_kubernetes::test_support::{
     IsolationApi as Fixture, isolate_guard_pod as isolate_pod, isolation_api as client,
     isolation_ticket as ticket,
 };
 use awaken_worker_fleet_kubernetes::verify_pod_isolation as verify_reservation;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_authority() {
@@ -27,7 +28,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         SandboxEffectFence::new("old-effect", "old-worker", "old-boot", 1, u64::MAX).unwrap();
     let terminal =
         SandboxEffectFence::new("terminal-effect", "old-worker", "old-boot", 2, u64::MAX).unwrap();
-    let state = Arc::new(Mutex::new(Fixture {
+    let state = Arc::new(LeafLock::new(Fixture {
         policy: true,
         delete_denied: true,
         ..Default::default()
@@ -69,7 +70,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
     claim.metadata.namespace = Some("sandbox-ns".into());
     claim.metadata.uid = Some("claim-uid".into());
     claim.metadata.resource_version = Some("1".into());
-    state.lock().unwrap().claim = Some(claim.clone());
+    state.lock().claim = Some(claim.clone());
     assert!(
         verify_reservation(&runtime.clients.control, guarded.guard(), "sentinel-uid")
             .await
@@ -103,7 +104,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         "P1"
     );
 
-    state.lock().unwrap().policy_tampered = true;
+    state.lock().policy_tampered = true;
     assert_eq!(
         guarded_claim_physical_state(&runtime, guard_name.as_str(), &guarded)
             .await
@@ -111,8 +112,8 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         GuardedClaimPhysical::Incompatible,
         "P2 policy drift"
     );
-    state.lock().unwrap().policy_tampered = false;
-    state.lock().unwrap().claim.as_mut().unwrap().metadata.uid = Some("foreign".into());
+    state.lock().policy_tampered = false;
+    state.lock().claim.as_mut().unwrap().metadata.uid = Some("foreign".into());
     assert_eq!(
         guarded_claim_physical_state(&runtime, guard_name.as_str(), &guarded)
             .await
@@ -120,10 +121,9 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         GuardedClaimPhysical::Incompatible,
         "P2 foreign PVC UID"
     );
-    state.lock().unwrap().claim = Some(claim.clone());
+    state.lock().claim = Some(claim.clone());
     state
         .lock()
-        .unwrap()
         .claim
         .as_mut()
         .unwrap()
@@ -147,7 +147,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         GuardedClaimPhysical::Incompatible,
         "P2 copied digest cannot hide changed storage"
     );
-    state.lock().unwrap().claim = Some(claim.clone());
+    state.lock().claim = Some(claim.clone());
     let authorization = awaken_sandbox_container::test_support::disposal_authorization(&terminal);
     assert!(
         remove_guarded_claim(
@@ -161,9 +161,9 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         .is_err(),
         "P2 revoked authority"
     );
-    assert_eq!(state.lock().unwrap().claim_deletes, 0, "P2 zero DELETEs");
+    assert_eq!(state.lock().claim_deletes, 0, "P2 zero DELETEs");
 
-    state.lock().unwrap().claim_delete_response_lost = true;
+    state.lock().claim_delete_response_lost = true;
     let authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
     assert!(
         remove_guarded_claim(
@@ -177,16 +177,9 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         .is_err(),
         "P3 lost DELETE response cannot issue a receipt"
     );
-    assert_eq!(
-        state.lock().unwrap().claim_deletes,
-        1,
-        "P3 one accepted DELETE"
-    );
-    assert!(
-        state.lock().unwrap().pod.is_some(),
-        "P1 inert guard retained"
-    );
-    state.lock().unwrap().policy_tampered = true;
+    assert_eq!(state.lock().claim_deletes, 1, "P3 one accepted DELETE");
+    assert!(state.lock().pod.is_some(), "P1 inert guard retained");
+    state.lock().policy_tampered = true;
     assert_eq!(
         guarded_claim_physical_state(&runtime, guard_name.as_str(), &guarded)
             .await
@@ -194,7 +187,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
         GuardedClaimPhysical::Incompatible,
         "P4 policy drift blocks absent-claim replay"
     );
-    state.lock().unwrap().policy_tampered = false;
+    state.lock().policy_tampered = false;
     remove_guarded_claim(
         &runtime,
         guard_name.as_str(),
@@ -204,11 +197,7 @@ async fn guarded_claim_disposal_requires_live_policy_exact_uid_and_current_autho
     )
     .await
     .unwrap();
-    assert_eq!(
-        state.lock().unwrap().claim_deletes,
-        1,
-        "P3 no second DELETE"
-    );
+    assert_eq!(state.lock().claim_deletes, 1, "P3 no second DELETE");
     assert_eq!(
         guarded_claim_physical_state(&runtime, guard_name.as_str(), &guarded)
             .await

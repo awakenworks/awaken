@@ -8,7 +8,7 @@
 //! (fail-closed, G22).
 
 #[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
+use awaken_sync::LeafLock;
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::ValidCatalog;
@@ -80,7 +80,7 @@ pub trait CatalogRepo: Send + Sync {
 /// hands back the checked inner with no read-time re-validation.
 #[cfg(any(test, feature = "test-support"))]
 pub struct InMemoryCatalogRepo {
-    inner: Mutex<ValidCatalog>,
+    inner: LeafLock<ValidCatalog>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -88,7 +88,7 @@ impl Default for InMemoryCatalogRepo {
     fn default() -> Self {
         Self {
             // An empty catalog trivially satisfies reference integrity.
-            inner: Mutex::new(
+            inner: LeafLock::new(
                 ValidCatalog::parse(ProviderCatalog::default()).expect("empty catalog is valid"),
             ),
         }
@@ -116,7 +116,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
         if endpoint.provider_id != provider.id {
             return Err(RepoError::ProviderNotFound(endpoint.provider_id.0));
         }
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         let mut next = guard.get().clone();
         next.providers.insert(provider.id.0.clone(), provider);
         next.endpoints
@@ -127,7 +127,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
     }
 
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError> {
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         let mut next = guard.get().clone();
         next.providers.insert(provider.id.0.clone(), provider);
         // Re-parse through the construction boundary; on rejection the store is
@@ -137,7 +137,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
     }
 
     async fn put_endpoint(&self, endpoint: ProtocolEndpoint) -> Result<(), RepoError> {
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         if !guard
             .get()
             .providers
@@ -155,7 +155,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
         offering.source = crate::OfferingSource::Manual;
         offering.status = crate::OfferingStatus::Active;
         offering.last_seen_at_unix_ms = None;
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         if !guard
             .get()
             .endpoints
@@ -199,7 +199,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
         models: Vec<DiscoveredModel>,
         observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError> {
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         if !guard.get().endpoints.contains_key(endpoint_id.as_str()) {
             return Err(RepoError::EndpointNotFound(endpoint_id.0.clone()));
         }
@@ -213,7 +213,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
         &self,
         projection: BrokeredCatalogProjection,
     ) -> Result<CatalogSyncResult, RepoError> {
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         let mut next = guard.get().clone();
         let result = next.reconcile_brokered_projection(projection)?;
         *guard = ValidCatalog::parse(next)?;
@@ -225,7 +225,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
         model_id: String,
         attrs: ModelAttributes,
     ) -> Result<(), RepoError> {
-        let mut guard = self.inner.lock().expect("catalog mutex");
+        let mut guard = self.inner.lock();
         let mut next = guard.get().clone();
         // Upsert on `model_id` — the durable backends key their row on exactly the
         // model id (schema PK, `ON CONFLICT … DO UPDATE`), so insert replaces.
@@ -240,7 +240,6 @@ impl CatalogRepo for InMemoryCatalogRepo {
     async fn get_provider(&self, id: &ProviderId) -> Result<Provider, RepoError> {
         self.inner
             .lock()
-            .expect("catalog mutex")
             .get()
             .providers
             .get(id.as_str())
@@ -251,7 +250,6 @@ impl CatalogRepo for InMemoryCatalogRepo {
     async fn get_endpoint(&self, id: &ProtocolEndpointId) -> Result<ProtocolEndpoint, RepoError> {
         self.inner
             .lock()
-            .expect("catalog mutex")
             .get()
             .endpoints
             .get(id.as_str())
@@ -263,7 +261,7 @@ impl CatalogRepo for InMemoryCatalogRepo {
         // The stored catalog is a `ValidCatalog`, so its integrity already holds —
         // hand back the inner without re-validating (the read-path check moved to
         // the write-time construction boundary above).
-        Ok(self.inner.lock().expect("catalog mutex").get().clone())
+        Ok(self.inner.lock().get().clone())
     }
 }
 

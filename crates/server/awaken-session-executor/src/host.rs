@@ -55,6 +55,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 #[cfg(test)]
 use awaken_session_application_contract::Pending;
+use awaken_session_execution_contract::SessionApplicationBinding;
 
 use awaken_ext_compact::CompactConfig;
 
@@ -88,10 +89,7 @@ pub struct RemoteAttemptInstallation {
 mod build;
 pub use build::SessionExecutionProcess;
 mod dependencies;
-pub use dependencies::{
-    SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
-    SessionExecutorBuilder,
-};
+pub use dependencies::{SessionExecutionDependencies, SessionExecutorBuilder};
 pub(crate) mod capability;
 pub use capability::{TrustedHostPolicy, WarmPool};
 pub(crate) mod boundary_run;
@@ -133,7 +131,8 @@ pub(crate) use run_control::{
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };
-pub use types::{HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, HostResume};
+pub(crate) use types::HostOutcomeIteration;
+pub use types::{HostOutcomeDrive, HostOutcomeReport, HostResume};
 #[cfg(test)]
 pub(crate) use worker_resolver::test_support::{
     eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
@@ -189,6 +188,7 @@ pub struct ExecutorComponents {
     pub(crate) resources: Arc<capability::ResourcePorts>,
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
     pub(crate) capture: Arc<capability::ContentCaptureCapability>,
-    /// The edges back into the Session application built over this Host.
-    pub(crate) session_application: SessionApplicationBindings,
+    /// The one late binding back into the Session application built over
+    /// this executor; the composition root completes it once.
+    pub(crate) session_application: SessionApplicationBinding,
 }

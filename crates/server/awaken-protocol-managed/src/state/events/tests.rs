@@ -1470,7 +1470,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         )
         .await;
         let runtime = RehydrateFake::default();
-        runtime.lifecycle.lock().unwrap().extend(initial_lifecycle);
+        runtime.lifecycle.lock().extend(initial_lifecycle);
         let warm = {
             let session_fixture_runtime = runtime.clone();
             let session_fixture_clock = awaken_time::system_clock();
@@ -1504,7 +1504,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
                     .committed_projection_ready,
                 "E2 no incomplete public candidate"
             );
-            runtime.lifecycle.lock().unwrap().extend(late_lifecycle);
+            runtime.lifecycle.lock().extend(late_lifecycle);
         }
         warm.refresh_committed_events(session_id).await.unwrap();
         let observe = |state: &ManagedState| {
@@ -2660,7 +2660,7 @@ async fn pending_child_reply_fixture(
             latest_run_id: Some(child_run.clone()),
         },
     );
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_id.clone(),
         vec![Message::new(
             MessageId(format!("message-route-{label}")),
@@ -2678,9 +2678,8 @@ async fn pending_child_reply_fixture(
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.clone(), vec![2]);
-    runtime.pending_by_thread.lock().unwrap().insert(
+    runtime.pending_by_thread.lock().insert(
         child_id.clone(),
         Pending {
             tool_use_id: call_id.clone(),
@@ -2689,7 +2688,7 @@ async fn pending_child_reply_fixture(
             client_executed,
         },
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &child_id,
@@ -2796,7 +2795,7 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                 EndCause::Error(_) | EndCause::Indeterminate => RunLifecycleEventKind::Failed,
                 _ => RunLifecycleEventKind::Completed,
             };
-            runtime.lifecycle.lock().unwrap().push(lifecycle(
+            runtime.lifecycle.lock().push(lifecycle(
                 3,
                 &child_id,
                 &RunId("run-route-terminal-result".into()),
@@ -2804,7 +2803,7 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                 RunState::Ended(cause.clone()),
             ));
             if !residual {
-                runtime.pending_by_thread.lock().unwrap().remove(&child_id);
+                runtime.pending_by_thread.lock().remove(&child_id);
             }
             let before = serde_json::to_value(
                 state
@@ -2815,8 +2814,8 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                     .unwrap(),
             )
             .unwrap();
-            let transcript = runtime.committed_by_thread.lock().unwrap().clone();
-            let deliveries = runtime.thread_tool_replies.lock().unwrap().clone();
+            let transcript = runtime.committed_by_thread.lock().clone();
+            let deliveries = runtime.thread_tool_replies.lock().clone();
             assert!(
                 state
                     .send_events_attributed(
@@ -2871,12 +2870,12 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                 "R3 no root mutation"
             );
             assert_eq!(
-                *runtime.committed_by_thread.lock().unwrap(),
+                *runtime.committed_by_thread.lock(),
                 transcript,
                 "R2/R3 no transcript mutation"
             );
             assert_eq!(
-                *runtime.thread_tool_replies.lock().unwrap(),
+                *runtime.thread_tool_replies.lock(),
                 deliveries,
                 "R2/R3 no Runtime delivery"
             );
@@ -3112,7 +3111,7 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             .unwrap();
 
         {
-            let replies = runtime.thread_tool_replies.lock().unwrap();
+            let replies = runtime.thread_tool_replies.lock();
             assert_eq!(replies.len(), 1, "R1-R3/E1 {label}");
             assert_eq!(
                 replies[0].target,
@@ -3205,16 +3204,15 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             "R4/E3 no replay receipt {label}"
         );
         assert_eq!(
-            runtime.thread_tool_replies.lock().unwrap().len(),
+            runtime.thread_tool_replies.lock().len(),
             1,
             "R4/E3 one delivery {label}"
         );
 
-        runtime.pending_by_thread.lock().unwrap().remove(&child_id);
+        runtime.pending_by_thread.lock().remove(&child_id);
         runtime
             .committed_by_thread
             .lock()
-            .unwrap()
             .get_mut(&child_id)
             .expect("R1-R3 child transcript")
             .push(Message::new(
@@ -3228,11 +3226,10 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
         runtime
             .message_cursors_by_thread
             .lock()
-            .unwrap()
             .get_mut(&child_id)
             .expect("R1-R3 child Message cursors")
             .push(3);
-        runtime.lifecycle.lock().unwrap().extend([
+        runtime.lifecycle.lock().extend([
             lifecycle(
                 3,
                 &child_id,
@@ -3321,7 +3318,7 @@ async fn legacy_tool_reply_id_routes_one_pending_owner() {
         .await
         .expect("L1/E1 unique legacy child");
     assert_eq!(
-        runtime.thread_tool_replies.lock().unwrap()[0].target,
+        runtime.thread_tool_replies.lock()[0].target,
         SessionThreadTarget::Child(ThreadId(child_id)),
         "L1/E1"
     );
@@ -3335,7 +3332,7 @@ async fn legacy_tool_reply_id_rejects_ambiguous_pending_owners() {
     // profiles grew, even though neither production path recursed.
     let (runtime, state, session_id, _child_id, _) =
         pending_child_reply_fixture("legacy-ambiguous", true, true).await;
-    *runtime.pending.lock().unwrap() = Some(Pending {
+    *runtime.pending.lock() = Some(Pending {
         tool_use_id: "call-route-legacy-ambiguous".into(),
         name: "client_lookup".into(),
         input: serde_json::json!({"owner":"root"}),
@@ -3344,7 +3341,6 @@ async fn legacy_tool_reply_id_rejects_ambiguous_pending_owners() {
     runtime
         .committed_by_thread
         .lock()
-        .unwrap()
         .get_mut(&session_id)
         .expect("L2 canonical root transcript")
         .push(Message::new(
@@ -3359,12 +3355,11 @@ async fn legacy_tool_reply_id_rejects_ambiguous_pending_owners() {
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .get_mut(&session_id)
         .expect("L2 canonical root transcript coordinates")
         .push(4);
     let root_run = RunId("run-route-legacy-ambiguous-root".into());
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             3,
             &session_id,
@@ -3412,7 +3407,7 @@ async fn legacy_tool_reply_id_rejects_ambiguous_pending_owners() {
         "L2/E2 no receipt"
     );
     assert!(
-        runtime.thread_tool_replies.lock().unwrap().is_empty(),
+        runtime.thread_tool_replies.lock().is_empty(),
         "L2/E2 no delivery"
     );
 }
@@ -6293,7 +6288,7 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
         .await
         .unwrap();
     let root_run = RunId("run-root-failure".into());
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &session.id,
@@ -6404,11 +6399,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
     // another effect, so R1-R4 are also the smallest systematic proof that live,
     // repeated warm, and cold projection converge without a parallel Run cache.
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let repo = Arc::new(ephemeral_session_repo().await);
     let state = Arc::new({
         let session_fixture_runtime = runtime.clone();
@@ -6454,7 +6445,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
             latest_run_id: Some(child_run.clone()),
         },
     );
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         1,
         child_id,
         &child_run,
@@ -6469,7 +6460,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         .stream_subscribe(&session.id)
         .expect("R1 live subscription");
 
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         2,
         child_id,
         &child_run,
@@ -6508,7 +6499,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
         "R1/E3"
     );
 
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_id.into(),
         vec![Message::text(
             MessageId::assistant(&child_run, 0),
@@ -6516,7 +6507,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
             "recovered answer",
         )],
     );
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         3,
         child_id,
         &child_run,
@@ -6638,11 +6629,10 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
     // | B3 | Failed | reached | no | live/warm | E3+E4 |
     // | B4 | B1-B3 | reached | as above | repeat/cold | E1-E5 |
     let runtime = RehydrateFake::default();
-    runtime.delegate_ids.lock().unwrap().extend([
-        "researcher".into(),
-        "reviewer".into(),
-        "critic".into(),
-    ]);
+    runtime
+        .delegate_ids
+        .lock()
+        .extend(["researcher".into(), "reviewer".into(), "critic".into()]);
     let repo = Arc::new(ephemeral_session_repo().await);
     let profiles = Arc::new(FrozenToolFamilyProfiles::native_roster(
         "coder",
@@ -6718,7 +6708,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
                 latest_run_id: Some(run_id.clone()),
             },
         );
-        runtime.lifecycle.lock().unwrap().push(lifecycle(
+        runtime.lifecycle.lock().push(lifecycle(
             ordinal as u64 + 1,
             thread_id,
             run_id,
@@ -6735,7 +6725,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
         .expect("B1-B3 live subscription");
 
     let awaiting_call = "budget-awaiting-call";
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         awaiting.0.into(),
         vec![Message::new(
             MessageId("message-budget-awaiting".into()),
@@ -6747,7 +6737,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
             )],
         )],
     );
-    runtime.pending_by_thread.lock().unwrap().insert(
+    runtime.pending_by_thread.lock().insert(
         awaiting.0.into(),
         Pending {
             tool_use_id: awaiting_call.into(),
@@ -6756,7 +6746,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
             client_executed: true,
         },
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             4,
             completed.0,
@@ -6965,11 +6955,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
     // | F3 | ordinary | same prefix | warm refresh | E1 once+E4 |
     // | F4 | ordinary | same prefix | cold rebuild | E1-E4 |
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let repo = Arc::new(ephemeral_session_repo().await);
     let state = Arc::new({
         let session_fixture_runtime = runtime.clone();
@@ -7015,7 +7001,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
             latest_run_id: Some(child_run.clone()),
         },
     );
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         1,
         child_id,
         &child_run,
@@ -7038,7 +7024,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
     let (_snapshot, mut receiver) = state
         .stream_subscribe(&session.id)
         .expect("F2 live subscription");
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_id.into(),
         vec![Message::text(
             MessageId::assistant(&child_run, 0),
@@ -7046,7 +7032,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
             "partial response must not become a successful report",
         )],
     );
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         2,
         child_id,
         &child_run,
@@ -7278,7 +7264,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
             },
         );
         let root_run = RunId("run-primary-with-active-child".into());
-        runtime.lifecycle.lock().unwrap().extend([
+        runtime.lifecycle.lock().extend([
             lifecycle(
                 1,
                 child_id,
@@ -7313,7 +7299,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
         );
 
         let call_id = "call-child-client";
-        runtime.committed_by_thread.lock().unwrap().insert(
+        runtime.committed_by_thread.lock().insert(
             child_id.into(),
             vec![Message::new(
                 MessageId("child-client-tool".into()),
@@ -7347,7 +7333,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
             }),
             "P2/E2 no premature tool or terminal"
         );
-        runtime.lifecycle.lock().unwrap().push(lifecycle(
+        runtime.lifecycle.lock().push(lifecycle(
             4,
             child_id,
             &child_run,
@@ -7381,7 +7367,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
                 .all(|event| event.type_str() != "agent.custom_tool_use"),
             "P3/E3 transcript cannot be marked/projected ahead of its ticket"
         );
-        runtime.pending_by_thread.lock().unwrap().insert(
+        runtime.pending_by_thread.lock().insert(
             child_id.into(),
             Pending {
                 tool_use_id: call_id.into(),
@@ -7463,7 +7449,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
         };
         state.send_events(&session_id, reply()).await.unwrap();
         {
-            let replies = runtime.thread_tool_replies.lock().unwrap();
+            let replies = runtime.thread_tool_replies.lock();
             assert_eq!(replies.len(), 1, "P5/E5");
             assert_eq!(replies[0].session_id, session_id, "P5/E5");
             assert_eq!(
@@ -7518,11 +7504,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
             before,
             "P6/E6 no duplicate matching receipt"
         );
-        assert_eq!(
-            runtime.thread_tool_replies.lock().unwrap().len(),
-            1,
-            "P6/E6"
-        );
+        assert_eq!(runtime.thread_tool_replies.lock().len(), 1, "P6/E6");
     })
     .await;
 }
@@ -7616,14 +7598,12 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
     runtime
         .committed_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![tool_message.clone()]);
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![2]);
-    runtime.pending_by_thread.lock().unwrap().insert(
+    runtime.pending_by_thread.lock().insert(
         child_id.into(),
         Pending {
             tool_use_id: first_call.into(),
@@ -7632,7 +7612,7 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
             client_executed: false,
         },
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             child_id,
@@ -7682,7 +7662,7 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         "T1/E1 withheld sibling retains the source"
     );
 
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_id.into(),
         vec![
             tool_message.clone(),
@@ -7711,10 +7691,9 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![2, 3, 3]);
-    runtime.pending_by_thread.lock().unwrap().remove(child_id);
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.pending_by_thread.lock().remove(child_id);
+    runtime.lifecycle.lock().push(lifecycle(
         3,
         child_id,
         &child_run,
@@ -7924,7 +7903,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
     let root_run = RunId("run-qualified-root".into());
     let child_a = ("thread-qualified-a", "researcher", "run-qualified-a");
     let child_b = ("thread-qualified-b", "reviewer", "run-qualified-b");
-    *runtime.committed.lock().unwrap() = Some(vec![Message::new(
+    *runtime.committed.lock() = Some(vec![Message::new(
         MessageId("message-qualified-root".into()),
         Role::Assistant,
         vec![ContentBlock::tool_use(
@@ -7933,13 +7912,13 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
             serde_json::json!({"owner":"root"}),
         )],
     )]);
-    *runtime.pending.lock().unwrap() = Some(Pending {
+    *runtime.pending.lock() = Some(Pending {
         tool_use_id: runtime_call_id.into(),
         name: "client_lookup".into(),
         input: serde_json::json!({"owner":"root"}),
         client_executed: true,
     });
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &session.id,
@@ -7976,7 +7955,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
                 latest_run_id: Some(run_id.clone()),
             },
         );
-        runtime.committed_by_thread.lock().unwrap().insert(
+        runtime.committed_by_thread.lock().insert(
             thread_id.into(),
             vec![Message::new(
                 MessageId("provider-reused-child-message".into()),
@@ -7991,7 +7970,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
                 ],
             )],
         );
-        runtime.pending_by_thread.lock().unwrap().insert(
+        runtime.pending_by_thread.lock().insert(
             thread_id.into(),
             Pending {
                 tool_use_id: runtime_call_id.into(),
@@ -8001,7 +7980,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
             },
         );
         let cursor = 3 + ordinal as u64 * 2;
-        runtime.lifecycle.lock().unwrap().extend([
+        runtime.lifecycle.lock().extend([
             lifecycle(
                 cursor,
                 thread_id,
@@ -8026,7 +8005,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         (child_a.0, 1_800_000_001_000),
         (child_b.0, 1_800_000_002_000),
     ] {
-        runtime.commit_times_by_thread.lock().unwrap().insert(
+        runtime.commit_times_by_thread.lock().insert(
             thread.to_string(),
             (1..100).map(|cursor| (cursor, at)).collect(),
         );
@@ -8272,7 +8251,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         )
         .await
         .unwrap();
-    let replies = runtime.thread_tool_replies.lock().unwrap();
+    let replies = runtime.thread_tool_replies.lock();
     assert_eq!(replies.len(), 1, "Q3/E4");
     assert_eq!(
         replies[0].target,
@@ -8281,15 +8260,11 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
     );
     assert_eq!(replies[0].tool_use_id, runtime_call_id, "Q3/E4");
     assert!(
-        runtime
-            .pending_by_thread
-            .lock()
-            .unwrap()
-            .contains_key(child_b.0),
+        runtime.pending_by_thread.lock().contains_key(child_b.0),
         "Q3/E4 child B remains pending"
     );
     assert!(
-        runtime.pending.lock().unwrap().is_some(),
+        runtime.pending.lock().is_some(),
         "Q3/E4 root remains pending"
     );
 }
@@ -8306,11 +8281,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
     // accepted ToolResult message commit is the immutable cross-post anchor.
     let repository = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let profiles = Arc::new(FrozenToolFamilyProfiles::native_roster(
         "coder",
         &["researcher"],
@@ -8361,13 +8332,12 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
             }),
         )],
     );
-    *runtime.committed.lock().unwrap() = Some(vec![tool_use.clone()]);
+    *runtime.committed.lock() = Some(vec![tool_use.clone()]);
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), vec![10]);
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         5,
         &session.id,
         &root_run,
@@ -8399,32 +8369,27 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
             )],
         )],
     );
-    *runtime.committed.lock().unwrap() = Some(vec![tool_use, accepted]);
+    *runtime.committed.lock() = Some(vec![tool_use, accepted]);
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), vec![10, 30]);
-    runtime
-        .coordinated
-        .lock()
-        .unwrap()
-        .push(CoordinatedThreadLink {
-            session_id: SessionId::from(&session.id),
-            thread_id: ThreadId(child_id.into()),
-            target: CoordinatedThreadTarget::Agent {
-                agent_id: "researcher".into(),
-            },
-            created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, call_id),
-            latest_run_id: Some(child_run.clone()),
-        });
+    runtime.coordinated.lock().push(CoordinatedThreadLink {
+        session_id: SessionId::from(&session.id),
+        thread_id: ThreadId(child_id.into()),
+        target: CoordinatedThreadTarget::Agent {
+            agent_id: "researcher".into(),
+        },
+        created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, call_id),
+        latest_run_id: Some(child_run.clone()),
+    });
     let child_activity = warm
         .application
         .activities()
         .begin_activity(&SessionId::from(&session.id))
         .await
         .unwrap();
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             31,
             child_id,
@@ -8569,11 +8534,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     // | B2 | same + C9 | full cold read | yes | T | E1,E2,E3,E4,E5,E6,E7(R4 cold) |
     let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let profiles = Arc::new(FrozenToolFamilyProfiles::native_roster(
         "coder",
         &["researcher"],
@@ -8630,7 +8591,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
             latest_run_id: Some(child_run.clone()),
         },
     );
-    runtime.usage_by_thread.lock().unwrap().extend([
+    runtime.usage_by_thread.lock().extend([
         (
             session.id.clone(),
             awaken_session_contract::SessionUsage {
@@ -8660,7 +8621,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
             },
         ),
     ]);
-    *runtime.committed.lock().unwrap() = Some(vec![
+    *runtime.committed.lock() = Some(vec![
         Message::new(
             MessageId("batch-independent-parent-call".into()),
             Role::Assistant,
@@ -8688,7 +8649,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
             )],
         ),
     ]);
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         1,
         child_id,
         &child_run,
@@ -8725,7 +8686,6 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     runtime
         .committed_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![first.clone()]);
     // ThreadCommit assigns a fixed cursor to each committed Message. The
     // fake's default cursor follows its latest lifecycle, which would
@@ -8733,7 +8693,6 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![1]);
     warm.refresh_committed_events(&session.id).await.unwrap();
     let prefix_events = warm
@@ -8765,14 +8724,12 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     runtime
         .committed_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![first, result, second]);
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(child_id.into(), vec![1, 2, 2]);
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         2,
         child_id,
         &child_run,
@@ -9016,11 +8973,7 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
     // P2=C1+C2+C3+C4 cold=>E3.
     let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let warm = {
         let session_fixture_runtime = runtime.clone();
         let session_fixture_clock = awaken_time::system_clock();
@@ -9065,7 +9018,7 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
             latest_run_id: Some(child_run.clone()),
         },
     );
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_id.into(),
         vec![
             Message::new(
@@ -9087,7 +9040,7 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
             ),
         ],
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             child_id,
@@ -9215,9 +9168,8 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     runtime
         .committed_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), messages.clone());
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &session.id,
@@ -9236,7 +9188,7 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
 
     // T1 known commit time -> exact subsecond wire value in every replica;
     // T2 backwards wall clock between commits -> order remains commit order.
-    runtime.commit_times_by_thread.lock().unwrap().insert(
+    runtime.commit_times_by_thread.lock().insert(
         session.id.clone(),
         [(1, 1_800_000_000_999), (2, 1_800_000_000_123)].into(),
     );
@@ -9451,7 +9403,7 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
     let child_id = "sthr_advisor";
     let child_run = RunId("run-advisor".into());
     let root_run = RunId("advisor-root".into());
-    runtime.usage_by_thread.lock().unwrap().extend([
+    runtime.usage_by_thread.lock().extend([
         (
             session.id.clone(),
             awaken_session_contract::SessionUsage {
@@ -9467,19 +9419,15 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
             },
         ),
     ]);
-    runtime
-        .coordinated
-        .lock()
-        .unwrap()
-        .push(CoordinatedThreadLink {
-            session_id: SessionId::from(&session.id),
-            thread_id: ThreadId(child_id.into()),
-            target: CoordinatedThreadTarget::Advisor {
-                model: "claude-opus-5".into(),
-            },
-            created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, "advisor-call"),
-            latest_run_id: Some(child_run.clone()),
-        });
+    runtime.coordinated.lock().push(CoordinatedThreadLink {
+        session_id: SessionId::from(&session.id),
+        thread_id: ThreadId(child_id.into()),
+        target: CoordinatedThreadTarget::Advisor {
+            model: "claude-opus-5".into(),
+        },
+        created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, "advisor-call"),
+        latest_run_id: Some(child_run.clone()),
+    });
     let advisor_call = Message::new(
         MessageId::assistant(&root_run, 0),
         Role::Assistant,
@@ -9489,8 +9437,8 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
             serde_json::json!({}),
         )],
     );
-    *runtime.committed.lock().unwrap() = Some(vec![advisor_call.clone()]);
-    runtime.committed_by_thread.lock().unwrap().insert(
+    *runtime.committed.lock() = Some(vec![advisor_call.clone()]);
+    runtime.committed_by_thread.lock().insert(
         child_id.into(),
         vec![
             Message::text(
@@ -9505,7 +9453,7 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
             ),
         ],
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &session.id,
@@ -9532,7 +9480,7 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
             .all(|event| !matches!(event.kind, OutboundKind::AgentThreadMessageReceived { .. })),
         "A1/C3/E9 Running holds seed and partial output"
     );
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         3,
         child_id,
         &child_run,
@@ -9540,7 +9488,7 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
         RunState::Ended(EndCause::NaturalEnd),
     ));
     state.refresh_committed_events(&session.id).await.unwrap();
-    *runtime.committed.lock().unwrap() = Some(vec![
+    *runtime.committed.lock() = Some(vec![
         advisor_call,
         Message::new(
             MessageId("advisor-parent-result".into()),
@@ -9662,15 +9610,8 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
     let primary_json = serde_json::to_string(&primary_events).unwrap();
     assert!(!primary_json.contains("independent advice"), "A3/C9/E8");
     assert!(!primary_json.contains("copied root context"), "A3/E9");
-    let committed_child_json = serde_json::to_string(
-        runtime
-            .committed_by_thread
-            .lock()
-            .unwrap()
-            .get(child_id)
-            .unwrap(),
-    )
-    .unwrap();
+    let committed_child_json =
+        serde_json::to_string(runtime.committed_by_thread.lock().get(child_id).unwrap()).unwrap();
     assert!(
         committed_child_json.contains("independent advice")
             && committed_child_json.contains("copied root context"),
@@ -9695,9 +9636,9 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
         ],
         "A1-A3 advisor delivery is primary-only"
     );
-    assert!(runtime.archive_commits.lock().unwrap().is_empty(), "A3/E4");
+    assert!(runtime.archive_commits.lock().is_empty(), "A3/E4");
 
-    runtime.coordinated.lock().unwrap()[0].target = CoordinatedThreadTarget::Advisor {
+    runtime.coordinated.lock()[0].target = CoordinatedThreadTarget::Advisor {
         model: String::new(),
     };
     state.sessions.lock().unwrap().remove(&session.id);
@@ -9803,9 +9744,8 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
     runtime
         .run_ids_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), root_run.clone());
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         session.id.clone(),
         ["advisor-failed-call", "advisor-cancelled-call"]
             .into_iter()
@@ -9826,9 +9766,8 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), vec![1, 2]);
-    runtime.coordinated.lock().unwrap().extend([
+    runtime.coordinated.lock().extend([
         CoordinatedThreadLink {
             session_id: SessionId::from(&session.id),
             thread_id: ThreadId(failed_thread.into()),
@@ -9860,7 +9799,7 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
         (failed_thread, &failed_run, "failed partial secret"),
         (cancelled_thread, &cancelled_run, "cancelled partial secret"),
     ] {
-        runtime.committed_by_thread.lock().unwrap().insert(
+        runtime.committed_by_thread.lock().insert(
             thread_id.into(),
             vec![
                 Message::text(
@@ -9872,7 +9811,7 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
             ],
         );
     }
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             failed_thread,
@@ -10020,7 +9959,7 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     let advisor_thread_id = "run-advisor-race";
     let advisor_run = RunId(advisor_thread_id.into());
     let root_run = RunId("run-root-lifecycle-scope".into());
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &session.id,
@@ -10043,7 +9982,7 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
             RunState::Ended(EndCause::NaturalEnd),
         ),
     ]);
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         session.id.clone(),
         vec![Message::new(
             MessageId::assistant(&root_run, 0),
@@ -10058,9 +9997,8 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), vec![1]);
-    *runtime.root_store_cursor_override.lock().unwrap() = Some(1);
+    *runtime.root_store_cursor_override.lock() = Some(1);
 
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
@@ -10070,20 +10008,16 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     );
     assert_eq!(state.list_threads(&session.id).unwrap().len(), 1, "L1/E1");
 
-    *runtime.root_store_cursor_override.lock().unwrap() = None;
-    runtime
-        .coordinated
-        .lock()
-        .unwrap()
-        .push(CoordinatedThreadLink {
-            session_id: SessionId::from(&session.id),
-            thread_id: ThreadId(advisor_thread_id.into()),
-            target: CoordinatedThreadTarget::Advisor {
-                model: "claude-opus-5".into(),
-            },
-            created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, "advisor-race"),
-            latest_run_id: Some(advisor_run),
-        });
+    *runtime.root_store_cursor_override.lock() = None;
+    runtime.coordinated.lock().push(CoordinatedThreadLink {
+        session_id: SessionId::from(&session.id),
+        thread_id: ThreadId(advisor_thread_id.into()),
+        target: CoordinatedThreadTarget::Advisor {
+            model: "claude-opus-5".into(),
+        },
+        created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, "advisor-race"),
+        latest_run_id: Some(advisor_run),
+    });
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         state.lifecycle_cursor(&session.id).unwrap(),
@@ -10100,7 +10034,7 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
     );
 
     let internal_run = RunId("run-internal-compactor".into());
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             4,
             &session.id,
@@ -10191,11 +10125,7 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
     // | S1 | T | T | T | F | T | discard mixed attempt |
     // | S2 | T | T | T | T | T | E1,E2,E3 |
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let state = ManagedState::new(runtime.clone()).await;
     let session = state
         .create_session(
@@ -10210,14 +10140,14 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
     let child_id = "thread-terminal-skew";
     let child_run = RunId("run-terminal-skew".into());
     let root_run = RunId("run-terminal-skew-root".into());
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.lifecycle.lock().push(lifecycle(
         1,
         &session.id,
         &root_run,
         RunLifecycleEventKind::Running,
         RunState::Running,
     ));
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         session.id.clone(),
         vec![
             Message::new(
@@ -10269,43 +10199,26 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session.id.clone(), vec![1, 2]);
-    runtime
-        .coordinated
-        .lock()
-        .unwrap()
-        .push(CoordinatedThreadLink {
-            session_id: SessionId::from(&session.id),
-            thread_id: ThreadId(child_id.into()),
-            target: CoordinatedThreadTarget::Agent {
-                agent_id: "researcher".into(),
-            },
-            created_by_operation_id: ToolBatch::operation_id_for_step(
-                &root_run,
-                0,
-                "terminal-skew",
-            ),
-            latest_run_id: Some(child_run.clone()),
-        });
-    runtime
-        .coordinated
-        .lock()
-        .unwrap()
-        .push(CoordinatedThreadLink {
-            session_id: SessionId::from(&session.id),
-            thread_id: ThreadId("thread-terminal-skew-b".into()),
-            target: CoordinatedThreadTarget::Agent {
-                agent_id: "researcher".into(),
-            },
-            created_by_operation_id: ToolBatch::operation_id_for_step(
-                &root_run,
-                0,
-                "terminal-skew-b",
-            ),
-            latest_run_id: Some(RunId("run-terminal-skew-b".into())),
-        });
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
+    runtime.coordinated.lock().push(CoordinatedThreadLink {
+        session_id: SessionId::from(&session.id),
+        thread_id: ThreadId(child_id.into()),
+        target: CoordinatedThreadTarget::Agent {
+            agent_id: "researcher".into(),
+        },
+        created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, "terminal-skew"),
+        latest_run_id: Some(child_run.clone()),
+    });
+    runtime.coordinated.lock().push(CoordinatedThreadLink {
+        session_id: SessionId::from(&session.id),
+        thread_id: ThreadId("thread-terminal-skew-b".into()),
+        target: CoordinatedThreadTarget::Agent {
+            agent_id: "researcher".into(),
+        },
+        created_by_operation_id: ToolBatch::operation_id_for_step(&root_run, 0, "terminal-skew-b"),
+        latest_run_id: Some(RunId("run-terminal-skew-b".into())),
+    });
+    runtime.lifecycle.lock().push(lifecycle(
         3,
         child_id,
         &child_run,
@@ -10321,7 +10234,7 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
         .map(|event| event.id)
         .collect::<Vec<_>>();
 
-    *runtime.child_commit_after_history_snapshot.lock().unwrap() = Some((
+    *runtime.child_commit_after_history_snapshot.lock() = Some((
         child_id.into(),
         vec![Message::text(
             MessageId::assistant(&child_run, 0),
@@ -10348,7 +10261,6 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
     let reads_before = runtime
         .order
         .lock()
-        .unwrap()
         .iter()
         .filter(|read| **read == "child_snapshot")
         .count();
@@ -10356,7 +10268,6 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
     let reads_after = runtime
         .order
         .lock()
-        .unwrap()
         .iter()
         .filter(|read| **read == "child_snapshot")
         .count();
@@ -10469,11 +10380,7 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
     // | H1 | yes | absent | Completed | E1,E2,E3 |
     let repo = Arc::new(ephemeral_session_repo().await);
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let original = {
         let session_fixture_runtime = runtime.clone();
         let session_fixture_clock = awaken_time::system_clock();
@@ -10520,7 +10427,7 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
             latest_run_id: Some(child_run.clone()),
         },
     );
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_id.into(),
         vec![
             Message::new(
@@ -10548,7 +10455,7 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
             ),
         ],
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             child_id,
@@ -12113,8 +12020,8 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
         Role::Assistant,
         "FINAL",
     );
-    *runtime.committed.lock().unwrap() = Some(vec![final_message.clone()]);
-    runtime.outcome_projections.lock().unwrap().insert(
+    *runtime.committed.lock() = Some(vec![final_message.clone()]);
+    runtime.outcome_projections.lock().insert(
         (session_id.into(), outcome_id.clone()),
         CommittedOutcomeProjection::Completed(OutcomeReport {
             iterations: vec![
@@ -12150,15 +12057,13 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     runtime
         .state_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session_id.into(), vec![10, 20, 20, 20]);
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session_id.into(), vec![20]);
-    *runtime.root_store_cursor_override.lock().unwrap() = Some(30);
-    runtime.commit_times_by_thread.lock().unwrap().insert(
+    *runtime.root_store_cursor_override.lock() = Some(30);
+    runtime.commit_times_by_thread.lock().insert(
         session_id.into(),
         [
             (10, 1_900_000_000_123),
@@ -12292,7 +12197,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     )
     .await;
     let source_run_id = RunId(format!("outcome/{outcome_id}/grader/0/run"));
-    runtime.outcome_projections.lock().unwrap().insert(
+    runtime.outcome_projections.lock().insert(
         (session_id.into(), outcome_id),
         CommittedOutcomeProjection::Errored(OutcomeFailure {
             code: "outcome_invalid_grader_output".into(),
@@ -12372,7 +12277,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     assert_eq!(initial.0[0].2, "Judge returned invalid JSON", "R1/E1");
     assert_eq!((initial.2, initial.3), (0, 0), "R1/E2");
 
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             2,
             session_id,
@@ -12440,7 +12345,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     .await;
     let ordinary_runtime = RehydrateFake::default();
     let ordinary_run_id = RunId("ordinary-root-run".into());
-    ordinary_runtime.lifecycle.lock().unwrap().extend([
+    ordinary_runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             ordinary_session_id,
@@ -12903,7 +12808,7 @@ async fn recovered_terminal_errors_are_visible_once_without_releasing_active_ses
             .await;
             let runtime = RehydrateFake::default();
             let run_id = RunId("uncertain-run".into());
-            runtime.lifecycle.lock().unwrap().extend([
+            runtime.lifecycle.lock().extend([
                 lifecycle(
                     1,
                     session_id,

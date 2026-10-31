@@ -255,11 +255,11 @@ impl DurableRegistrar {
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
         let _guard = self.refresh.lock().await;
         let expected = self.catalog.preview_registration(registration.clone())?;
-        let prior = self.catalog.at_revision(
+        let prior = self.catalog.try_at_revision(
             &registration.workspace_id,
             &registration.agent_id,
             registration.source_revision,
-        );
+        )?;
         let evidence = match (
             registration.publication_sequence,
             registration.published_at_unix_ms,
@@ -277,18 +277,18 @@ impl DurableRegistrar {
             }
             _ => None,
         };
+        let time_amended = self.catalog.has_time_amendment(
+            &registration.workspace_id,
+            &registration.agent_id,
+            registration.source_revision,
+        )?;
         let needs_amendment = prior.as_ref().is_some_and(|prior| {
             let mut enriched = prior.clone();
             enriched.published_at_unix_ms = registration.published_at_unix_ms;
             enriched.publication_sequence = registration.publication_sequence;
             enriched.publication_order_verified = registration.publication_order_verified;
             (prior.published_at_unix_ms.is_none() && enriched == registration)
-                || (prior == &registration
-                    && self.catalog.has_time_amendment(
-                        &registration.workspace_id,
-                        &registration.agent_id,
-                        registration.source_revision,
-                    ))
+                || (prior == &registration && time_amended)
         });
         let command = match (needs_amendment, evidence) {
             (true, Some(evidence)) => CatalogCommand::PublicationTime(evidence),

@@ -25,9 +25,10 @@
 //!   secret-free legacy Event-batch cutover proof from this process's sole
 //!   Session lifecycle supervisor.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 
+use awaken_sync::{LeafLock, LeafRwLock};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
@@ -76,13 +77,14 @@ impl http_body::Body for ActiveResponseBody {
 pub struct DrainController {
     draining: AtomicBool,
     active: AtomicUsize,
-    public_admission_fence: Mutex<()>,
-    registration_supervisor: RwLock<Option<Arc<awaken_control::StaticRegistrationSupervisor>>>,
-    registration_health: RwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
-    service_lifecycle: RwLock<Option<awaken_service_lifecycle::ServiceLifecycle>>,
-    postgres_pool: RwLock<Option<sqlx::PgPool>>,
-    event_batch_cutover_validation:
-        RwLock<Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>>,
+    public_admission_fence: LeafLock<()>,
+    registration_supervisor: LeafRwLock<Option<Arc<awaken_control::StaticRegistrationSupervisor>>>,
+    registration_health: LeafRwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
+    service_lifecycle: LeafRwLock<Option<awaken_service_lifecycle::ServiceLifecycle>>,
+    postgres_pool: LeafRwLock<Option<sqlx::PgPool>>,
+    event_batch_cutover_validation: LeafRwLock<
+        Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
+    >,
 }
 
 impl DrainController {
@@ -110,49 +112,31 @@ impl DrainController {
         supervisor: Arc<awaken_control::StaticRegistrationSupervisor>,
     ) {
         let health = supervisor.health();
-        *self
-            .registration_supervisor
-            .write()
-            .expect("registration supervisor lock poisoned") = Some(supervisor);
-        *self
-            .registration_health
-            .write()
-            .expect("registration health lock poisoned") = Some(health);
+        *self.registration_supervisor.write() = Some(supervisor);
+        *self.registration_health.write() = Some(health);
     }
 
     pub fn set_service_lifecycle(&self, lifecycle: awaken_service_lifecycle::ServiceLifecycle) {
-        *self
-            .service_lifecycle
-            .write()
-            .expect("service lifecycle lock poisoned") = Some(lifecycle);
+        *self.service_lifecycle.write() = Some(lifecycle);
     }
 
     pub(crate) fn set_session_event_batch_cutover_validation_source(
         &self,
         source: Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>,
     ) {
-        *self
-            .event_batch_cutover_validation
-            .write()
-            .expect("Session Event-batch cutover validation source lock poisoned") = Some(source);
+        *self.event_batch_cutover_validation.write() = Some(source);
     }
 
     /// Attach the canonical Coordinator pool already opened by
     /// `CoordinatorPersistence`. Readiness clones this handle; it must never
     /// create a second pool or retain a database URL.
     pub(crate) fn set_postgres_pool(&self, pool: sqlx::PgPool) {
-        *self
-            .postgres_pool
-            .write()
-            .expect("postgres readiness pool lock poisoned") = Some(pool);
+        *self.postgres_pool.write() = Some(pool);
     }
 
     #[cfg(test)]
     fn set_registration_health_for_test(&self, health: Arc<awaken_control::RegistrationHealth>) {
-        *self
-            .registration_health
-            .write()
-            .expect("registration health lock poisoned") = Some(health);
+        *self.registration_health.write() = Some(health);
     }
 
     #[must_use]
@@ -161,13 +145,11 @@ impl DrainController {
             && self
                 .service_lifecycle
                 .read()
-                .expect("service lifecycle lock poisoned")
                 .as_ref()
                 .is_none_or(awaken_service_lifecycle::ServiceLifecycle::is_healthy)
             && self
                 .registration_health
                 .read()
-                .expect("registration health lock poisoned")
                 .as_ref()
                 .is_none_or(|health| health.snapshot().ready)
     }
@@ -183,11 +165,7 @@ impl DrainController {
         if !self.is_ready() {
             return false;
         }
-        let pool = self
-            .postgres_pool
-            .read()
-            .expect("postgres readiness pool lock poisoned")
-            .clone();
+        let pool = self.postgres_pool.read().clone();
         let Some(pool) = pool else {
             return self.readiness_decision(true);
         };
@@ -204,7 +182,6 @@ impl DrainController {
     fn registration_snapshot(&self) -> Option<awaken_control::RegistrationHealthSnapshot> {
         self.registration_health
             .read()
-            .expect("registration health lock poisoned")
             .as_ref()
             .map(|health| health.snapshot())
     }
@@ -214,16 +191,12 @@ impl DrainController {
     ) -> Option<awaken_session_application::SessionEventBatchCutoverValidationSnapshot> {
         self.event_batch_cutover_validation
             .read()
-            .expect("Session Event-batch cutover validation source lock poisoned")
             .as_ref()
             .and_then(|source| source.snapshot())
     }
 
     fn admit_public_request(ctrl: &Arc<Self>, authority_read: bool) -> Option<ActiveRequestGuard> {
-        let _fence = ctrl
-            .public_admission_fence
-            .lock()
-            .expect("public request admission fence poisoned");
+        let _fence = ctrl.public_admission_fence.lock();
         if ctrl.is_draining() && !authority_read {
             return None;
         }
@@ -232,10 +205,7 @@ impl DrainController {
     }
 
     fn begin_drain(&self) {
-        let _fence = self
-            .public_admission_fence
-            .lock()
-            .expect("public request admission fence poisoned");
+        let _fence = self.public_admission_fence.lock();
         self.draining.store(true, Ordering::Release);
     }
 }
@@ -436,12 +406,7 @@ pub fn register_active_streams_gauge(
             .u64_observable_gauge("awaken_service_lifecycle_healthy")
             .with_description("1 while every supervised critical service task is healthy.")
             .with_callback(move |obs| {
-                if let Some(tasks) = ctrl
-                    .service_lifecycle
-                    .read()
-                    .expect("service lifecycle lock poisoned")
-                    .as_ref()
-                {
+                if let Some(tasks) = ctrl.service_lifecycle.read().as_ref() {
                     obs.observe(u64::from(tasks.is_healthy()), &[]);
                 }
             })

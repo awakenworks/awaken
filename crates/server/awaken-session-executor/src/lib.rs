@@ -129,8 +129,8 @@ pub use crate::host::capability::WorkerContentAdapters;
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts, test_memory_content};
 pub use crate::host::{
     AttemptExecutorDecorator, ExecutorComponents, HostResume, RemoteAttemptInstallation,
-    SessionApplicationBindingError, SessionApplicationBindings, SessionExecutionDependencies,
-    SessionExecutionProcess, SessionExecutorBuilder, TrustedHostPolicy, WarmPool,
+    SessionExecutionDependencies, SessionExecutionProcess, SessionExecutorBuilder,
+    TrustedHostPolicy, WarmPool,
 };
 pub use crate::no_model::NoModelConfiguredExecutor;
 use awaken_credential_contract::CredentialRefreshFactory;

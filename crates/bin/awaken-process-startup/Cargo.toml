@@ -23,6 +23,7 @@ path = "src/lib.rs"
 # co-located Worker, the Coordinator process package (awaken-coordinator-process)
 # supplies none.
 [dependencies]
+awaken-sync.workspace = true
 awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true

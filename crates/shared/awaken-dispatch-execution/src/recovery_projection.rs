@@ -9,8 +9,6 @@
 //! claimed attempt replaces it with a claim-authorized snapshot, and successful
 //! remote commits advance it monotonically.
 
-use std::sync::RwLock;
-
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
@@ -28,6 +26,7 @@ use awaken_agent_contract::thread::read::recovery::{
     AnswerableTicketError, CurrentRunError, RunRecordSelectionError, RunRecoverySnapshot,
     RunResumeTicket,
 };
+use awaken_sync::InvariantRwLock;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryProjectionError {
@@ -72,7 +71,7 @@ const fn classify_recovery_snapshot_admission(
 /// Non-authoritative committed-read cache for one remote Worker session.
 #[derive(Debug, Default)]
 pub struct RecoveryProjection {
-    snapshot: RwLock<Option<RunRecoverySnapshot>>,
+    snapshot: InvariantRwLock<Option<RunRecoverySnapshot>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

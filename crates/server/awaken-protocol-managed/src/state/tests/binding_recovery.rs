@@ -615,7 +615,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
 
     // Fresh state (empty cache) sharing the durable repo — simulates a restart.
     let runtime = RehydrateFake::default();
-    *runtime.committed.lock().unwrap() = Some(vec![Message::new(
+    *runtime.committed.lock() = Some(vec![Message::new(
         awaken_agent_contract::agent::message::Id("assistant-tool".into()),
         awaken_agent_contract::agent::message::Role::Assistant,
         vec![
@@ -626,14 +626,14 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             },
         ],
     )]);
-    *runtime.pending.lock().unwrap() = Some(awaken_session_application_contract::Pending {
+    *runtime.pending.lock() = Some(awaken_session_application_contract::Pending {
         tool_use_id: "call-submit".into(),
         name: "design_submit_artifact".into(),
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
         client_executed: true,
     });
     let child_thread_id = "sthr_durable";
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         child_thread_id.into(),
         vec![
             Message::new(
@@ -661,11 +661,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             ),
         ],
     );
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let root_run_id = awaken_agent_contract::agent::run::Id("parent".into());
     let child_run_id = awaken_agent_contract::agent::run::Id("coord-run-durable".into());
     runtime.install_agent_coordination_prefix(
@@ -687,7 +683,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             latest_run_id: Some(child_run_id.clone()),
         },
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         // R2 source-order constraint: ThreadCommit encodes each audit sequence
         // as commit*1000+offset. Raw sequence 1..4 decodes to source commit 0
         // and makes a completed child appear before its accepted root send.
@@ -786,21 +782,18 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             && thread.status == SessionThreadStatus::Idle
     }));
     assert!(
-        restored.lock().unwrap().is_empty(),
+        restored.lock().is_empty(),
         "a read rebuilds no Runtime Resource projection"
     );
     assert!(
-        order.lock().unwrap().iter().all(|operation| matches!(
+        order.lock().iter().all(|operation| matches!(
             *operation,
             "history" | "coordination" | "root_snapshot" | "child_snapshot"
         )),
         "a read opens only canonical root/coordination/child projections"
     );
-    assert!(restored_runtimes.lock().unwrap().is_empty(), "read-only");
-    assert!(
-        restored_environments.lock().unwrap().is_empty(),
-        "read-only"
-    );
+    assert!(restored_runtimes.lock().is_empty(), "read-only");
+    assert!(restored_environments.lock().is_empty(), "read-only");
     let durable = repo.get(&SessionId::from("sesn_1")).await.unwrap();
     assert_eq!(
         durable.resources.active,
@@ -888,7 +881,10 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     };
-    assert!(restarted.list_sessions().is_empty(), "C1 cold cache");
+    assert!(
+        restarted.list_sessions().unwrap().is_empty(),
+        "C1 cold cache"
+    );
 
     let listed = restarted
         .list_sessions_scoped_durable("workspace-a")
@@ -903,15 +899,12 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
         "E1 + E2"
     );
     assert!(
-        restarted.list_sessions().is_empty(),
+        restarted.list_sessions().unwrap().is_empty(),
         "E3 remains a pure projection"
     );
+    assert!(restored.lock().is_empty(), "E3 no Runtime restoration");
     assert!(
-        restored.lock().unwrap().is_empty(),
-        "E3 no Runtime restoration"
-    );
-    assert!(
-        restored_environments.lock().unwrap().is_empty(),
+        restored_environments.lock().is_empty(),
         "E3 no Environment restoration"
     );
 }
@@ -980,10 +973,7 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
         .expect("R2 Preview projection remains discoverable");
     assert_eq!(preview_projection.agent.id, "preview-expired", "R2");
     assert_eq!(preview_projection.agent.version, 1, "R2");
-    assert!(
-        restored.lock().unwrap().is_empty(),
-        "R2 no Runtime restoration"
-    );
+    assert!(restored.lock().is_empty(), "R2 no Runtime restoration");
     let interactive = restarted.rehydrated_session("sesn_preview", "workspace-a", preview);
     assert!(
         matches!(interactive, Err(StateError::Run(ref error)) if error.code == "unavailable"),
@@ -1019,7 +1009,7 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
         awaken_agent_contract::agent::message::Role::Assistant,
         "first",
     );
-    *runtime.committed.lock().unwrap() = Some(vec![first.clone()]);
+    *runtime.committed.lock() = Some(vec![first.clone()]);
     let state = {
         let session_fixture_runtime = std::sync::Arc::new(runtime.clone());
         let session_fixture_clock = awaken_time::system_clock();
@@ -1040,7 +1030,7 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
         awaken_agent_contract::agent::message::Role::Assistant,
         "second",
     );
-    *runtime.committed.lock().unwrap() = Some(vec![first, second]);
+    *runtime.committed.lock() = Some(vec![first, second]);
     state
         .refresh_committed_events("sesn_peer")
         .await
@@ -1095,10 +1085,10 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
         .await
         .expect("prepare existing protocol thread");
 
-    assert_eq!(restored.lock().unwrap().len(), 1);
-    assert_eq!(restored.lock().unwrap()[0].2, sample_inputs());
+    assert_eq!(restored.lock().len(), 1);
+    assert_eq!(restored.lock()[0].2, sample_inputs());
     assert_eq!(
-        restored_environments.lock().unwrap().as_slice(),
+        restored_environments.lock().as_slice(),
         &[(
             "coder".to_string(),
             "external-thread".to_string(),
@@ -1236,8 +1226,8 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
     assert_eq!(restarted.reconcile_resource_activations().await, 1);
     restarted.ensure_session("sesn_pending").await.unwrap();
 
-    assert_eq!(restored.lock().unwrap().len(), 1);
-    assert_eq!(restored.lock().unwrap()[0].2, desired);
+    assert_eq!(restored.lock().len(), 1);
+    assert_eq!(restored.lock()[0].2, desired);
     let durable = repo.get(&SessionId::from("sesn_pending")).await.unwrap();
     assert!(durable.resources.pending.is_none());
     assert_eq!(durable.resources.active, desired);
@@ -1371,13 +1361,13 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
         .await;
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(report.settled.len(), 2);
-    assert!(applied.lock().unwrap().is_empty(), "R1-R5");
+    assert!(applied.lock().is_empty(), "R1-R5");
     // R4/R5 name WHICH Sessions are torn down, not the order. The recovery
     // sweep reconciles candidates concurrently and re-sorts only its reports by
     // candidate index; a teardown effect is recorded when its own task
     // completes, so asserting a sequence here would pin an I/O race rather than
     // the contract.
-    let mut torn_down = ended.lock().unwrap().clone();
+    let mut torn_down = ended.lock().clone();
     torn_down.sort();
     assert_eq!(
         torn_down.as_slice(),
@@ -1448,12 +1438,9 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
         .ensure_session("sesn_running_rehydrate")
         .await
         .expect("C1 running Session remains recoverable");
-    assert!(
-        applied.lock().unwrap().is_empty(),
-        "E2 no Resource re-apply"
-    );
-    assert!(ended.lock().unwrap().is_empty(), "E2 no terminal teardown");
-    assert!(restored_environment.lock().unwrap().is_empty(), "E2");
+    assert!(applied.lock().is_empty(), "E2 no Resource re-apply");
+    assert!(ended.lock().is_empty(), "E2 no terminal teardown");
+    assert!(restored_environment.lock().is_empty(), "E2");
     assert!(
         repo.get(&SessionId::from("sesn_running_rehydrate"))
             .await
@@ -1599,7 +1586,7 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
         "T1 skip"
     );
     assert!(
-        runtime_effects.lock().unwrap().is_empty(),
+        runtime_effects.lock().is_empty(),
         "T1 terminal root creates no MCP Runtime effect"
     );
 }
@@ -1647,7 +1634,7 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
 
     assert_eq!(restarted.reconcile_session_realizations().await, 1, "C1-C3");
     assert_eq!(
-        order.lock().unwrap().as_slice(),
+        order.lock().as_slice(),
         &["runtime", "environment", "mcp"],
         "E1/E2/E4"
     );

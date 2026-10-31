@@ -73,7 +73,10 @@ async fn dream_scans_durable_roots_that_this_replica_never_cached() {
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
     };
-    assert!(replica.list_sessions().is_empty(), "C1 cold wire cache");
+    assert!(
+        replica.list_sessions().unwrap().is_empty(),
+        "C1 cold wire cache"
+    );
 
     let eligible = replica
         .eligible_sessions("workspace-a", 1_000, 10)
