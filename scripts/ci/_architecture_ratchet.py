@@ -19,6 +19,10 @@ corpus and the one comparison they share:
   unless ``--reason`` says why, and keeps that reason next to the number. A
   missing baseline file, or a rule the file does not hold yet (a rule added to
   the module), is recorded as it stands (the first write).
+
+A ``hard`` rule is a plain deny (plan v5 S2): a ratchet that reached zero, or a
+rule that never had debt. The baseline holds no record for it, every occurrence
+is an error, and no mode writes one.
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ class Rule:
     name: str
     advice: str
     slack: int = 0
+    hard: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,7 +95,10 @@ def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: d
             *, lower_advice: str | None = None, full_details: bool = False) -> list[str]:
     errors: list[str] = []
     for rule in rules:
-        now, held = counts.get(rule.name, {}), baseline.get(rule.name, {})
+        if rule.hard and rule.name in baseline:
+            errors.append(diagnostic(rule.name, baseline_name, "holds a record", "none",
+                                     f"remove the {rule.name!r} key; a hard rule has no allowance"))
+        now, held = counts.get(rule.name, {}), ({} if rule.hard else baseline.get(rule.name, {}))
         for key in sorted(set(now) | set(held)):
             current, was = now.get(key, 0), held.get(key, 0)
             if current > was:
@@ -138,7 +146,7 @@ def growth(rules: tuple[Rule, ...], counts: Counts, baseline: dict) -> list[str]
     """Recorded numbers that would rise; a rule the baseline does not hold yet is its first write."""
     return [
         f"{rule.name}: {key} {baseline[rule.name].get(key, 0)} -> {count}"
-        for rule in rules if rule.name in baseline
+        for rule in rules if rule.name in baseline and not rule.hard
         for key, count in sorted(counts.get(rule.name, {}).items())
         if count > baseline[rule.name].get(key, 0)
     ]
@@ -183,6 +191,10 @@ def render(rules: tuple[Rule, ...], counts: Counts, previous: dict, reason: str 
     reasons: dict[str, dict[str, str]] = {name: value for name, value in previous.get("growth_reasons", {}).items()
                                        if name not in owned}
     for rule in rules:
+        if rule.hard:
+            document.pop(rule.name, None)
+            reasons.pop(rule.name, None)
+            continue
         current = {key: count for key, count in sorted(counts.get(rule.name, {}).items()) if count}
         document[rule.name] = current
         kept = {key: text for key, text in previous.get("growth_reasons", {}).get(rule.name, {}).items()
@@ -548,6 +560,7 @@ def selftest() -> None:
     | B4   | slack rule falls less than / at least `slack` below       | accept / error (lower) |
     | B5   | render: growth without a reason / with one / repeated reason / a fall | reported / history kept / history retained / no reason needed |
     | B6   | a rule the baseline does not hold yet (new rule)          | first write: no growth, no reason kept |
+    | B7   | hard rule: an occurrence / none / a baseline record for it | error / accept / error; render drops the record |
     """
     rules = (Rule("r", "fix it"), Rule("lines", "move it", slack=10))
     held = {"r": {"a": 2}, "lines": {"c": 100}}
@@ -632,6 +645,16 @@ def selftest() -> None:
     assert first["new"] == {"k": 5} and "growth_reasons" not in first, f"B6 render {first}"
     assert "new: k 0 -> 5" in compare(added, {"r": {"a": 2}, "lines": {"c": 100}, "new": {"k": 5}}, {}, held,
                                    "b.json")[0], "B6 check before the first write"
+    deny = (Rule("deny", "remove it", hard=True),)
+    assert compare(deny, {"deny": {"k": 1}}, {"deny": {"k": ["x.rs:1"]}}, {}, "b.json") == \
+        ["deny: k 0 -> 1 (x.rs:1); fix: remove it"], "B7 occurrence"
+    assert compare(deny, {"deny": {}}, {}, {}, "b.json") == [], "B7 none"
+    assert compare(deny, {}, {}, {"deny": {"k": 1}}, "b.json")[0].startswith("deny: b.json holds a record"), \
+        "B7 record refused"
+    assert compare(deny, {"deny": {"k": 1}}, {}, {"deny": {"k": 1}}, "b.json")[1].startswith("deny: k 0 -> 1"), \
+        "B7 a record grants nothing"
+    assert "deny" not in render(deny, {"deny": {"k": 1}}, {"deny": {}}, "why", "c"), "B7 render drops it"
+    assert growth(deny, {"deny": {"k": 1}}, {"deny": {}}) == [], "B7 no growth to approve"
     _selftest_cli()
     _selftest_registered()
     _selftest_diagnostics()

@@ -17,11 +17,13 @@ turns that placement into dependency direction:
   crate; a protocol adapter is mounted only by a composition root.
 * `composition-root-leaf`: no SDK or Platform crate depends on an `apps` crate.
 
-Edges that violate these rules today are recorded in
-`bounded_context_baseline.json` with the planned change that removes each one.
-The baseline only shrinks: a violation missing from it fails, and an entry that
-no longer violates fails too, so a removal is recorded in the same commit that
-achieves it.
+`sdk-standalone`, `extension-engine-split` and `composition-root-leaf` are
+hard rules (`HARD_RULES`): they reached zero, so every violation fails and the
+baseline holds no record for them (plan v5 S2). Edges that violate the other two
+rules today are recorded in `bounded_context_baseline.json` with the planned
+change that removes each one. The baseline only shrinks: a violation missing
+from it fails, and an entry that no longer violates fails too, so a removal is
+recorded in the same commit that achieves it.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from _crate_dependency_fitness import CrateSpec
 BASELINE = Path(__file__).with_name("bounded_context_baseline.json")
 
 SHARED_CONTEXTS = frozenset({"fencing", "storage"})
+HARD_RULES = frozenset({"sdk-standalone", "extension-engine-split", "composition-root-leaf"})
 ENGINE = "awaken-runtime"
 EXTENSION_PREFIX = "awaken-ext-"
 
@@ -100,7 +103,9 @@ def ratchet_errors(
         if rule not in found:
             errors.append(f"bounded-context baseline names unknown rule {rule!r}")
             continue
-        recorded = baseline.get(rule, {})
+        if rule in HARD_RULES and rule in baseline:
+            errors.append(f"{rule}: {BASELINE.name} holds a record for a hard rule; remove the key")
+        recorded = {} if rule in HARD_RULES else baseline.get(rule, {})
         current = {_edge_key(edge) for edge in found[rule]}
         for key in sorted(current - set(recorded)):
             errors.append(f"{rule}: new dependency {key}; {ADVICE[rule]}")
@@ -137,6 +142,7 @@ def selftest() -> None:
     | B12  | apps / devtools     | anything                       | accept |
     | B13  | baseline lists a non-violation | -                   | stale entry error |
     | B14  | baseline entry without a reason | -                  | error |
+    | B15  | a hard rule: a violation / a baseline record for it | - | error / error (a record grants nothing) |
     """
 
     def spec(name: str, product: str, context: str, layer: str, deps: Iterable[str] = ()) -> CrateSpec:
@@ -185,4 +191,8 @@ def selftest() -> None:
     assert not ratchet_errors(
         {**empty, "protocol-leaf": {("a", "p")}}, {"protocol-leaf": {"a -> p": "moves"}}
     ), "recorded violation with a reason is accepted"
+    assert ratchet_errors({**empty, "sdk-standalone": {("a", "p")}}, {}), "B15 violation"
+    assert len(ratchet_errors({**empty, "sdk-standalone": {("a", "p")}},
+                              {"sdk-standalone": {"a -> p": "moves"}})) == 2, "B15 record"
+    assert not ratchet_errors(empty, {}), "B15 none"
     print("_bounded_context_fitness selftest: the decision table holds")

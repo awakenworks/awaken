@@ -1,5 +1,4 @@
 {
-  "composition-root-leaf": {},
   "context-contract-seam": {
     "awaken-acp-application -> awaken-credential-vault": "reach the credentials context through its contract instead of awaken-credential-vault (application), or re-home awaken-acp-application",
     "awaken-admin-config-api -> awaken-credential-vault": "reach the credentials context through its contract instead of awaken-credential-vault (application), or re-home awaken-admin-config-api",
@@ -33,10 +32,8 @@
     "awaken-session-environment -> awaken-sandbox-local": "reach the sandbox context through its contract instead of awaken-sandbox-local (infrastructure), or re-home awaken-session-environment",
     "awaken-coordinator-client -> awaken-dispatch-execution": "reach the execution context through its contract instead of awaken-dispatch-execution (infrastructure), or re-home awaken-coordinator-client"
   },
-  "extension-engine-split": {},
   "protocol-leaf": {
     "awaken-run-executor-a2a -> awaken-protocol-a2a": "the executor uses awaken-protocol-a2a's client codec; move that codec behind an execution-side contract",
     "awaken-run-executor-acp -> awaken-protocol-acp": "the executor uses awaken-protocol-acp's client codec; move that codec behind an execution-side contract"
-  },
-  "sdk-standalone": {}
+  }
 }

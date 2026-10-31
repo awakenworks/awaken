@@ -235,6 +235,9 @@ run static "gate-argument hygiene" python3 scripts/ci/check_gate_arguments.py
 run static "guard navigation self-test" python3 scripts/ci/guards.py --self-test
 run static "gate path references self-test" python3 scripts/ci/check_gate_path_references.py --self-test
 run static "gate path references" python3 scripts/ci/check_gate_path_references.py
+run static "test inventory" python3 scripts/ci/check_test_inventory.py
+run static "hook input closure self-test" python3 scripts/ci/_input_closure.py --self-test
+run static "hook input closure" python3 scripts/ci/_input_closure.py
 run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --self-test
 run static "dependency-gates" python3 scripts/ci/check_dependency_gates.py
 run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --self-test
@@ -330,7 +333,8 @@ run docs "documentation" scripts/ci/check-docs.sh
 # profile and Cargo resolve the full gate uses; its dry-run rows need cargo.
 run rust "crate test runner self-test" scripts/ci/test.sh --self-test
 run rust "rust" scripts/ci/check-rust.sh --full
-run rust "dependency-policy" cargo deny --log-level error check advisories bans
+run rust "dependency-advisories" cargo deny --log-level error check advisories
+run rust "dependency-policy" cargo deny --exclude-dev --log-level error check -D unused-wrapper bans
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
 # Generated wire artifacts (JSON Schema, OpenAPI, TS types, the Managed SDK
 # oracle) are derived from Rust DTOs and the pinned official SDK. They drift
