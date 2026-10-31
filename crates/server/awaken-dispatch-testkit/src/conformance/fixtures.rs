@@ -96,6 +96,7 @@ fn current_session_command_with_operation(
             required_worker_capabilities: request.placement.required_capabilities.clone(),
         },
         replacement: request.session_run_replacement,
+        private_task_input: None,
     };
     request.with_session_command_fingerprint(command.command_fingerprint())
 }

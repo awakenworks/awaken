@@ -329,6 +329,7 @@ mod tests {
                     traceparent: None,
                     execution_requirements: Default::default(),
                     replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+                    private_task_input: None,
                 },
                 Some(Arc::new(NoopSink)),
             )

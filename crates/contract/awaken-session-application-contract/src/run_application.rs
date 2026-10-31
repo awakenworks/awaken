@@ -192,6 +192,17 @@ pub trait SessionRunBackgroundApplication: Send + Sync {
         messages: Vec<Message>,
         traceparent: Option<String>,
     ) -> Result<RunId, RunApplicationError>;
+
+    /// Admit the background Run that delivers one Task observation, through
+    /// the same reservation, activity and activation as
+    /// [`Self::submit_session_run_background`]. The Run's dispatch row carries
+    /// `attention.input` privately. The acknowledgement is returned only after
+    /// the Run is durably activated, so its sender may stop retrying; the same
+    /// operation id with the same input returns the same Run.
+    async fn submit_task_attention(
+        &self,
+        attention: crate::TaskAttention,
+    ) -> Result<crate::TaskAttentionAck, RunApplicationError>;
 }
 
 /// Concatenate direct text blocks, dropping non-text blocks. Nested tool-result

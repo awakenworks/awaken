@@ -23,10 +23,6 @@
 //! co-located root that builds the Session executor (`awaken-session-executor`)
 //! and selects these ports from it; this crate links no executor, realization
 //! or Sandbox implementation.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod admin;
 pub mod application_access;
@@ -929,13 +925,15 @@ fn registered_worker_transport_with_broker(
     commit: Arc<awaken_dispatch_http::ClaimedCommitHttpService>,
     environment_warmups: Router,
     source_retention: Router,
+    task_attention: Router,
     broker: Option<Router>,
 ) -> Router {
     let transport = awaken_dispatch_http::registered_worker_transport_router_with_services(
         dispatch, resources, commit,
     )
     .merge(environment_warmups)
-    .merge(source_retention);
+    .merge(source_retention)
+    .merge(task_attention);
     match broker {
         Some(broker) => transport.merge(broker),
         None => transport,
@@ -1018,6 +1016,14 @@ async fn mount_with_managed_over_and_models(
         &worker_directory,
         &worker_authenticator,
         &worker_clock,
+    );
+    // A registered Worker delivers its Task observations to the same Session
+    // Run application every other Run admission uses.
+    let task_attention = awaken_dispatch_http::worker_task_attention_router(
+        execution.session_runs.clone(),
+        worker_directory.clone(),
+        worker_authenticator.clone(),
+        worker_clock.clone(),
     );
     let model_inventory =
         executable_agent_inventory_reads(model_inventory, executable_projection_refresh);
@@ -1262,6 +1268,7 @@ async fn mount_with_managed_over_and_models(
         commit,
         environment_warmups,
         source_retention,
+        task_attention,
         worker_create_broker_router,
     );
     // The Models API (`/v1/models`) over the deployment's model directory.

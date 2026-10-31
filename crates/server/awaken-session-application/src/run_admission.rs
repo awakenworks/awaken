@@ -971,6 +971,7 @@ impl SessionRunApplication {
             traceparent,
             execution_requirements: Default::default(),
             replacement,
+            private_task_input: None,
         })
     }
 
@@ -1226,6 +1227,39 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
             .activate_admitted_session_run(admitted)
             .await?;
         Ok(run_id)
+    }
+
+    /// Decision table (remote Task control, ACK rows):
+    /// | Rule | cause | effect |
+    /// |---|---|---|
+    /// | K1 | admission and activation succeed | the acknowledgement names the Run |
+    /// | K2 | the same operation id and input again | the same Run (replayed admission) |
+    /// | K3 | the same operation id with other input | refused as a reused Run id |
+    /// | K4 | admission refuses (Session gone, bad input) | that refusal; no Run |
+    async fn submit_task_attention(
+        &self,
+        attention: awaken_session_application_contract::TaskAttention,
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
+        let mut command = self.admission_command(
+            &attention.operation_id,
+            &attention.thread,
+            None,
+            vec![attention.message],
+            None,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
+        )?;
+        command.private_task_input = attention.input;
+        let run_id = command.run_id.clone();
+        let owner_scope = (self.workspace)(&attention.thread)?;
+        let admitted = Box::pin(
+            self.admissions
+                .admit_or_create_session_run(&owner_scope, command),
+        )
+        .await?;
+        self.admissions
+            .activate_admitted_session_run(admitted)
+            .await?;
+        Ok(awaken_session_application_contract::TaskAttentionAck { run_id })
     }
 }
 

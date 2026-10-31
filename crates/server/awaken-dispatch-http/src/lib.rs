@@ -3,10 +3,6 @@
 //! Durable operations and the complete registered-Worker dispatch surface are
 //! assembled here. The runtime Host supplies only execution/recovery ports; it
 //! does not own these routes.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod claimed_commit_http;
 mod durable_ops;
@@ -18,7 +14,7 @@ pub use worker_dispatch::respond as worker_transport_response;
 pub use worker_dispatch::{
     RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
     registered_dispatch_router, registered_worker_transport_router_with_services,
-    worker_environment_warmup_router, worker_source_retention_router,
+    worker_environment_warmup_router, worker_source_retention_router, worker_task_attention_router,
 };
 
 pub use worker_dispatch::WorkerDispatchAuthority;

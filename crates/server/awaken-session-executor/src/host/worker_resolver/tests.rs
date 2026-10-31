@@ -58,6 +58,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
         traceparent: None,
         execution_requirements: Default::default(),
         replacement: Default::default(),
+        private_task_input: None,
     };
     let request = ingress::RunDispatch::new(activation)
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()))

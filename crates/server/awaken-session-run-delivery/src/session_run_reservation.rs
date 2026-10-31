@@ -63,6 +63,7 @@ pub struct SessionRunInputs<'a> {
 /// | R4 | the store reserves, replays, recovers, completed or activated the Run | that outcome |
 /// | R5 | the Run id was reserved with another input | refused as a reused id |
 /// | R6 | the store fails | retryable |
+/// | R7 | the command carries private Task input | the row carries it unchanged |
 ///
 /// The command's fingerprint is taken before Skill expansion, so a retry
 /// that reconstructs the payload from changed projections cannot reuse it.
@@ -104,6 +105,17 @@ where
         .map_err(RunError::from)?
         .with_session_command_fingerprint(command_fingerprint)
         .with_session_run_replacement(command.replacement);
+    // The Task holder's observations ride privately on this row to the
+    // claiming process's StepStart; they are already in the command identity.
+    // The row then demands the Task control codec of any Worker that claims
+    // it, as `RunDispatch::validate_worker_codec_requirements` checks.
+    if command.private_task_input.is_some() {
+        request
+            .placement
+            .required_capabilities
+            .insert(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY.to_owned());
+    }
+    request.private_task_input = command.private_task_input;
     let worker_bound = !command
         .execution_requirements
         .required_worker_capabilities

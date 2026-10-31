@@ -1391,6 +1391,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
                 ]),
             },
         replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+        private_task_input: None,
     };
     let expected_fingerprint = command.command_fingerprint();
 

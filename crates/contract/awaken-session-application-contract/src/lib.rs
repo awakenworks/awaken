@@ -15,6 +15,7 @@ mod pending;
 mod run_application;
 mod run_coordination;
 mod step_outcome;
+mod task_attention;
 mod usage;
 
 pub(crate) use awaken_session_contract::DeletedSessionEventAdmissions;
@@ -50,6 +51,10 @@ pub use run_coordination::{
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
 };
 pub use step_outcome::StepOutcome;
+pub use task_attention::{
+    PRIVATE_TASK_INPUT_VERSION, PrivateTaskInput, PrivateTaskInputError, TaskAttention,
+    TaskAttentionAck, WORKER_TASK_ATTENTION_PATH, registered_task_holder,
+};
 pub use usage::session_usage_from_thread_usage;
 
 mod composition;

@@ -379,6 +379,18 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         let host = &self.assembly;
         let context = if let Some(dispatch) = dispatch {
+            // Claim-bound StepStart: the Task observations this Run carries
+            // reach this process's Task owner before the Run executes; a
+            // refused record refuses the Run rather than dropping a result.
+            crate::background_task::accept_claimed_task_input(
+                &host.capabilities.background_supervisor,
+                dispatch.private_task_input.as_ref(),
+            )
+            .map_err(|error| {
+                execution_error(format!(
+                    "claimed Run carries a refused Task observation: {error}"
+                ))
+            })?;
             let effective_model_ref = dispatch.activation.effective_model_ref().to_owned();
             let input = ClaimedRuntimeInput {
                 identity: RuntimePublicationIdentity::from_publications(

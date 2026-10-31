@@ -444,6 +444,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
                 traceparent: command.traceparent.clone(),
                 execution_requirements: Default::default(),
                 replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+                private_task_input: None,
             })
             .await
             .expect("C1 reservation"),

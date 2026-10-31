@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{BackgroundTaskEnd, BackgroundTaskId, BackgroundWait, TaskTenure};
 
-pub const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
+pub(crate) const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct BackgroundTaskCompletion {
@@ -206,6 +206,53 @@ impl BackgroundTaskSupervisor {
         let (entry, token) = SupervisorEntry::active(fence);
         entries.insert(id.clone(), entry);
         Some(token)
+    }
+
+    /// Offer one observation another process delivered through the claim of
+    /// the Run about to execute. Only the existing StepStart fold can turn it
+    /// into Thread state, and only against the equal committed attempt.
+    ///
+    /// Decision table (slot before × record → effect; returns whether the
+    /// slot now holds the record):
+    /// | Rule | slot | record | effect |
+    /// |---|---|---|---|
+    /// | D1 | vacant | any | the record |
+    /// | D2 | older epoch, any phase | any | replaced by the record |
+    /// | D3 | same tenure, Active | any | unchanged: this process executes it |
+    /// | D4 | same tenure, Waiting | Ended | replaced by Completed |
+    /// | D5 | same tenure, Waiting | Waiting | unchanged |
+    /// | D6 | same tenure, Completed | any | unchanged |
+    /// | D7 | newer epoch, or same epoch and another holder | any | unchanged |
+    pub fn accept_delivered(&self, record: &crate::TaskObservationRecord) -> bool {
+        let fence = record.tenure();
+        let delivered = match record.observation() {
+            crate::TaskObservation::Ended { end } => {
+                SupervisorEntry::Completed(BackgroundTaskCompletion {
+                    fence: fence.clone(),
+                    end: end.clone(),
+                })
+            }
+            crate::TaskObservation::Waiting { wait, renew_lease } => {
+                SupervisorEntry::Waiting(BackgroundTaskWaitCandidate {
+                    fence: fence.clone(),
+                    wait: wait.clone(),
+                    renew_lease: *renew_lease,
+                })
+            }
+        };
+        let mut entries = self.entries.lock();
+        let replace = match entries.get(record.task_id()) {
+            None => true,
+            Some(entry) if entry.fence().epoch() < fence.epoch() => true,
+            Some(SupervisorEntry::Waiting(candidate)) if candidate.fence == fence => {
+                matches!(delivered, SupervisorEntry::Completed(_))
+            }
+            Some(_) => false,
+        };
+        if replace {
+            entries.insert(record.task_id().clone(), delivered);
+        }
+        replace
     }
 
     /// Atomically replace one registered launch with its first completion.
@@ -653,6 +700,99 @@ mod tests {
             1,
             "R3"
         );
+    }
+
+    #[test]
+    fn delivered_observations_fill_only_vacant_older_or_waiting_slots() {
+        // Decision table D1-D7 of `accept_delivered`: slot phase
+        // vacant/Active/Waiting/Completed × slot epoch below/equal/above the
+        // record × record kind Ended/Waiting, plus a same-epoch slot of another
+        // holder. Effect: the slot holds the record only for D1, D2 and D4.
+        let record = |epoch, ended| {
+            let mut completion = completion(epoch);
+            completion.end = BackgroundTaskEnd::Failed {
+                message: "delivered".into(),
+            };
+            if ended {
+                crate::TaskObservationRecord::ended(&completion)
+            } else {
+                crate::TaskObservationRecord::waiting(&wait_candidate(epoch))
+            }
+        };
+        for phase in 0..4 {
+            for slot_epoch in [1_u64, 2, 3] {
+                for ended in [true, false] {
+                    let supervisor =
+                        BackgroundTaskSupervisor::new("local", awaken_time::system_clock());
+                    let slot = completion(slot_epoch).fence;
+                    if phase > 0 {
+                        supervisor.register(&id(), &slot).unwrap();
+                    }
+                    if phase == 2 {
+                        supervisor.wait(id(), wait_candidate(slot_epoch));
+                    }
+                    if phase == 3 {
+                        supervisor.complete(id(), completion(slot_epoch));
+                    }
+                    let accepted = supervisor.accept_delivered(&record(2, ended));
+                    let expected =
+                        phase == 0 || slot_epoch < 2 || (slot_epoch == 2 && phase == 2 && ended);
+                    assert_eq!(
+                        accepted, expected,
+                        "phase={phase} slot_epoch={slot_epoch} ended={ended}"
+                    );
+                    let entries = supervisor.entries.lock();
+                    let entry = entries.get(&id()).unwrap();
+                    if expected {
+                        assert_eq!(entry.fence(), &record(2, ended).tenure());
+                        assert_eq!(
+                            matches!(entry, SupervisorEntry::Completed(_)),
+                            ended,
+                            "the slot holds the delivered kind"
+                        );
+                    } else {
+                        assert_eq!(entry.fence(), &slot, "an unchanged slot keeps its fence");
+                    }
+                }
+            }
+        }
+        // D7: same epoch, another holder: incomparable, unchanged.
+        let supervisor = BackgroundTaskSupervisor::new("local", awaken_time::system_clock());
+        let other = fixtures::tenure("other", 2);
+        supervisor.register(&id(), &other).unwrap();
+        supervisor.wait(
+            id(),
+            BackgroundTaskWaitCandidate {
+                fence: other.clone(),
+                ..wait_candidate(2)
+            },
+        );
+        assert!(!supervisor.accept_delivered(&record(2, true)));
+        assert!(supervisor.completion(&id()).is_none());
+    }
+
+    #[test]
+    fn a_delivered_completion_folds_through_the_existing_admission() {
+        // S1-S3: the delivered candidate is staged only against the equal
+        // committed attempt, retired by a newer one, preserved otherwise.
+        for (committed, staged, retained) in [
+            (Some(2_u64), true, true),
+            (Some(3), false, false),
+            (None, false, true),
+        ] {
+            let supervisor = BackgroundTaskSupervisor::new("local", awaken_time::system_clock());
+            assert!(
+                supervisor.accept_delivered(&crate::TaskObservationRecord::ended(&completion(2)))
+            );
+            let committed = committed.map(|epoch| fixtures::tenure("worker", epoch));
+            assert_eq!(
+                supervisor
+                    .completion_for_fold(&id(), committed.as_ref())
+                    .is_some(),
+                staged
+            );
+            assert_eq!(supervisor.completion(&id()).is_some(), retained);
+        }
     }
 }
 

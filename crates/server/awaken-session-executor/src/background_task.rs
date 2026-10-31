@@ -17,7 +17,7 @@ use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_background_task::{
     BackgroundTask, BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
-    TaskTenure, tasks_from_state,
+    TaskObservationCodecError, TaskObservationRecord, TaskTenure, tasks_from_state,
 };
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -26,6 +26,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
+use awaken_session_application_contract::{PrivateTaskInput, TaskAttention};
 use awaken_session_execution_contract::SessionApplicationBinding;
 use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
@@ -114,8 +115,67 @@ fn attention_message(
     (operation_id, message)
 }
 
+/// The observation one attention delivers: the slot's candidate for exactly
+/// this attempt, encoded for the Run that folds it.
+///
+/// Decision table (attention kind × slot → carried input):
+/// | Rule | kind | slot | input |
+/// |---|---|---|---|
+/// | P1 | Terminal | Completed with this tenure | its Ended record |
+/// | P2 | Waiting, Watchdog | Waiting with this tenure | its Waiting record |
+/// | P3 | InputRequired | any | none: the attention only wakes the Thread |
+/// | P4 | any | vacant, another tenure or another phase | none |
+fn attention_input(
+    supervisor: &BackgroundTaskSupervisor,
+    task_id: &BackgroundTaskId,
+    fence: &TaskTenure,
+    kind: &BackgroundAttention,
+) -> Option<PrivateTaskInput> {
+    let record = match kind {
+        BackgroundAttention::Terminal => supervisor
+            .completion(task_id)
+            .filter(|completion| &completion.fence == fence)
+            .map(|completion| TaskObservationRecord::ended(&completion)),
+        BackgroundAttention::Waiting | BackgroundAttention::Watchdog { .. } => supervisor
+            .wait_candidate(task_id)
+            .filter(|candidate| &candidate.fence == fence)
+            .map(|candidate| TaskObservationRecord::waiting(&candidate)),
+        BackgroundAttention::InputRequired { .. } => None,
+    }?;
+    PrivateTaskInput::new(vec![record.encode()]).ok()
+}
+
+/// Offer the Task observations a claimed Run carries to this process's Task
+/// owner before the Run executes, so its StepStart can fold them against
+/// committed truth. Every record decodes before any is offered.
+///
+/// Decision table (causes → effect):
+/// | Rule | cause | effect |
+/// |---|---|---|
+/// | C2 | the Run carries no private Task input | nothing offered |
+/// | C4 | every record decodes | each offered (`accept_delivered`, D1-D7) |
+/// | C5 | any record is refused by the Task codec | refused; nothing offered |
+pub(crate) fn accept_claimed_task_input(
+    supervisor: &BackgroundTaskSupervisor,
+    input: Option<&PrivateTaskInput>,
+) -> Result<(), TaskObservationCodecError> {
+    let Some(input) = input else {
+        return Ok(());
+    };
+    let records = input
+        .observations()
+        .iter()
+        .map(TaskObservationRecord::decode)
+        .collect::<Result<Vec<_>, _>>()?;
+    for record in &records {
+        supervisor.accept_delivered(record);
+    }
+    Ok(())
+}
+
 async fn publish_attention(
     application: Option<SessionApplicationBinding>,
+    supervisor: &BackgroundTaskSupervisor,
     thread_id: &awaken_agent_contract::agent::thread::Id,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
@@ -125,22 +185,20 @@ async fn publish_attention(
         return;
     };
     let (operation_id, message) = attention_message(thread_id, task_id, fence, &kind);
+    let attention = TaskAttention {
+        operation_id: operation_id.clone(),
+        thread: thread_id.0.clone(),
+        holder: fence.holder().clone(),
+        message,
+        input: attention_input(supervisor, task_id, fence, &kind),
+    };
     let attempts = ATTENTION_RETRY_DELAYS
         .iter()
         .copied()
         .map(Some)
         .chain(std::iter::once(None));
     for (attempt, retry_delay) in attempts.enumerate() {
-        match application
-            .submit_session_run_background(
-                &operation_id,
-                &thread_id.0,
-                None,
-                vec![message.clone()],
-                None,
-            )
-            .await
-        {
+        match application.submit_task_attention(attention.clone()).await {
             Ok(_) => return,
             Err(error) if error.kind == RunErrorKind::BadRequest => {
                 tracing::warn!(
@@ -278,6 +336,7 @@ impl BackgroundTaskTerminalObserver {
                     self.supervisor.complete(task_id.clone(), completion);
                     publish_attention(
                         self.attention.clone(),
+                        &self.supervisor,
                         &thread_id,
                         &task_id,
                         &fence,
@@ -294,6 +353,7 @@ impl BackgroundTaskTerminalObserver {
                 self.supervisor.complete(task_id.clone(), completion);
                 publish_attention(
                     self.attention.clone(),
+                    &self.supervisor,
                     &thread_id,
                     &task_id,
                     &fence,
@@ -313,6 +373,7 @@ impl BackgroundTaskTerminalObserver {
             );
             publish_attention(
                 self.attention.clone(),
+                &self.supervisor,
                 &thread_id,
                 &task_id,
                 &fence,
@@ -334,6 +395,7 @@ impl BackgroundTaskTerminalObserver {
                 );
                 publish_attention(
                     self.attention.clone(),
+                    &self.supervisor,
                     &thread_id,
                     &task_id,
                     &fence,
@@ -375,6 +437,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -392,6 +455,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -405,6 +469,7 @@ impl BackgroundTaskTerminalObserver {
                             .complete(task_id.clone(), Self::completion(fence.clone(), Ok(output)));
                         publish_attention(
                             attention,
+                            &supervisor,
                             &thread_id,
                             &task_id,
                             &fence,
@@ -417,6 +482,7 @@ impl BackgroundTaskTerminalObserver {
                         supervisor.complete(task_id.clone(), Self::indeterminate(fence.clone(), error.to_string()));
                         publish_attention(
                             attention,
+                            &supervisor,
                             &thread_id,
                             &task_id,
                             &fence,
@@ -431,6 +497,7 @@ impl BackgroundTaskTerminalObserver {
                         );
                         publish_attention(
                             attention,
+                            &supervisor,
                             &thread_id,
                             &task_id,
                             &fence,
@@ -485,6 +552,7 @@ impl BackgroundTaskTerminalObserver {
                     );
                     publish_attention(
                         self.attention.clone(),
+                        &self.supervisor,
                         &thread_id,
                         &task_id,
                         &fence,
@@ -506,6 +574,7 @@ impl BackgroundTaskTerminalObserver {
                 );
                 publish_attention(
                     self.attention.clone(),
+                    &self.supervisor,
                     &thread_id,
                     &task_id,
                     &fence,
@@ -525,6 +594,7 @@ impl BackgroundTaskTerminalObserver {
             );
             publish_attention(
                 self.attention.clone(),
+                &self.supervisor,
                 &thread_id,
                 &task_id,
                 &fence,
@@ -544,6 +614,7 @@ impl BackgroundTaskTerminalObserver {
             );
             publish_attention(
                 self.attention.clone(),
+                &self.supervisor,
                 &thread_id,
                 &task_id,
                 &fence,
@@ -564,6 +635,7 @@ impl BackgroundTaskTerminalObserver {
                 );
                 publish_attention(
                     self.attention.clone(),
+                    &self.supervisor,
                     &thread_id,
                     &task_id,
                     &fence,
@@ -608,6 +680,7 @@ impl BackgroundTaskTerminalObserver {
                         ));
                         publish_attention(
                             attention,
+                            &supervisor,
                             &thread_id,
                             &task_id,
                             &fence,
@@ -671,6 +744,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -697,6 +771,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -723,6 +798,7 @@ impl BackgroundTaskTerminalObserver {
                             ));
                             publish_attention(
                                 attention.clone(),
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -737,6 +813,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -755,6 +832,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -773,6 +851,7 @@ impl BackgroundTaskTerminalObserver {
                             );
                             publish_attention(
                                 attention,
+                                &supervisor,
                                 &thread_id,
                                 &task_id,
                                 &fence,
@@ -865,6 +944,7 @@ mod tests {
         agent: Option<String>,
         messages: Vec<Message>,
         traceparent: Option<String>,
+        input: Option<awaken_session_application_contract::PrivateTaskInput>,
     }
 
     struct RecordingAttentionApplication {
@@ -891,26 +971,12 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl SessionRunBackgroundApplication for RecordingAttentionApplication {
-        async fn submit_session_run_background(
-            &self,
-            operation_id: &str,
-            thread: &str,
-            agent: Option<String>,
-            messages: Vec<Message>,
-            traceparent: Option<String>,
-        ) -> Result<RunId, awaken_session_application_contract::RunApplicationError> {
+    impl RecordingAttentionApplication {
+        fn record(&self, call: AttentionCall) -> Result<(), awaken_session_types::RunError> {
             self.calls
                 .lock()
                 .expect("attention calls mutex poisoned")
-                .push(AttentionCall {
-                    operation_id: operation_id.to_string(),
-                    thread: thread.to_string(),
-                    agent,
-                    messages,
-                    traceparent,
-                });
+                .push(call);
             if self.definitive_rejection {
                 return Err(awaken_session_types::RunError::bad_request(
                     "definitive test rejection",
@@ -927,10 +993,54 @@ mod tests {
                     "transient test failure",
                 ));
             }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl SessionRunBackgroundApplication for RecordingAttentionApplication {
+        async fn submit_session_run_background(
+            &self,
+            operation_id: &str,
+            thread: &str,
+            agent: Option<String>,
+            messages: Vec<Message>,
+            traceparent: Option<String>,
+        ) -> Result<RunId, awaken_session_application_contract::RunApplicationError> {
+            self.record(AttentionCall {
+                operation_id: operation_id.to_string(),
+                thread: thread.to_string(),
+                agent,
+                messages,
+                traceparent,
+                input: None,
+            })?;
             Ok(awaken_session_execution_contract::session_run_id(
                 &awaken_session_types::SessionId::from(thread),
                 operation_id,
             ))
+        }
+
+        async fn submit_task_attention(
+            &self,
+            attention: awaken_session_application_contract::TaskAttention,
+        ) -> Result<
+            awaken_session_application_contract::TaskAttentionAck,
+            awaken_session_application_contract::RunApplicationError,
+        > {
+            let run_id = awaken_session_execution_contract::session_run_id(
+                &awaken_session_types::SessionId::from(attention.thread.as_str()),
+                &attention.operation_id,
+            );
+            self.record(AttentionCall {
+                operation_id: attention.operation_id,
+                thread: attention.thread,
+                agent: None,
+                messages: vec![attention.message],
+                traceparent: None,
+                input: attention.input,
+            })?;
+            Ok(awaken_session_application_contract::TaskAttentionAck { run_id })
         }
     }
 
@@ -1043,6 +1153,152 @@ mod tests {
         );
     }
 
+    #[test]
+    fn attention_carries_only_the_slot_candidate_of_its_exact_attempt() {
+        // Decision table P1-P4 of `attention_input`.
+        let task = BackgroundTaskId::new("task").expect("task id");
+        let tenure = |epoch| {
+            awaken_lease_contract::fence::Tenure::granted(
+                task.clone(),
+                "worker".into(),
+                awaken_lease_contract::fence::Epoch::from_persisted(epoch).unwrap(),
+            )
+        };
+        let wait = || {
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "generation".into(),
+                task_id: "remote".into(),
+                poll_interval_ms: None,
+            })
+        };
+        let kind_of = |input: Option<PrivateTaskInput>| {
+            input.map(|input| {
+                let record = TaskObservationRecord::decode(&input.observations()[0]).unwrap();
+                (
+                    record.tenure().epoch().get(),
+                    matches!(
+                        record.observation(),
+                        awaken_ext_background_task::TaskObservation::Ended { .. }
+                    ),
+                )
+            })
+        };
+        let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
+        // P4 vacant.
+        assert_eq!(
+            attention_input(
+                &supervisor,
+                &task,
+                &tenure(1),
+                &BackgroundAttention::Terminal
+            ),
+            None
+        );
+        supervisor.register(&task, &tenure(1)).unwrap();
+        // P3 / P4 Active: nothing to deliver.
+        for kind in [
+            BackgroundAttention::InputRequired { change: "c".into() },
+            BackgroundAttention::Waiting,
+            BackgroundAttention::Terminal,
+        ] {
+            assert_eq!(attention_input(&supervisor, &task, &tenure(1), &kind), None);
+        }
+        supervisor.wait(
+            task.clone(),
+            BackgroundTaskWaitCandidate {
+                fence: tenure(1),
+                wait: wait(),
+                renew_lease: true,
+            },
+        );
+        // P2 Waiting and Watchdog; P4 another tenure; P3 still nothing.
+        for kind in [
+            BackgroundAttention::Waiting,
+            BackgroundAttention::Watchdog { change: "w".into() },
+        ] {
+            assert_eq!(
+                kind_of(attention_input(&supervisor, &task, &tenure(1), &kind)),
+                Some((1, false))
+            );
+            assert_eq!(attention_input(&supervisor, &task, &tenure(2), &kind), None);
+        }
+        assert_eq!(
+            attention_input(
+                &supervisor,
+                &task,
+                &tenure(1),
+                &BackgroundAttention::InputRequired { change: "c".into() }
+            ),
+            None
+        );
+        supervisor.complete(
+            task.clone(),
+            BackgroundTaskCompletion {
+                fence: tenure(1),
+                end: BackgroundTaskEnd::Cancelled,
+            },
+        );
+        // P1 Terminal; P4 another tenure.
+        assert_eq!(
+            kind_of(attention_input(
+                &supervisor,
+                &task,
+                &tenure(1),
+                &BackgroundAttention::Terminal
+            )),
+            Some((1, true))
+        );
+        assert_eq!(
+            attention_input(
+                &supervisor,
+                &task,
+                &tenure(2),
+                &BackgroundAttention::Terminal
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_claimed_run_offers_its_task_input_only_when_every_record_decodes() {
+        // Decision table C2/C4/C5 of `accept_claimed_task_input`.
+        let task = BackgroundTaskId::new("task").expect("task id");
+        let fence = awaken_lease_contract::fence::Tenure::granted(
+            task.clone(),
+            "remote-worker".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(4).unwrap(),
+        );
+        let record = TaskObservationRecord::ended(&BackgroundTaskCompletion {
+            fence: fence.clone(),
+            end: BackgroundTaskEnd::Cancelled,
+        });
+        let supervisor = BackgroundTaskSupervisor::new("local", awaken_time::system_clock());
+        // C2
+        accept_claimed_task_input(&supervisor, None).expect("C2");
+        assert!(supervisor.completion(&task).is_none(), "C2 nothing offered");
+        // C5: one refused record refuses the whole input before any offer.
+        let mut refused = record.encode();
+        refused["version"] = serde_json::json!(2);
+        let mixed = PrivateTaskInput::new(vec![record.encode(), refused]).unwrap();
+        assert_eq!(
+            accept_claimed_task_input(&supervisor, Some(&mixed)),
+            Err(TaskObservationCodecError::Version(2)),
+            "C5"
+        );
+        assert!(supervisor.completion(&task).is_none(), "C5 nothing offered");
+        // C4
+        let valid = PrivateTaskInput::new(vec![record.encode()]).unwrap();
+        accept_claimed_task_input(&supervisor, Some(&valid)).expect("C4");
+        assert_eq!(
+            supervisor
+                .completion(&task)
+                .map(|completion| completion.fence),
+            Some(fence),
+            "C4 the delivered candidate waits for the StepStart fold"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn attention_publication_retries_ambiguous_failures_with_one_identity_only() {
         // Cause/effect decision table:
@@ -1059,7 +1315,16 @@ mod tests {
             awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
         );
 
-        publish_attention(None, &thread, &task, &fence, BackgroundAttention::Terminal).await;
+        let supervisor = BackgroundTaskSupervisor::new("worker", awaken_time::system_clock());
+        publish_attention(
+            None,
+            &supervisor,
+            &thread,
+            &task,
+            &fence,
+            BackgroundAttention::Terminal,
+        )
+        .await;
 
         let accepting = Arc::new(RecordingAttentionApplication::accepting(2));
         let accepting_port: Arc<dyn SessionRunBackgroundApplication> = accepting.clone();
@@ -1067,6 +1332,7 @@ mod tests {
             Some(crate::test_application_bindings::background_binding(
                 accepting_port.clone(),
             )),
+            &supervisor,
             &thread,
             &task,
             &fence,
@@ -1095,6 +1361,7 @@ mod tests {
             Some(crate::test_application_bindings::background_binding(
                 rejecting_port.clone(),
             )),
+            &supervisor,
             &thread,
             &task,
             &fence,
@@ -1117,6 +1384,7 @@ mod tests {
             Some(crate::test_application_bindings::background_binding(
                 exhausted_port.clone(),
             )),
+            &supervisor,
             &thread,
             &task,
             &fence,
@@ -1540,6 +1808,20 @@ mod tests {
         assert_eq!(attention_calls.len(), 1, "R3/R6 E3/E6 one attention Run");
         assert_eq!(attention_calls[0].thread, thread_id.0, "R6/E6 owner");
         assert_eq!(attention_calls[0].messages[0].role, Role::System, "R6/E6");
+        let carried = attention_calls[0]
+            .input
+            .as_ref()
+            .expect("P1 the terminal attention carries its observation");
+        let record = TaskObservationRecord::decode(&carried.observations()[0])
+            .expect("P1 the carried record decodes");
+        assert_eq!(record.tenure(), fence, "P1 exact attempt tenure");
+        assert!(
+            matches!(
+                record.observation(),
+                awaken_ext_background_task::TaskObservation::Ended { .. }
+            ),
+            "P1 Ended record"
+        );
         drop(attention_calls);
         assert_eq!(after_tool_calls.load(Ordering::SeqCst), 0, "R4/E4");
         let completion = supervisor.completion(&task.id).expect("R3/E3 completion");
