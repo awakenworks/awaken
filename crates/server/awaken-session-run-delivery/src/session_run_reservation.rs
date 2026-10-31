@@ -104,10 +104,19 @@ where
         .map_err(RunError::from)?
         .with_session_command_fingerprint(command_fingerprint)
         .with_session_run_replacement(command.replacement);
+    let worker_bound = !command
+        .execution_requirements
+        .required_worker_capabilities
+        .is_empty();
     require_registered_worker(
         &mut request.placement,
         command.execution_requirements.required_worker_capabilities,
     );
+    if worker_bound {
+        // A row bound to a registered Worker publishes the wire codecs its
+        // request kind requires; canonical submission refuses one without.
+        request = request.with_worker_codec_requirements();
+    }
     let outcome = reserve_session_run_request(request, reservations).await?;
     session_run_reservation(outcome)
 }
