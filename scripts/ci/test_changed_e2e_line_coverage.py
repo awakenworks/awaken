@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import re
 import subprocess
@@ -23,6 +24,14 @@ SPEC.loader.exec_module(MODULE)
 
 class UnreachableManifestTests(unittest.TestCase):
     def setUp(self) -> None:
+        # A hook exports GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE for the commit in
+        # progress; the fixture and the module under test act on the scratch
+        # repository instead, never on the one being committed.
+        self.environment = mock.patch.dict(
+            os.environ, {key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+            clear=True)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temporary.name)
         source = self.root / "crates/example/src/lib.rs"

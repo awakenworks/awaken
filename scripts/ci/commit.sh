@@ -44,7 +44,11 @@ self_test() {
   scratch="$(mktemp -d)"
   trap 'rm -rf "$scratch"' RETURN
   # A disposable repository with no hooks and no user configuration, so the
-  # commit this proves is the wrapper's own and not one some hook made.
+  # commit this proves is the wrapper's own and not one some hook made. A
+  # hook's GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE would point every call below
+  # at the repository being committed, so they are dropped first.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   export GIT_AUTHOR_NAME=self-test GIT_AUTHOR_EMAIL=self-test@example.invalid
   export GIT_COMMITTER_NAME=self-test GIT_COMMITTER_EMAIL=self-test@example.invalid
