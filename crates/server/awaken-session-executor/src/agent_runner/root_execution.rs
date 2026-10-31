@@ -283,22 +283,39 @@ async fn run_configured_agent_inner(
         runtime = runtime.with_run_delegation(service);
     }
     ctx = ctx.with_tool_executor(current_tool_executor);
-    let state = match stable_run_id {
-        Some(run_id) => {
-            runtime
-                .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
-                    ResumeResult::allow()
-                })
-                .await
-        }
-        None => {
-            runtime
-                .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
-                .await
-        }
-    }
-    .map_err(AgentRunError::Runtime)?;
+    let state = nested_run_to_completion(&runtime, &config, stable_run_id, thread, seed, ctx)
+        .await
+        .map_err(AgentRunError::Runtime)?;
     completed_agent_result(reader.as_ref(), &thread_id, state)
+}
+
+/// The auxiliary Agent's Runtime attempt, heap-owned at this one boundary.
+///
+/// An auxiliary Agent runs beneath another Run (a compaction summary, a judge or
+/// a memory extraction inside a hook). Awaiting the attempt inline made this
+/// poll frame reserve a slot for each branch's whole Runtime attempt state, and
+/// that nested stack overflowed a 2 MiB thread; the caller now holds a pointer.
+fn nested_run_to_completion<'a>(
+    runtime: &'a awaken_runtime::Runtime,
+    config: &'a awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
+    stable_run_id: Option<RunId>,
+    thread: &'a str,
+    seed: RunInput,
+    ctx: RuntimeRunContext,
+) -> futures_util::future::BoxFuture<'a, Result<RunState, awaken_runtime_contract::execution::Error>>
+{
+    match stable_run_id {
+        Some(run_id) => {
+            Box::pin(
+                runtime.run_to_completion_with_id(config, run_id, thread, seed, ctx, |_| {
+                    ResumeResult::allow()
+                }),
+            )
+        }
+        None => Box::pin(
+            runtime.run_to_completion(config, thread, seed, ctx, |_| ResumeResult::allow()),
+        ),
+    }
 }
 
 fn completed_agent_result(

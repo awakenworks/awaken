@@ -267,109 +267,16 @@ impl crate::SessionRuns {
             .await
     }
 
-    async fn deliver_run(
-        &self,
-        delivery: HostRunDelivery<'_>,
-    ) -> Result<CommittedStepReceipt, SessionExecutionError> {
-        let HostRunDelivery {
-            agent,
-            thread,
-            input,
-            sink,
-            data_subject_id,
-            origin,
-        } = delivery;
-        if origin == RunCommandOrigin::DirectCommand
-            && self
-                .installed_sessions
-                .read_run(thread, |run| run.session_dispatch)?
-                .unwrap_or(false)
-        {
-            return Err(SessionExecutionError::bad_request(
-                "Managed Session roots must use Session-owned Run ingress",
-            ));
-        }
-        let ctx = self.run_assembly.ctx_for(thread, agent).await?;
-        let _command = ctx.command.lock().await;
-        if ctx
-            .commit
-            .open_wait_for_thread(&ctx.thread_id)
-            .await
-            .map_err(SessionExecutionError::internal)?
-            .is_some()
-        {
-            return Err(SessionExecutionError::bad_request(
-                "thread is awaiting a tool decision",
-            ));
-        }
-        // Recall is injected by the memory plugin's BeforeInference hook (request-only,
-        // never committed), so the host does not touch it here.
-        let mut messages: Vec<Message> = Vec::new();
-        // Expand a user `/skill-name` into the skill's instructions before the Run.
-        let input = match &ctx.skill_registry {
-            Some(registry) => {
-                awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
-                    .map_err(SessionExecutionError::internal)?
-            }
-            None => input,
-        };
-        messages.extend(input);
-        let (generated_run_id, mut activation) =
-            ctx.runtime
-                .prepare(&ctx.config, ctx.thread_id.0.clone(), messages);
-        // Runtime owns the one restart-unique Run id scheme. Durable execution
-        // persists that id before dispatch; a second timestamp/counter mint here
-        // would collide across active-active PID-1 containers in the same millisecond.
-        let run_id = generated_run_id;
-        // Read the baseline from the authoritative recovery contract. In an
-        // active-active Coordinator tier this process's synchronous projection
-        // may lag commits made by a peer; using it here would project an older
-        // Run again when the current Run settles on another replica.
-        let baseline = self.authoritative_step_snapshot(&ctx, &run_id).await?;
-        let before = baseline.messages.len();
-        activation.run_id = run_id.clone();
-        activation.model_ref_override = self.agent.inference_routing.override_for(thread)?;
-        activation.data_subject_id = data_subject_id;
-        let expected_input_ids = activation
-            .input
-            .iter()
-            .map(|message| message.id.0.clone())
-            .collect::<Vec<_>>();
-        let executor = crate::run_exec::BoundRunExecutor::new(self, ctx.clone())
-            .with_stream_sink(sink)
-            .retain_active_until_settled();
-        let executor = if origin == RunCommandOrigin::ThreadExtension {
-            executor.for_thread_extension()
-        } else {
-            executor
-        };
-        let state = match awaken_runtime_contract::execution::RunExecutor::execute(
-            &executor,
-            activation,
-            awaken_runtime_contract::RuntimeRunContext::new(),
-        )
-        .await
-        {
-            Ok(state) => state,
-            Err(error) => {
-                Self::clear_active_run(&ctx, &run_id)?;
-                return Err(SessionExecutionError::internal(error.to_string()));
-            }
-        };
-        let _projection = ctx.projection.lock().await;
-        let result = self
-            .finish_active_step(
-                &ctx,
-                run_id,
-                state,
-                StepCommitExpectation {
-                    messages_before: before,
-                    input_ids: &expected_input_ids,
-                },
-                thread,
-            )
-            .await?;
-        Ok(result)
+    /// One foreground Run delivery, heap-owned at this one boundary: every Host
+    /// ingress (`run`, its attributed/streamed forms and Thread extension)
+    /// awaits a pointer, so an instrumented ingress frame never embeds the
+    /// whole Run attempt and a nested auxiliary Run still fits a 2 MiB stack.
+    fn deliver_run<'a>(
+        &'a self,
+        delivery: HostRunDelivery<'a>,
+    ) -> futures_util::future::BoxFuture<'a, Result<CommittedStepReceipt, SessionExecutionError>>
+    {
+        Box::pin(deliver_foreground_run(self, delivery))
     }
 
     /// RunResume through the same in-flight identity installed Session as a fresh foreground
@@ -732,6 +639,111 @@ impl crate::SessionRuns {
         )
         .await?)
     }
+}
+
+async fn deliver_foreground_run(
+    runs: &crate::SessionRuns,
+    delivery: HostRunDelivery<'_>,
+) -> Result<CommittedStepReceipt, SessionExecutionError> {
+    let HostRunDelivery {
+        agent,
+        thread,
+        input,
+        sink,
+        data_subject_id,
+        origin,
+    } = delivery;
+    if origin == RunCommandOrigin::DirectCommand
+        && runs
+            .installed_sessions
+            .read_run(thread, |run| run.session_dispatch)?
+            .unwrap_or(false)
+    {
+        return Err(SessionExecutionError::bad_request(
+            "Managed Session roots must use Session-owned Run ingress",
+        ));
+    }
+    let ctx = runs.run_assembly.ctx_for(thread, agent).await?;
+    let _command = ctx.command.lock().await;
+    if ctx
+        .commit
+        .open_wait_for_thread(&ctx.thread_id)
+        .await
+        .map_err(SessionExecutionError::internal)?
+        .is_some()
+    {
+        return Err(SessionExecutionError::bad_request(
+            "thread is awaiting a tool decision",
+        ));
+    }
+    // Recall is injected by the memory plugin's BeforeInference hook (request-only,
+    // never committed), so the host does not touch it here.
+    let mut messages: Vec<Message> = Vec::new();
+    // Expand a user `/skill-name` into the skill's instructions before the Run.
+    let input = match &ctx.skill_registry {
+        Some(registry) => {
+            awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
+                .map_err(SessionExecutionError::internal)?
+        }
+        None => input,
+    };
+    messages.extend(input);
+    let (generated_run_id, mut activation) =
+        ctx.runtime
+            .prepare(&ctx.config, ctx.thread_id.0.clone(), messages);
+    // Runtime owns the one restart-unique Run id scheme. Durable execution
+    // persists that id before dispatch; a second timestamp/counter mint here
+    // would collide across active-active PID-1 containers in the same millisecond.
+    let run_id = generated_run_id;
+    // Read the baseline from the authoritative recovery contract. In an
+    // active-active Coordinator tier this process's synchronous projection
+    // may lag commits made by a peer; using it here would project an older
+    // Run again when the current Run settles on another replica.
+    let baseline = runs.authoritative_step_snapshot(&ctx, &run_id).await?;
+    let before = baseline.messages.len();
+    activation.run_id = run_id.clone();
+    activation.model_ref_override = runs.agent.inference_routing.override_for(thread)?;
+    activation.data_subject_id = data_subject_id;
+    let expected_input_ids = activation
+        .input
+        .iter()
+        .map(|message| message.id.0.clone())
+        .collect::<Vec<_>>();
+    let executor = crate::run_exec::BoundRunExecutor::new(runs, ctx.clone())
+        .with_stream_sink(sink)
+        .retain_active_until_settled();
+    let executor = if origin == RunCommandOrigin::ThreadExtension {
+        executor.for_thread_extension()
+    } else {
+        executor
+    };
+    let state = match awaken_runtime_contract::execution::RunExecutor::execute(
+        &executor,
+        activation,
+        awaken_runtime_contract::RuntimeRunContext::new(),
+    )
+    .await
+    {
+        Ok(state) => state,
+        Err(error) => {
+            crate::SessionRuns::clear_active_run(&ctx, &run_id)?;
+            return Err(SessionExecutionError::internal(error.to_string()));
+        }
+    };
+    let _projection = ctx.projection.lock().await;
+    let result = runs
+        .finish_active_step(
+            &ctx,
+            run_id,
+            state,
+            StepCommitExpectation {
+                messages_before: before,
+                input_ids: &expected_input_ids,
+            },
+            thread,
+        )
+        .await?;
+    Ok(result)
 }
 
 use awaken_dispatch_contract::{
