@@ -68,7 +68,7 @@ pub async fn update_exact_pod_finalizer(
         name,
         None,
         require_present,
-        Some(checkpoint),
+        checkpoint,
         &replacement,
         &verify,
     )
@@ -76,26 +76,29 @@ pub async fn update_exact_pod_finalizer(
     .map(|_| ())
 }
 
+/// The checkpoint of a Pod metadata update that carries no effect fence, such
+/// as a runtime-owner transfer: it admits every step and proves no expiry.
+pub fn unfenced_checkpoint() -> Result<(), RuntimeError> {
+    Ok(())
+}
+
 /// The original cancellable Pod GET/replace/409 loop, shared without changing
 /// any domain admission. `initial` is an already-observed Pod, not a fresh UID
 /// sample. A 409 alone never authorizes a mutation: `replacement` must recheck
 /// the caller's frozen identity and merge its one change into the fresh object.
-/// None preserves the old owner-transfer interface's absence of an effect
-/// callback; it proves no expiry check. Existing finalizer/publish callbacks
-/// remain Some and run on the same pre/post-I/O sides as before.
+/// `checkpoint` runs on the same pre/post-I/O sides of every read and write; an
+/// update that carries no effect fence passes [`unfenced_checkpoint`].
 pub async fn update_pod_metadata(
     pods: &Api<Pod>,
     name: &str,
     mut initial: Option<Pod>,
     require_present: bool,
-    checkpoint: Option<&(dyn Fn() -> Result<(), RuntimeError> + Sync)>,
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     replacement: &(dyn Fn(&Pod) -> Result<Option<Pod>, RuntimeError> + Sync),
     verify: &(dyn Fn(&Pod) -> Result<(), RuntimeError> + Sync),
 ) -> Result<Option<Pod>, RuntimeError> {
     loop {
-        if let Some(checkpoint) = checkpoint {
-            checkpoint()?;
-        }
+        checkpoint()?;
         let observed = if let Some(pod) = initial.take() {
             pod
         } else {
@@ -104,9 +107,7 @@ pub async fn update_pod_metadata(
                 Err(error) if api_not_found(&error) && !require_present => return Ok(None),
                 Err(error) => return Err(backend(error)),
             };
-            if let Some(checkpoint) = checkpoint {
-                checkpoint()?;
-            }
+            checkpoint()?;
             pod
         };
         let Some(replacement) = replacement(&observed)? else {
@@ -115,9 +116,7 @@ pub async fn update_pod_metadata(
         let replaced = pods
             .replace(name, &PostParams::default(), &replacement)
             .await;
-        if let Some(checkpoint) = checkpoint {
-            checkpoint()?;
-        }
+        checkpoint()?;
         match replaced {
             Ok(patched) => {
                 verify(&patched)?;
