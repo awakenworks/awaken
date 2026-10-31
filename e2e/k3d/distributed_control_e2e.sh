@@ -309,15 +309,15 @@ create_native_worker_pod() {
   local pod_name="$1"
   # One canonical Pod template covers predecessor and successor. The projected
   # coordinate is authenticated independently by TokenReview; restartPolicy
-  # Never, the retained finalizer and a private non-privileged process namespace
-  # are prerequisites for exact termination evidence, not test conveniences.
+  # Never, the finalizer the Coordinator retains at registration and a private
+  # non-privileged process namespace are prerequisites for exact termination
+  # evidence, not test conveniences. No template carries that finalizer.
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: v1
 kind: Pod
 metadata:
   name: ${pod_name}
   labels: { app: worker, awaken.dev/native-crash-fixture: "true" }
-  finalizers: [awaken.dev/worker-process-evidence]
 spec:
   serviceAccountName: worker-runtime
   automountServiceAccountToken: true

@@ -361,7 +361,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: awaken-worker
-      finalizers: [awaken.dev/worker-process-evidence]
+      # No process-evidence finalizer here: the Coordinator adds it at
+      # registration, once the Pod can bind, so a Pod that never registers
+      # never keeps one (ADR-0078 amendment 2026-10-31).
     spec:
       serviceAccountName: awaken-worker
       restartPolicy: Never

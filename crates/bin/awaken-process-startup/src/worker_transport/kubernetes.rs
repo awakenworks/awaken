@@ -217,6 +217,15 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
                 "registered Kubernetes Worker Create ledger provider changed",
             ));
         }
+        // Retain only a Pod that can bind now. An unbindable Pod (restarting
+        // policy, privileged shape, not Running) would otherwise keep the
+        // finalizer while its Worker retries and then exits unregistered.
+        self.observer
+            .bind_pod_process(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("Worker Pod has no admissible process binding")
+            })?;
         self.observer
             .retain_pod_process_evidence(pod.name(), pod.uid())
             .await
@@ -290,6 +299,21 @@ impl WorkerRelayTargetObserver for KubernetesWorkerBindings {
     }
 }
 
+async fn registry_has_record(
+    directory: &dyn awaken_dispatch::WorkerDirectory,
+    worker_id: &str,
+) -> Result<bool, ApplicationError> {
+    use awaken_worker_contract::WorkerCurrentSource as _;
+    directory
+        .current(worker_id)
+        .await
+        .map(|record| record.is_some())
+        .map_err(|_| ApplicationError::unavailable("Worker Registry unavailable"))
+}
+
+/// Bound on ended unregistered Worker Pods released per maintenance pass.
+const UNREGISTERED_RELEASES_PER_PASS: usize = 8;
+
 struct KubernetesWorkerStops {
     stopper: Arc<PodProcessStopper>,
     create_ledger: Arc<K8sWorkerCreateLedger>,
@@ -317,6 +341,67 @@ impl KubernetesWorkerStops {
             ));
         }
         Ok((process, pod))
+    }
+
+    /// Decision for one ended Pod still retaining Worker evidence:
+    /// | Registry record | Create ledger            | Effect                      |
+    /// | present         | any                      | keep (exact-exit path owns) |
+    /// | absent          | absent                   | release finalizer           |
+    /// | absent          | unbound -> sealed        | release finalizer           |
+    /// | absent          | bound / ticket / unknown | keep (insert may be pending)|
+    /// The Registry is reread after the seal: a binding frozen before it may
+    /// still commit, and only an absent record after the deny fence is final.
+    async fn release_unregistered_ended_pod(
+        &self,
+        directory: &dyn awaken_dispatch::WorkerDirectory,
+        name: &str,
+        uid: &str,
+    ) -> Result<(), ApplicationError> {
+        let pod = KubernetesPodIdentity::new(&self.namespace, name, uid)
+            .map_err(ApplicationError::invalid)?;
+        let worker_id = pod.worker_id();
+        if registry_has_record(directory, &worker_id).await? {
+            return Ok(());
+        }
+        match self
+            .create_ledger
+            .existing_worker_anchor(pod.namespace(), pod.name(), pod.uid())
+            .await
+        {
+            Ok((ledger_name, ledger_uid)) => {
+                let binding = K8sLedgerBinding {
+                    worker_namespace: pod.namespace(),
+                    worker_name: pod.name(),
+                    worker_uid: pod.uid(),
+                    ledger_name: &ledger_name,
+                    ledger_uid: &ledger_uid,
+                    configuration_fingerprint: self.create_ledger.configuration_fingerprint(),
+                };
+                self.create_ledger
+                    .seal_unattempted_worker(binding)
+                    .await
+                    .map_err(|_| {
+                        ApplicationError::unavailable(
+                            "ended unregistered Worker ledger is bound or unavailable",
+                        )
+                    })?;
+            }
+            Err(awaken_container_contract::RuntimeError::NotFound(_)) => {}
+            Err(_) => {
+                return Err(ApplicationError::unavailable(
+                    "ended unregistered Worker ledger unavailable",
+                ));
+            }
+        }
+        if registry_has_record(directory, &worker_id).await? {
+            return Ok(());
+        }
+        self.stopper
+            .release_ended_unregistered_pod_evidence(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("ended unregistered Worker release unavailable")
+            })
     }
 
     async fn seal_original_create_admission(
@@ -445,6 +530,29 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
             .map_err(|_| {
                 ApplicationError::unavailable("closed-idle Worker Pod retirement is unavailable")
             })
+    }
+    async fn release_unregistered_ended_worker_evidence(
+        &self,
+        directory: &dyn awaken_dispatch::WorkerDirectory,
+    ) -> Result<(), ApplicationError> {
+        // The Worker finalizer is added only at registration. A Pod that ended
+        // between that retention and its Registry insert has no record for the
+        // per-incarnation scan; release it here once provably unregistered.
+        let candidates = self
+            .stopper
+            .ended_retained_worker_pods()
+            .await
+            .map_err(|_| ApplicationError::unavailable("ended Worker Pod listing unavailable"))?;
+        let mut first_error = None;
+        for (name, uid) in candidates.into_iter().take(UNREGISTERED_RELEASES_PER_PASS) {
+            if let Err(error) = self
+                .release_unregistered_ended_pod(directory, &name, &uid)
+                .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
     async fn stop_closed_worker(
         &self,

@@ -913,6 +913,75 @@ async fn worker_container_exit_settles_only_retained_exact_evidence_for_every_ex
 }
 
 #[tokio::test]
+async fn ended_never_registered_release_requires_an_ended_exact_retained_pod() {
+    // Never-registered release (the caller has proved no Registry record and an
+    // absent or sealed unbound ledger). Causes on the fresh read: N1 same UID;
+    // N2 phase Succeeded or Failed (absorbing); N3 Worker finalizer present.
+    // | Rule | N1 | N2                 | N3 | Effect                              |
+    // | E1   | y  | Succeeded / Failed | y  | one RV-fenced finalizer PUT, siblings kept, no DELETE |
+    // | E2   | y  | Running / Pending  | y  | no write (a live Worker may still register) |
+    // | E3   | n  | ended              | y  | no write (successor untouched)      |
+    // | E4   | y  | ended              | n  | no write (nothing retained)         |
+    // Listing selects ended Pods with the Worker finalizer (E1 and E3 shapes).
+    for (row, phase, uid, retained, released) in [
+        ("E1 succeeded", "Succeeded", "uid-a", true, true),
+        ("E1 failed", "Failed", "uid-a", true, true),
+        ("E2 running", "Running", "uid-a", true, false),
+        ("E2 pending", "Pending", "uid-a", true, false),
+        ("E3 successor", "Failed", "uid-b", true, false),
+        ("E4 unretained", "Failed", "uid-a", false, false),
+    ] {
+        let fixture = Fixture::new(Fault::None);
+        let mut pod = running();
+        pod["status"]["phase"] = json!(phase);
+        pod["metadata"]["uid"] = json!(uid);
+        let pod = if retained {
+            retained(pod)
+        } else {
+            pod["metadata"]["finalizers"] = json!(["other.example/keep"]);
+            decode(pod)
+        };
+        assert_eq!(
+            ended_retained_worker_pod(&pod).is_some(),
+            retained && matches!(phase, "Succeeded" | "Failed"),
+            "{row}: listing selects ended retained Pods only"
+        );
+        fixture.facts.lock().unwrap().pod = Some(pod);
+        fixture
+            .stopper()
+            .release_ended_unregistered_pod_evidence("worker", "uid-a")
+            .await
+            .unwrap();
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!(facts.released, usize::from(released), "{row}");
+        assert_eq!(facts.accepted, 0, "{row}: never DELETE");
+        assert!(
+            facts.calls.iter().all(|(method, _)| method != "DELETE"),
+            "{row}"
+        );
+        let finalizers = facts
+            .pod
+            .as_ref()
+            .unwrap()
+            .metadata
+            .finalizers
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            finalizers.iter().any(|value| value == "other.example/keep"),
+            "{row}: sibling retention kept"
+        );
+        assert_eq!(
+            finalizers
+                .iter()
+                .any(|value| value == WORKER_PROCESS_EVIDENCE_FINALIZER),
+            retained && !released,
+            "{row}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn stop_requires_prebound_retention_and_returns_only_independent_exact_exit() {
     // Causes: C1 pre-binding retention; C2 current retention; C3 exact process
     // identity/profile; C4 deleting; C5 complete runtime exit; C6 API read status.

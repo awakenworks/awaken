@@ -164,6 +164,8 @@ def main() -> None:
         worker = resources_text.split(marker, 1)[1].split("\n---", 1)[0]
         return (
             "restartPolicy: Never" in worker
+            # The process-evidence finalizer is added at registration only.
+            and "awaken.dev/worker-process-evidence" not in worker
             and "podFailurePolicy:" in worker
             and re.search(r"action: Ignore\s+onExitCodes:\s+containerName: worker\s+operator: NotIn\s+values: \[0\]", worker) is not None
             and re.search(r'action: Ignore\s+onPodConditions:\s+- type: DisruptionTarget\s+status: "True"', worker) is not None
@@ -183,6 +185,12 @@ def main() -> None:
                           "restartPolicy: Always\n      serviceAccountName: worker-runtime"),
         distributed_marker,
     ), "PR6 restartable Worker Pod"
+    assert not worker_replacement_contract(
+        product_resources.replace(
+            "        app.kubernetes.io/name: awaken-worker\n      # No process-evidence",
+            "        app.kubernetes.io/name: awaken-worker\n      finalizers: [awaken.dev/worker-process-evidence]\n      # No process-evidence",
+        ),
+    ), "template finalizer pins never-registered Pods"
     assert not worker_replacement_contract(
         resources.replace(distributed_marker, distributed_marker.replace("kind: Job", "kind: StatefulSet")),
         distributed_marker,

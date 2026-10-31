@@ -208,6 +208,17 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
         current.1 = body.clone();
         (StatusCode::OK, Json(body))
     }
+    async fn pod_list(State(facts): State<Arc<Facts>>) -> Json<Value> {
+        let (status, pod) = facts.pod.lock().unwrap().clone();
+        let items = if status == StatusCode::OK {
+            vec![pod]
+        } else {
+            Vec::new()
+        };
+        Json(
+            json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":items}),
+        )
+    }
     async fn ledger_get(State(facts): State<Arc<Facts>>) -> (StatusCode, Json<Value>) {
         match facts.ledger.lock().unwrap().clone() {
             Some(value) => (StatusCode::OK, Json(value)),
@@ -269,6 +280,7 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
             "/api/v1/namespaces/create-control/configmaps/{name}",
             get(ledger_get).put(ledger_update),
         )
+        .route("/api/v1/namespaces/workers/pods", get(pod_list))
         .route(
             "/api/v1/namespaces/workers/pods/worker-a",
             get(pod).put(update).delete(delete),

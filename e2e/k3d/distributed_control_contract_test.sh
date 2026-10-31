@@ -319,7 +319,10 @@ grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'worker_kubernetes_identity_directory' "$RENDERED"
 grep -q 'restartPolicy: Never' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'awaken.dev/worker-process-evidence' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# The Coordinator adds the Worker process-evidence finalizer at registration;
+# neither a fixture Pod nor the fleet template may carry it from creation.
+! grep -q 'finalizers: \[awaken.dev/worker-process-evidence\]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+! grep -q 'awaken.dev/worker-process-evidence' "$RENDERED"
 grep -Fq 'wait --for=delete "pod/$NATIVE_CRASH_OLD"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'prepare-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"

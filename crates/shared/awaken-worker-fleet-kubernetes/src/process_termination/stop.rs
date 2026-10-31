@@ -10,7 +10,7 @@ use super::{
 use crate::pod_metadata::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{DeleteParams, Preconditions};
+use kube::api::{DeleteParams, ListParams, Preconditions};
 
 /// A trusted recovery application may request termination of a whole Worker
 /// process domain. This is not a per-Run cancellation port: other Runs can share
@@ -81,17 +81,49 @@ impl PodProcessStopper {
         name: &str,
         uid: &str,
     ) -> Result<(), RuntimeError> {
-        self.release_pod_evidence(name, uid, true).await
+        self.release_pod_evidence(name, uid, ReleaseAdmission::DeletionIntent)
+            .await
     }
 
-    // One finalizer CAS for both existing release authorities: a durable exact
-    // process exit may release immediately; an unbound/closed-idle coordinate
-    // alone must wait for API-owned deletion intent. Neither issues DELETE.
+    /// This namespace's ended Pods (phase Succeeded or Failed) that still carry
+    /// the Worker process-evidence finalizer, as exact `(name, UID)` pairs in
+    /// name order. Listing grants nothing; the caller decides which may release.
+    pub async fn ended_retained_worker_pods(&self) -> Result<Vec<(String, String)>, RuntimeError> {
+        let params = ListParams::default().fields("status.phase!=Running,status.phase!=Pending");
+        let pods = self.observer.pods.list(&params).await.map_err(backend)?;
+        let mut ended: Vec<_> = pods
+            .items
+            .iter()
+            .filter_map(ended_retained_worker_pod)
+            .collect();
+        ended.sort();
+        Ok(ended)
+    }
+
+    /// Release the Worker finalizer of an ended Pod whose process never reached
+    /// the Registry. The caller must first prove that: no Registry record and an
+    /// absent or sealed unbound Create ledger. Here the fresh read must still be
+    /// the same UID, still ended (an absorbing phase: no process can start or
+    /// bind again) and still retained; the CAS is fenced by resourceVersion.
+    /// No DELETE is issued and no exit receipt is produced.
+    pub async fn release_ended_unregistered_pod_evidence(
+        &self,
+        name: &str,
+        uid: &str,
+    ) -> Result<(), RuntimeError> {
+        self.release_pod_evidence(name, uid, ReleaseAdmission::Ended)
+            .await
+    }
+
+    // One finalizer CAS for every release authority: a durable exact process
+    // exit may release immediately; an unbound/closed-idle coordinate alone
+    // must wait for API-owned deletion intent; a never-registered domain needs
+    // its Pod ended. None issues DELETE.
     async fn release_pod_evidence(
         &self,
         name: &str,
         uid: &str,
-        require_deletion_intent: bool,
+        admission: ReleaseAdmission,
     ) -> Result<(), RuntimeError> {
         if uid.is_empty() {
             return Err(backend("idle evidence release requires an exact UID"));
@@ -103,9 +135,14 @@ impl PodProcessStopper {
             false,
             &|| Ok(()),
             &|pod| {
+                let admitted = match admission {
+                    ReleaseAdmission::ExactExit => true,
+                    ReleaseAdmission::DeletionIntent => pod.metadata.deletion_timestamp.is_some(),
+                    ReleaseAdmission::Ended => pod_has_ended(pod),
+                };
                 if pod.metadata.uid.as_deref() != Some(uid)
                     || retention_finalizer(pod) != Some(WORKER_PROCESS_EVIDENCE_FINALIZER)
-                    || (require_deletion_intent && pod.metadata.deletion_timestamp.is_none())
+                    || !admitted
                 {
                     Ok(ExactFinalizerAdmission::Complete)
                 } else {
@@ -211,9 +248,45 @@ impl PodProcessStopper {
         if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
             return Ok(());
         }
-        self.release_pod_evidence(&binding.name, &binding.uid, false)
+        self.release_pod_evidence(&binding.name, &binding.uid, ReleaseAdmission::ExactExit)
             .await
     }
+}
+
+/// What, besides the exact UID and the Worker finalizer, admits a release.
+#[derive(Clone, Copy)]
+enum ReleaseAdmission {
+    /// The Registry durably holds this binding's exact exit.
+    ExactExit,
+    /// A closed-idle coordinate: the API must already have deletion intent.
+    DeletionIntent,
+    /// A never-registered domain: the Pod phase must be terminal.
+    Ended,
+}
+
+fn pod_has_ended(pod: &Pod) -> bool {
+    matches!(
+        pod.status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref()),
+        Some("Succeeded" | "Failed")
+    )
+}
+
+/// An ended Pod still retaining Worker evidence, as its exact coordinate.
+fn ended_retained_worker_pod(pod: &Pod) -> Option<(String, String)> {
+    let retained = pod.metadata.finalizers.as_ref().is_some_and(|values| {
+        values
+            .iter()
+            .any(|v| v == WORKER_PROCESS_EVIDENCE_FINALIZER)
+    });
+    if !retained || !pod_has_ended(pod) {
+        return None;
+    }
+    Some((
+        coordinate(pod.metadata.name.as_deref())?,
+        coordinate(pod.metadata.uid.as_deref())?,
+    ))
 }
 
 #[cfg(test)]
