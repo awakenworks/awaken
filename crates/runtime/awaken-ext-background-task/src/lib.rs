@@ -10,6 +10,7 @@
 
 mod model;
 mod notification;
+mod observation;
 mod plugin;
 mod supervisor;
 mod tools;
@@ -22,6 +23,9 @@ pub use model::{
 };
 pub use notification::{
     TaskNotificationEvent, TaskNotificationFormat, TaskNotificationRule, TaskNotifications,
+};
+pub use observation::{
+    TASK_OBSERVATION_VERSION, TaskObservation, TaskObservationCodecError, TaskObservationRecord,
 };
 pub use plugin::{
     BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin,
