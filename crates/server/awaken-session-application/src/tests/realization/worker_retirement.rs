@@ -839,3 +839,6 @@ async fn worker_retirement_explains_every_refusing_session_without_changing_the_
         "X3/E2"
     );
 }
+
+mod active_source_facts;
+mod per_source_verdict;

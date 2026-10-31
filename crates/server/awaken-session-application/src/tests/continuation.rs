@@ -36,6 +36,19 @@ struct ContinuationRuntime {
         )>,
     >,
     adoptions: Mutex<Vec<(String, String, String)>>,
+    /// Hold the next checkpoint effect after it starts until released.
+    checkpoint_gate: Mutex<Option<CheckpointGate>>,
+}
+
+/// One held checkpoint effect: `entered` fires when the effect starts and the
+/// effect returns only after `release`. `digest`, when set, is the held
+/// upload's own content digest, so its observation differs from a concurrent
+/// owner's upload of the same effect.
+#[derive(Clone, Default)]
+struct CheckpointGate {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    digest: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -283,6 +296,17 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
             .lock()
             .unwrap()
             .push((request.workspace_id.clone(), request.created_at_unix_ms));
+        let gate = self.checkpoint_gate.lock().unwrap().take();
+        let mut digest = "digest".to_owned();
+        if let Some(gate) = gate {
+            gate.entered.notify_one();
+            tokio::time::timeout(std::time::Duration::from_secs(4), gate.release.notified())
+                .await
+                .expect("the held checkpoint is released within its frozen bound");
+            if let Some(held) = gate.digest {
+                digest = held;
+            }
+        }
         if self.fail_checkpoint_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected upload crash"));
         }
@@ -292,7 +316,7 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
             checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
                 id: "object".into(),
                 format: request.format,
-                digest: "digest".into(),
+                digest,
                 size_bytes: 10,
                 created_at_unix_ms: request.created_at_unix_ms,
                 expires_at_unix_ms: request.expires_at_unix_ms,
@@ -2482,3 +2506,5 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "O1 no effect");
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 0, "O3 no effect");
 }
+
+mod backend_takeover;
