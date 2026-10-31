@@ -18,12 +18,13 @@
 //! call yields a fresh, expiring access token.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use awaken_time::mono::{self, Instant};
 
 use awaken_agent_contract::RedactedString;
+use awaken_sync::LeafLock;
 
 use crate::{CredentialError, CredentialSourceId};
 
@@ -106,7 +107,7 @@ impl TokenSource for CommandTokenSource {
 pub struct CachingTokenSource<T> {
     inner: T,
     ttl: Duration,
-    cached: Mutex<Option<(RedactedString, Instant)>>,
+    cached: LeafLock<Option<(RedactedString, Instant)>>,
 }
 
 impl<T: TokenSource> CachingTokenSource<T> {
@@ -115,7 +116,7 @@ impl<T: TokenSource> CachingTokenSource<T> {
         Self {
             inner,
             ttl,
-            cached: Mutex::new(None),
+            cached: LeafLock::new(None),
         }
     }
 }
@@ -123,13 +124,13 @@ impl<T: TokenSource> CachingTokenSource<T> {
 #[async_trait::async_trait]
 impl<T: TokenSource> TokenSource for CachingTokenSource<T> {
     async fn access_token(&self) -> Result<RedactedString, CredentialError> {
-        if let Some((token, minted)) = self.cached.lock().unwrap().as_ref()
+        if let Some((token, minted)) = self.cached.lock().as_ref()
             && minted.elapsed() < self.ttl
         {
             return Ok(token.clone());
         }
         let fresh = self.inner.access_token().await?;
-        *self.cached.lock().unwrap() = Some((fresh.clone(), mono::now()));
+        *self.cached.lock() = Some((fresh.clone(), mono::now()));
         Ok(fresh)
     }
 }
@@ -138,7 +139,7 @@ impl<T: TokenSource> TokenSource for CachingTokenSource<T> {
 /// `materialize` free function still reuses one minted token across runs (keyed by
 /// credential-source id). Built lazily on first use.
 type OauthSources = HashMap<String, Arc<CachingTokenSource<CommandTokenSource>>>;
-static OAUTH_SOURCES: OnceLock<Mutex<OauthSources>> = OnceLock::new();
+static OAUTH_SOURCES: OnceLock<LeafLock<OauthSources>> = OnceLock::new();
 
 /// Mint (or reuse a cached) OAuth access token for `source_id` by running
 /// `command` (`[program, args…]`). The per-source [`CachingTokenSource`] persists
@@ -152,9 +153,8 @@ pub(crate) async fn oauth_access_token(
     })?;
     let cached = {
         let mut sources = OAUTH_SOURCES
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap();
+            .get_or_init(|| LeafLock::new(HashMap::new()))
+            .lock();
         sources
             .entry(source_id.0.clone())
             .or_insert_with(|| {

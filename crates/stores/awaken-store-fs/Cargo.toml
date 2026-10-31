@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "store-fs"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
 awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 awaken-store-inmem.workspace = true

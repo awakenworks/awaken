@@ -400,7 +400,8 @@ mod tests {
     use crate::test_support::{
         IsolationApi as Fixture, isolation_api as client, isolation_ticket as ticket,
     };
-    use std::sync::{Arc, Mutex};
+    use awaken_sync::LeafLock;
+    use std::sync::Arc;
 
     #[test]
     fn original_metadata_field_law_keeps_isolation_purpose_and_unknown_uid() {
@@ -650,7 +651,7 @@ mod tests {
         // The ledger CAS test separately covers the durable
         // state transition after these physical observations.
         let ticket = ticket();
-        let state = Arc::new(Mutex::new(Fixture {
+        let state = Arc::new(LeafLock::new(Fixture {
             policy: true,
             delete_denied: true,
             ..Default::default()
@@ -669,33 +670,32 @@ mod tests {
             isolated,
             "I1 lost response replay"
         );
-        assert_eq!(state.lock().unwrap().creates, 2, "I1 one physical UID");
-        state.lock().unwrap().denial_code = 403;
+        assert_eq!(state.lock().creates, 2, "I1 one physical UID");
+        state.lock().denial_code = 403;
         assert!(
             verify_reservation(&api, &ticket, "sentinel-uid")
                 .await
                 .unwrap(),
             "I1 403 policy denial"
         );
-        state.lock().unwrap().denial_code = 0;
+        state.lock().denial_code = 0;
         assert!(
             !verify_reservation(&api, &ticket, "foreign-uid")
                 .await
                 .unwrap(),
             "I3 UID"
         );
-        state.lock().unwrap().delete_denied = false;
+        state.lock().delete_denied = false;
         assert!(
             !verify_reservation(&api, &ticket, "sentinel-uid")
                 .await
                 .unwrap(),
             "I3 missing denial"
         );
-        state.lock().unwrap().delete_denied = true;
-        let original_spec = state.lock().unwrap().pod.as_ref().unwrap().spec.clone();
+        state.lock().delete_denied = true;
+        let original_spec = state.lock().pod.as_ref().unwrap().spec.clone();
         state
             .lock()
-            .unwrap()
             .pod
             .as_mut()
             .unwrap()
@@ -710,10 +710,9 @@ mod tests {
                 .unwrap(),
             "I3 changed executable"
         );
-        state.lock().unwrap().pod.as_mut().unwrap().spec = original_spec.clone();
+        state.lock().pod.as_mut().unwrap().spec = original_spec.clone();
         state
             .lock()
-            .unwrap()
             .pod
             .as_mut()
             .unwrap()
@@ -727,43 +726,42 @@ mod tests {
                 .unwrap(),
             "I3 scheduled reservation"
         );
-        state.lock().unwrap().pod.as_mut().unwrap().spec = original_spec;
-        state.lock().unwrap().pod.as_mut().unwrap().status =
-            Some(k8s_openapi::api::core::v1::PodStatus {
-                phase: Some("Running".into()),
-                ..Default::default()
-            });
+        state.lock().pod.as_mut().unwrap().spec = original_spec;
+        state.lock().pod.as_mut().unwrap().status = Some(k8s_openapi::api::core::v1::PodStatus {
+            phase: Some("Running".into()),
+            ..Default::default()
+        });
         assert!(
             !verify_reservation(&api, &ticket, "sentinel-uid")
                 .await
                 .unwrap(),
             "I3 container execution status"
         );
-        state.lock().unwrap().pod.as_mut().unwrap().status = None;
-        state.lock().unwrap().policy = false;
+        state.lock().pod.as_mut().unwrap().status = None;
+        state.lock().policy = false;
         assert_eq!(
             isolate_pod(&api, &ticket).await.unwrap(),
             None,
             "I3 missing policy"
         );
-        state.lock().unwrap().policy = true;
-        state.lock().unwrap().policy_tampered = true;
+        state.lock().policy = true;
+        state.lock().policy_tampered = true;
         assert!(
             !verify_reservation(&api, &ticket, "sentinel-uid")
                 .await
                 .unwrap(),
             "I3 changed policy"
         );
-        state.lock().unwrap().policy_tampered = false;
-        state.lock().unwrap().binding_tampered = true;
+        state.lock().policy_tampered = false;
+        state.lock().binding_tampered = true;
         assert!(
             !verify_reservation(&api, &ticket, "sentinel-uid")
                 .await
                 .unwrap(),
             "I3 changed binding"
         );
-        state.lock().unwrap().binding_tampered = false;
-        state.lock().unwrap().policy_lagged = true;
+        state.lock().binding_tampered = false;
+        state.lock().policy_lagged = true;
         assert!(
             !verify_reservation(&api, &ticket, "sentinel-uid")
                 .await
@@ -771,7 +769,7 @@ mod tests {
             "I3 policy generation not observed"
         );
 
-        let original_state = Arc::new(Mutex::new(Fixture {
+        let original_state = Arc::new(LeafLock::new(Fixture {
             policy: true,
             delete_denied: true,
             ..Default::default()
@@ -780,7 +778,7 @@ mod tests {
         original.metadata.uid = Some("original-uid".into());
         original.metadata.labels = None;
         original.metadata.finalizers = Some(vec![ORIGINAL_GUARD_FINALIZER.into()]);
-        original_state.lock().unwrap().pod = Some(original);
+        original_state.lock().pod = Some(original);
         assert_eq!(
             isolate_pod(&client(original_state.clone()), &ticket)
                 .await
@@ -792,7 +790,6 @@ mod tests {
         );
         original_state
             .lock()
-            .unwrap()
             .pod
             .as_mut()
             .unwrap()
@@ -807,7 +804,6 @@ mod tests {
         );
         original_state
             .lock()
-            .unwrap()
             .pod
             .as_mut()
             .unwrap()
@@ -815,7 +811,6 @@ mod tests {
             .finalizers = Some(vec![ORIGINAL_GUARD_FINALIZER.into()]);
         original_state
             .lock()
-            .unwrap()
             .pod
             .as_mut()
             .unwrap()
@@ -847,7 +842,7 @@ mod tests {
             ORIGINAL_GUARD_FINALIZER.into(),
             "other/finalizer".into(),
         ]);
-        let state = Arc::new(Mutex::new(Fixture {
+        let state = Arc::new(LeafLock::new(Fixture {
             pod: Some(pod),
             ..Default::default()
         }));
@@ -860,7 +855,6 @@ mod tests {
         );
         state
             .lock()
-            .unwrap()
             .pod
             .as_mut()
             .unwrap()
@@ -878,7 +872,6 @@ mod tests {
             .unwrap();
         let finalizers = state
             .lock()
-            .unwrap()
             .pod
             .as_ref()
             .unwrap()

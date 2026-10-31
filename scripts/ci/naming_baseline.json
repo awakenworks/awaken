@@ -21,7 +21,6 @@
     "OAuthHelper": 1,
     "RegisteredDispatchDependencies": 1,
     "ResourcePorts": 1,
-    "SessionApplicationBindings": 1,
     "SessionExecutionDependencies": 1,
     "Shared": 1,
     "SkillWiring": 1,
@@ -56,7 +55,6 @@
     "awaken-container-contract::RuntimeError": 1,
     "awaken-control::HostedRuntimePathMatch": 1,
     "awaken-control::HostedRuntimeRouteProfile": 1,
-    "awaken-coordinator::DurableRuntimeAuthority": 1,
     "awaken-dispatch-contract::SessionRuntimeEnvelope": 1,
     "awaken-dispatch-erasure::RuntimeAuthority": 1,
     "awaken-dispatch-erasure::RuntimeAuthorityError": 1,
@@ -78,7 +76,6 @@
     "awaken-session-execution-contract::EnvironmentRuntime": 1,
     "awaken-session-execution-contract::NeutralRuntime": 1,
     "awaken-session-execution-contract::RealizationRuntime": 1,
-    "awaken-session-executor::MemoryRuntime": 1,
     "awaken-session-types::SessionRuntimePlacement": 1
   },
   "growth_reasons": {

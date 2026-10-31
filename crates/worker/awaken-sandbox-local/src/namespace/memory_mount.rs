@@ -23,7 +23,7 @@ pub(crate) async fn prepare_memory_before_root(
 /// adapter. The guard is retained before any mode/evidence validation so every
 /// caller can compensate a partially successful external mount.
 pub(crate) async fn mount_memory_requirement(
-    memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: &Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     requirement: &pc::MountRequirement,
     host_path: &Path,
     retained_mounts: &mut crate::MemoryMountState,
@@ -37,11 +37,7 @@ pub(crate) async fn mount_memory_requirement(
     else {
         return Ok(None);
     };
-    let Some(mounter) = memory_mounter
-        .read()
-        .expect("memory mounter lock poisoned")
-        .clone()
-    else {
+    let Some(mounter) = memory_mounter.read().clone() else {
         return Err(pc::SandboxError::unsupported(format!(
             "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
             requirement.mount_id
@@ -187,7 +183,7 @@ pub(crate) struct AdoptionMemoryReplay {
 /// post-mount validation; spec-less public adoption therefore fails closed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_adoption_memory_replay(
-    memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: &Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     memory_mounts: crate::MemoryMountOwner,
     root: &Path,
     current_evidence: Option<&super::realization_marker::RealizationEvidence>,
@@ -291,7 +287,7 @@ pub(crate) struct TerminalMemoryReplay {
 /// retained removal validator.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_terminal_memory_replay(
-    memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: &Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     memory_mounts: crate::MemoryMountOwner,
     root: &Path,
     fingerprint: &pc::SandboxRealizationFingerprint,
@@ -415,7 +411,7 @@ pub(crate) async fn prepare_terminal_memory_replay(
 /// here. An admitted retry compensates unpublished attempts; denied or failed
 /// compensation remains reachable from the live Provider for another retry.
 pub(crate) async fn replay_memory_mount_guards<F>(
-    memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: &Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     memory_mounts: crate::MemoryMountOwner,
     spec: &pc::SandboxSpec,
     realized: &[pc::RealizedMount],

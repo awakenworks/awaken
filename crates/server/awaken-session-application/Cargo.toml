@@ -12,6 +12,7 @@ layer = "application"
 authority = "session"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true

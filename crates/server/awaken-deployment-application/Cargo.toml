@@ -16,6 +16,7 @@ separation = "sole-in-layer"
 test-support = []
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-time.workspace = true
 awaken-deployment-contract.workspace = true
 awaken-executable-agent-contract.workspace = true

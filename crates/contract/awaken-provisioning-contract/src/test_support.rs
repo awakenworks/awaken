@@ -9,29 +9,34 @@
 //! This is not a production clock or an authority inferred from fence expiry.
 
 use crate::{CurrentExecutionAuthority, SandboxEffectFence};
-use std::{io, sync::Mutex, time::Duration};
+use awaken_sync::{InvariantLock, LeafLock};
+use std::{io, time::Duration};
 
 pub struct EffectAuthority {
-    pub current: Mutex<Option<(SandboxEffectFence, Duration)>>,
+    pub current: InvariantLock<Option<(SandboxEffectFence, Duration)>>,
 }
 
 impl EffectAuthority {
     pub fn new(fence: &SandboxEffectFence) -> Self {
         Self {
-            current: Mutex::new(Some((fence.clone(), Duration::from_secs(1)))),
+            current: InvariantLock::new(Some((fence.clone(), Duration::from_secs(1)))),
         }
     }
 
     pub fn denied() -> Self {
         Self {
-            current: Mutex::new(None),
+            current: InvariantLock::new(None),
         }
     }
 }
 
 impl CurrentExecutionAuthority for EffectAuthority {
     fn with_current(&self, effect: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()> {
-        let current = self.current.lock().unwrap();
+        // A poisoned authority grants nothing.
+        let current = self
+            .current
+            .lock()
+            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
         let (_, remaining) = current.as_ref().ok_or(io::ErrorKind::PermissionDenied)?;
         if remaining.is_zero() {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -44,7 +49,11 @@ impl CurrentExecutionAuthority for EffectAuthority {
         asserted: &SandboxEffectFence,
         effect: &mut dyn FnMut(&SandboxEffectFence, Duration) -> io::Result<()>,
     ) -> io::Result<()> {
-        let current = self.current.lock().unwrap();
+        // A poisoned authority grants nothing.
+        let current = self
+            .current
+            .lock()
+            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
         let (fence, remaining) = current.as_ref().ok_or(io::ErrorKind::PermissionDenied)?;
         if !asserted.same_effect_identity(fence)
             || asserted.expires_at_unix_ms() > fence.expires_at_unix_ms()
@@ -64,17 +73,14 @@ impl CurrentExecutionAuthority for EffectAuthority {
 /// becomes as observable in a fixture as a stranded container is in production.
 /// Process-wide rather than per-double so a fake can stay a plain value that
 /// dozens of call sites construct positionally.
-static ABANDONED_EFFECTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static ABANDONED_EFFECTS: LeafLock<Vec<String>> = LeafLock::new(Vec::new());
 
 /// The retention a test double hands to its claim: it records `identity` if and
 /// only if the claimed effect is dropped unsettled.
 pub fn retain_abandoned_effect(identity: impl Into<String>) -> impl FnOnce() + Send + 'static {
     let identity = identity.into();
     move || {
-        ABANDONED_EFFECTS
-            .lock()
-            .expect("abandoned effect ledger poisoned")
-            .push(identity);
+        ABANDONED_EFFECTS.lock().push(identity);
     }
 }
 
@@ -83,11 +89,7 @@ pub fn retain_abandoned_effect(identity: impl Into<String>) -> impl FnOnce() + S
 /// effect that settles never records anything here in the first place.
 #[must_use]
 pub fn drain_abandoned_effects() -> Vec<String> {
-    std::mem::take(
-        &mut *ABANDONED_EFFECTS
-            .lock()
-            .expect("abandoned effect ledger poisoned"),
-    )
+    std::mem::take(&mut *ABANDONED_EFFECTS.lock())
 }
 
 /// A live fence plus its matching authority, for tests that own no aggregate

@@ -16,6 +16,7 @@ standalone-release-admission = []
 test-support = []
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true

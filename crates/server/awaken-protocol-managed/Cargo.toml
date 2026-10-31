@@ -30,6 +30,7 @@ test-support = [
 ]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-web-policy-contract.workspace = true
 awaken-data-subject-application.workspace = true
 # The content-capture decision kernel and its policy sources (ADR-0050 D8): the

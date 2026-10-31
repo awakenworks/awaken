@@ -45,11 +45,7 @@ impl LocalSandbox {
         command: pc::Command,
     ) -> Result<PreparedCommand, pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
-        let broker = self
-            .secret_broker
-            .read()
-            .expect("secret broker lock poisoned")
-            .clone();
+        let broker = self.secret_broker.read().clone();
         let mut command =
             pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await?;
         if command.argv.is_empty() {

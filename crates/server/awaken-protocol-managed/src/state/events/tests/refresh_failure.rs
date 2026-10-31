@@ -81,11 +81,7 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
 
 async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>, String) {
     let runtime = RehydrateFake::default();
-    runtime
-        .delegate_ids
-        .lock()
-        .unwrap()
-        .push("researcher".into());
+    runtime.delegate_ids.lock().push("researcher".into());
     let inner = Arc::new(ephemeral_session_repo().await);
     let repository = Arc::new(ConflictInjectingRepo::new(
         inner.clone(),
@@ -137,14 +133,14 @@ async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>
                 latest_run_id: Some(child_run.clone()),
             },
         );
-        runtime.lifecycle.lock().unwrap().push(lifecycle(
+        runtime.lifecycle.lock().push(lifecycle(
             1,
             "refresh-child",
             &child_run,
             RunLifecycleEventKind::Running,
             RunState::Running,
         ));
-        runtime.committed_by_thread.lock().unwrap().insert(
+        runtime.committed_by_thread.lock().insert(
             "refresh-child".into(),
             vec![Message::text(
                 MessageId("refresh-child-message".into()),
@@ -410,7 +406,7 @@ async fn aggregate_usage_reuses_fenced_snapshots_without_independent_accounting_
         for cold in [false, true] {
             let (runtime, state, id) = read_cut_fixture(true).await;
             for (thread, tokens) in [(&id[..], root_tokens), ("refresh-child", child_tokens)] {
-                runtime.usage_by_thread.lock().unwrap().insert(
+                runtime.usage_by_thread.lock().insert(
                     thread.into(),
                     awaken_session_contract::SessionUsage {
                         input_tokens: tokens,

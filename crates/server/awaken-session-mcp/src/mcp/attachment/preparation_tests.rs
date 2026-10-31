@@ -242,7 +242,6 @@ async fn native_http_preparation_is_owned_before_io_and_drain_joins_its_original
     assert!(removed.native_wiring.is_none());
     assert_eq!(
         seen.lock()
-            .unwrap()
             .iter()
             .filter(|(method, _)| method == "initialize")
             .count(),

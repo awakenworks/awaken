@@ -17,6 +17,7 @@ authority = "runtime"
 separation = "publish"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-time.workspace = true
 awaken-agent-contract = { workspace = true, features = ["schema"] }
 awaken-tool-contract.workspace = true

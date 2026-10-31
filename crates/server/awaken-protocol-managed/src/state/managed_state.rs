@@ -5,9 +5,10 @@
 //! Wire projection state for the Managed protocol adapter.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
 
+use awaken_sync::{InvariantLock, LeafLock};
 use tokio::sync::broadcast;
 
 use awaken_session_application::{
@@ -70,11 +71,11 @@ pub struct ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     pub(super) application: Arc<SessionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
-    pub(super) sessions: Mutex<HashMap<String, SessionRecord>>,
+    pub(super) sessions: InvariantLock<HashMap<String, SessionRecord>>,
     pub(super) session_seq: AtomicU64,
     /// Per-Session committed wire-event channels. Runtime live observations use
     /// the ThreadEventHub subscription and never enter this map.
-    pub(super) live: Mutex<HashMap<String, broadcast::Sender<Event>>>,
+    pub(super) live: LeafLock<HashMap<String, broadcast::Sender<Event>>>,
     /// Current Workspace geography policy. Hosted composition supplies this
     /// authority; self-managed mode leaves it absent and retains local policy.
     pub(super) inference_geo_policy: Option<Arc<dyn crate::ManagedInferenceGeoPolicy>>,
@@ -89,7 +90,8 @@ pub struct ManagedState {
     pub(super) warm_cold_oracle: std::sync::atomic::AtomicBool,
     /// One-shot test observation after the complete cold cache entry is visible.
     #[cfg(test)]
-    pub(super) cold_publication_pause: Mutex<Option<super::rehydration::ColdPublicationPause>>,
+    pub(super) cold_publication_pause:
+        std::sync::Mutex<Option<super::rehydration::ColdPublicationPause>>,
 }
 
 impl ManagedState {

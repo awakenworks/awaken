@@ -15,10 +15,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
     ) -> Result<(), pc::SandboxError> {
         self.require_root_identity()?;
         plan.validate_mount_path()?;
-        intent.validate_owned_path(
-            plan,
-            Some(&self.owned_paths.lock().expect("owned paths lock poisoned")),
-        )?;
+        intent.validate_owned_path(plan, Some(&self.owned_paths.lock()))?;
         #[cfg(target_os = "linux")]
         if let Some(outcome) = self
             .scoped_repository(plan, None, credential, intent)

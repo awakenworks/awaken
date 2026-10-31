@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-sync.workspace = true
 # The shared authz engine (in-memory ApiTokenDirectory + PolicySet + preset role
 # catalog). This crate is the open "judgment" half — authenticate + authorize; it
 # never touches the durable iam-server store (that is the authoring half).

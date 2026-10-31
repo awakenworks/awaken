@@ -54,7 +54,7 @@ pub use awaken_runtime_contract::permission::PermissionGrantObserver;
 /// the attempt that made it.
 #[derive(Default)]
 pub(crate) struct PermissionAudit(
-    std::sync::Mutex<Vec<awaken_agent_contract::audit::draft::Draft>>,
+    awaken_sync::LeafLock<Vec<awaken_agent_contract::audit::draft::Draft>>,
 );
 
 impl PermissionAudit {
@@ -66,14 +66,11 @@ impl PermissionAudit {
                     ruling.verdict.kind().gate_outcome_kind().audit_decision(),
                 )
                 .into();
-        self.0
-            .lock()
-            .expect("ACP permission audit lock poisoned")
-            .push(draft);
+        self.0.lock().push(draft);
     }
 
     pub(crate) fn drain(&self) -> Vec<awaken_agent_contract::audit::draft::Draft> {
-        std::mem::take(&mut *self.0.lock().expect("ACP permission audit lock poisoned"))
+        std::mem::take(&mut *self.0.lock())
     }
 }
 

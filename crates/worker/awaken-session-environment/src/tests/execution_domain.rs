@@ -29,7 +29,7 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
     };
     for row in ["exact", "absent", "error"] {
         {
-            let mut shared = provider.shared.lock().unwrap();
+            let mut shared = provider.shared.lock();
             shared.remove("__process_binding");
             shared.remove("__process_binding_error");
             if row == "exact" {

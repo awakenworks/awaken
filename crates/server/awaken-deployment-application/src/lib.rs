@@ -22,7 +22,7 @@ pub use awaken_deployment_contract::{
 
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_deployment_contract::{
@@ -32,6 +32,7 @@ use awaken_deployment_contract::{
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrationError, ExecutableAgentRegistrationSource,
 };
+use awaken_sync::{InvariantLock, LeafLock, LockPoisoned};
 use scheduler::{next_occurrence, validate_schedule};
 
 #[cfg(test)]
@@ -57,6 +58,14 @@ pub enum DeploymentApplicationError {
     Unavailable(String),
 }
 
+/// A poisoned working projection is unavailable until the repository is
+/// reloaded; the caller retries like any other backend unavailability.
+impl From<LockPoisoned> for DeploymentApplicationError {
+    fn from(value: LockPoisoned) -> Self {
+        Self::Unavailable(value.to_string())
+    }
+}
+
 impl From<DeploymentRepositoryError> for DeploymentApplicationError {
     fn from(value: DeploymentRepositoryError) -> Self {
         Self::Unavailable(value.to_string())
@@ -71,15 +80,15 @@ pub trait DeploymentSessionLauncher: Send + Sync {
 /// One authoritative Deployment application instance. Its maps are synchronized
 /// working projections; the injected repository is restart and replica truth.
 pub struct DeploymentApplication {
-    deployments: Mutex<BTreeMap<String, DeploymentRecord>>,
-    runs: Mutex<BTreeMap<String, DeploymentRunRecord>>,
-    launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
+    deployments: InvariantLock<BTreeMap<String, DeploymentRecord>>,
+    runs: InvariantLock<BTreeMap<String, DeploymentRunRecord>>,
+    launcher: LeafLock<Option<Arc<dyn DeploymentSessionLauncher>>>,
     lifecycle_notifier:
-        Mutex<Option<Arc<dyn awaken_session_application_contract::LifecycleFactNotifier>>>,
+        LeafLock<Option<Arc<dyn awaken_session_application_contract::LifecycleFactNotifier>>>,
     repository: Option<Arc<dyn DeploymentRepository>>,
-    executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
+    executable_agents: LeafLock<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
     executable_projection_refresh:
-        Mutex<Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>>,
+        LeafLock<Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>>,
     scheduled_limit: usize,
     /// The composing process's wall clock: every Deployment and run fact is
     /// stamped, and every schedule judged, on it.
@@ -93,13 +102,13 @@ impl DeploymentApplication {
     #[must_use]
     pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
-            deployments: Mutex::new(BTreeMap::new()),
-            runs: Mutex::new(BTreeMap::new()),
-            launcher: Mutex::new(None),
-            lifecycle_notifier: Mutex::new(None),
+            deployments: InvariantLock::new(BTreeMap::new()),
+            runs: InvariantLock::new(BTreeMap::new()),
+            launcher: LeafLock::new(None),
+            lifecycle_notifier: LeafLock::new(None),
             repository: None,
-            executable_agents: Mutex::new(None),
-            executable_projection_refresh: Mutex::new(None),
+            executable_agents: LeafLock::new(None),
+            executable_projection_refresh: LeafLock::new(None),
             scheduled_limit: DEFAULT_SCHEDULED_LIMIT,
             clock,
         }
@@ -112,13 +121,13 @@ impl DeploymentApplication {
     ) -> Result<Self, DeploymentApplicationError> {
         let (deployments, runs) = load_projection(repository.as_ref()).await?;
         Ok(Self {
-            deployments: Mutex::new(deployments),
-            runs: Mutex::new(runs),
-            launcher: Mutex::new(None),
-            lifecycle_notifier: Mutex::new(None),
+            deployments: InvariantLock::new(deployments),
+            runs: InvariantLock::new(runs),
+            launcher: LeafLock::new(None),
+            lifecycle_notifier: LeafLock::new(None),
             repository: Some(repository),
-            executable_agents: Mutex::new(None),
-            executable_projection_refresh: Mutex::new(None),
+            executable_agents: LeafLock::new(None),
+            executable_projection_refresh: LeafLock::new(None),
             scheduled_limit: DEFAULT_SCHEDULED_LIMIT,
             clock,
         })
@@ -132,7 +141,7 @@ impl DeploymentApplication {
     }
 
     pub fn bind_launcher(&self, launcher: Arc<dyn DeploymentSessionLauncher>) {
-        *self.launcher.lock().expect("Deployment launcher lock") = Some(launcher);
+        *self.launcher.lock() = Some(launcher);
     }
 
     /// Bind the same payload-free wake used by the Session lifecycle outbox.
@@ -142,38 +151,24 @@ impl DeploymentApplication {
         &self,
         notifier: Arc<dyn awaken_session_application_contract::LifecycleFactNotifier>,
     ) {
-        *self
-            .lifecycle_notifier
-            .lock()
-            .expect("Deployment lifecycle notifier lock") = Some(notifier);
+        *self.lifecycle_notifier.lock() = Some(notifier);
     }
 
     pub(crate) fn notify_lifecycle(&self) {
-        if let Some(notifier) = self
-            .lifecycle_notifier
-            .lock()
-            .expect("Deployment lifecycle notifier lock")
-            .as_ref()
-        {
+        if let Some(notifier) = self.lifecycle_notifier.lock().as_ref() {
             notifier.notify();
         }
     }
 
     pub fn bind_executable_agents(&self, source: Arc<dyn ExecutableAgentRegistrationSource>) {
-        *self
-            .executable_agents
-            .lock()
-            .expect("executable Agent source lock") = Some(source);
+        *self.executable_agents.lock() = Some(source);
     }
 
     pub fn bind_executable_projection_refresh(
         &self,
         refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) {
-        *self
-            .executable_projection_refresh
-            .lock()
-            .expect("executable projection refresh lock") = Some(refresh);
+        *self.executable_projection_refresh.lock() = Some(refresh);
     }
 
     async fn refresh_executable_projections(
@@ -182,11 +177,7 @@ impl DeploymentApplication {
         awaken_session_application_contract::ExecutableProjectionAdmission,
         DeploymentApplicationError,
     > {
-        let refresh = self
-            .executable_projection_refresh
-            .lock()
-            .expect("executable projection refresh lock")
-            .clone();
+        let refresh = self.executable_projection_refresh.lock().clone();
         match refresh {
             Some(refresh) => refresh
                 .refresh()
@@ -204,14 +195,8 @@ impl DeploymentApplication {
             return Ok(());
         };
         let (deployments, runs) = load_projection(repository.as_ref()).await?;
-        self.deployments
-            .lock()
-            .expect("Deployment projection lock")
-            .extend(deployments);
-        self.runs
-            .lock()
-            .expect("DeploymentRun projection lock")
-            .extend(runs);
+        self.deployments.lock()?.extend(deployments);
+        self.runs.lock()?.extend(runs);
         Ok(())
     }
 
@@ -225,11 +210,7 @@ impl DeploymentApplication {
                 "deployment Agent id must be non-empty and version must be at least 1".into(),
             ));
         }
-        let source = self
-            .executable_agents
-            .lock()
-            .expect("executable Agent source lock")
-            .clone();
+        let source = self.executable_agents.lock().clone();
         let Some(source) = source else {
             return Ok(DeploymentAgent::new(
                 selector.id.clone(),
@@ -293,7 +274,7 @@ impl DeploymentApplication {
         };
         validate_record(&record)?;
         {
-            let deployments = self.deployments.lock().expect("Deployment projection lock");
+            let deployments = self.deployments.lock()?;
             if record.schedule.is_some() {
                 ensure_scheduled_capacity(&deployments, self.scheduled_limit)?;
             }
@@ -313,10 +294,7 @@ impl DeploymentApplication {
                 return Err(scheduled_capacity_error(self.scheduled_limit));
             }
         }
-        self.deployments
-            .lock()
-            .expect("Deployment projection lock")
-            .insert(id.clone(), record.clone());
+        self.deployments.lock()?.insert(id.clone(), record.clone());
         Ok(DeploymentView { id, record })
     }
 
@@ -327,8 +305,7 @@ impl DeploymentApplication {
     ) -> Result<DeploymentView, DeploymentApplicationError> {
         self.refresh().await?;
         self.deployments
-            .lock()
-            .expect("Deployment projection lock")
+            .lock()?
             .get(id)
             .filter(|record| record.workspace_id == workspace_id)
             .cloned()
@@ -346,8 +323,7 @@ impl DeploymentApplication {
         self.refresh().await?;
         Ok(self
             .deployments
-            .lock()
-            .expect("Deployment projection lock")
+            .lock()?
             .iter()
             .filter(|(_, record)| record.workspace_id == workspace_id)
             .map(|(id, record)| DeploymentView {
@@ -444,10 +420,7 @@ impl DeploymentApplication {
         validate_record(&candidate)?;
         let current_had_schedule = current.schedule.is_some();
         if !current_had_schedule && candidate.schedule.is_some() {
-            ensure_scheduled_capacity(
-                &self.deployments.lock().expect("Deployment projection lock"),
-                self.scheduled_limit,
-            )?;
+            ensure_scheduled_capacity(&*self.deployments.lock()?, self.scheduled_limit)?;
         }
         candidate.updated_at = timestamp(self.clock.now_ms());
         candidate.revision = next_revision(current.revision)?;
@@ -457,8 +430,7 @@ impl DeploymentApplication {
             self.scheduled_limit,
         )?;
         self.deployments
-            .lock()
-            .expect("Deployment projection lock")
+            .lock()?
             .insert(id.to_string(), candidate.clone());
         Ok(DeploymentView {
             id: id.to_string(),
@@ -490,8 +462,7 @@ impl DeploymentApplication {
                 self.scheduled_limit,
             )?;
             self.deployments
-                .lock()
-                .expect("Deployment projection lock")
+                .lock()?
                 .insert(id.to_string(), record.clone());
         }
         Ok(DeploymentView {
@@ -550,8 +521,7 @@ impl DeploymentApplication {
             self.scheduled_limit,
         )?;
         self.deployments
-            .lock()
-            .expect("Deployment projection lock")
+            .lock()?
             .insert(id.to_string(), record.clone());
         Ok(DeploymentView {
             id: id.to_string(),
@@ -582,10 +552,7 @@ impl DeploymentApplication {
         };
         let launch = admission.enter(|| launch_for(&deployment, id, &run_id, &run.trigger));
         self.persist_run(&run_id, &run, None).await?;
-        self.runs
-            .lock()
-            .expect("DeploymentRun projection lock")
-            .insert(run_id.clone(), run);
+        self.runs.lock()?.insert(run_id.clone(), run);
         self.launch_run(&run_id, launch).await
     }
 
@@ -603,8 +570,7 @@ impl DeploymentApplication {
     ) -> Result<DeploymentRunView, DeploymentApplicationError> {
         self.refresh().await?;
         self.runs
-            .lock()
-            .expect("DeploymentRun projection lock")
+            .lock()?
             .get(id)
             .filter(|record| record.workspace_id == workspace_id)
             .cloned()
@@ -622,8 +588,7 @@ impl DeploymentApplication {
         self.refresh().await?;
         Ok(self
             .runs
-            .lock()
-            .expect("DeploymentRun projection lock")
+            .lock()?
             .iter()
             .filter(|(_, record)| record.workspace_id == workspace_id)
             .map(|(id, record)| DeploymentRunView {
@@ -642,8 +607,7 @@ impl DeploymentApplication {
         let now = timestamp(self.clock.now_ms());
         let candidates: Vec<(String, DeploymentRecord)> = self
             .deployments
-            .lock()
-            .expect("Deployment projection lock")
+            .lock()?
             .iter()
             .filter(|(_, record)| {
                 record.archived_at.is_none()
@@ -668,7 +632,7 @@ impl DeploymentApplication {
                 self.scheduled_limit,
             )?;
         }
-        let mut deployments = self.deployments.lock().expect("Deployment projection lock");
+        let mut deployments = self.deployments.lock()?;
         for (id, candidate) in &candidates {
             deployments.insert(id.clone(), candidate.clone());
         }
@@ -680,16 +644,11 @@ impl DeploymentApplication {
         run_id: &str,
         launch: DeploymentLaunch,
     ) -> Result<DeploymentRunView, DeploymentApplicationError> {
-        let launcher = self
-            .launcher
-            .lock()
-            .expect("Deployment launcher lock")
-            .clone()
-            .ok_or_else(|| {
-                DeploymentApplicationError::Unavailable(
-                    "Deployment Session launcher is not configured".into(),
-                )
-            })?;
+        let launcher = self.launcher.lock().clone().ok_or_else(|| {
+            DeploymentApplicationError::Unavailable(
+                "Deployment Session launcher is not configured".into(),
+            )
+        })?;
         let outcome = launcher.launch(launch).await;
         let DeploymentLaunchOutcome::Unavailable { message } = &outcome else {
             return self.finish_run(run_id, outcome).await;
@@ -706,8 +665,7 @@ impl DeploymentApplication {
     ) -> Result<DeploymentRunView, DeploymentApplicationError> {
         let mut run = self
             .runs
-            .lock()
-            .expect("DeploymentRun projection lock")
+            .lock()?
             .get(run_id)
             .cloned()
             .ok_or(DeploymentApplicationError::NotFound("deployment_run"))?;
@@ -741,10 +699,7 @@ impl DeploymentApplication {
             )
         });
         self.persist_run(run_id, &run, lifecycle).await?;
-        self.runs
-            .lock()
-            .expect("DeploymentRun projection lock")
-            .insert(run_id.to_string(), run.clone());
+        self.runs.lock()?.insert(run_id.to_string(), run.clone());
 
         if matches!(run.trigger, DeploymentTrigger::Schedule { .. })
             && let Some(error) = run
@@ -754,8 +709,7 @@ impl DeploymentApplication {
         {
             let mut deployment = self
                 .deployments
-                .lock()
-                .expect("Deployment projection lock")
+                .lock()?
                 .get(&run.deployment_id)
                 .cloned()
                 .ok_or(DeploymentApplicationError::NotFound("deployment"))?;
@@ -775,8 +729,7 @@ impl DeploymentApplication {
                 self.scheduled_limit,
             )?;
             self.deployments
-                .lock()
-                .expect("Deployment projection lock")
+                .lock()?
                 .insert(run.deployment_id.clone(), deployment);
         }
         Ok(DeploymentRunView {
@@ -791,8 +744,7 @@ impl DeploymentApplication {
         id: &str,
     ) -> Result<DeploymentRecord, DeploymentApplicationError> {
         self.deployments
-            .lock()
-            .expect("Deployment projection lock")
+            .lock()?
             .get(id)
             .filter(|record| record.workspace_id == workspace_id)
             .cloned()
@@ -804,11 +756,7 @@ impl DeploymentApplication {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<bool, DeploymentApplicationError> {
-        let source = self
-            .executable_agents
-            .lock()
-            .expect("executable Agent source lock")
-            .clone();
+        let source = self.executable_agents.lock().clone();
         let Some(source) = source else {
             return Ok(false);
         };

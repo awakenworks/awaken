@@ -90,6 +90,14 @@ impl From<awaken_session_contract::SessionRepositoryError> for StateError {
     }
 }
 
+// A poisoned Managed projection lock means a holder panicked mid-update of the
+// disposable wire cache; the request is refused as a retryable unavailability.
+impl From<awaken_sync::LockPoisoned> for StateError {
+    fn from(poisoned: awaken_sync::LockPoisoned) -> Self {
+        Self::Run(RunError::unavailable(poisoned.to_string()))
+    }
+}
+
 // Preserve the application classification at the protocol boundary. Keeping
 // this conversion beside the direct repository conversion makes every caller
 // use the same typed adapter instead of an ad hoc transport decision.

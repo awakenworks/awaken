@@ -93,10 +93,7 @@ impl DeploymentApplication {
                 .primary_agent_missing(&launch.workspace_id, &launch.agent.id)
                 .await?
             {
-                self.runs
-                    .lock()
-                    .expect("DeploymentRun projection lock")
-                    .remove(&run_id);
+                self.runs.lock()?.remove(&run_id);
                 // `tick` speculatively advances the working cursor. Restore the
                 // durable revision before the Agent cascade performs its CAS.
                 self.refresh().await?;
@@ -134,16 +131,12 @@ impl DeploymentApplication {
                         // revision before launch so an auto-pause is fenced by
                         // the database revision it actually follows.
                         self.deployments
-                            .lock()
-                            .expect("Deployment projection lock")
+                            .lock()?
                             .insert(run.deployment_id.clone(), deployment.clone());
                     }
                     ScheduledRunClaimOutcome::AlreadyClaimed
                     | ScheduledRunClaimOutcome::StaleDeployment => {
-                        self.runs
-                            .lock()
-                            .expect("DeploymentRun projection lock")
-                            .remove(&run_id);
+                        self.runs.lock()?.remove(&run_id);
                         self.refresh().await?;
                         continue;
                     }
@@ -156,8 +149,8 @@ impl DeploymentApplication {
 
     fn tick(&self, now: u64) -> Result<Vec<ScheduledCandidate>, DeploymentApplicationError> {
         let mut result = Vec::new();
-        let mut deployments = self.deployments.lock().expect("Deployment projection lock");
-        let mut runs = self.runs.lock().expect("DeploymentRun projection lock");
+        let mut deployments = self.deployments.lock()?;
+        let mut runs = self.runs.lock()?;
         for (deployment_id, deployment) in deployments.iter_mut() {
             let Some((cron, timezone)) = active_cron(deployment) else {
                 continue;

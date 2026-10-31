@@ -823,7 +823,7 @@ mod retry_hint_tests {
                 .await
                 .unwrap();
             let binding = available_local_environment_binding(&host, &thread, &initial).await;
-            *fake.observation.lock().unwrap() = Some(observation);
+            *fake.observation.lock() = Some(observation);
             let app = roots.application_with_configuration(
                 &managed,
                 awaken_session_application::SessionApplicationConfiguration {
@@ -844,7 +844,7 @@ mod retry_hint_tests {
                 panic!("{rule} expected original provider effect: {error}");
             };
             assert_eq!(
-                fake.observations.lock().unwrap().len(),
+                fake.observations.lock().len(),
                 1,
                 "{rule} real provider observation entered; original effect: {effect:?}"
             );
@@ -930,7 +930,7 @@ mod retry_hint_tests {
             // provider effect or durable Root mutation. Existing App construction
             // probes separately own zero-call first-refusal for every installed Session.
             let effects = (
-                fake.observations.lock().unwrap().len(),
+                fake.observations.lock().len(),
                 fake.creates.load(Ordering::SeqCst),
                 fake.adopts.load(Ordering::SeqCst),
                 fake.disposals.load(Ordering::SeqCst),
@@ -938,7 +938,7 @@ mod retry_hint_tests {
             assert_process_dispatch_placement_uses_the_selected_instance(&host, &root);
             assert_eq!(
                 (
-                    fake.observations.lock().unwrap().len(),
+                    fake.observations.lock().len(),
                     fake.creates.load(Ordering::SeqCst),
                     fake.adopts.load(Ordering::SeqCst),
                     fake.disposals.load(Ordering::SeqCst),

@@ -22,6 +22,7 @@ name = "awaken-eval"
 path = "src/main.rs"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true

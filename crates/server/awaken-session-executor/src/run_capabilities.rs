@@ -32,7 +32,7 @@ pub struct RunCapabilities {
     pub(crate) exec: Arc<capability::AttemptBackends>,
     pub(crate) tools: Arc<capability::ToolOffering>,
     pub(crate) worker: Arc<capability::WorkerTransports>,
-    pub(crate) session_application: crate::SessionApplicationBindings,
+    pub(crate) session_application: awaken_session_execution_contract::SessionApplicationBinding,
 }
 
 impl RunCapabilities {

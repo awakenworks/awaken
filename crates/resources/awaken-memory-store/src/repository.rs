@@ -19,11 +19,11 @@
 //! feature-gated SQLite/Postgres transactional repositories for durable execution.
 //!
 #[cfg(any(test, feature = "test-support"))]
+use awaken_sync::LeafLock;
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -362,7 +362,7 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
 #[cfg(any(test, feature = "test-support"))]
 pub struct VolatileMemoryRepository {
     clock: Arc<dyn WallClock>,
-    inner: Mutex<InMemoryState>,
+    inner: LeafLock<InMemoryState>,
     next: AtomicU64,
     version_next: AtomicU64,
 }
@@ -383,7 +383,7 @@ impl VolatileMemoryRepository {
     pub fn new(clock: Arc<dyn WallClock>) -> Self {
         Self {
             clock,
-            inner: Mutex::default(),
+            inner: LeafLock::default(),
             next: AtomicU64::default(),
             version_next: AtomicU64::default(),
         }
@@ -433,7 +433,7 @@ impl VolatileMemoryRepository {
         candidate: &awaken_resource_contract::MemoryCopyConflict,
     ) -> Result<(), MemErr> {
         validate_copy_conflict(candidate)?;
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock();
         let candidates = state.copy_conflicts.entry(store.to_owned()).or_default();
         let id = candidate.id();
         if let Some(existing) = candidates.get(&id) {
@@ -459,14 +459,13 @@ impl VolatileMemoryRepository {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .copy_conflicts
             .get(store)
             .map(|values| values.values().cloned().collect())
             .unwrap_or_default())
     }
     async fn snapshot_heads_inner(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard
             .records
             .get(store)
@@ -480,7 +479,7 @@ impl VolatileMemoryRepository {
     }
 
     async fn list_inner(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard
             .records
             .get(store)
@@ -494,7 +493,7 @@ impl VolatileMemoryRepository {
     }
 
     async fn get_by_path_inner(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard
             .records
             .get(store)
@@ -516,7 +515,7 @@ impl VolatileMemoryRepository {
         validate_path(path)?;
         validate_size(content)?;
         let id = self.mint_id();
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let store_map = guard.records.entry(store.to_string()).or_default();
         if store_map.contains_key(path) {
             return Err(MemErr::PathConflict(path.to_string()));
@@ -584,7 +583,7 @@ impl VolatileMemoryRepository {
 
     async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let store_map = guard
             .records
             .get_mut(store)
@@ -641,7 +640,7 @@ impl VolatileMemoryRepository {
         path: &str,
         actor: Option<&MemoryActor>,
     ) -> Result<(), MemErr> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let removed = guard
             .records
             .get_mut(store)
@@ -677,7 +676,7 @@ impl VolatileMemoryRepository {
         base: &MemoryGeneration,
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let current = guard
             .records
             .get(store)
@@ -725,7 +724,6 @@ impl VolatileMemoryRepository {
         Ok(self
             .inner
             .lock()
-            .unwrap()
             .versions
             .get(store)
             .cloned()
@@ -746,7 +744,7 @@ impl VolatileMemoryRepository {
         version_id: &str,
         actor: Option<&MemoryActor>,
     ) -> Result<Option<MemoryVersion>, MemErr> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let Some(version) = guard
             .versions
             .get_mut(store)
@@ -763,7 +761,7 @@ impl VolatileMemoryRepository {
     }
 
     async fn purge_store_inner(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock();
         let heads_deleted = state
             .records
             .remove(store)
@@ -805,7 +803,7 @@ impl VolatileMemoryRepository {
             validate_path(path)?;
         }
         let new_sha = sha256_hex(content);
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let store_map = guard
             .records
             .get_mut(store)

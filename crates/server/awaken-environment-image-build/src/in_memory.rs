@@ -1,19 +1,18 @@
 // @formal entrypoint environment_image_build.single_claim_exact_reclaim_and_stale_fence
-use std::collections::BTreeMap;
-use std::sync::Mutex;
-
 use async_trait::async_trait;
 use awaken_executable_environment_contract::{
     EnvironmentImageBuildClaim, EnvironmentImageBuildDemand, EnvironmentImageBuildError,
     EnvironmentImageBuildRecord, EnvironmentImageBuildStore,
 };
+use awaken_sync::LeafLock;
+use std::collections::BTreeMap;
 
 use crate::durable::{DurableEnvironmentImageBuildStore, RecordBackend, VersionedRecord};
 
 /// Test substrate for the same compare-and-swap store used by durable adapters.
 /// Only record IO lives here; claim, replay and terminal rules have one owner.
 #[derive(Default)]
-struct MemoryRecordBackend(Mutex<BTreeMap<String, VersionedRecord>>);
+struct MemoryRecordBackend(LeafLock<BTreeMap<String, VersionedRecord>>);
 
 #[async_trait]
 impl RecordBackend for MemoryRecordBackend {
@@ -21,7 +20,7 @@ impl RecordBackend for MemoryRecordBackend {
         &self,
         record: &EnvironmentImageBuildRecord,
     ) -> Result<bool, EnvironmentImageBuildError> {
-        let mut rows = self.0.lock().expect("image build store");
+        let mut rows = self.0.lock();
         if rows.contains_key(&record.demand.build_key) {
             return Ok(false);
         }
@@ -35,23 +34,17 @@ impl RecordBackend for MemoryRecordBackend {
         Ok(true)
     }
     async fn get(&self, key: &str) -> Result<Option<VersionedRecord>, EnvironmentImageBuildError> {
-        Ok(self.0.lock().expect("image build store").get(key).cloned())
+        Ok(self.0.lock().get(key).cloned())
     }
     async fn candidates(&self) -> Result<Vec<VersionedRecord>, EnvironmentImageBuildError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("image build store")
-            .values()
-            .cloned()
-            .collect())
+        Ok(self.0.lock().values().cloned().collect())
     }
     async fn compare_and_swap(
         &self,
         expected: &VersionedRecord,
         next: &EnvironmentImageBuildRecord,
     ) -> Result<bool, EnvironmentImageBuildError> {
-        let mut rows = self.0.lock().expect("image build store");
+        let mut rows = self.0.lock();
         let Some(current) = rows.get_mut(&expected.record.demand.build_key) else {
             return Ok(false);
         };

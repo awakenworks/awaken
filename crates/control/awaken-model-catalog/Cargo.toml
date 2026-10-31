@@ -12,6 +12,7 @@ layer = "domain"
 authority = "model-catalog"
 
 [dependencies]
+awaken-sync.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true

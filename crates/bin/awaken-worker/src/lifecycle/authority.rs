@@ -8,7 +8,8 @@ use awaken_lease_contract::authority::{
     AuthorityLeaseTiming, AuthorityProofStarted as ProofStarted,
 };
 use awaken_provisioning_contract::CurrentExecutionAuthority;
-use std::{io, sync::Mutex, time::Duration};
+use awaken_sync::InvariantLock;
+use std::{io, time::Duration};
 
 #[derive(Clone, Copy)]
 pub(super) struct Receipt {
@@ -70,7 +71,7 @@ impl Proof {
 }
 
 #[derive(Default)]
-pub(crate) struct WorkerAuthorityProof(Mutex<Proof>);
+pub(crate) struct WorkerAuthorityProof(InvariantLock<Proof>);
 
 impl WorkerAuthorityProof {
     pub(crate) fn apply(
@@ -97,10 +98,10 @@ impl WorkerAuthorityProof {
     }
 
     pub(crate) fn close(&self) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Proof::Closed;
+        // A poisoned proof already denies every grant, renewal and effect.
+        if let Ok(mut proof) = self.0.lock() {
+            *proof = Proof::Closed;
+        }
     }
 }
 
@@ -250,7 +251,7 @@ mod tests {
         assert!(
             matches!(
                 authority.0.try_lock(),
-                Err(std::sync::TryLockError::WouldBlock)
+                Err(awaken_sync::TryLockFailure::WouldBlock)
             ),
             "W10"
         );

@@ -192,7 +192,6 @@ fn native_request(session: &str, url: &str) -> crate::session_mcp::StageMcpAttac
 
 fn initialize_count(seen: &crate::test_mcp::SeenMcpRequests) -> usize {
     seen.lock()
-        .unwrap()
         .iter()
         .filter(|(method, _)| method == "initialize")
         .count()

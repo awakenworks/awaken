@@ -1,0 +1,72 @@
+pub mod awaken_sync
+pub enum awaken_sync::TryLockFailure
+pub awaken_sync::TryLockFailure::Poisoned(awaken_sync::LockPoisoned)
+pub awaken_sync::TryLockFailure::WouldBlock
+pub struct awaken_sync::InvariantLock<T: ?core::marker::Sized>
+impl<T: ?core::marker::Sized> awaken_sync::InvariantLock<T>
+pub fn awaken_sync::InvariantLock<T>::get_mut(&mut self) -> core::result::Result<&mut T, awaken_sync::LockPoisoned>
+pub fn awaken_sync::InvariantLock<T>::is_poisoned(&self) -> bool
+pub fn awaken_sync::InvariantLock<T>::lock(&self) -> core::result::Result<std::sync::poison::mutex::MutexGuard<'_, T>, awaken_sync::LockPoisoned>
+pub fn awaken_sync::InvariantLock<T>::try_lock(&self) -> core::result::Result<std::sync::poison::mutex::MutexGuard<'_, T>, awaken_sync::TryLockFailure>
+impl<T> awaken_sync::InvariantLock<T>
+pub fn awaken_sync::InvariantLock<T>::into_inner(self) -> core::result::Result<T, awaken_sync::LockPoisoned>
+pub const fn awaken_sync::InvariantLock<T>::new(T) -> Self
+impl<T: ?core::marker::Sized + core::fmt::Debug> core::fmt::Debug for awaken_sync::InvariantLock<T>
+pub fn awaken_sync::InvariantLock<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: core::default::Default> core::default::Default for awaken_sync::InvariantLock<T>
+pub fn awaken_sync::InvariantLock<T>::default() -> Self
+impl<T> core::convert::From<T> for awaken_sync::InvariantLock<T>
+pub fn awaken_sync::InvariantLock<T>::from(T) -> Self
+pub struct awaken_sync::InvariantRwLock<T: ?core::marker::Sized>
+impl<T: ?core::marker::Sized> awaken_sync::InvariantRwLock<T>
+pub fn awaken_sync::InvariantRwLock<T>::get_mut(&mut self) -> core::result::Result<&mut T, awaken_sync::LockPoisoned>
+pub fn awaken_sync::InvariantRwLock<T>::is_poisoned(&self) -> bool
+pub fn awaken_sync::InvariantRwLock<T>::read(&self) -> core::result::Result<std::sync::poison::rwlock::RwLockReadGuard<'_, T>, awaken_sync::LockPoisoned>
+pub fn awaken_sync::InvariantRwLock<T>::try_read(&self) -> core::result::Result<std::sync::poison::rwlock::RwLockReadGuard<'_, T>, awaken_sync::TryLockFailure>
+pub fn awaken_sync::InvariantRwLock<T>::try_write(&self) -> core::result::Result<std::sync::poison::rwlock::RwLockWriteGuard<'_, T>, awaken_sync::TryLockFailure>
+pub fn awaken_sync::InvariantRwLock<T>::write(&self) -> core::result::Result<std::sync::poison::rwlock::RwLockWriteGuard<'_, T>, awaken_sync::LockPoisoned>
+impl<T> awaken_sync::InvariantRwLock<T>
+pub fn awaken_sync::InvariantRwLock<T>::into_inner(self) -> core::result::Result<T, awaken_sync::LockPoisoned>
+pub const fn awaken_sync::InvariantRwLock<T>::new(T) -> Self
+impl<T: ?core::marker::Sized + core::fmt::Debug> core::fmt::Debug for awaken_sync::InvariantRwLock<T>
+pub fn awaken_sync::InvariantRwLock<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: core::default::Default> core::default::Default for awaken_sync::InvariantRwLock<T>
+pub fn awaken_sync::InvariantRwLock<T>::default() -> Self
+impl<T> core::convert::From<T> for awaken_sync::InvariantRwLock<T>
+pub fn awaken_sync::InvariantRwLock<T>::from(T) -> Self
+pub struct awaken_sync::LeafLock<T: ?core::marker::Sized>
+impl<T: ?core::marker::Sized> awaken_sync::LeafLock<T>
+pub fn awaken_sync::LeafLock<T>::get_mut(&mut self) -> &mut T
+pub fn awaken_sync::LeafLock<T>::lock(&self) -> std::sync::poison::mutex::MutexGuard<'_, T>
+pub fn awaken_sync::LeafLock<T>::try_lock(&self) -> core::option::Option<std::sync::poison::mutex::MutexGuard<'_, T>>
+impl<T> awaken_sync::LeafLock<T>
+pub fn awaken_sync::LeafLock<T>::into_inner(self) -> T
+pub const fn awaken_sync::LeafLock<T>::new(T) -> Self
+impl<T: ?core::marker::Sized + core::fmt::Debug> core::fmt::Debug for awaken_sync::LeafLock<T>
+pub fn awaken_sync::LeafLock<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: core::default::Default> core::default::Default for awaken_sync::LeafLock<T>
+pub fn awaken_sync::LeafLock<T>::default() -> Self
+impl<T> core::convert::From<T> for awaken_sync::LeafLock<T>
+pub fn awaken_sync::LeafLock<T>::from(T) -> Self
+pub struct awaken_sync::LeafRwLock<T: ?core::marker::Sized>
+impl<T: ?core::marker::Sized> awaken_sync::LeafRwLock<T>
+pub fn awaken_sync::LeafRwLock<T>::get_mut(&mut self) -> &mut T
+pub fn awaken_sync::LeafRwLock<T>::read(&self) -> std::sync::poison::rwlock::RwLockReadGuard<'_, T>
+pub fn awaken_sync::LeafRwLock<T>::try_read(&self) -> core::option::Option<std::sync::poison::rwlock::RwLockReadGuard<'_, T>>
+pub fn awaken_sync::LeafRwLock<T>::try_write(&self) -> core::option::Option<std::sync::poison::rwlock::RwLockWriteGuard<'_, T>>
+pub fn awaken_sync::LeafRwLock<T>::write(&self) -> std::sync::poison::rwlock::RwLockWriteGuard<'_, T>
+impl<T> awaken_sync::LeafRwLock<T>
+pub fn awaken_sync::LeafRwLock<T>::into_inner(self) -> T
+pub const fn awaken_sync::LeafRwLock<T>::new(T) -> Self
+impl<T: ?core::marker::Sized + core::fmt::Debug> core::fmt::Debug for awaken_sync::LeafRwLock<T>
+pub fn awaken_sync::LeafRwLock<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: core::default::Default> core::default::Default for awaken_sync::LeafRwLock<T>
+pub fn awaken_sync::LeafRwLock<T>::default() -> Self
+impl<T> core::convert::From<T> for awaken_sync::LeafRwLock<T>
+pub fn awaken_sync::LeafRwLock<T>::from(T) -> Self
+pub struct awaken_sync::LockPoisoned
+impl awaken_sync::LockPoisoned
+pub const fn awaken_sync::LockPoisoned::guarded(&self) -> &'static str
+impl core::error::Error for awaken_sync::LockPoisoned
+impl core::fmt::Display for awaken_sync::LockPoisoned
+pub fn awaken_sync::LockPoisoned::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

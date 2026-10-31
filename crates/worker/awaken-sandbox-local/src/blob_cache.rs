@@ -11,7 +11,9 @@
 //! `BlobSource` port; the cache slots in behind it (dependency-inverted).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use awaken_sync::LeafLock;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::BlobSource;
@@ -71,7 +73,7 @@ impl BlobLru {
 pub struct WorkspaceBlobCache {
     workspace_id: String,
     inner: Arc<dyn BlobSource>,
-    lru: Arc<Mutex<BlobLru>>,
+    lru: Arc<LeafLock<BlobLru>>,
 }
 
 impl WorkspaceBlobCache {
@@ -85,7 +87,7 @@ impl WorkspaceBlobCache {
         Self::with_shared(
             workspace_id,
             inner,
-            Arc::new(Mutex::new(BlobLru::new(capacity))),
+            Arc::new(LeafLock::new(BlobLru::new(capacity))),
         )
     }
 
@@ -94,7 +96,7 @@ impl WorkspaceBlobCache {
     pub fn with_shared(
         workspace_id: impl Into<String>,
         inner: Arc<dyn BlobSource>,
-        lru: Arc<Mutex<BlobLru>>,
+        lru: Arc<LeafLock<BlobLru>>,
     ) -> Self {
         Self {
             workspace_id: workspace_id.into(),
@@ -108,12 +110,12 @@ impl WorkspaceBlobCache {
 impl BlobSource for WorkspaceBlobCache {
     async fn get(&self, id: &str) -> Option<Vec<u8>> {
         let key = (self.workspace_id.clone(), id.to_string());
-        if let Some(bytes) = self.lru.lock().unwrap().get(&key) {
+        if let Some(bytes) = self.lru.lock().get(&key) {
             return Some(bytes);
         }
         // Miss: fetch from the backing store and cache under the tenant-scoped key.
         let bytes = self.inner.get(id).await?;
-        self.lru.lock().unwrap().insert(key, bytes.clone());
+        self.lru.lock().insert(key, bytes.clone());
         Some(bytes)
     }
 }
@@ -160,7 +162,7 @@ mod tests {
             bytes: b"shared-hash-bytes".to_vec(),
             calls: calls.clone(),
         });
-        let lru = Arc::new(Mutex::new(BlobLru::new(8)));
+        let lru = Arc::new(LeafLock::new(BlobLru::new(8)));
         let ws_a = WorkspaceBlobCache::with_shared("ws-a", inner.clone(), lru.clone());
         let ws_b = WorkspaceBlobCache::with_shared("ws-b", inner, lru);
 

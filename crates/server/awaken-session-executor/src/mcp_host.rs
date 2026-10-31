@@ -327,15 +327,10 @@ impl crate::RunAssembly {
         configuration: &std::collections::BTreeMap<String, serde_json::Value>,
     ) -> Result<(), SessionExecutionError> {
         let recipients = || {
-            let application = self
-                .capabilities
-                .session_application
-                .background_run_submission()
-                .cloned()
-                .filter(|p| p.strong_count() > 0)
-                .ok_or_else(|| {
-                    McpError::internal("MCP application input has no Session admission authority")
-                })?;
+            let application = self.capabilities.session_application.clone();
+            application.background_runs().map_err(|_| {
+                McpError::internal("MCP application input has no Session admission authority")
+            })?;
             let host: Weak<dyn McpInputHost> = Arc::downgrade(&self.mcp_application_inputs) as _;
             Ok(McpInputRecipients { application, host })
         };

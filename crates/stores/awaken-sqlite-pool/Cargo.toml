@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["sqlx"]
 
 [dependencies]
+awaken-sync.workspace = true
 futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }

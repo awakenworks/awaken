@@ -92,6 +92,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/prompt-skill-optimization-state-machine.md` | Proposed lifecycle owner | Not required | n/a |
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/injection-and-error-cleanup.md` | Decision record | Not required | n/a |
+| `design/lock-poisoning.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
 | `design/runtime-persistence.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-state-machine.md` | Role owner | Required | self |

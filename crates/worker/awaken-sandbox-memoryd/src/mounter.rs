@@ -300,7 +300,7 @@ impl MemoryMounter for MemoryStoreMounter {
                         Some(handle.cache_witness_for_test());
                 }
                 return Ok(Box::new(FuseMount {
-                    handle: Arc::new(std::sync::Mutex::new(handle)),
+                    handle: Arc::new(awaken_sync::InvariantLock::new(handle)),
                 }) as Box<dyn MemoryMount>);
             }
 
@@ -381,7 +381,7 @@ impl MemoryMounter for MemoryStoreMounter {
 /// A live FUSE mount; teardown unmounts (draining open fds).
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 struct FuseMount {
-    handle: Arc<std::sync::Mutex<crate::fuse::MemoryMountHandle>>,
+    handle: Arc<awaken_sync::InvariantLock<crate::fuse::MemoryMountHandle>>,
 }
 
 #[cfg(all(feature = "fuse", target_os = "linux"))]

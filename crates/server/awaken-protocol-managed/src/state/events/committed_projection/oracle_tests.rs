@@ -203,7 +203,7 @@ async fn candidate_uses_committed_prefix_even_when_warm_progress_is_poisoned() {
         Role::Assistant,
         "committed answer",
     );
-    *runtime.committed.lock().unwrap() = Some(vec![message.clone()]);
+    *runtime.committed.lock() = Some(vec![message.clone()]);
     let state = ManagedState::new(runtime).await;
     let session = state
         .create_session(

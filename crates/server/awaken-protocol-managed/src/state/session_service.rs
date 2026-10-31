@@ -8,14 +8,15 @@
 #[cfg(any(test, feature = "test-support"))]
 use awaken_credential_contract::{CredentialMaterialIngress, SessionCredentialSource};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
 
 #[cfg(any(test, feature = "test-support"))]
 use awaken_environment_application::execution::EnvironmentExecutionApplication;
 use awaken_session_application::SessionApplication;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_sync::{InvariantLock, LeafLock};
 
 use super::ManagedState;
 #[cfg(any(test, feature = "test-support"))]
@@ -108,15 +109,15 @@ impl ManagedState {
             roles: super::SessionApplicationRoles::of(&application),
             #[cfg(any(test, feature = "test-support"))]
             application,
-            sessions: Mutex::new(HashMap::new()),
+            sessions: InvariantLock::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
-            live: Mutex::new(HashMap::new()),
+            live: LeafLock::new(HashMap::new()),
             inference_geo_policy: None,
             capture_policy,
             #[cfg(test)]
             warm_cold_oracle: std::sync::atomic::AtomicBool::new(true),
             #[cfg(test)]
-            cold_publication_pause: Mutex::new(None),
+            cold_publication_pause: std::sync::Mutex::new(None),
         }
     }
 

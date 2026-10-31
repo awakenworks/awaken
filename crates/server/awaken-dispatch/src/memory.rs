@@ -29,7 +29,9 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use awaken_sync::InvariantLock;
 
 use crate::{
     DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
@@ -319,7 +321,7 @@ impl MemoryDispatchStore {
     }
 }
 
-fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, DispatchError> {
+fn lock(state: &InvariantLock<State>) -> Result<std::sync::MutexGuard<'_, State>, DispatchError> {
     state
         .lock()
         .map_err(|_| DispatchError::unavailable("dispatch store poisoned"))

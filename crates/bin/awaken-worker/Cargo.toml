@@ -41,6 +41,7 @@ container-k8s = [
 ]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-inference-endpoint.workspace = true
 awaken-deployment-config.workspace = true
 awaken-agent-contract.workspace = true
@@ -81,7 +82,6 @@ awaken-authority-clock.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
-awaken-session-run-delivery.workspace = true
 awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate

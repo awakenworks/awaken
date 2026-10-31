@@ -1006,11 +1006,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
     ] {
         let repo = Arc::new(ephemeral_session_repo().await);
         let runtime = RehydrateFake::default();
-        runtime
-            .delegate_ids
-            .lock()
-            .unwrap()
-            .push("researcher".into());
+        runtime.delegate_ids.lock().push("researcher".into());
         let state = Arc::new({
             let session_fixture_runtime = runtime.clone();
             let session_fixture_clock = awaken_time::system_clock();
@@ -1058,7 +1054,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
         );
         let call_id = format!("client-call-{rule}");
         let child_message = if terminal_kind == Some(RunLifecycleEventKind::Awaiting) {
-            runtime.pending_by_thread.lock().unwrap().insert(
+            runtime.pending_by_thread.lock().insert(
                 child_id.clone(),
                 Pending {
                     tool_use_id: call_id.clone(),
@@ -1086,13 +1082,12 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
         runtime
             .committed_by_thread
             .lock()
-            .unwrap()
             .insert(child_id.clone(), vec![child_message]);
         let child_thread = awaken_agent_contract::agent::thread::Id(child_id.clone());
         // P2 source-order constraint: production audit cursors encode the
         // backend-wide commit before the event offset; raw 1/2 would decode
         // both child transitions as commit 0 and reverse the accepted send.
-        runtime.lifecycle.lock().unwrap().push(RunLifecycleEvent {
+        runtime.lifecycle.lock().push(RunLifecycleEvent {
             cursor: awaken_agent_contract::encode_run_lifecycle_cursor(1, 0).unwrap(),
             source_commit_cursor: 1,
             thread_id: child_thread.clone(),
@@ -1102,7 +1097,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             await_reason: None,
         });
         if let Some(kind) = terminal_kind {
-            runtime.lifecycle.lock().unwrap().push(RunLifecycleEvent {
+            runtime.lifecycle.lock().push(RunLifecycleEvent {
                 cursor: awaken_agent_contract::encode_run_lifecycle_cursor(2, 0).unwrap(),
                 source_commit_cursor: 2,
                 thread_id: child_thread,
@@ -1350,10 +1345,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
                 "{rule}/E6 cold terminal suffix after {cursor}"
             );
         }
-        assert!(
-            runtime.archive_commits.lock().unwrap().is_empty(),
-            "{rule}/E4"
-        );
+        assert!(runtime.archive_commits.lock().is_empty(), "{rule}/E4");
     }
 }
 

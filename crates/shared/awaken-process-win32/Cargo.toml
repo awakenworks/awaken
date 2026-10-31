@@ -17,6 +17,7 @@ separation = "isolation"
 isolates = ["windows-sys"]
 
 [target.'cfg(windows)'.dependencies]
+awaken-sync.workspace = true
 process-wrap = { version = "=10.0.1", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
 tokio = { workspace = true, features = ["process", "time"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

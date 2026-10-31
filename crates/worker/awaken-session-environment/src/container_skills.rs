@@ -9,8 +9,8 @@ use awaken_session_environment_contract::DiscoveredSkillFile;
 /// The container environment's cache of discovered Skill directories.
 /// Opaque: consumers reach Skills through the environment's Skill role.
 pub struct ContainerSkillCache {
-    dirs: std::sync::Mutex<std::collections::BTreeSet<String>>,
-    snapshot: std::sync::RwLock<ContainerSkillSnapshot>,
+    dirs: awaken_sync::LeafLock<std::collections::BTreeSet<String>>,
+    snapshot: awaken_sync::LeafRwLock<ContainerSkillSnapshot>,
 }
 
 enum ContainerSkillSnapshot {
@@ -21,20 +21,22 @@ enum ContainerSkillSnapshot {
 impl Default for ContainerSkillCache {
     fn default() -> Self {
         Self {
-            dirs: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-            snapshot: std::sync::RwLock::new(ContainerSkillSnapshot::Ready(Default::default())),
+            dirs: awaken_sync::LeafLock::new(std::collections::BTreeSet::new()),
+            snapshot: awaken_sync::LeafRwLock::new(ContainerSkillSnapshot::Ready(
+                Default::default(),
+            )),
         }
     }
 }
 
 impl ContainerSkillCache {
     pub(super) fn register(&self, subdir: &str) {
-        self.dirs.lock().unwrap().insert(subdir.to_string());
+        self.dirs.lock().insert(subdir.to_string());
     }
 
     pub(super) fn get(&self, subdir: &str) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
         self.register(subdir);
-        match &*self.snapshot.read().unwrap() {
+        match &*self.snapshot.read() {
             ContainerSkillSnapshot::Ready(files) => {
                 Ok(files.get(subdir).cloned().unwrap_or_default())
             }
@@ -46,20 +48,20 @@ impl ContainerSkillCache {
     }
 
     pub(super) fn invalidate(&self, error: impl Into<String>) {
-        *self.snapshot.write().unwrap() = ContainerSkillSnapshot::Unavailable(error.into());
+        *self.snapshot.write() = ContainerSkillSnapshot::Unavailable(error.into());
     }
 
     pub(super) async fn refresh(
         &self,
         sandbox: &dyn awaken_provisioning_contract::SessionSandbox,
     ) -> Result<(), pc::SandboxError> {
-        if let ContainerSkillSnapshot::Unavailable(error) = &*self.snapshot.read().unwrap() {
+        if let ContainerSkillSnapshot::Unavailable(error) = &*self.snapshot.read() {
             return Err(pc::SandboxError::backend(
                 "refresh",
                 format!("container Skill catalog is unavailable: {error}"),
             ));
         }
-        let dirs: Vec<_> = self.dirs.lock().unwrap().iter().cloned().collect();
+        let dirs: Vec<_> = self.dirs.lock().iter().cloned().collect();
         let discovered = async {
             let mut next = std::collections::BTreeMap::new();
             for subdir in dirs {
@@ -89,7 +91,7 @@ impl ContainerSkillCache {
         .await;
         match discovered {
             Ok(files) => {
-                *self.snapshot.write().unwrap() = ContainerSkillSnapshot::Ready(files);
+                *self.snapshot.write() = ContainerSkillSnapshot::Ready(files);
                 Ok(())
             }
             Err(error) => {

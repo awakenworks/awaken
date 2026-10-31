@@ -12,8 +12,9 @@
 //! The summary is injected request-only and activates a Run-scoped request window;
 //! no raw Step is hidden before the summary covers it. Durable truth is never erased.
 
+use awaken_sync::InvariantLock;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::{AuxiliaryAgentInput, invoke_auxiliary_agent};
@@ -54,7 +55,7 @@ type ArtifactCell = Arc<tokio::sync::OnceCell<Option<CompactArtifact>>>;
 struct HostCompactBackend {
     agent_tool: Arc<dyn RawTool>,
     background: Arc<BackgroundRuns>,
-    cells: Mutex<BTreeMap<String, ArtifactCell>>,
+    cells: InvariantLock<BTreeMap<String, ArtifactCell>>,
 }
 
 /// Every compaction failure already means "no artifact": the caller keeps the
@@ -158,7 +159,7 @@ pub(crate) fn compact_backend(
     Arc::new(HostCompactBackend {
         agent_tool,
         background,
-        cells: Mutex::new(BTreeMap::new()),
+        cells: InvariantLock::new(BTreeMap::new()),
     })
 }
 
@@ -284,7 +285,7 @@ mod tests {
         let backend = HostCompactBackend {
             agent_tool: runner,
             background: Arc::new(BackgroundRuns::new()),
-            cells: Mutex::new(BTreeMap::new()),
+            cells: InvariantLock::new(BTreeMap::new()),
         };
         crate::session_execution_error::poison_for_test(&backend.cells);
         let request = CompactRequest {

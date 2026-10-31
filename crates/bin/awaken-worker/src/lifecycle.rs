@@ -10,9 +10,10 @@
 // @formal entrypoint worker_drain.registry_transition_follows_local_fence
 //! Worker registry authority, heartbeat, and local admission lifecycle.
 
+use awaken_sync::LeafRwLock;
 use awaken_time::mono::{self, Instant};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
@@ -198,7 +199,7 @@ pub(crate) struct WorkerSupervisor {
     pub(crate) observation_ttl: std::time::Duration,
     pub(crate) probe_interval: std::time::Duration,
     pub(crate) warm_environments: Arc<
-        RwLock<
+        LeafRwLock<
             BTreeMap<
                 awaken_provisioning_contract::SandboxCapacityShapeId,
                 awaken_session_configuration_contract::EnvironmentSnapshot,
@@ -207,7 +208,7 @@ pub(crate) struct WorkerSupervisor {
     >,
     /// The original-source retention this draining incarnation last observed;
     /// every heartbeat reports it whole.
-    pub(crate) source_retention: Arc<RwLock<BTreeSet<WorkerSourceRetention>>>,
+    pub(crate) source_retention: Arc<LeafRwLock<BTreeSet<WorkerSourceRetention>>>,
 }
 
 /// One fresh readiness observation of a local tier's backend.
@@ -301,7 +302,6 @@ impl WorkerSupervisor {
     ) -> BTreeSet<awaken_provisioning_contract::SandboxCapacityShapeId> {
         self.warm_environments
             .read()
-            .expect("warm Environment receipt lock")
             .iter()
             .filter(|(_, snapshot)| {
                 self.roles
@@ -329,10 +329,7 @@ impl WorkerSupervisor {
 
     /// The retention facts the next heartbeat reports.
     pub(crate) fn source_retention(&self) -> BTreeSet<WorkerSourceRetention> {
-        self.source_retention
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.source_retention.read().clone()
     }
 
     /// Observe the original Session sources this incarnation holds and keep
@@ -374,10 +371,7 @@ impl WorkerSupervisor {
             report
         };
         let facts = report.len();
-        *self
-            .source_retention
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = report;
+        *self.source_retention.write() = report;
         Ok(facts)
     }
 
@@ -386,11 +380,7 @@ impl WorkerSupervisor {
     /// Environment set, so it neither erases receipts nor bypasses the default
     /// share of the same budget.
     pub(crate) async fn reconcile_environment_warmups(&self) -> Result<usize, String> {
-        let previous = self
-            .warm_environments
-            .read()
-            .expect("warm Environment receipt lock")
-            .clone();
+        let previous = self.warm_environments.read().clone();
         let fetched = self
             .control
             .current_environment_warmups(&self.identity)
@@ -468,10 +458,7 @@ impl WorkerSupervisor {
                 }
             }
         }
-        *self
-            .warm_environments
-            .write()
-            .expect("warm Environment receipt lock") = next;
+        *self.warm_environments.write() = next;
         let ready = self.warm_environment_shapes().len();
         if let Some(error) = fetch_error {
             Err(error)
@@ -1232,7 +1219,7 @@ mod tests {
                     "worker-test",
                 )
                 .await,
-                awaken_session_run_delivery::SessionApplications::Standalone,
+                awaken_session_execution_contract::SessionApplications::Standalone,
             )
             .unwrap(),
             control: awaken_coordinator_client::WorkerControlClient::new(
@@ -1248,7 +1235,7 @@ mod tests {
             observation_ttl: std::time::Duration::from_secs(30),
             probe_interval: std::time::Duration::from_secs(10),
             warm_environments: Default::default(),
-            source_retention: Arc::new(std::sync::RwLock::new(previous.clone())),
+            source_retention: Arc::new(awaken_sync::LeafRwLock::new(previous.clone())),
         };
         assert!(!lifecycle.roles.dispatch().can_resume_work().await);
         assert!(lifecycle.reconcile_source_retention().await.is_err(), "W2");
@@ -1302,7 +1289,7 @@ mod tests {
                         "worker-test",
                     )
                     .await,
-                    awaken_session_run_delivery::SessionApplications::Standalone,
+                    awaken_session_execution_contract::SessionApplications::Standalone,
                 )
                 .unwrap(),
                 control: awaken_coordinator_client::WorkerControlClient::new(
@@ -1928,7 +1915,7 @@ mod tests {
                         "none",
                     )
                     .await,
-                    awaken_session_run_delivery::SessionApplications::Standalone,
+                    awaken_session_execution_contract::SessionApplications::Standalone,
                 )
                 .unwrap(),
                 control: WorkerControlClient::new(

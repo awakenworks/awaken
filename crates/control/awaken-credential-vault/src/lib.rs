@@ -49,11 +49,11 @@ pub use vault_application::{
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
 
 use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::StructuredCredentialMaterial;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_sync::LeafLock;
 
 /// Opaque handle into a [`SecretStore`]. Never the secret itself.
 /// Byte-lexical identity order is also the deterministic material cleanup order.
@@ -868,6 +868,14 @@ pub enum CredentialError {
     Storage(String),
 }
 
+/// A poisoned in-process credential lock is a storage failure the caller
+/// retries like any other backend failure.
+impl From<awaken_sync::LockPoisoned> for CredentialError {
+    fn from(poisoned: awaken_sync::LockPoisoned) -> Self {
+        Self::Storage(poisoned.to_string())
+    }
+}
+
 /// Persistence of opaque sealed blobs (`nonce ‖ ciphertext`), keyed by
 /// [`SecretRef`] — the seam that makes the AEAD layer engine-agnostic. The
 /// sealing `sealed::SealedAeadSecretStore` writes through this port;
@@ -889,7 +897,7 @@ pub trait SealedBlobStore: Send + Sync {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySealedBlobStore {
-    blobs: Mutex<HashMap<String, Vec<u8>>>,
+    blobs: LeafLock<HashMap<String, Vec<u8>>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -904,36 +912,25 @@ impl InMemorySealedBlobStore {
 #[async_trait::async_trait]
 impl SealedBlobStore for InMemorySealedBlobStore {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
-        self.blobs
-            .lock()
-            .expect("sealed blob mutex")
-            .insert(r.0.clone(), blob);
+        self.blobs.lock().insert(r.0.clone(), blob);
         Ok(())
     }
 
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError> {
         self.blobs
             .lock()
-            .expect("sealed blob mutex")
             .get(&r.0)
             .cloned()
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
     }
 
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
-        self.blobs.lock().expect("sealed blob mutex").remove(&r.0);
+        self.blobs.lock().remove(&r.0);
         Ok(())
     }
 
     async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        Ok(self
-            .blobs
-            .lock()
-            .expect("sealed blob mutex")
-            .keys()
-            .cloned()
-            .map(SecretRef)
-            .collect())
+        Ok(self.blobs.lock().keys().cloned().map(SecretRef).collect())
     }
 }
 
@@ -941,7 +938,7 @@ impl SealedBlobStore for InMemorySealedBlobStore {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySecretStore {
-    map: Mutex<HashMap<String, String>>,
+    map: LeafLock<HashMap<String, String>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -958,7 +955,6 @@ impl SecretStore for InMemorySecretStore {
     async fn put(&self, r: &SecretRef, secret: RedactedString) -> Result<(), CredentialError> {
         self.map
             .lock()
-            .expect("secret store mutex")
             .insert(r.0.clone(), secret.expose_secret().to_string());
         Ok(())
     }
@@ -966,26 +962,18 @@ impl SecretStore for InMemorySecretStore {
     async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError> {
         self.map
             .lock()
-            .expect("secret store mutex")
             .get(&r.0)
             .map(|v| RedactedString::new(v.clone()))
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
     }
 
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
-        self.map.lock().expect("secret store mutex").remove(&r.0);
+        self.map.lock().remove(&r.0);
         Ok(())
     }
 
     async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        Ok(self
-            .map
-            .lock()
-            .expect("secret store mutex")
-            .keys()
-            .cloned()
-            .map(SecretRef)
-            .collect())
+        Ok(self.map.lock().keys().cloned().map(SecretRef).collect())
     }
 }
 

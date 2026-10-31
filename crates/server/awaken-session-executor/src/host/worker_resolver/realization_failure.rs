@@ -84,7 +84,7 @@ mod tests {
                 .unwrap(),
         );
         let fake = Arc::new(FakeContainerProvider::default());
-        *fake.create_error.lock().unwrap() = Some(
+        *fake.create_error.lock() = Some(
             awaken_provisioning_contract::SandboxError::capacity_unavailable("provider quota"),
         );
         let provider = SandboxEnvironmentProvider::container(
@@ -158,7 +158,7 @@ mod tests {
             "C3 resolver does not spend budget"
         );
         assert!(!rows[0].sandbox_bound, "C3 no durable Sandbox binding");
-        assert_eq!(fake.observations.lock().unwrap().len(), 0);
+        assert_eq!(fake.observations.lock().len(), 0);
         assert_eq!(fake.adopts.load(Ordering::SeqCst), 0);
         assert_eq!(fake.disposals.load(Ordering::SeqCst), 0);
         assert!(

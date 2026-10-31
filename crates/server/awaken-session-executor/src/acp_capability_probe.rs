@@ -17,8 +17,9 @@
 //! a later process still needs the provider’s durable effect and physical proof.
 
 use awaken_session_realization::peers::EnvironmentPeer as _;
+use awaken_sync::InvariantLock;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -53,7 +54,7 @@ const PROBE_RECONCILER: &str = "SessionAcpCapabilityNegotiator::probe_scope";
 /// wants to read the ledger.
 #[derive(Default)]
 pub(crate) struct StrandedProbeEnvironments {
-    scopes: Mutex<Vec<String>>,
+    scopes: InvariantLock<Vec<String>>,
 }
 
 impl StrandedProbeEnvironments {

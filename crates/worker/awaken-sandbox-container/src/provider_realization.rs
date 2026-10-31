@@ -227,15 +227,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             adoption_fingerprint: None,
             realization_fingerprint: None,
             memory_materializations: Vec::new(),
-            owned_paths: std::sync::Mutex::new(Vec::new()),
+            owned_paths: awaken_sync::LeafLock::new(Vec::new()),
             adopted_handle: Some(handle),
             realized: Vec::new(),
             recovered: disposition == pc::SandboxRestoreTargetDisposition::Recovered,
             lifecycle: Arc::new(ContainerCleanupState::recovered(
-                self.secret_broker
-                    .read()
-                    .expect("container secret broker lock poisoned")
-                    .clone(),
+                self.secret_broker.read().clone(),
                 staging.guard.take(),
             )),
             execs: Arc::default(),
@@ -347,15 +344,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             adoption_fingerprint: None,
             realization_fingerprint: None,
             memory_materializations: Vec::new(),
-            owned_paths: std::sync::Mutex::new(Vec::new()),
+            owned_paths: awaken_sync::LeafLock::new(Vec::new()),
             adopted_handle: Some(handle.clone()),
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(ContainerCleanupState::recovered(
-                self.secret_broker
-                    .read()
-                    .expect("container secret broker lock poisoned")
-                    .clone(),
+                self.secret_broker.read().clone(),
                 recovered_staging,
             )),
             execs: Arc::default(),

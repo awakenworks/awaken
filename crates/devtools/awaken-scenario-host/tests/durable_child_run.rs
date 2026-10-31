@@ -152,7 +152,7 @@ async fn durable_child_run_scenario() {
     let lifecycle = awaken_session_executor::session_dispatch_lifecycle(
         host.as_ref(),
         host.worker_completion_sink(),
-        awaken_session_run_delivery::SessionApplications::Standalone,
+        awaken_session_execution_contract::SessionApplications::Standalone,
     )
     .expect("explicit ordinary Thread execution");
     lifecycle

@@ -1,0 +1,26 @@
+[package]
+name = "awaken-sync"
+description = "The lock-poisoning law: invariant locks refuse a poisoned state, leaf locks recover it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+# SDK publishing preparation: the two lock semantics appear in SDK crates.
+api_snapshot = true
+context = "runtime"
+product = "sdk"
+bounded_context = "agent-runtime"
+# Contract layer only because contract crates hold locks too (a contract may
+# depend only on contracts). It is a depth-0 leaf like awaken-time.
+layer = "contract"
+# ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
+kinds = ["types"]
+authority = "lock-poisoning"
+separation = "contract"
+
+# A depth-0 contract leaf: no dependency may be added here.
+[dependencies]
+
+[lints]
+workspace = true

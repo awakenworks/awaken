@@ -593,6 +593,19 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         "R12 callback panic once under actual guard"
     );
     assert!(installed_sessions.installed_sessions.is_poisoned());
+    // The poisoned entry is unreadable by design, so its Arcs witness E5: a
+    // refused action that cloned, replaced or dropped one would change a count.
+    let holders = || {
+        [
+            Arc::strong_count(&frozen),
+            Arc::strong_count(&memory),
+            Arc::strong_count(&context),
+            Arc::strong_count(&phase_locks.0),
+            Arc::strong_count(&phase_locks.1),
+            Arc::strong_count(&phase_locks.2),
+        ]
+    };
+    let held_at_poison = holders();
     let mut callbacks = 0;
     for target in ["present", "absent"] {
         // Q8 actual global installed Session poison precedes Primary for either adapter;
@@ -702,86 +715,28 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         installed_sessions.installed_sessions.is_poisoned(),
         "S4/E6 poison remains"
     );
-    let poisoned_guard = match installed_sessions.installed_sessions.lock() {
-        Err(error) => error.into_inner(),
-        Ok(_) => panic!("S4/E6 no recovery or clear_poison"),
-    };
-    assert_eq!(poisoned_guard.len(), 1, "S4/E5 no target created");
+    // E6: the invariant registry has no recovery route. Every acquisition
+    // refuses with the typed poison naming the guarded state, so no refused
+    // action above could have reached the entry (E5 by construction).
     assert!(
-        !poisoned_guard.contains_key("absent"),
-        "S4 absent remains absent"
-    );
-    let installed = &poisoned_guard["present"];
-    assert!(
-        Arc::ptr_eq(&installed.inputs, &frozen),
-        "S4/E5 whole Frozen Arc"
-    );
-    assert_eq!(
-        installed.inputs.workspace.as_deref(),
-        Some("original-workspace")
-    );
-    assert_eq!(
-        installed.realization.staging().resources.mounts,
-        resources.mounts
-    );
-    assert_eq!(
-        installed.realization.staging().resources.prompts,
-        resources.prompts
-    );
-    assert_eq!(
-        format!(
-            "{:?}",
-            installed.realization.staging().resources.resource_prompts
+        matches!(
+            installed_sessions.installed_sessions.lock(),
+            Err(poisoned) if poisoned.guarded().contains("InstalledSession")
         ),
-        format!("{:?}", resources.resource_prompts)
-    );
-    assert_eq!(
-        installed
-            .realization
-            .staging()
-            .resources
-            .binding_checks
-            .len(),
-        1
+        "S4/E6 no recovery or clear_poison"
     );
     assert!(
-        matches!(&installed.realization.staging().resources.binding_checks[0], ResourceBindingCheck::MemoryStore {
-        memory_store_id, config_version,
-    } if memory_store_id == "poison-memory" && config_version.0 == 3)
+        matches!(
+            installed_sessions.installed_sessions.try_lock(),
+            Err(awaken_sync::TryLockFailure::Poisoned(_))
+        ),
+        "S4/E6 no non-blocking recovery"
     );
-    assert!(installed.realization.staging().resources.repositories == resources.repositories);
-    assert_eq!(installed.realization.staging().memory_bindings.len(), 1);
-    assert!(Arc::ptr_eq(
-        &installed.realization.staging().memory_bindings["original-binding"],
-        &memory
-    ));
-    assert!(Arc::ptr_eq(
-        installed.realization.staging().memory.as_ref().unwrap(),
-        &memory
-    ));
-    assert_eq!(installed.realization.staging().skills, Some(vec![skill]));
     assert_eq!(
-        installed.realization.staging().effect_key.as_deref(),
-        Some("original-key")
+        holders(),
+        held_at_poison,
+        "S4/E5 whole Frozen Arc, memory, Run context and phase locks keep their holders"
     );
-    assert!(
-        Arc::ptr_eq(installed.run.context.as_ref().unwrap(), &context),
-        "S4/E5 Run context"
-    );
-    assert_eq!(installed.run.dispatch_claim, Some(claim));
-    assert!(installed.run.session_dispatch);
-    assert!(Arc::ptr_eq(
-        &installed.realization.execution().phase,
-        &phase_locks.0
-    ));
-    assert!(Arc::ptr_eq(
-        &installed.realization.environment().lifecycle,
-        &phase_locks.1
-    ));
-    assert!(Arc::ptr_eq(
-        &installed.realization.staging().projection,
-        &phase_locks.2
-    ));
 }
 
 #[tokio::test]

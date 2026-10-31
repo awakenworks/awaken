@@ -14,6 +14,7 @@ separation = "protocol"
 protocol = "acp"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-tool-contract = { workspace = true, optional = true }
 awaken-data-governance-contract.workspace = true
 awaken-acp-contract.workspace = true

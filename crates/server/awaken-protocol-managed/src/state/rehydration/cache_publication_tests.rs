@@ -68,10 +68,15 @@ async fn cold_publication_exposes_owner_before_the_first_hydrator_returns() {
             .await
             .unwrap();
         assert_eq!(owner, "workspace-a");
-        let visible = state.list_sessions_scoped("workspace-a");
+        let visible = state.list_sessions_scoped("workspace-a").unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, id);
-        assert!(state.list_sessions_scoped("workspace-b").is_empty());
+        assert!(
+            state
+                .list_sessions_scoped("workspace-b")
+                .unwrap()
+                .is_empty()
+        );
         for denied_id in [id, "absent-session"] {
             assert!(matches!(
                 state
@@ -151,11 +156,16 @@ async fn failed_cold_reads_never_publish_content_or_an_orphan_owner() {
         ));
         assert!(state.sessions.lock().unwrap().is_empty());
         assert!(state.owner_scope(id).is_none());
-        assert!(state.list_sessions_scoped("workspace-a").is_empty());
+        assert!(
+            state
+                .list_sessions_scoped("workspace-a")
+                .unwrap()
+                .is_empty()
+        );
         reads.fail("session", false);
         state.hydrate_session_record(id, purpose).await.unwrap();
         assert_eq!(state.owner_scope(id).as_deref(), Some("workspace-a"));
-        assert_eq!(state.list_sessions_scoped("workspace-a")[0].id, id);
+        assert_eq!(state.list_sessions_scoped("workspace-a").unwrap()[0].id, id);
     }
 }
 
@@ -178,14 +188,24 @@ async fn eviction_removes_only_the_disposable_owner_with_its_record() {
         state.owner_scope(&created.id).as_deref(),
         Some("workspace-a")
     );
-    assert_eq!(state.list_sessions_scoped("workspace-a").len(), 1);
-    assert!(state.list_sessions_scoped("workspace-b").is_empty());
+    assert_eq!(state.list_sessions_scoped("workspace-a").unwrap().len(), 1);
+    assert!(
+        state
+            .list_sessions_scoped("workspace-b")
+            .unwrap()
+            .is_empty()
+    );
     state.sessions.lock().unwrap().remove(&created.id).unwrap();
     assert!(
         state.owner_scope(&created.id).is_none(),
         "no orphan owner after eviction"
     );
-    assert!(state.list_sessions_scoped("workspace-a").is_empty());
+    assert!(
+        state
+            .list_sessions_scoped("workspace-a")
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         state.resolve_owner(&created.id).await.unwrap().as_deref(),
         Some("workspace-a")
@@ -202,5 +222,8 @@ async fn eviction_removes_only_the_disposable_owner_with_its_record() {
         state.owner_scope(&created.id).as_deref(),
         Some("workspace-a")
     );
-    assert_eq!(state.list_sessions_scoped("workspace-a")[0].id, created.id);
+    assert_eq!(
+        state.list_sessions_scoped("workspace-a").unwrap()[0].id,
+        created.id
+    );
 }

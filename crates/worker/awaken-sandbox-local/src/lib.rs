@@ -509,7 +509,7 @@ mod memory_mount_release_tests {
             teardown_calls: teardown_calls.clone(),
             drops: drops.clone(),
         });
-        let mounter = Arc::new(std::sync::RwLock::new(Some(mounter)));
+        let mounter = Arc::new(awaken_sync::LeafRwLock::new(Some(mounter)));
         let requirement = pc::MountRequirement {
             mount_id: "memory".into(),
             source: pc::MountSource::MemoryStore {

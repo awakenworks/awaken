@@ -2,7 +2,9 @@
 //! isolation policy, one Pod and one PVC, for the isolation guard's own tests
 //! and for the Sandbox adapter's guarded-claim tests that join the same guard.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use awaken_sync::LeafLock;
 
 use awaken_container_contract::{CreateTicket, CreateTicketRequest, TicketResult, TicketStatus};
 use http::{Method, Request, Response};
@@ -65,7 +67,7 @@ fn response(code: u16, body: Value) -> Response<Body> {
         .unwrap()
 }
 
-type State = Arc<Mutex<IsolationApi>>;
+type State = Arc<LeafLock<IsolationApi>>;
 
 fn not_found(message: &str) -> Response<Body> {
     response(
@@ -110,7 +112,7 @@ async fn serve(state: &State, request: Request<Body>) -> Response<Body> {
 }
 
 fn policy(state: &State) -> Response<Body> {
-    let state = state.lock().unwrap();
+    let state = state.lock();
     if !state.policy {
         return not_found("policy not found");
     }
@@ -138,7 +140,7 @@ fn policy(state: &State) -> Response<Body> {
 
 fn binding(state: &State) -> Response<Body> {
     let mut spec = expected_binding_spec();
-    if state.lock().unwrap().binding_tampered {
+    if state.lock().binding_tampered {
         spec.validation_actions = Some(vec!["Warn".into()]);
     }
     let binding = ValidatingAdmissionPolicyBinding {
@@ -153,7 +155,7 @@ fn binding(state: &State) -> Response<Body> {
 
 async fn create_pod(state: &State, request: Request<Body>) -> Response<Body> {
     let bytes = request.into_body().collect_bytes().await.unwrap();
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock();
     state.creates += 1;
     if state.pod.is_some() {
         response(409, json!({"reason":"AlreadyExists","code":409}))
@@ -168,7 +170,7 @@ async fn create_pod(state: &State, request: Request<Body>) -> Response<Body> {
 async fn pod(state: &State, request: Request<Body>, name: &str) -> Response<Body> {
     let method = request.method().clone();
     if method == Method::GET {
-        return match &state.lock().unwrap().pod {
+        return match &state.lock().pod {
             Some(pod) if pod.metadata.name.as_deref() == Some(name) => {
                 response(200, serde_json::to_value(pod).unwrap())
             }
@@ -179,7 +181,7 @@ async fn pod(state: &State, request: Request<Body>, name: &str) -> Response<Body
     let body = request.into_body().collect_bytes().await.unwrap();
     if method == Method::PUT {
         let mut replacement: Pod = serde_json::from_slice(&body).unwrap();
-        let mut state = state.lock().unwrap();
+        let mut state = state.lock();
         let current = state.pod.as_ref().unwrap();
         assert_eq!(current.metadata.name.as_deref(), Some(name));
         if replacement.metadata.uid != current.metadata.uid
@@ -199,7 +201,7 @@ async fn pod(state: &State, request: Request<Body>, name: &str) -> Response<Body
         Method::DELETE,
         "unexpected isolation Pod request {method}"
     );
-    let state = state.lock().unwrap();
+    let state = state.lock();
     assert_eq!(
         state.pod.as_ref().unwrap().metadata.name.as_deref(),
         Some(name)
@@ -229,7 +231,7 @@ async fn pod(state: &State, request: Request<Body>, name: &str) -> Response<Body
 async fn claim(state: &State, request: Request<Body>) -> Response<Body> {
     let method = request.method().clone();
     if method == Method::GET {
-        return match &state.lock().unwrap().claim {
+        return match &state.lock().claim {
             Some(claim) => response(200, serde_json::to_value(claim).unwrap()),
             None => not_found("PVC not found"),
         };
@@ -241,7 +243,7 @@ async fn claim(state: &State, request: Request<Body>) -> Response<Body> {
     );
     let bytes = request.into_body().collect_bytes().await.unwrap();
     let options: Value = serde_json::from_slice(&bytes).unwrap();
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock();
     let claim = state.claim.as_ref().expect("exact original PVC exists");
     assert_eq!(options["preconditions"]["uid"], json!(claim.metadata.uid));
     assert_eq!(

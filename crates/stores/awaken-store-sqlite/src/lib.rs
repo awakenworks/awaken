@@ -29,7 +29,6 @@
 //! with each commit — never an independent authority.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -63,6 +62,7 @@ use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
 use awaken_store_schema::StoredU64;
+use awaken_sync::InvariantLock;
 use sqlx::SqliteConnection;
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
@@ -131,7 +131,7 @@ const NS: &str = "runtime";
 /// A SQLite-backed [`Coordinator`] plus the read ports it serves.
 pub struct SqliteCommitCoordinator {
     pool: EmbeddedPool,
-    projection: Mutex<Projection>,
+    projection: InvariantLock<Projection>,
     /// Serializes commits so the fence is assigned without a race and the
     /// projection advances in commit order.
     write_lock: tokio::sync::Mutex<()>,
@@ -212,7 +212,7 @@ impl SqliteCommitCoordinator {
 
         Ok(Self {
             pool,
-            projection: Mutex::new(projection),
+            projection: InvariantLock::new(projection),
             write_lock: tokio::sync::Mutex::new(()),
         })
     }
@@ -697,7 +697,9 @@ fn decode_resume_ticket(
     }
 }
 
-fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
+fn lock(
+    projection: &InvariantLock<Projection>,
+) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
     projection
         .lock()
         .map_err(|_| Error::Rejected("commit projection poisoned".to_string()))

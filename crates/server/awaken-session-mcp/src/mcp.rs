@@ -787,7 +787,6 @@ mod native_mcp_wiring_tests {
         );
         let tool_calls = seen
             .lock()
-            .unwrap()
             .iter()
             .filter(|(method, _)| method == "tools/call")
             .count();
@@ -803,7 +802,6 @@ mod native_mcp_wiring_tests {
         assert!(wiring.skill_registries.is_empty());
         assert!(
             seen.lock()
-                .unwrap()
                 .iter()
                 .all(|(method, _)| method != "prompts/list"),
             "disabled means no prompt discovery side effect"
@@ -821,7 +819,6 @@ mod native_mcp_wiring_tests {
         assert_eq!(registry.list().unwrap()[0].id, "mcp:docs:review");
         assert!(
             seen.lock()
-                .unwrap()
                 .iter()
                 .all(|(method, _)| method != "prompts/get"),
             "catalog discovery remains metadata-only"
@@ -838,7 +835,6 @@ mod native_mcp_wiring_tests {
         assert_eq!(skill.body, "Review focus: security");
         assert!(
             seen.lock()
-                .unwrap()
                 .iter()
                 .any(|(method, _)| method == "prompts/get")
         );

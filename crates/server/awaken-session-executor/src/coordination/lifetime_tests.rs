@@ -20,7 +20,7 @@ async fn remote_host(control: Arc<RemoteControl>) -> Arc<crate::ExecutorComponen
     drop(
         crate::WorkerRoles::of(
             &host,
-            awaken_session_run_delivery::SessionApplications::ClaimedWorker,
+            awaken_session_execution_contract::SessionApplications::ClaimedWorker,
         )
         .unwrap(),
     );
@@ -491,7 +491,9 @@ async fn model_gate_preserves_local_and_remote_control_failure_grades() {
             ..Default::default()
         });
         for endpoint in [
-            CoordinationEndpoint::Local(Arc::downgrade(&local)),
+            CoordinationEndpoint::Local(crate::test_application_bindings::coordination_binding(
+                local.clone(),
+            )),
             CoordinationEndpoint::Remote {
                 control: control.clone(),
                 installed_sessions: Weak::new(),

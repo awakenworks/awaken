@@ -147,20 +147,12 @@ impl ProjectedAcpCredentials {
                     .map(|binding| Ok((binding.credential.id.clone(), to_local_binding(binding)?)))
                     .collect::<Result<BTreeMap<_, _>, String>>()
                     .map_err(|_| CredentialMaterialError::Invalid)?;
-                *self
-                    .resolver
-                    .bindings
-                    .lock()
-                    .expect("ACP bindings poisoned") = next;
+                *self.resolver.bindings.lock() = next;
                 Ok(bindings)
             }
             failure => {
                 // Never leave a usable prior binding behind on a hard read failure.
-                self.resolver
-                    .bindings
-                    .lock()
-                    .expect("ACP bindings poisoned")
-                    .clear();
+                self.resolver.bindings.lock().clear();
                 Err(match failure {
                     Ok(Err(error)) => error,
                     _ => CredentialMaterialError::Unavailable,
@@ -512,7 +504,7 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert!(projected.resolver.bindings.lock().unwrap().is_empty());
+            assert!(projected.resolver.bindings.lock().is_empty());
             assert_eq!(discovery.calls.load(Ordering::SeqCst), 0);
         }
         std::fs::remove_file(&path).unwrap();
@@ -716,7 +708,7 @@ mod tests {
                 .is_err(),
             "R14"
         );
-        assert!(projected.resolver.bindings.lock().unwrap().is_empty());
+        assert!(projected.resolver.bindings.lock().is_empty());
         assert_eq!(discovery.calls.load(Ordering::SeqCst), 0);
         std::fs::remove_file(&parent).unwrap();
         std::fs::create_dir(&parent).unwrap();

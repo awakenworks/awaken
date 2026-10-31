@@ -27,8 +27,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -56,6 +56,7 @@ use awaken_agent_contract::thread::read::recovery::{
 use awaken_fs_durability::sync_directory;
 use awaken_fs_durability::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryCommitReplay};
+use awaken_sync::InvariantLock;
 
 const LOG_FILE: &str = "commits.ndjson";
 const LOG_LOCK_FILE: &str = "commits.lock";
@@ -113,7 +114,7 @@ fn recovery_replay_preserves_complete_entry_and_time() {
 /// A filesystem `CommitCoordinator` + `CheckpointReader`. Durable truth is the
 /// append-only log; reads are served from an in-memory model rebuilt from it.
 pub struct FsCommitCoordinator {
-    log: Mutex<File>,
+    log: InvariantLock<File>,
     inner: MemoryCommitCoordinator,
     /// Stamps each appended record's `committed_at_unix_ms`, the same clock the
     /// in-memory read model is built over.
@@ -362,7 +363,7 @@ impl FsCommitCoordinator {
             sync_directory(dir)?;
         }
         Ok(Self {
-            log: Mutex::new(log),
+            log: InvariantLock::new(log),
             inner: replay.finish(),
             clock,
             write_lock: tokio::sync::Mutex::new(()),

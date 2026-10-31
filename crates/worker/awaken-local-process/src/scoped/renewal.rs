@@ -3,7 +3,8 @@
 //! transport owns neither the lease nor its renewal/revocation schedule.
 use super::{ExecutionDeadline, MAX_WINDOW, grant, invalid, timed_out};
 use awaken_provisioning_contract::Signal;
-use std::{cell::Cell, io, sync::Mutex, time::Duration};
+use awaken_sync::InvariantLock;
+use std::{cell::Cell, io, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     net::UnixStream,
@@ -15,14 +16,14 @@ const REFRESH: u8 = 5;
 /// as GO/revocation. A precomputed bool or a remembered lease is insufficient.
 pub struct ScopedDeadlineGrant<'a> {
     control: &'a UnixStream,
-    writer: &'a Mutex<()>,
+    writer: &'a InvariantLock<()>,
     committed: &'a Cell<bool>,
 }
 
 impl<'a> ScopedDeadlineGrant<'a> {
     pub(super) fn new(
         control: &'a UnixStream,
-        writer: &'a Mutex<()>,
+        writer: &'a InvariantLock<()>,
         committed: &'a Cell<bool>,
     ) -> Self {
         Self {
@@ -217,7 +218,7 @@ mod tests {
         // shared grant transport, NOT a substituted Session lease authority.
         for rule in 15..=19 {
             let (parent, mut child) = UnixStream::pair().unwrap();
-            let writer = Mutex::new(());
+            let writer = InvariantLock::new(());
             let mut calls = 0;
             let deadline = ExecutionDeadline::after(Duration::from_secs(5)).unwrap();
             let result = grant::commit_checked(&parent, |committed| {
@@ -269,7 +270,7 @@ mod tests {
         // corruption or deadlock. Business stdio is never the control channel.
         let (parent, mut child) = UnixStream::pair().unwrap();
         let parent = std::sync::Arc::new(parent);
-        let writer = std::sync::Arc::new(Mutex::new(()));
+        let writer = std::sync::Arc::new(InvariantLock::new(()));
         let cutoff = ExecutionDeadline::after(Duration::from_secs(5)).unwrap();
         let signals = {
             let parent = parent.clone();

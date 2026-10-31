@@ -74,7 +74,6 @@ fn release_and_reacquire_preserve_one_complete_authority() {
                 queue
                     .authority
                     .lock()
-                    .unwrap()
                     .current_session_lease("env", &SessionId::from("session"), 1)
                     .is_some(),
                 "an old release cannot clear the successor authority"
@@ -205,7 +204,7 @@ fn renewal_and_reclaim_return_complete_lease_snapshots() {
             .unwrap()
             .expect("one coherent lease is always available");
         let replaced = replacement.join().unwrap().is_some();
-        let authority = queue.authority.lock().unwrap();
+        let authority = queue.authority.lock();
         let current = authority
             .current_session_lease("env", &SessionId::from("session"), 1)
             .unwrap();

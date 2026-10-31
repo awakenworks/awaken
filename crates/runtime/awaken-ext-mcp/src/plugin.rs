@@ -15,7 +15,9 @@
 //! exact ids are not known at composition time.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use awaken_sync::LeafLock;
 
 use awaken_mcp_wire::McpToolDefinition;
 use awaken_runtime_contract::plugin::{
@@ -87,7 +89,7 @@ pub struct McpServer {
     server_name: String,
     namespace: String,
     transport: Arc<dyn McpToolTransport>,
-    registry: Arc<Mutex<McpRegistry>>,
+    registry: Arc<LeafLock<McpRegistry>>,
     _refresh: Arc<RegistryRefresh>,
 }
 
@@ -116,7 +118,7 @@ impl McpServer {
         let mut tools = transport.list_tools().await?;
         validate_tools_task_negotiation(&server_name, &tools, transport.as_ref())?;
         apply_sensitive(&mut tools, &sensitive);
-        let registry = Arc::new(Mutex::new(McpRegistry { version: 1, tools }));
+        let registry = Arc::new(LeafLock::new(McpRegistry { version: 1, tools }));
 
         let refresh_registry = Arc::clone(&registry);
         let refresh_transport = Arc::clone(&transport);
@@ -133,9 +135,11 @@ impl McpServer {
                     .is_ok()
                 {
                     apply_sensitive(&mut tools, &sensitive);
-                    let mut registry = refresh_registry.lock().unwrap();
-                    registry.tools = tools;
-                    registry.version += 1;
+                    let mut registry = refresh_registry.lock();
+                    *registry = McpRegistry {
+                        version: registry.version + 1,
+                        tools,
+                    };
                 }
             }
         });
@@ -183,7 +187,7 @@ impl McpServer {
 
     /// The current registry version (advances on `tools/list_changed`).
     pub fn version(&self) -> u64 {
-        self.registry.lock().unwrap().version
+        self.registry.lock().version
     }
 
     /// The server's name.
@@ -217,7 +221,7 @@ pub struct McpPlugin {
     server_name: String,
     namespace: String,
     transport: Arc<dyn McpToolTransport>,
-    registry: Arc<Mutex<McpRegistry>>,
+    registry: Arc<LeafLock<McpRegistry>>,
     _refresh: Arc<RegistryRefresh>,
 }
 
@@ -237,7 +241,7 @@ impl Plugin for McpPlugin {
 
     fn resolve(&self) -> Contributions {
         let mut contributions = Contributions::new(plugin_id(&self.server_name));
-        let registry = self.registry.lock().unwrap();
+        let registry = self.registry.lock();
         for def in &registry.tools {
             // A tool whose name has no encodable identity is skipped rather
             // than failing the whole resolution.
@@ -253,7 +257,7 @@ impl Plugin for McpPlugin {
     }
 
     fn live_version(&self) -> Option<u64> {
-        Some(self.registry.lock().unwrap().version)
+        Some(self.registry.lock().version)
     }
 
     fn resolve_configured(

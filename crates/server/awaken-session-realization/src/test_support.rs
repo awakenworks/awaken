@@ -91,7 +91,7 @@ pub fn wall_clock_now_ms() -> u64 {
 /// [`SessionRealizationSource`]: crate::session_realizations::SessionRealizationSource
 #[derive(Default)]
 pub struct InMemorySessionRealizations {
-    sessions: std::sync::Mutex<std::collections::HashMap<String, InMemorySession>>,
+    sessions: awaken_sync::InvariantLock<std::collections::HashMap<String, InMemorySession>>,
 }
 
 #[derive(Default)]
