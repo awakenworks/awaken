@@ -140,14 +140,19 @@ async fn gate(environment_id: &str) -> Gate {
 }
 
 impl Gate {
-    /// The oracle: no admissible snapshot and no non-blocking readiness.
-    async fn refuses(&self, row: &str) {
+    /// The oracle: no admissible snapshot and no non-blocking readiness. An
+    /// unfinished build exhausts the bounded wait (`Timeout`); a known Failed
+    /// build is refused at once as `Unavailable` while its retry stays queued
+    /// (the coordinator's own Failed-readiness decision table).
+    async fn refuses(&self, row: &str, known_failed: bool) {
         let id = &self.registration.definition.id;
+        let refusal = self.execution.snapshot(id, None).await;
         assert!(
-            matches!(
-                self.execution.snapshot(id, None).await,
-                Err(EnvironmentImageBuildError::Timeout(_))
-            ),
+            if known_failed {
+                matches!(refusal, Err(EnvironmentImageBuildError::Unavailable(_)))
+            } else {
+                matches!(refusal, Err(EnvironmentImageBuildError::Timeout(_)))
+            },
             "{row}: blocking admission refuses an unready image"
         );
         assert_eq!(
@@ -169,7 +174,7 @@ impl Gate {
 async fn unready_build_states_grant_no_session_admission() {
     let gate = gate("env-gate").await;
     let now = awaken_time::system_clock().now_ms();
-    gate.refuses("G1 Pending").await;
+    gate.refuses("G1 Pending", false).await;
 
     let claim = gate
         .store
@@ -177,7 +182,7 @@ async fn unready_build_states_grant_no_session_admission() {
         .await
         .unwrap()
         .expect("G2 claim");
-    gate.refuses("G2 Building").await;
+    gate.refuses("G2 Building", false).await;
 
     assert!(
         gate.store
@@ -185,7 +190,7 @@ async fn unready_build_states_grant_no_session_admission() {
             .await
             .unwrap()
     );
-    gate.refuses("G3 Failed before retry").await;
+    gate.refuses("G3 Failed before retry", true).await;
     assert_eq!(gate.builder.builds.load(Ordering::SeqCst), 0, "G1-G3");
 
     let mutant = EnvironmentExecutionApplication::new(
@@ -225,7 +230,7 @@ async fn only_a_ready_and_available_image_is_admitted() {
         "R1"
     );
     gate.builder.available.store(false, Ordering::SeqCst);
-    gate.refuses("R2 Ready but unavailable").await;
+    gate.refuses("R2 Ready but unavailable", false).await;
     assert_eq!(
         gate.builder.builds.load(Ordering::SeqCst),
         1,
