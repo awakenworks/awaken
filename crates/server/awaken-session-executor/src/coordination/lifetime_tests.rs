@@ -491,7 +491,9 @@ async fn model_gate_preserves_local_and_remote_control_failure_grades() {
             ..Default::default()
         });
         for endpoint in [
-            CoordinationEndpoint::Local(Arc::downgrade(&local)),
+            CoordinationEndpoint::Local(crate::test_application_bindings::coordination_binding(
+                local.clone(),
+            )),
             CoordinationEndpoint::Remote {
                 control: control.clone(),
                 installed_sessions: Weak::new(),

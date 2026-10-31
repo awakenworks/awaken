@@ -187,7 +187,6 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__fail_skill_read".into(), Vec::new());
     let environment = Arc::new(
         SandboxEnvironmentProvider::container(
@@ -238,7 +237,6 @@ async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("broken/SKILL.md".into(), vec![0xff, 0xfe]);
     let environment = Arc::new(
         SandboxEnvironmentProvider::container(
@@ -346,7 +344,7 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
         .unwrap();
     environment.lifecycle().dispose().await.unwrap();
 
-    let specs = provider.specs.lock().unwrap();
+    let specs = provider.specs.lock();
     assert_eq!(specs.len(), 2, "I1/I2 provider boundary");
     assert_eq!(
         specs[0].packages.managers.get("npm"),
