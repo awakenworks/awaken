@@ -119,8 +119,9 @@ durable cancel request in the same settlement transaction that removes the row
 cancellation claim finds an unconfirmed predecessor; that Run then commits
 `Error`/`Indeterminate` instead of `Cancelled`, and before this amendment the
 cancel fact vanished with the row. The Outcome controller reads it from the
-completion to classify such a Worker Run as interrupted, while the committed Run
-state stays the terminal authority and its fault is still published.
+completion (or, while the row is still live, from the row's own cancel request)
+to classify such a Worker Run as interrupted, while the committed Run state
+stays the terminal authority and its fault is still published.
 
 Persisted format: converged migration V9 adds
 `{prefix}_dispatch_completion.cancel_requested BIGINT NOT NULL DEFAULT 0`;

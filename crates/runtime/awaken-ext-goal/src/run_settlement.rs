@@ -107,6 +107,14 @@ mod tests {
         cancellation_requested: false,
     });
 
+    /// Rule label, committed Run state, settlement read, expected result.
+    type Row = (
+        &'static str,
+        RunState,
+        Option<RunSettlement>,
+        Result<RunVerdict, Undecided>,
+    );
+
     fn error() -> RunState {
         RunState::Ended(EndCause::Error(Failure::CapabilityBound))
     }
@@ -114,12 +122,7 @@ mod tests {
     #[test]
     fn worker_run_classification_follows_the_settled_cancel_fact() {
         // Every row of the table on `classify_run`; each label names its rule.
-        let rows: Vec<(
-            &str,
-            RunState,
-            Option<RunSettlement>,
-            Result<RunVerdict, Undecided>,
-        )> = vec![
+        let rows: Vec<Row> = vec![
             (
                 "R1",
                 RunState::Ended(EndCause::NaturalEnd),

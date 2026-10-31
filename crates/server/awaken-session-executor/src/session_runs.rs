@@ -132,23 +132,3 @@ impl SessionRuns {
         })
     }
 }
-
-/// Outcome settlement reads go to this process's Coordinator dispatch owner.
-/// A process without that owner cannot read a settlement and reports it as
-/// unavailable rather than guessing one.
-#[async_trait::async_trait]
-impl awaken_dispatch_contract::SessionRunAdmissionReads for SessionRuns {
-    async fn observe_session_run_admission(
-        &self,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<
-        awaken_dispatch_contract::SessionRunAdmissionObservation,
-        awaken_dispatch_contract::DispatchError,
-    > {
-        use awaken_dispatch_contract::SessionRunAdmissionReads as _;
-        self.coordinator_dispatch()
-            .map_err(awaken_dispatch_contract::DispatchError::unavailable)?
-            .observe_session_run_admission(run_id)
-            .await
-    }
-}

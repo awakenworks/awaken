@@ -337,7 +337,10 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
             3,
             &awaken_session_run_delivery::OutcomeRunExecutor::new(
                 &admission,
-                host.session_runs().as_ref(),
+                host.session_runs()
+                    .coordinator_dispatch()
+                    .expect("Coordinator dispatch owner")
+                    .as_ref(),
             ),
         )
         .await
