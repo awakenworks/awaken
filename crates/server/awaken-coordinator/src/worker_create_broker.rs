@@ -306,6 +306,7 @@ fn binding<'a>(
     ledger: &dyn K8sCreateBrokerEffects,
     anchor: &'a WorkerCreateLedger,
     pod: &'a KubernetesPodIdentity,
+    worker: &'a WorkerIdentity,
     provider_id: &str,
 ) -> Result<K8sLedgerBinding<'a>, ApplicationError> {
     if anchor.provider_id() != provider_id
@@ -320,6 +321,8 @@ fn binding<'a>(
         worker_namespace: pod.namespace(),
         worker_name: pod.name(),
         worker_uid: pod.uid(),
+        // One Create ledger per Worker incarnation (container instance).
+        worker_incarnation: &worker.incarnation_id,
         ledger_name: anchor.name(),
         ledger_uid: anchor.uid(),
         configuration_fingerprint: anchor.configuration_fingerprint(),
@@ -332,7 +335,7 @@ pub async fn seal_worker_requests<'a>(
     ledger: &dyn K8sCreateBrokerEffects,
     anchor: &'a WorkerCreateLedger,
     pod: &'a KubernetesPodIdentity,
-    worker: &WorkerIdentity,
+    worker: &'a WorkerIdentity,
     provider_id: &str,
 ) -> Result<(K8sLedgerBinding<'a>, RequestJoin), ApplicationError> {
     if !pod.matches_worker(worker) {
@@ -340,7 +343,7 @@ pub async fn seal_worker_requests<'a>(
             "Worker Create seal has another incarnation",
         ));
     }
-    let exact = binding(ledger, anchor, pod, provider_id)?;
+    let exact = binding(ledger, anchor, pod, worker, provider_id)?;
     ledger.seal_worker(exact).await.map_err(|_| {
         ApplicationError::unavailable("old Worker Create ledger could not be sealed")
     })?;
@@ -512,7 +515,13 @@ impl K8sCreateBroker {
         let anchor = record.create_ledger.ok_or_else(|| {
             ApplicationError::unavailable("Worker Create has no frozen physical ledger")
         })?;
-        let ledger_binding = binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?;
+        let ledger_binding = binding(
+            self.ledger.as_ref(),
+            &anchor,
+            &pod,
+            &identity,
+            &self.provider_id,
+        )?;
         let validated = validate_create(&identity, &self.sandbox_namespace, create)?;
         let (admission, profile) = self
             .ledger
@@ -722,7 +731,13 @@ impl K8sCreateBroker {
             let reply = BrokerCreateReply::new(status_response(403, "Forbidden"), profile)?;
             self.ledger
                 .finish_request(
-                    binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?,
+                    binding(
+                        self.ledger.as_ref(),
+                        &anchor,
+                        &pod,
+                        &identity,
+                        &self.provider_id,
+                    )?,
                     &create.ticket,
                     &result,
                 )
@@ -735,7 +750,13 @@ impl K8sCreateBroker {
         let admitted = self
             .ledger
             .ticket_for(
-                binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?,
+                binding(
+                    self.ledger.as_ref(),
+                    &anchor,
+                    &pod,
+                    &identity,
+                    &self.provider_id,
+                )?,
                 &create.ticket,
             )
             .await
@@ -806,7 +827,13 @@ impl K8sCreateBroker {
         let reply = BrokerCreateReply::new(K8sCreateResponse { status, object }, profile)?;
         self.ledger
             .finish_request(
-                binding(self.ledger.as_ref(), &anchor, &pod, &self.provider_id)?,
+                binding(
+                    self.ledger.as_ref(),
+                    &anchor,
+                    &pod,
+                    &identity,
+                    &self.provider_id,
+                )?,
                 &create.ticket,
                 &result,
             )

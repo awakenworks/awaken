@@ -322,9 +322,10 @@ the frozen binding must retain that fact before effects. A historical unretained
 binding cannot gain stop capability by observing a later finalizer.
 
 The same provider also accepts a Deployment Pod whose `Always` restart policy
-is frozen before effects, provided every private container is still in its
-original execution with zero restarts and the evidence finalizer is already
-present. This does not treat a restartable Pod's natural exit as irreversible:
+is frozen before effects, provided the evidence finalizer is already present.
+ADR-0078's 2026-10-31 amendment refines the rule below: an incarnation is one
+container instance, observed by exact container ID in `state` or `lastState`,
+and a restarted container registers as a new incarnation of the same Worker. This does not treat a restartable Pod's natural exit as irreversible:
 observation requires accepted deletion intent and exact runtime exit of the
 entire frozen container set. A policy change, restart, replaced container or
 lost status remains Unknown. Historical bindings without the new policy fact

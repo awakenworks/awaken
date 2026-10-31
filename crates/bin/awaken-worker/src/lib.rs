@@ -27,48 +27,10 @@
 //! the injected [`InferenceExecutorMaterializer`]. The host's inert executor
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_provisioning_contract::{SandboxProvider, SessionSandbox};
 use futures_util::FutureExt as _;
 use std::sync::Arc;
-
-#[cfg(feature = "container-k8s")]
-async fn request_registered_kubernetes_pod_replacement(worker_id: &str) -> Result<(), String> {
-    use awaken_worker_fleet_kubernetes::{PodProcessObserver, PodProcessStopper};
-    use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
-
-    let pod = KubernetesPodIdentity::from_worker_id(worker_id)?;
-    let client = awaken_worker_fleet_kubernetes::connect_control_client()
-        .await
-        .map_err(|error| error.to_string())?;
-    let observer =
-        PodProcessObserver::new(client, pod.namespace()).map_err(|error| error.to_string())?;
-    PodProcessStopper::new(observer)
-        .request_registered_pod_replacement(pod.name(), pod.uid())
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "container-k8s")]
-async fn await_registered_kubernetes_pod_replacement(worker_id: &str) {
-    let mut attempts = 0_u64;
-    loop {
-        match request_registered_kubernetes_pod_replacement(worker_id).await {
-            Ok(()) => break,
-            Err(error) => {
-                if attempts.is_multiple_of(10) {
-                    eprintln!("worker Pod replacement intent pending: {error}");
-                }
-                attempts = attempts.saturating_add(1);
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
-    }
-}
 
 mod acp_capability;
 mod admin;
@@ -83,6 +45,7 @@ mod lifecycle;
 mod manifest;
 #[cfg(test)]
 mod relay_hand;
+mod startup_retry;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
@@ -1464,30 +1427,28 @@ impl WorkerNode {
         // closes the listener on every early return or unwind.
         let admin_surface = start_admin_surface(self.admin_listen).await;
         let mut shutdown = std::pin::pin!(shutdown);
-        let mut registration_wait_attempts = 0_u64;
+        let mut backoff = startup_retry::StartupBackoff::new(&incarnation_id);
         let registration_receipt = loop {
-            let attempt = bootstrap_control
+            let error = match bootstrap_control
                 .register_classified(incarnation_id.clone(), self.manifest.clone())
-                .await;
-            match attempt {
+                .await
+            {
                 Ok(registration) => break registration,
-                Err(
-                    error @ (awaken_coordinator_client::WorkerRegistrationError::SlotOccupied(_)
-                    | awaken_coordinator_client::WorkerRegistrationError::Unavailable(_)),
-                ) => {
-                    if registration_wait_attempts.is_multiple_of(10) {
-                        eprintln!("worker registration waiting for Coordinator: {error}");
-                    }
-                    registration_wait_attempts = registration_wait_attempts.saturating_add(1);
-                    tokio::select! {
-                        () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
-                        shutdown = &mut shutdown => {
-                            shutdown?;
-                            return Ok(());
-                        }
-                    }
+                Err(error) => error,
+            };
+            // Exhaustion exits non-zero: the Never-restart Pod ends and the
+            // fleet controller replaces it with a fresh UID.
+            let delay = backoff.delay_after(&error).map_err(std::io::Error::other)?;
+            eprintln!(
+                "worker registration waiting for Coordinator (retry {} in {delay:?}): {error}",
+                backoff.retries()
+            );
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {}
+                shutdown = &mut shutdown => {
+                    shutdown?;
+                    return Ok(());
                 }
-                Err(error) => return Err(std::io::Error::other(error.to_string()).into()),
             }
         };
         let startup_timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
@@ -1952,15 +1913,9 @@ impl WorkerNode {
             )
             .await;
         }
-        #[cfg(feature = "container-k8s")]
-        if k8s_create_client.is_some() && identity.worker_id.starts_with("k8s:") {
-            // One Pod UID is one Registry incarnation and one immutable Create
-            // ledger. Keep /livez serving while this drained process waits for
-            // a UID-fenced Kubernetes deletion intent; exiting sooner would
-            // let StatefulSet restart a second process under the same UID.
-            // This never emits a stop receipt or releases retained evidence.
-            await_registered_kubernetes_pod_replacement(&identity.worker_id).await;
-        }
+        // A registered Kubernetes Worker runs in a `restartPolicy: Never` Pod
+        // (the Coordinator binds no other): exiting ends that Pod, and its
+        // retained exact exit settles this incarnation. No self-deletion here.
         shutdown?;
         if authority_lost {
             return Err(std::io::Error::other(

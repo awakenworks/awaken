@@ -170,6 +170,22 @@ def main() -> None:
     for status in ('', '            status: "False"', '            status: "Unknown"'):
         assert not worker_replacement_contract(product_resources.replace('            status: "True"', status))
     distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
+    # PR6 (ADR-0078 amendment 2026-10-31): the Coordinator adds the Worker
+    # process-evidence finalizer at registration, once the Pod can bind. A
+    # template finalizer would pin every Pod that never registers, so neither
+    # the product Job nor the distributed StatefulSet template may carry it.
+    def worker_template_finalizer_free(resources_text: str, marker: str) -> bool:
+        worker = resources_text.split(marker, 1)[1].split("\n---", 1)[0]
+        return "awaken.dev/worker-process-evidence" not in worker
+    assert worker_template_finalizer_free(product_resources, product_marker), "PR6 product"
+    assert worker_template_finalizer_free(resources, distributed_marker), "PR6 distributed"
+    assert not worker_template_finalizer_free(
+        product_resources.replace(
+            "        app.kubernetes.io/name: awaken-worker\n      # No process-evidence",
+            "        app.kubernetes.io/name: awaken-worker\n      finalizers: [awaken.dev/worker-process-evidence]\n      # No process-evidence",
+        ),
+        product_marker,
+    ), "PR6 mutation: template finalizer"
     assert worker_retirement_contract(product_resources, product_marker)
     assert worker_retirement_contract(resources, distributed_marker)
     assert not worker_retirement_contract(

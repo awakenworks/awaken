@@ -177,15 +177,13 @@ impl WorkerRequestAuthenticator for KubernetesWorkerAuthenticator {
         if pod != requested_pod {
             return Err(invalid("Kubernetes token belongs to another Pod"));
         }
-        let mut context = VerifiedWorkerContext::signed(
+        // The Worker ID is the Pod; its incarnation is a container instance.
+        // Registration does not trust a process-proposed incarnation: the
+        // Coordinator's binding source derives it from the running container.
+        Ok(VerifiedWorkerContext::signed(
             worker_id.into(),
             identity,
             format!("k8s-pod:{}", pod.uid()),
-        );
-        // A non-restarting Pod is one execution domain. A process-proposed
-        // nonce must not resurrect its closed Registry slot while an independent
-        // controller stops that same Pod. Generation remains Registry-owned.
-        context.registration_incarnation = Some(pod.uid().into());
-        Ok(context)
+        ))
     }
 }

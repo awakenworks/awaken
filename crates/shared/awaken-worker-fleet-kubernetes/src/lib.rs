@@ -38,8 +38,9 @@ pub use create_ledger::{
 pub use create_transport::{K8sCreateTransport, brokered_client};
 pub use network_labels::sandbox_network_labels;
 pub use process_termination::{
-    CONTINUATION_CLEANUP_FINALIZER, ObservedPodProcessExit, PodProcessBinding, PodProcessObserver,
-    PodProcessStopper, PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
+    CONTINUATION_CLEANUP_FINALIZER, EndedRetainedWorkerPod, ObservedContainerExit,
+    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,
+    PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
     has_forbidden_sandbox_namespace_shape,
 };
 

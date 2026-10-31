@@ -104,7 +104,9 @@ grep -q 'package_registry_insecure = true' "$RENDERED"
 grep -q 'serviceAccountName: awaken-product' "$RENDERED"
 grep -q 'serviceAccountName: awaken-worker' "$RENDERED"
 grep -q 'restartPolicy: Never' "$RENDERED"
-grep -q 'awaken.dev/worker-process-evidence' "$RENDERED"
+# The Worker process-evidence finalizer is added at registration only; a
+# template finalizer would pin every never-registered Pod forever.
+! grep -q 'awaken.dev/worker-process-evidence' "$RENDERED"
 grep -q 'https://awaken-product:8443' "$RENDERED"
 grep -q 'image: nginx:1.27-alpine' "$RENDERED"
 grep -q 'secretName: awaken-worker-upstream-tls' "$RENDERED"

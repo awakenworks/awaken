@@ -16,8 +16,8 @@ use awaken_dispatch::{
 use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_worker_contract::{WorkerRelayTargetError, WorkerRelayTargetObserver};
 use awaken_worker_fleet_kubernetes::{
-    K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver, PodProcessStopper,
-    PodProcessTermination,
+    EndedRetainedWorkerPod, K8sWorkerCreateLedger, PodProcessBinding, PodProcessObserver,
+    PodProcessStopper, PodProcessTermination,
 };
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
@@ -102,9 +102,16 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
                 "Worker bootstrap names another Pod namespace",
             ));
         }
+        let incarnation = self
+            .create_ledger
+            .worker_incarnation_of(expected.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("original Worker bootstrap ledger unavailable")
+            })?;
         let (name, uid) = self
             .create_ledger
-            .existing_worker_anchor(pod.namespace(), pod.name(), pod.uid())
+            .existing_worker_anchor(pod.namespace(), pod.name(), pod.uid(), &incarnation)
             .await
             .map_err(|_| {
                 ApplicationError::unavailable("original Worker bootstrap ledger unavailable")
@@ -121,6 +128,7 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             worker_namespace: pod.namespace(),
             worker_name: pod.name(),
             worker_uid: pod.uid(),
+            worker_incarnation: &incarnation,
             ledger_name: anchor.name(),
             ledger_uid: anchor.uid(),
             configuration_fingerprint: anchor.configuration_fingerprint(),
@@ -149,23 +157,52 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
         Ok(anchor)
     }
 
+    async fn registration_incarnation(
+        &self,
+        registration: &WorkerRegistration,
+    ) -> Result<Option<String>, ApplicationError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&registration.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.namespace || registration.worker_id != pod.worker_id() {
+            return Err(ApplicationError::invalid(
+                "registration names another Worker Pod namespace",
+            ));
+        }
+        // The Worker ID stays the Pod; each running container instance is an
+        // incarnation of it. Only a bindable Pod gets one.
+        self.observer
+            .admissible_incarnation(pod.name(), pod.uid())
+            .await
+            .map(Some)
+            .map_err(|_| ApplicationError::unavailable("Worker Pod has no admissible process"))
+    }
+
     async fn prepare_registration_physical_evidence(
         &self,
         registration: &WorkerRegistration,
     ) -> Result<Option<WorkerCreateLedger>, ApplicationError> {
         let pod = KubernetesPodIdentity::from_worker_id(&registration.worker_id)
             .map_err(ApplicationError::invalid)?;
-        if pod.namespace() != self.namespace
-            || registration.worker_id != pod.worker_id()
-            || registration.incarnation_id != pod.uid()
-        {
+        if pod.namespace() != self.namespace || registration.worker_id != pod.worker_id() {
             return Err(ApplicationError::invalid(
                 "Create ledger registration names another Worker Pod",
             ));
         }
+        // A container restart between incarnation selection and here yields
+        // another incarnation: refuse; the Worker re-registers.
+        let current = self
+            .observer
+            .admissible_incarnation(pod.name(), pod.uid())
+            .await
+            .map_err(|_| ApplicationError::unavailable("Worker Pod has no admissible process"))?;
+        if registration.incarnation_id != current {
+            return Err(ApplicationError::unavailable(
+                "Worker container instance changed during registration",
+            ));
+        }
         let (name, uid) = self
             .create_ledger
-            .initialize(pod.namespace(), pod.name(), pod.uid())
+            .initialize(pod.namespace(), pod.name(), pod.uid(), &current)
             .await
             .map_err(|_| ApplicationError::unavailable("Worker Create ledger unavailable"))?;
         let anchor = WorkerCreateLedger::new(
@@ -206,6 +243,7 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             worker_namespace: pod.namespace(),
             worker_name: pod.name(),
             worker_uid: pod.uid(),
+            worker_incarnation: &worker.incarnation_id,
             ledger_name: anchor.name(),
             ledger_uid: anchor.uid(),
             configuration_fingerprint: anchor.configuration_fingerprint(),
@@ -215,6 +253,21 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
         {
             return Err(ApplicationError::unavailable(
                 "registered Kubernetes Worker Create ledger provider changed",
+            ));
+        }
+        // Retain only a Pod whose running container is this incarnation. An
+        // unbindable Pod (privileged shape, not Running) or a restarted
+        // container would otherwise keep the finalizer for nobody.
+        let admissible = self
+            .observer
+            .admissible_incarnation(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("Worker Pod has no admissible process binding")
+            })?;
+        if !process_incarnation_matches(&pod, worker, &admissible) {
+            return Err(ApplicationError::unavailable(
+                "Worker container instance changed before retention",
             ));
         }
         self.observer
@@ -228,7 +281,9 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             .map_err(|_| {
                 ApplicationError::unavailable("retained Worker process binding unavailable")
             })?;
-        if !process.worker_evidence_was_retained() {
+        if !process.worker_evidence_was_retained()
+            || !process.belongs_to_incarnation(pod.uid(), &worker.incarnation_id)
+        {
             return Err(ApplicationError::unavailable(
                 "Worker process evidence was not retained",
             ));
@@ -260,7 +315,9 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             .map_err(|_| {
                 ApplicationError::unavailable("exact Kubernetes Worker process is unavailable")
             })?;
-        if !binding.worker_evidence_was_retained() {
+        if !binding.worker_evidence_was_retained()
+            || !binding.belongs_to_incarnation(pod.uid(), &worker.incarnation_id)
+        {
             return Err(ApplicationError::unavailable(
                 "Kubernetes Worker process evidence must be retained before admission",
             ));
@@ -290,6 +347,36 @@ impl WorkerRelayTargetObserver for KubernetesWorkerBindings {
     }
 }
 
+/// Whether the Registry leaves the ended Pod's last incarnation to the
+/// unregistered release: no record for the Worker ID, or a record of an older
+/// incarnation whose exact exit is already recorded.
+async fn registry_releases_unregistered(
+    directory: &dyn awaken_dispatch::WorkerDirectory,
+    worker_id: &str,
+    last_incarnation: &str,
+) -> Result<bool, ApplicationError> {
+    let current = directory
+        .current(worker_id)
+        .await
+        .map_err(|_| ApplicationError::unavailable("Worker Registry unavailable"))?;
+    Ok(current.is_none_or(|record| {
+        record.snapshot.identity.incarnation_id != last_incarnation && record.process_exit.is_some()
+    }))
+}
+
+/// A registering or retaining process is this incarnation: its running
+/// container instance, or the historical Pod-UID incarnation of the Pod.
+fn process_incarnation_matches(
+    pod: &KubernetesPodIdentity,
+    worker: &WorkerIdentity,
+    container_incarnation: &str,
+) -> bool {
+    worker.incarnation_id == container_incarnation || worker.incarnation_id == pod.uid()
+}
+
+/// Bound on ended unregistered Worker Pods released per maintenance pass.
+const UNREGISTERED_RELEASES_PER_PASS: usize = 8;
+
 struct KubernetesWorkerStops {
     stopper: Arc<PodProcessStopper>,
     create_ledger: Arc<K8sWorkerCreateLedger>,
@@ -311,12 +398,76 @@ impl KubernetesWorkerStops {
             || pod.namespace() != self.namespace
             || !pod.matches_worker(binding.worker())
             || !process.matches_pod(pod.namespace(), pod.name(), pod.uid())
+            || !process.belongs_to_incarnation(pod.uid(), &binding.worker().incarnation_id)
         {
             return Err(ApplicationError::invalid(
                 "closed Worker binding does not belong to this Kubernetes execution domain",
             ));
         }
         Ok((process, pod))
+    }
+
+    /// Decision for one ended Pod still retaining Worker evidence, keyed by
+    /// the incarnation of its last container instance (L) and the Worker ID's
+    /// current Registry record (R):
+    /// | R                                    | L's ledger           | effect  |
+    /// | R names L                            | any                  | keep: the exact-exit path owns L |
+    /// | R names an older incarnation, no exit | any                  | keep: its exit may still be in `lastState` |
+    /// | absent, or older with recorded exit  | absent / unbound     | release (unbound ledger sealed first) |
+    /// | absent, or older with recorded exit  | bound / unavailable  | keep: L's Registry insert may be pending |
+    /// The Registry is reread after the seal: a binding frozen before it may
+    /// still commit, and only the same decision after the deny fence is final.
+    async fn release_unregistered_ended_pod(
+        &self,
+        directory: &dyn awaken_dispatch::WorkerDirectory,
+        ended: &EndedRetainedWorkerPod,
+    ) -> Result<(), ApplicationError> {
+        let pod = KubernetesPodIdentity::new(&self.namespace, &ended.name, &ended.uid)
+            .map_err(ApplicationError::invalid)?;
+        let worker_id = pod.worker_id();
+        if !registry_releases_unregistered(directory, &worker_id, &ended.incarnation).await? {
+            return Ok(());
+        }
+        match self
+            .create_ledger
+            .existing_worker_anchor(pod.namespace(), pod.name(), pod.uid(), &ended.incarnation)
+            .await
+        {
+            Ok((ledger_name, ledger_uid)) => {
+                let binding = K8sLedgerBinding {
+                    worker_namespace: pod.namespace(),
+                    worker_name: pod.name(),
+                    worker_uid: pod.uid(),
+                    worker_incarnation: &ended.incarnation,
+                    ledger_name: &ledger_name,
+                    ledger_uid: &ledger_uid,
+                    configuration_fingerprint: self.create_ledger.configuration_fingerprint(),
+                };
+                self.create_ledger
+                    .seal_unattempted_worker(binding)
+                    .await
+                    .map_err(|_| {
+                        ApplicationError::unavailable(
+                            "ended unregistered Worker ledger is bound or unavailable",
+                        )
+                    })?;
+            }
+            Err(awaken_container_contract::RuntimeError::NotFound(_)) => {}
+            Err(_) => {
+                return Err(ApplicationError::unavailable(
+                    "ended unregistered Worker ledger unavailable",
+                ));
+            }
+        }
+        if !registry_releases_unregistered(directory, &worker_id, &ended.incarnation).await? {
+            return Ok(());
+        }
+        self.stopper
+            .release_ended_unregistered_pod_evidence(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("ended unregistered Worker release unavailable")
+            })
     }
 
     async fn seal_original_create_admission(
@@ -384,6 +535,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
             worker_namespace: pod.namespace(),
             worker_name: pod.name(),
             worker_uid: pod.uid(),
+            worker_incarnation: &worker.incarnation_id,
             ledger_name: anchor.name(),
             ledger_uid: anchor.uid(),
             configuration_fingerprint: anchor.configuration_fingerprint(),
@@ -420,7 +572,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         awaken_dispatch::WorkerProcessExit::new(
             &self.provider_id,
             reference,
-            receipt.resource_version(),
+            receipt.evidence_ref(),
         )
         .map(Some)
         .map_err(|error| ApplicationError::internal(error.to_string()))
@@ -439,12 +591,57 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         }
         self.seal_original_create_admission(&pod, worker, original_create_ledger)
             .await?;
-        self.stopper
-            .retire_closed_idle_pod(pod.name(), pod.uid())
+        // A restarted container is a newer incarnation of this Pod: retiring
+        // this one must neither delete the Pod nor drop its retention.
+        let process = match original_create_ledger {
+            Some(anchor) => self
+                .create_ledger
+                .read_process_binding(K8sLedgerBinding {
+                    worker_namespace: pod.namespace(),
+                    worker_name: pod.name(),
+                    worker_uid: pod.uid(),
+                    worker_incarnation: &worker.incarnation_id,
+                    ledger_name: anchor.name(),
+                    ledger_uid: anchor.uid(),
+                    configuration_fingerprint: anchor.configuration_fingerprint(),
+                })
+                .await
+                .map_err(|_| {
+                    ApplicationError::unavailable("idle Worker process binding unavailable")
+                })?,
+            None => None,
+        };
+        let retired = match &process {
+            Some(process) => self.stopper.retire_closed_idle_incarnation(process).await,
+            None => {
+                self.stopper
+                    .retire_closed_idle_pod(pod.name(), pod.uid())
+                    .await
+            }
+        };
+        retired.map_err(|_| {
+            ApplicationError::unavailable("closed-idle Worker Pod retirement is unavailable")
+        })
+    }
+    async fn release_unregistered_ended_worker_evidence(
+        &self,
+        directory: &dyn awaken_dispatch::WorkerDirectory,
+    ) -> Result<(), ApplicationError> {
+        // The Worker finalizer is added only at registration. A Pod that ended
+        // between that retention and its Registry insert has no record for the
+        // per-incarnation scan; release it here once provably unregistered.
+        let candidates = self
+            .stopper
+            .ended_retained_worker_pods()
             .await
-            .map_err(|_| {
-                ApplicationError::unavailable("closed-idle Worker Pod retirement is unavailable")
-            })
+            .map_err(|_| ApplicationError::unavailable("ended Worker Pod listing unavailable"))?;
+        let mut first_error = None;
+        for ended in candidates.into_iter().take(UNREGISTERED_RELEASES_PER_PASS) {
+            if let Err(error) = self.release_unregistered_ended_pod(directory, &ended).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
     async fn stop_closed_worker(
         &self,
@@ -458,7 +655,7 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         })? {
             PodProcessTermination::Unknown => Ok(WorkerProcessStopStatus::Unknown),
             PodProcessTermination::Observed(receipt) => {
-                execution.observed_exit(receipt.resource_version())
+                execution.observed_exit(receipt.evidence_ref())
             }
         }
     }

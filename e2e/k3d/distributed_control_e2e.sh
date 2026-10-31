@@ -298,15 +298,15 @@ create_native_worker_pod() {
   local pod_name="$1"
   # One canonical Pod template covers predecessor and successor. The projected
   # coordinate is authenticated independently by TokenReview; restartPolicy
-  # Never, the retained finalizer and a private non-privileged process namespace
-  # are prerequisites for exact termination evidence, not test conveniences.
+  # Never, the finalizer the Coordinator retains at registration and a private
+  # non-privileged process namespace are prerequisites for exact termination
+  # evidence, not test conveniences. No template carries that finalizer.
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: v1
 kind: Pod
 metadata:
   name: ${pod_name}
   labels: { app: worker, awaken.dev/native-crash-fixture: "true" }
-  finalizers: [awaken.dev/worker-process-evidence]
 spec:
   serviceAccountName: worker-runtime
   automountServiceAccountToken: true
@@ -382,24 +382,35 @@ YAML
 }
 
 hard_crash_native_worker() {
-  local pod="$1" expected_uid="$2" facts uid node container phase observed_container observed_uid observed_exit
+  local pod="$1" expected_uid="$2" mode="${3:-ended}" facts uid node container restarts phase observed_container observed_uid observed_exit observed_restarts
   # One API observation binds UID, node and CRI id before the destructive
   # injection. Completion joins the exact retained UID/container, never a bare
-  # name/404. Both Native fault phases reuse this one physical injection owner.
+  # name/404. Every Worker fault phase reuses this one physical injection owner.
+  # Mode `ended`: a Never-restart Pod ends Failed with that exact exit.
+  # Mode `in-place`: an Always Pod keeps its UID, kubelet restarts the
+  # container, and `lastState` names the killed container with exit 137.
   facts=$(kubectl -n "$NS" get pod "$pod" \
-    -o jsonpath='{.metadata.uid}|{.spec.nodeName}|{.status.containerStatuses[0].containerID}')
-  IFS='|' read -r uid node container <<<"$facts"
+    -o jsonpath='{.metadata.uid}|{.spec.nodeName}|{.status.containerStatuses[0].containerID}|{.status.containerStatuses[0].restartCount}')
+  IFS='|' read -r uid node container restarts <<<"$facts"
   container=${container#containerd://}
   [ "$uid" = "$expected_uid" ] && [[ "$node" == "k3d-${CLUSTER}-"* ]] \
-    && [[ "$container" =~ ^[0-9a-f]{64}$ ]] \
+    && [[ "$container" =~ ^[0-9a-f]{64}$ ]] && [[ "$restarts" =~ ^[0-9]+$ ]] \
     || { err "invalid exact Native Worker CRI crash target"; return 1; }
   k3d_hard_stop_cri_container "$CLUSTER" "$node" "$container" || return "$?"
   for _ in $(seq 1 90); do
-    facts=$(kubectl -n "$NS" get pod "$pod" \
-      -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[0].state.terminated.containerID}|{.status.containerStatuses[0].state.terminated.exitCode}')
-    IFS='|' read -r observed_uid phase observed_container observed_exit <<<"$facts"
-    [ "$observed_uid" = "$expected_uid" ] && [ "$phase" = "Failed" ] \
-      && [ "$observed_container" = "containerd://${container}" ] && [ "$observed_exit" = 137 ] && return 0
+    if [ "$mode" = in-place ]; then
+      facts=$(kubectl -n "$NS" get pod "$pod" \
+        -o jsonpath='{.metadata.uid}|{.status.containerStatuses[0].restartCount}|{.status.containerStatuses[0].lastState.terminated.containerID}|{.status.containerStatuses[0].lastState.terminated.exitCode}')
+      IFS='|' read -r observed_uid observed_restarts observed_container observed_exit <<<"$facts"
+      [ "$observed_uid" = "$expected_uid" ] && [ "$observed_restarts" = "$((restarts + 1))" ] \
+        && [ "$observed_container" = "containerd://${container}" ] && [ "$observed_exit" = 137 ] && return 0
+    else
+      facts=$(kubectl -n "$NS" get pod "$pod" \
+        -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[0].state.terminated.containerID}|{.status.containerStatuses[0].state.terminated.exitCode}')
+      IFS='|' read -r observed_uid phase observed_container observed_exit <<<"$facts"
+      [ "$observed_uid" = "$expected_uid" ] && [ "$phase" = "Failed" ] \
+        && [ "$observed_container" = "containerd://${container}" ] && [ "$observed_exit" = 137 ] && return 0
+    fi
     sleep 1
   done
   err "Kubernetes did not retain the exact hard-crashed Worker process"
@@ -659,8 +670,9 @@ log "6/11 remove the entire Coordinator tier, then recover the same publication"
 # C1 Coordinator unavailable -> public publication fails retryably and Workers
 # revoke their local claim admission; C2 Coordinator restored -> durable
 # publication remains available, but drained Worker incarnations terminate;
-# C3 the drained Worker requests exact Pod deletion before exit; StatefulSet
-# replacement gets a new UID, then a fresh incarnation can become Ready.
+# C3 the drained Worker exits; kubelet restarts its container in place under
+# the same Pod UID, and that new container instance registers as a new
+# incarnation of the same Pod-scoped Worker ID, then becomes Ready.
 WORKER_CONTAINERS_BEFORE=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
 WORKER_0_UID_BEFORE=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')
 WORKER_1_UID_BEFORE=$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')
@@ -693,21 +705,66 @@ node "$DRIVER" retry-publication "$API_URL"
 kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
 WORKER_CONTAINERS_AFTER=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
 [ "$WORKER_CONTAINERS_BEFORE" != "$WORKER_CONTAINERS_AFTER" ] || { err "drained Worker containers were reused"; exit 1; }
-# Worker Pod replacement decision table: W1 authority lost + exact local
-# drain + retained UID deletion intent => Kubernetes may replace the Pod;
-# W2 same UID container restart => the immutable Create ledger cannot bind a
-# second process and must remain unready. E1 both ordinals acquire new UIDs
-# with zero container restarts; E2 either unchanged UID fails this gate. The
-# provider still owns the old exit receipt independently of DELETE acceptance.
-[ "$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')" != "$WORKER_0_UID_BEFORE" ] \
-  || { err "worker-0 reused its immutable Pod UID"; exit 1; }
-[ "$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')" != "$WORKER_1_UID_BEFORE" ] \
-  || { err "worker-1 reused its immutable Pod UID"; exit 1; }
+# Worker incarnation decision table (ADR-0078 amendment 2026-10-31): W1
+# authority lost + exact local drain + process exit => kubelet restarts the
+# container in place; W2 the new container instance registers as a new
+# incarnation of the same Pod-scoped Worker ID. E1 both ordinals keep their
+# Pod UID, restart in place at least once and run new container IDs; E2 an
+# unchanged container ID fails this gate. The Coordinator settles each old
+# incarnation from its container's exact `lastState` exit.
+[ "$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')" = "$WORKER_0_UID_BEFORE" ] \
+  || { err "worker-0 was replaced instead of restarted in place"; exit 1; }
+[ "$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')" = "$WORKER_1_UID_BEFORE" ] \
+  || { err "worker-1 was replaced instead of restarted in place"; exit 1; }
 for pod in worker-0 worker-1; do
-  [ "$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}')" = 0 ] \
-    || { err "$pod restarted inside its immutable Pod UID"; exit 1; }
+  [ "$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}')" -ge 1 ] \
+    || { err "$pod did not restart its container in place"; exit 1; }
 done
-ok "Coordinator outage failed closed; exact Pod deletion created fresh Worker UIDs"
+ok "Coordinator outage failed closed; restarted Worker containers registered as new incarnations"
+
+log "6b/11 hard-kill one Worker container in place; its incarnation settles from lastState"
+# Cause/effect decision table (ADR-0078 amendment 2026-10-31: the Worker ID is
+# the Pod, an incarnation is one container instance). C1 the CRI hard-kills
+# the running container of registered, retained worker-0 without deleting the
+# Pod; C2 the StatefulSet Pod is restartPolicy Always. Effects: E1 the same
+# Pod UID restarts the container in place (restartCount +1) and `lastState`
+# names the killed container with exit 137; E2 the new container ID registers
+# as a new incarnation of the same Worker ID; E3 the old incarnation records
+# its exact exit 137 from `lastState` before the new one is admitted; E4 public
+# work continues. Rules K1 C1+C2 => E1+E2; K2 E1 => E3; K3 E2 => E4. If the
+# container restarted twice before observation, E3 is Unknown instead.
+CRASHED_WORKER_UID=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')
+CRASHED_CONTAINER=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.status.containerStatuses[0].containerID}')
+CRASHED_INCARNATION=${CRASHED_CONTAINER#containerd://}
+CRASHED_WORKER_ID="k8s:${NS}:worker-0:${CRASHED_WORKER_UID}"
+CRASHED_REGISTERED=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM worker_registry_worker
+     WHERE worker_id = '${CRASHED_WORKER_ID}' AND incarnation_id = '${CRASHED_INCARNATION}'")
+[ "$CRASHED_REGISTERED" = "1" ] || { err "worker-0 is not registered as its container instance"; exit 1; }
+hard_crash_native_worker worker-0 "$CRASHED_WORKER_UID" in-place
+kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
+[ "$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')" = "$CRASHED_WORKER_UID" ] \
+  || { err "worker-0 was replaced instead of restarted in place"; exit 1; }
+RESTARTED_CONTAINER=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.status.containerStatuses[0].containerID}')
+RESTARTED_INCARNATION=${RESTARTED_CONTAINER#containerd://}
+[ -n "$RESTARTED_INCARNATION" ] && [ "$RESTARTED_INCARNATION" != "$CRASHED_INCARNATION" ] \
+  || { err "worker-0 did not start a new container instance"; exit 1; }
+for _ in $(seq 1 120); do
+  RESTARTED_LEASES=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT count(*) FROM worker_registry_worker
+       WHERE worker_id = '${CRASHED_WORKER_ID}' AND incarnation_id = '${RESTARTED_INCARNATION}'
+       AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)")
+  [ "$RESTARTED_LEASES" = "1" ] && break
+  sleep 1
+done
+[ "$RESTARTED_LEASES" = "1" ] || { err "restarted container never registered as a new incarnation"; exit 1; }
+CRASHED_EXIT=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM worker_registry_worker
+     WHERE worker_id = '${CRASHED_WORKER_ID}' AND incarnation_id = '${CRASHED_INCARNATION}'
+     AND process_exit_json LIKE '%k8s-container-exit%' AND process_exit_json LIKE '%exit_code%137%'")
+[ "$CRASHED_EXIT" = "1" ] || { err "killed incarnation has no exact lastState exit 137: $CRASHED_EXIT"; exit 1; }
+node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-WORKER-CRASH
+ok "killed Worker container restarted in place, its old incarnation settled exit 137, and work continued"
 
 log "7/11 inject single-Pod faults and concurrent durable traffic"
 # Cause/effect decision table:

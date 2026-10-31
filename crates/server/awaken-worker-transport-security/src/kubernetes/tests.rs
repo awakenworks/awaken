@@ -127,24 +127,31 @@ fn parts(identity: Option<&WorkerIdentity>) -> Parts {
 
 #[cfg(feature = "kubernetes")]
 #[tokio::test]
-async fn one_pod_uid_cannot_authenticate_another_process_incarnation() {
-    // I1 exact Pod UID + canonical incarnation + positive Registry generation =>
-    // authenticated. I2 same reviewed UID + another incarnation =>
-    // reject before review. Otherwise a closed incarnation can register anew
-    // inside the very Pod an independent stop command is about to terminate.
-    // UID replacement must instead use a different Worker id and Pod domain.
+async fn one_pod_authenticates_only_its_container_instance_incarnations() {
+    // The Worker ID is the Pod; an incarnation is one container instance.
+    // I1 registration carries no identity and pins no incarnation: the
+    // Coordinator's binding source derives it from the running container.
+    // I2 the Pod's historical Pod-UID incarnation or a container-instance
+    // token (lowercase hex) + positive generation => authenticated; Registry
+    // still fences the exact incarnation and generation. I3 any other
+    // incarnation shape (a random boot name, another Pod's UID) or generation
+    // zero => reject before review.
     let api = MockApi::new(Duration::from_secs(2), Duration::ZERO).await;
-    let exact = WorkerIdentity::new(pod().worker_id(), pod().uid(), 1);
     let bootstrap = api.auth.authenticate(&parts(None)).await.unwrap();
-    assert_eq!(
-        bootstrap.registration_incarnation(),
-        Some(pod().uid()),
-        "I1 fixed registration"
-    );
-    assert!(api.auth.authenticate(&parts(Some(&exact))).await.is_ok());
+    assert!(bootstrap.identity().is_none(), "I1");
+    let container = "a".repeat(64);
+    for incarnation in [pod().uid(), "0f3a9c", container.as_str()] {
+        let identity = WorkerIdentity::new(pod().worker_id(), incarnation, 1);
+        assert!(
+            api.auth.authenticate(&parts(Some(&identity))).await.is_ok(),
+            "I2 {incarnation}"
+        );
+    }
     for identity in [
         WorkerIdentity::new(pod().worker_id(), "new-random-boot", 1),
         WorkerIdentity::new(pod().worker_id(), "another-pod-uid", 1),
+        WorkerIdentity::new(pod().worker_id(), "a".repeat(129), 1),
+        WorkerIdentity::new(pod().worker_id(), "0f3a9c", 0),
     ] {
         assert!(
             api.auth
@@ -154,7 +161,7 @@ async fn one_pod_uid_cannot_authenticate_another_process_incarnation() {
             "I2"
         );
     }
-    assert_eq!(api.state.calls.load(Ordering::SeqCst), 2, "I2 no review");
+    assert_eq!(api.state.calls.load(Ordering::SeqCst), 4, "I3 no review");
 }
 
 #[test]

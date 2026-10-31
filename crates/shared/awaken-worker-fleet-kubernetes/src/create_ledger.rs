@@ -38,6 +38,7 @@ const SANDBOX_NAMESPACE: &str = "awaken.dev/create-ledger-sandbox-namespace";
 const WORKER_NAMESPACE: &str = "awaken.dev/create-ledger-worker-namespace";
 const WORKER_NAME: &str = "awaken.dev/create-ledger-worker-name";
 const WORKER_UID: &str = "awaken.dev/create-ledger-worker-uid";
+const WORKER_INCARNATION: &str = "awaken.dev/create-ledger-worker-incarnation";
 const CONFIGURATION: &str = "awaken.dev/create-ledger-configuration";
 const VERSION: &str = "v1";
 const CAS_ATTEMPTS: usize = 8;
@@ -96,28 +97,60 @@ impl K8sWorkerCreateLedger {
         &self.provider_id
     }
 
-    fn ledger_name(worker_namespace: &str, worker_name: &str, worker_uid: &str) -> String {
-        let identity = serde_json::to_vec(&(worker_namespace, worker_name, worker_uid))
-            .expect("Worker Pod coordinate is serializable");
+    /// One ledger per Worker incarnation. A historical incarnation equal to the
+    /// Pod UID keeps its original Pod-scoped name; a container-instance
+    /// incarnation of the same Pod gets its own ledger.
+    fn ledger_name(
+        worker_namespace: &str,
+        worker_name: &str,
+        worker_uid: &str,
+        worker_incarnation: &str,
+    ) -> String {
+        let identity = if worker_incarnation == worker_uid {
+            serde_json::to_vec(&(worker_namespace, worker_name, worker_uid))
+        } else {
+            serde_json::to_vec(&(
+                worker_namespace,
+                worker_name,
+                worker_uid,
+                worker_incarnation,
+            ))
+        }
+        .expect("Worker Pod coordinate is serializable");
         let digest = blake3::hash(&identity).to_hex();
         format!("awaken-create-{}", &digest.as_str()[..32])
     }
 
-    fn desired(&self, worker_namespace: &str, worker_name: &str, worker_uid: &str) -> ConfigMap {
-        let name = Self::ledger_name(worker_namespace, worker_name, worker_uid);
+    fn desired(
+        &self,
+        worker_namespace: &str,
+        worker_name: &str,
+        worker_uid: &str,
+        worker_incarnation: &str,
+    ) -> ConfigMap {
+        let name = Self::ledger_name(
+            worker_namespace,
+            worker_name,
+            worker_uid,
+            worker_incarnation,
+        );
+        let mut annotations = BTreeMap::from([
+            (CONTRACT.into(), VERSION.into()),
+            (PROVIDER.into(), self.provider_id.clone()),
+            (SANDBOX_NAMESPACE.into(), self.sandbox_namespace.clone()),
+            (WORKER_NAMESPACE.into(), worker_namespace.into()),
+            (WORKER_NAME.into(), worker_name.into()),
+            (WORKER_UID.into(), worker_uid.into()),
+            (CONFIGURATION.into(), self.configuration_fingerprint.clone()),
+        ]);
+        if worker_incarnation != worker_uid {
+            annotations.insert(WORKER_INCARNATION.into(), worker_incarnation.into());
+        }
         ConfigMap {
             metadata: ObjectMeta {
                 name: Some(name),
                 namespace: Some(self.control_namespace.clone()),
-                annotations: Some(BTreeMap::from([
-                    (CONTRACT.into(), VERSION.into()),
-                    (PROVIDER.into(), self.provider_id.clone()),
-                    (SANDBOX_NAMESPACE.into(), self.sandbox_namespace.clone()),
-                    (WORKER_NAMESPACE.into(), worker_namespace.into()),
-                    (WORKER_NAME.into(), worker_name.into()),
-                    (WORKER_UID.into(), worker_uid.into()),
-                    (CONFIGURATION.into(), self.configuration_fingerprint.clone()),
-                ])),
+                annotations: Some(annotations),
                 ..Default::default()
             },
             data: Some(BTreeMap::from([(
@@ -164,17 +197,28 @@ impl K8sWorkerCreateLedger {
         worker_namespace: &str,
         worker_name: &str,
         worker_uid: &str,
+        worker_incarnation: &str,
     ) -> Result<ConfigMap, RuntimeError> {
-        if [worker_namespace, worker_name, worker_uid]
-            .into_iter()
-            .any(|v| v.trim().is_empty() || v.trim() != v)
+        if [
+            worker_namespace,
+            worker_name,
+            worker_uid,
+            worker_incarnation,
+        ]
+        .into_iter()
+        .any(|v| v.trim().is_empty() || v.trim() != v)
             || worker_namespace != self.sandbox_namespace
         {
             return Err(backend(
                 "Kubernetes Create ledger Worker Pod identity is invalid",
             ));
         }
-        Ok(self.desired(worker_namespace, worker_name, worker_uid))
+        Ok(self.desired(
+            worker_namespace,
+            worker_name,
+            worker_uid,
+            worker_incarnation,
+        ))
     }
 
     /// Initialize only during verified Worker registration. A 409 reads the
@@ -185,8 +229,14 @@ impl K8sWorkerCreateLedger {
         worker_namespace: &str,
         worker_name: &str,
         worker_uid: &str,
+        worker_incarnation: &str,
     ) -> Result<(String, String), RuntimeError> {
-        let desired = self.verified_worker_object(worker_namespace, worker_name, worker_uid)?;
+        let desired = self.verified_worker_object(
+            worker_namespace,
+            worker_name,
+            worker_uid,
+            worker_incarnation,
+        )?;
         capacity::validate_candidate(&desired, &WorkerCreateLedgerState::fresh())?;
         let name = desired.name_any();
         let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
@@ -199,6 +249,25 @@ impl K8sWorkerCreateLedger {
         Ok((name, uid))
     }
 
+    /// The Worker incarnation that the ledger named by an anchor belongs to: its
+    /// incarnation annotation, or the Pod UID for a historical Pod-scoped
+    /// ledger. Identity only; `existing_worker_anchor` still verifies it.
+    pub async fn worker_incarnation_of(
+        &self,
+        ledger_name: &str,
+        worker_uid: &str,
+    ) -> Result<String, RuntimeError> {
+        let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
+        let observed = api.get(ledger_name).await.map_err(backend)?;
+        Ok(observed
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(WORKER_INCARNATION))
+            .cloned()
+            .unwrap_or_else(|| worker_uid.to_owned()))
+    }
+
     /// Read an existing original bootstrap anchor. Recovery cannot create a
     /// replacement ledger to turn missing historical evidence into emptiness.
     pub async fn existing_worker_anchor(
@@ -206,8 +275,14 @@ impl K8sWorkerCreateLedger {
         worker_namespace: &str,
         worker_name: &str,
         worker_uid: &str,
+        worker_incarnation: &str,
     ) -> Result<(String, String), RuntimeError> {
-        let desired = self.verified_worker_object(worker_namespace, worker_name, worker_uid)?;
+        let desired = self.verified_worker_object(
+            worker_namespace,
+            worker_name,
+            worker_uid,
+            worker_incarnation,
+        )?;
         let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
         let observed = api.get(&desired.name_any()).await.map_err(backend)?;
         Ok((desired.name_any(), self.verify(&desired, &observed)?))
@@ -227,6 +302,7 @@ impl K8sWorkerCreateLedger {
             binding.worker_namespace,
             binding.worker_name,
             binding.worker_uid,
+            binding.worker_incarnation,
         );
         if desired.name_any() != binding.ledger_name {
             return Err(backend(
@@ -339,6 +415,7 @@ impl K8sWorkerCreateLedger {
             binding.worker_name,
             binding.worker_uid,
         ) || !process.worker_evidence_was_retained()
+            || !process.belongs_to_incarnation(binding.worker_uid, binding.worker_incarnation)
         {
             return Err(backend(
                 "Worker Create ledger received an unretained or foreign Pod binding",
@@ -386,6 +463,7 @@ impl K8sWorkerCreateLedger {
             binding.worker_name,
             binding.worker_uid,
         ) || !process.worker_evidence_was_retained()
+            || !process.belongs_to_incarnation(binding.worker_uid, binding.worker_incarnation)
         {
             return Err(backend(
                 "Worker Create ledger process binding no longer matches its Pod",
@@ -635,13 +713,13 @@ mod tests {
         } = fixture(true);
         assert!(
             ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .is_err(),
             "J2 no response-only proof"
         );
         let (name, uid) = ledger
-            .initialize("awaken-system", "worker", "pod-uid")
+            .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
             .await
             .unwrap();
         assert!(name.starts_with("awaken-create-"));
@@ -651,7 +729,7 @@ mod tests {
         stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = json!("uid-replaced");
         assert_eq!(
             ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .unwrap()
                 .1,
@@ -662,7 +740,7 @@ mod tests {
             json!("foreign");
         assert!(
             ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .is_err(),
             "J4 foreign provider"
@@ -672,7 +750,7 @@ mod tests {
         stored.lock().unwrap().as_mut().unwrap()["immutable"] = json!(true);
         assert!(
             ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .is_err(),
             "J4 immutable ledger cannot accept ticket CAS"
@@ -681,7 +759,7 @@ mod tests {
         stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = json!("");
         assert!(
             ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .is_err(),
             "J4 missing UID"
@@ -697,7 +775,7 @@ mod tests {
         let Fixture { ledger, calls, .. } = fixture(false);
         assert!(
             ledger
-                .initialize("foreign", "worker", "pod-uid")
+                .initialize("foreign", "worker", "pod-uid", "pod-uid")
                 .await
                 .is_err()
         );
@@ -745,13 +823,14 @@ mod tests {
         } = fixture(false);
         let fingerprint = ledger.configuration_fingerprint().to_owned();
         let (name, uid) = ledger
-            .initialize("awaken-system", "worker", "pod-uid")
+            .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
             .await
             .unwrap();
         let binding = K8sLedgerBinding {
             worker_namespace: "awaken-system",
             worker_name: "worker",
             worker_uid: "pod-uid",
+            worker_incarnation: "pod-uid",
             ledger_name: &name,
             ledger_uid: &uid,
             configuration_fingerprint: &fingerprint,
@@ -960,7 +1039,7 @@ mod tests {
                 ..
             } = fixture(false);
             let expected = ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .unwrap();
             {
@@ -981,7 +1060,7 @@ mod tests {
             let before = stored.lock().unwrap().clone();
             let start = calls.lock().unwrap().len();
             let observed = ledger
-                .existing_worker_anchor("awaken-system", "worker", "pod-uid")
+                .existing_worker_anchor("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await;
             assert_eq!(observed.is_ok(), cause == "exact", "A1/A2 {cause}");
             if cause == "exact" {
@@ -1011,13 +1090,14 @@ mod tests {
                 ..
             } = fixture(false);
             let (name, uid) = ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .unwrap();
             let binding = K8sLedgerBinding {
                 worker_namespace: "awaken-system",
                 worker_name: "worker",
                 worker_uid: "pod-uid",
+                worker_incarnation: "pod-uid",
                 ledger_name: &name,
                 ledger_uid: &uid,
                 configuration_fingerprint: ledger.configuration_fingerprint(),
@@ -1063,13 +1143,14 @@ mod tests {
                 ..
             } = fixture(false);
             let (name, uid) = ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .unwrap();
             let binding = K8sLedgerBinding {
                 worker_namespace: "awaken-system",
                 worker_name: "worker",
                 worker_uid: "pod-uid",
+                worker_incarnation: "pod-uid",
                 ledger_name: &name,
                 ledger_uid: &uid,
                 configuration_fingerprint: ledger.configuration_fingerprint(),
@@ -1140,13 +1221,14 @@ mod tests {
         for bound_first in [false, true] {
             let Fixture { ledger, calls, .. } = fixture(false);
             let (name, uid) = ledger
-                .initialize("awaken-system", "worker", "pod-uid")
+                .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
                 .await
                 .unwrap();
             let binding = K8sLedgerBinding {
                 worker_namespace: "awaken-system",
                 worker_name: "worker",
                 worker_uid: "pod-uid",
+                worker_incarnation: "pod-uid",
                 ledger_name: &name,
                 ledger_uid: &uid,
                 configuration_fingerprint: ledger.configuration_fingerprint(),
@@ -1195,13 +1277,14 @@ mod tests {
         // process may read the original only through the Registry-frozen UID.
         let Fixture { ledger, calls, .. } = fixture(false);
         let (name, uid) = ledger
-            .initialize("awaken-system", "worker", "pod-uid")
+            .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
             .await
             .unwrap();
         let binding = K8sLedgerBinding {
             worker_namespace: "awaken-system",
             worker_name: "worker",
             worker_uid: "pod-uid",
+            worker_incarnation: "pod-uid",
             ledger_name: &name,
             ledger_uid: &uid,
             configuration_fingerprint: ledger.configuration_fingerprint(),

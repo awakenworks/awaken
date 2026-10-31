@@ -32,6 +32,17 @@ const FINALIZER: &str = awaken_worker_fleet_kubernetes::WORKER_PROCESS_EVIDENCE_
 
 mod source_retention;
 
+/// The incarnation a single-container Worker Pod's running instance names:
+/// its runtime container ID without the `<runtime>://` scheme.
+async fn container_incarnation_of(pods: &kube::Api<Pod>, name: &str) -> String {
+    let pod = pods.get(name).await.unwrap();
+    let id = pod.status.unwrap().container_statuses.unwrap()[0]
+        .container_id
+        .clone()
+        .unwrap();
+    id.rsplit("://").next().unwrap().to_owned()
+}
+
 async fn ready_deployment_pod(pods: &kube::Api<Pod>, previous_uid: Option<&str>) -> Pod {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -334,9 +345,10 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .unwrap()
         .worker;
     assert_eq!(worker, retry, "L1 immutable real-token identity");
+    // The Worker ID is the Pod; its incarnation is the running container.
     assert_eq!(
         worker.snapshot.identity.incarnation_id,
-        *created[0].metadata.uid.as_ref().unwrap()
+        container_incarnation_of(&pods, created[0].metadata.name.as_deref().unwrap()).await
     );
     // L1a actual Pod UID + successful provider Create -> the Registry freezes
     // one ledger UID before Ready. L3a Coordinator restart and old Pod loss ->
@@ -686,6 +698,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             worker_namespace: name,
             worker_name: created[0].metadata.name.as_deref().unwrap(),
             worker_uid: created[0].metadata.uid.as_deref().unwrap(),
+            worker_incarnation: &worker.snapshot.identity.incarnation_id,
             ledger_name: ledger.name(),
             ledger_uid: ledger.uid(),
             configuration_fingerprint: ledger.configuration_fingerprint(),
@@ -768,6 +781,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             worker_namespace: name,
             worker_name: "idle",
             worker_uid: created[2].metadata.uid.as_deref().unwrap(),
+            worker_incarnation: &idle_identity.incarnation_id,
             ledger_name: idle_anchor.name(),
             ledger_uid: idle_anchor.uid(),
             configuration_fingerprint: idle_anchor.configuration_fingerprint(),
@@ -979,7 +993,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     );
     assert_eq!(
         registered_successor.snapshot.identity.incarnation_id,
-        successor.metadata.uid.as_deref().unwrap(),
+        container_incarnation_of(&pods, successor.metadata.name.as_deref().unwrap()).await,
         "L9"
     );
     assert!(

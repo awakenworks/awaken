@@ -13,6 +13,7 @@ fn binding<'a>(
         worker_namespace: "awaken-system",
         worker_name: "worker",
         worker_uid: "pod-uid",
+        worker_incarnation: "pod-uid",
         ledger_name: name,
         ledger_uid: uid,
         configuration_fingerprint: ledger.configuration_fingerprint(),
@@ -42,7 +43,7 @@ async fn legacy_physical_ledger_replays_exact_history_without_new_reserve_admiss
         ..
     } = fixture(false);
     let (name, uid) = ledger
-        .initialize("awaken-system", "worker", "pod-uid")
+        .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
         .await
         .unwrap();
     let req = request("pods", "original");
@@ -67,7 +68,7 @@ async fn legacy_physical_ledger_replays_exact_history_without_new_reserve_admiss
     stored.lock().unwrap().as_mut().unwrap()["data"]["ledger"] = historical.to_string().into();
     assert_eq!(
         ledger
-            .initialize("awaken-system", "worker", "pod-uid")
+            .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
             .await
             .unwrap(),
         (name.clone(), uid.clone())
@@ -127,7 +128,7 @@ async fn fresh_cas_recomputes_conflicts_and_lost_finish_reply_from_original_stat
         ..
     } = fixture(false);
     let (name, uid) = ledger
-        .initialize("awaken-system", "worker", "pod-uid")
+        .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
         .await
         .unwrap();
     let exact = binding(&ledger, &name, &uid);
@@ -207,7 +208,7 @@ async fn metadata_growth_blocks_even_an_unchanged_pending_isolation_admission() 
         ..
     } = fixture(false);
     let (name, uid) = ledger
-        .initialize("awaken-system", "worker", "pod-uid")
+        .initialize("awaken-system", "worker", "pod-uid", "pod-uid")
         .await
         .unwrap();
     let exact = binding(&ledger, &name, &uid);

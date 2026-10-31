@@ -208,6 +208,17 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
         current.1 = body.clone();
         (StatusCode::OK, Json(body))
     }
+    async fn pod_list(State(facts): State<Arc<Facts>>) -> Json<Value> {
+        let (status, pod) = facts.pod.lock().unwrap().clone();
+        let items = if status == StatusCode::OK {
+            vec![pod]
+        } else {
+            Vec::new()
+        };
+        Json(
+            json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":items}),
+        )
+    }
     async fn ledger_get(State(facts): State<Arc<Facts>>) -> (StatusCode, Json<Value>) {
         match facts.ledger.lock().unwrap().clone() {
             Some(value) => (StatusCode::OK, Json(value)),
@@ -269,6 +280,7 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
             "/api/v1/namespaces/create-control/configmaps/{name}",
             get(ledger_get).put(ledger_update),
         )
+        .route("/api/v1/namespaces/workers/pods", get(pod_list))
         .route(
             "/api/v1/namespaces/workers/pods/worker-a",
             get(pod).put(update).delete(delete),
@@ -416,10 +428,14 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
 }
 
 #[tokio::test]
-async fn deployment_binding_freezes_restart_policy_through_the_same_transport_owner() {
-    // D1 reviewed UID + Registry incarnation + retained original Deployment
-    // container => the existing binding source freezes Always. D2 removing the
-    // finalizer before admission => Unavailable, not an unbound fallback.
+async fn deployment_binding_freezes_the_container_instance_through_the_same_transport_owner() {
+    // The Worker ID is the Pod; an incarnation is one container instance.
+    // D1 reviewed UID + Registry incarnation + retained Always (Deployment)
+    // container => the existing binding source freezes it as restartable.
+    // D2 the finalizer removed before admission => Unavailable, never an
+    // unbound fallback. D3 a container-instance incarnation binds only its own
+    // running container; another instance of the same Pod is Unavailable.
+    // D4 the registration incarnation is the running container's token.
     let (transport, facts) = fixture();
     let source = transport.binding_source().unwrap();
     let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
@@ -432,6 +448,31 @@ async fn deployment_binding_freezes_restart_policy_through_the_same_transport_ow
     assert_eq!(
         coordinate["containers"][0]["container_id"],
         "containerd://exact"
+    );
+    let registration = WorkerRegistration {
+        worker_id: worker.worker_id.clone(),
+        incarnation_id: "process-proposed".into(),
+        manifest: manifest(),
+        create_ledger: None,
+    };
+    let incarnation = source
+        .registration_incarnation(&registration)
+        .await
+        .unwrap()
+        .expect("D4 Kubernetes names the incarnation");
+    assert!(
+        awaken_worker_transport_security::kubernetes::is_container_incarnation(&incarnation),
+        "D4 {incarnation}"
+    );
+    let current = WorkerIdentity::new(&worker.worker_id, &incarnation, 1);
+    assert!(
+        source.binding_for(&current).await.is_ok(),
+        "D3 own instance"
+    );
+    let other = WorkerIdentity::new(&worker.worker_id, "0123abcd", 1);
+    assert!(
+        source.binding_for(&other).await.is_err(),
+        "D3 another instance"
     );
     pod["metadata"]["finalizers"] = json!([]);
     *facts.pod.lock().unwrap() = (StatusCode::OK, pod);
@@ -779,7 +820,10 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 panic!("S3 exact local exit")
             };
             assert_eq!(receipt.binding(), &bound);
-            assert_eq!(receipt.evidence_ref(), "7");
+            // The evidence is the exact container exit (container-instance
+            // incarnations), not the Pod resource version.
+            let exact_exit = r#"k8s-container-exit:v1:[{"name":"worker","container_id":"containerd://exact","exit_code":137,"reason":"Error","finished_at":"2026-09-09T00:01:00Z"}]"#;
+            assert_eq!(receipt.evidence_ref(), exact_exit);
             let persisted = directory
                 .incarnation(&worker)
                 .await
@@ -787,7 +831,11 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 .unwrap()
                 .process_exit
                 .unwrap();
-            assert_eq!(persisted.evidence_ref(), "7", "S4 commit before release");
+            assert_eq!(
+                persisted.evidence_ref(),
+                exact_exit,
+                "S4 commit before release"
+            );
             assert_eq!(facts.updates.lock().unwrap().len(), 1, "S4 one release");
             assert!(
                 !facts.pod.lock().unwrap().1["metadata"]["finalizers"]

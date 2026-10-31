@@ -187,6 +187,18 @@ impl SessionWorkerResolver {
                 Err(_) => tracing::warn!("exact Worker retention retry timed out"),
             }
         }
+        // A domain that died before its Registry insert has no record above;
+        // the provider releases only ended, provably unregistered domains.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            source.release_unregistered_worker_evidence(directory.as_ref()),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "unregistered Worker retention retry pending"),
+            Err(_) => tracing::warn!("unregistered Worker retention retry timed out"),
+        }
         Ok(())
     }
 }

@@ -1180,3 +1180,69 @@ no absence or exit receipt is inferred, and the hard-node-loss rule above still
 holds. An unguarded, unfenced, foreign or non-terminal deleting Pod, and a
 terminating claim without its Disposing evidence, remain unresolved exactly as
 before.
+
+## Amendment 2026-10-31: a Worker incarnation is one container instance
+
+A registered Kubernetes Worker's identity was its Pod: Worker ID and
+incarnation were both the Pod UID, and the process binding required zero
+container restarts. Workers run as Deployments or StatefulSets
+(`restartPolicy: Always`, as Deployments require), so a crash, OOM kill or
+liveness kill restarted the container inside the same UID. The new process
+could never bind, the Worker retried registration forever, and the old
+incarnation could not settle: its exit survived only in `lastState`, which the
+observer ignored. The cell had no Worker until an operator deleted the Pod.
+
+Decision. The Worker ID stays the Pod (`k8s:<ns>:<pod>:<uid>`), stable across
+in-place restarts; an incarnation is one container instance, named by the
+running container's runtime ID (`PodProcessBinding::incarnation`). The
+Coordinator derives it at registration from the authenticated Pod's running
+container and ignores the process-proposed value. Binding no longer requires a
+zero restart count; it records each container's ID and start time and, for an
+Always Pod, requires retained evidence. Each incarnation has its own Create
+ledger; a historical Pod-UID incarnation keeps its original Pod-scoped ledger.
+
+A bound restartable incarnation is observed by exact container ID within the
+same Pod UID and container name: the running ID equals the bound ID -> alive;
+`state` or `lastState` names the bound ID with an exact exit -> that exit
+(code, reason, finish time) is the receipt, and the Pod is not deleted;
+neither names it (restarted again, or the Pod is gone) -> the evidence is lost
+and the incarnation stays Unknown, so its attempts keep the existing
+Indeterminate path. Stopping a still-running incarnation deletes its Pod by
+exact UID and resourceVersion. A Pod that already runs a newer container is
+never deleted or released on behalf of an older incarnation. Never Pods keep
+their original rule (every exact exit plus a terminal phase). Bindings
+persisted before this change carry the same fields; their Always ones settle
+by the container-ID rule above.
+
+When a restarted container registers, the Coordinator first expires the
+previous incarnation of the same Worker ID (once its lease has lapsed; a live
+lease refuses the new incarnation) and records its exact `lastState` exit,
+before the Registry admits the new one. If that exit is already lost, the new
+incarnation is still admitted: the Registry generation and incarnation fence
+every request and every physical attempt is owned by its exact incarnation,
+and kubelet never runs two instances of one container name in a Pod, so the
+old container is not running. A draining Worker therefore no longer deletes
+its own Pod before exiting; Deployments keep autoscaling and rolling upgrades.
+
+No Worker Pod template carries the process-evidence finalizer. The
+Coordinator adds it at registration, once the Pod can bind. Maintenance also
+lists ended Pods that still hold it (`release_unregistered_ended_worker_evidence`)
+and releases one only when its last container instance never registered: no
+Registry record names that incarnation, any older incarnation's exit is
+already recorded, and that incarnation's Create ledger is absent or still
+unbound (sealed first, then the Registry reread). The release is a
+resourceVersion-fenced finalizer CAS on the same UID.
+
+Evidence: `container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation`,
+`historical_bindings_settle_by_their_recorded_policy`,
+`restartable_stop_settles_by_container_instance_and_never_harms_a_newer_one`,
+`worker_container_exit_settles_only_retained_exact_evidence_for_every_exit_kind`,
+`ended_never_registered_release_requires_an_ended_exact_retained_pod`,
+`ended_unregistered_worker_pods_release_retention_only_when_provably_unregistered`,
+`deployment_binding_freezes_the_container_instance_through_the_same_transport_owner`,
+`one_pod_authenticates_only_its_container_instance_incarnations`, the live
+`in_place_restart_settles_the_old_container_from_last_state_against_a_real_kubelet`,
+the startup retry table in `awaken-worker/src/startup_retry.rs`, and k3d stage
+6b of `e2e/k3d/distributed_control_e2e.sh` (hard-kill worker-0's container in
+place; same Pod UID, new incarnation registered, old exit 137 recorded from
+`lastState`, work continues).

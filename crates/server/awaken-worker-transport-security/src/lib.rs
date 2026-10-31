@@ -5,10 +5,6 @@
 //! trust is established. The default header authenticator is suitable for local
 //! and test compositions behind a trusted network. Managed deployments replace it
 //! with WorkerLease/mTLS verification without changing dispatch semantics.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod kubernetes;
 mod worker_bootstrap;
@@ -681,7 +677,6 @@ impl WorkerRequestAuthenticator for MtlsWorkerAuthenticator {
             worker_id: principal.worker_id.clone(),
             identity: principal.identity.clone(),
             credential_id: Some(format!("mtls:{}", principal.certificate_sha256)),
-            registration_incarnation: None,
         })
     }
 }
@@ -1129,9 +1124,6 @@ pub struct VerifiedWorkerContext {
     worker_id: String,
     identity: Option<WorkerIdentity>,
     credential_id: Option<String>,
-    // Only an authenticated immutable execution domain may fix registration.
-    // Ordinary signed/mTLS processes retain their proposed fresh incarnation.
-    registration_incarnation: Option<String>,
 }
 
 impl VerifiedWorkerContext {
@@ -1146,7 +1138,6 @@ impl VerifiedWorkerContext {
             worker_id: worker_id.into(),
             identity: None,
             credential_id: None,
-            registration_incarnation: None,
         }
     }
 
@@ -1155,7 +1146,6 @@ impl VerifiedWorkerContext {
             worker_id,
             identity,
             credential_id: Some(credential_id),
-            registration_incarnation: None,
         }
     }
 
@@ -1172,15 +1162,6 @@ impl VerifiedWorkerContext {
     #[must_use]
     pub fn credential_id(&self) -> Option<&str> {
         self.credential_id.as_deref()
-    }
-
-    /// An immutable provider domain fixes its incarnation for its entire life.
-    /// Registration must preserve this value, including after expiry/closure;
-    /// a different historical incarnation requires a new physical domain.
-    /// This is neither a Registry generation nor a physical stop receipt.
-    #[must_use]
-    pub fn registration_incarnation(&self) -> Option<&str> {
-        self.registration_incarnation.as_deref()
     }
 }
 

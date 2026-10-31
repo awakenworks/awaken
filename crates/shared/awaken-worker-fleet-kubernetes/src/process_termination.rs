@@ -1,6 +1,14 @@
 // @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Independent observation of one frozen, private Pod process domain.
 //!
+//! A Worker process incarnation is one container instance: the bound running
+//! container's runtime ID and start time inside the same Pod UID. A
+//! `restartPolicy: Always` Pod may restart that container in place; the new
+//! container is a new incarnation of the same Pod-scoped Worker ID, and the old
+//! one is settled from the exact terminated state that names its container ID
+//! (`state` or `lastState`). When neither names it, its evidence is lost and
+//! observation stays Unknown; no exit is ever inferred.
+//!
 //! This evidence covers local processes only. It does not discharge a Dispatch
 //! attempt, prove external requests stopped, or grant replay authority. In
 //! particular, Pod absence, deletion and phase Failed are not stop receipts.
@@ -14,7 +22,7 @@ use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::core::v1::PodSpec;
 
 mod stop;
-pub use stop::PodProcessStopper;
+pub use stop::{EndedRetainedWorkerPod, PodProcessStopper};
 
 /// Installed by the trusted Worker deployment before execution admission, and
 /// retained until the exact attempt evidence has been durably consumed. This is
@@ -61,8 +69,11 @@ pub struct PodProcessBinding {
     retention_finalizer: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     init_containers: Vec<ContainerProcessBinding>,
-    /// An Always-policy Pod needs accepted deletion intent as well as exact
-    /// exits. Absence preserves the original Never-policy binding contract.
+    /// The Pod is `restartPolicy: Always`: its bound containers may be replaced
+    /// in place, so each is observed by exact container ID in `state` or
+    /// `lastState`. Absence preserves the original Never-policy contract.
+    /// Bindings persisted before container-instance identity carry the same
+    /// fact and settle by the same container-ID rule (their IDs were exact).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     restartable: bool,
 }
@@ -87,6 +98,47 @@ impl PodProcessBinding {
     pub fn worker_evidence_was_retained(&self) -> bool {
         self.retained && self.retention_finalizer == WORKER_PROCESS_EVIDENCE_FINALIZER
     }
+
+    /// The Worker incarnation this binding identifies: its container instance.
+    /// See [`container_incarnation`].
+    pub fn incarnation(&self) -> String {
+        container_incarnation(
+            self.containers
+                .iter()
+                .map(|container| (container.name.as_str(), container.container_id.as_str())),
+        )
+    }
+
+    /// Whether this binding is the process of `incarnation` in Pod `pod_uid`.
+    /// A historical incarnation equal to the Pod UID predates container
+    /// identity and names whichever single process the Pod was bound to.
+    pub fn belongs_to_incarnation(&self, pod_uid: &str, incarnation: &str) -> bool {
+        self.uid == pod_uid && (incarnation == pod_uid || self.incarnation() == incarnation)
+    }
+}
+
+/// The incarnation token for one container instance set: the lowercase hex
+/// runtime ID of a single container (`containerd://<hex>` -> `<hex>`), else a
+/// 32-hex digest over every `(name, container ID)` pair in name order. The
+/// token is lowercase hex, so it can never equal a Pod UID (which has dashes).
+pub(crate) fn container_incarnation<'a>(
+    containers: impl Iterator<Item = (&'a str, &'a str)>,
+) -> String {
+    let mut containers: Vec<_> = containers.collect();
+    containers.sort();
+    if let [(_, id)] = containers.as_slice() {
+        let hex = id.rsplit("://").next().unwrap_or_default();
+        if !hex.is_empty()
+            && hex.len() <= 128
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return hex.to_owned();
+        }
+    }
+    let encoded = serde_json::to_vec(&containers).expect("container coordinates serialize");
+    blake3::hash(&encoded).to_hex().as_str()[..32].to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +156,7 @@ pub enum PodProcessTermination {
     Unknown,
     /// Exact non-restarting container terminated. This variant is an observation,
     /// not a whole-attempt acknowledgement or proof about remote participants.
-    Observed(ObservedPodProcessExit),
+    Observed(Box<ObservedPodProcessExit>),
 }
 
 /// Subject-bound evidence minted only by authenticated observation. Private
@@ -113,6 +165,26 @@ pub enum PodProcessTermination {
 pub struct ObservedPodProcessExit {
     binding: PodProcessBinding,
     resource_version: String,
+    exits: Vec<ObservedContainerExit>,
+}
+
+/// The exact runtime exit of one bound container, as kubelet reported it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ObservedContainerExit {
+    name: String,
+    container_id: String,
+    exit_code: i32,
+    reason: String,
+    finished_at: Time,
+}
+
+impl ObservedContainerExit {
+    pub fn exit_code(&self) -> i32 {
+        self.exit_code
+    }
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
 }
 
 impl ObservedPodProcessExit {
@@ -122,6 +194,20 @@ impl ObservedPodProcessExit {
 
     pub fn resource_version(&self) -> &str {
         &self.resource_version
+    }
+
+    pub fn exits(&self) -> &[ObservedContainerExit] {
+        &self.exits
+    }
+
+    /// Durable evidence for the Registry exit receipt: the exact container
+    /// exits (ID, code, reason, finish time). It depends only on those facts,
+    /// so a repeated observation of the same exit yields the same reference.
+    pub fn evidence_ref(&self) -> String {
+        format!(
+            "k8s-container-exit:v1:{}",
+            serde_json::to_string(&self.exits).expect("container exits serialize")
+        )
     }
 }
 
@@ -177,9 +263,10 @@ impl PodProcessObserver {
     }
     /// Obtain the exact running process coordinate through the existing control
     /// client. The caller must persist it before allowing any external effects.
-    /// Every ordinary container is included. Init, ephemeral, independently
-    /// restartable containers and prior restarts remain outside this proof
-    /// domain. An Always-policy Pod additionally requires retained evidence.
+    /// Every ordinary container is included. Only a `restartPolicy: Never` Pod
+    /// is admitted: an in-place restart would put a second process under the
+    /// same UID, Registry incarnation and Create ledger. Init, ephemeral and
+    /// independently restartable containers remain outside this proof domain.
     pub async fn bind_pod_process(
         &self,
         name: &str,
@@ -188,6 +275,23 @@ impl PodProcessObserver {
         self.observed_pod_binding(name, expected_uid)
             .await
             .map(|(_, binding)| binding)
+    }
+
+    /// The incarnation token of the Pod's running container instance, if the
+    /// Pod could be bound once its evidence is retained (same checks as
+    /// [`Self::bind_pod_process`] except retention). Registration uses it to
+    /// name the incarnation and to refuse an unbindable Pod before retaining.
+    pub async fn admissible_incarnation(
+        &self,
+        name: &str,
+        expected_uid: &str,
+    ) -> Result<String, RuntimeError> {
+        if expected_uid.is_empty() {
+            return Err(backend("Pod process binding requires an authenticated UID"));
+        }
+        let pod = self.pods.get(name).await.map_err(backend)?;
+        bind_checked(&self.namespace, name, expected_uid, &pod, false)
+            .map(|binding| binding.incarnation())
     }
 
     async fn observed_pod_binding(
@@ -244,6 +348,10 @@ impl PodProcessObserver {
 
 fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
     let spec = pod.spec.as_ref()?;
+    // Under Always a container may restart in place: its identity is then its
+    // container ID, not a zero restart count. The frozen policy is compared
+    // by the observation that consumes these statuses.
+    let restartable = spec.restart_policy.as_deref() == Some("Always");
     if !matches!(spec.restart_policy.as_deref(), Some("Never" | "Always"))
         || has_forbidden_sandbox_namespace_shape(spec)
         || spec.containers.is_empty()
@@ -280,7 +388,7 @@ fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
             .iter()
             .filter(|status| status.name == container.name);
         let status = matching.next()?;
-        if matching.next().is_some() || status.restart_count != 0 {
+        if matching.next().is_some() || (!restartable && status.restart_count != 0) {
             return None;
         }
         result.push(status);
@@ -402,6 +510,16 @@ fn bind(
     expected_uid: &str,
     pod: &Pod,
 ) -> Result<PodProcessBinding, RuntimeError> {
+    bind_checked(namespace, name, expected_uid, pod, true)
+}
+
+fn bind_checked(
+    namespace: &str,
+    name: &str,
+    expected_uid: &str,
+    pod: &Pod,
+    require_restartable_retention: bool,
+) -> Result<PodProcessBinding, RuntimeError> {
     let binding = (|| {
         if pod.metadata.deletion_timestamp.is_some()
             || pod.metadata.namespace.as_deref() != Some(namespace)
@@ -426,8 +544,11 @@ fn bind(
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+        // The bound running containers are this incarnation. Under Always a
+        // later container is another incarnation whose predecessor's exit
+        // survives only in `lastState`, so its evidence must already be retained.
         let restartable = pod.spec.as_ref()?.restart_policy.as_deref() == Some("Always");
-        if restartable && !evidence_is_retained(pod) {
+        if restartable && require_restartable_retention && !evidence_is_retained(pod) {
             return None;
         }
         Some(PodProcessBinding {
@@ -488,14 +609,134 @@ fn matching_statuses<'a>(
     Some(statuses)
 }
 
+/// One bound container's fate in a restartable Pod, by exact container ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ContainerFate {
+    /// The bound container instance is still the running one.
+    Running,
+    /// `state` or `lastState` names the bound container with an exact exit.
+    Exited(ObservedContainerExit),
+    /// Neither names it (restarted again, or only a synthetic status): the
+    /// exit evidence is lost and must never be inferred.
+    Lost,
+}
+
+/// Node-loss controllers may synthesize Failed/ContainerStatusUnknown. Require
+/// an exact runtime exit of exactly the bound container, not a phase or code.
+fn exact_exit(
+    expected: &ContainerProcessBinding,
+    terminated: &k8s_openapi::api::core::v1::ContainerStateTerminated,
+) -> Option<ObservedContainerExit> {
+    let reason = terminated.reason.as_deref()?;
+    if !matches!(reason, "Completed" | "Error" | "OOMKilled")
+        || terminated.container_id.as_deref() != Some(expected.container_id.as_str())
+        || terminated.started_at.as_ref()? != &expected.started_at
+        || terminated.finished_at.as_ref()? < terminated.started_at.as_ref()?
+    {
+        return None;
+    }
+    Some(ObservedContainerExit {
+        name: expected.name.clone(),
+        container_id: expected.container_id.clone(),
+        exit_code: terminated.exit_code,
+        reason: reason.to_owned(),
+        finished_at: terminated.finished_at.clone()?,
+    })
+}
+
+/// The Pod-UID fence plus the per-container fate of a restartable binding.
+/// `None` means the Pod is not this binding's Pod (UID, node, policy, init
+/// set, private shape or container names differ): nothing can be observed.
+fn restartable_fates(binding: &PodProcessBinding, pod: &Pod) -> Option<Vec<ContainerFate>> {
+    if !binding.restartable || completed_init_bindings(pod)? != binding.init_containers {
+        return None;
+    }
+    let statuses = process_statuses(pod)?;
+    if pod.spec.as_ref()?.restart_policy.as_deref() != Some("Always")
+        || pod.metadata.namespace.as_deref() != Some(binding.namespace.as_str())
+        || pod.metadata.name.as_deref() != Some(binding.name.as_str())
+        || pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
+        || pod.spec.as_ref()?.node_name.as_deref() != Some(binding.node.as_str())
+        || statuses.len() != binding.containers.len()
+    {
+        return None;
+    }
+    let mut fates = Vec::with_capacity(statuses.len());
+    for (status, expected) in statuses.into_iter().zip(&binding.containers) {
+        if status.name != expected.name {
+            return None;
+        }
+        let exited = [
+            status
+                .state
+                .as_ref()
+                .and_then(|state| state.terminated.as_ref()),
+            status
+                .last_state
+                .as_ref()
+                .and_then(|state| state.terminated.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|terminated| {
+            terminated.container_id.as_deref() == Some(expected.container_id.as_str())
+        })
+        .find_map(|terminated| exact_exit(expected, terminated));
+        let running = status.container_id.as_deref() == Some(expected.container_id.as_str())
+            && status
+                .state
+                .as_ref()
+                .and_then(|state| state.running.as_ref())
+                .and_then(|running| running.started_at.as_ref())
+                == Some(&expected.started_at);
+        fates.push(match (exited, running) {
+            (Some(exit), _) => ContainerFate::Exited(exit),
+            (None, true) => ContainerFate::Running,
+            (None, false) => ContainerFate::Lost,
+        });
+    }
+    Some(fates)
+}
+
+/// The Pod still runs a container instance other than this restartable
+/// binding's: a newer incarnation owns the Pod and its retained evidence.
+fn runs_newer_container(binding: &PodProcessBinding, pod: &Pod) -> bool {
+    binding.restartable
+        && pod.metadata.uid.as_deref() == Some(binding.uid.as_str())
+        && pod
+            .status
+            .as_ref()
+            .and_then(|status| status.container_statuses.as_ref())
+            .is_some_and(|statuses| {
+                statuses.iter().any(|status| {
+                    binding.containers.iter().any(|bound| {
+                        bound.name == status.name
+                            && status
+                                .container_id
+                                .as_deref()
+                                .is_some_and(|id| id != bound.container_id)
+                    })
+                })
+            })
+}
+
 fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
     let proof = (|| {
-        if binding.restartable
-            && (!binding.retained
-                || !binding_retention_is_present(binding, pod)
-                || pod.metadata.deletion_timestamp.is_none())
-        {
-            return None;
+        if binding.restartable {
+            // Container identity: an exact exit of every bound container
+            // instance closes this incarnation; the Pod may live on with a
+            // newer incarnation, so no deletion intent or terminal phase.
+            if !binding.retained || !binding_retention_is_present(binding, pod) {
+                return None;
+            }
+            let exits = restartable_fates(binding, pod)?
+                .into_iter()
+                .map(|fate| match fate {
+                    ContainerFate::Exited(exit) => Some(exit),
+                    ContainerFate::Running | ContainerFate::Lost => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some((coordinate(pod.metadata.resource_version.as_deref())?, exits));
         }
         let statuses = matching_statuses(binding, pod)?;
         if !matches!(
@@ -504,28 +745,25 @@ fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
         ) {
             return None;
         }
+        let mut exits = Vec::with_capacity(statuses.len());
         for (status, expected) in statuses.into_iter().zip(&binding.containers) {
-            let state = status.state.as_ref()?;
-            let terminated = state.terminated.as_ref()?;
-            // Node-loss controllers may synthesize Failed/ContainerStatusUnknown.
-            // Require an exact runtime exit, not a phase or a synthetic exit code.
-            if !matches!(
-                terminated.reason.as_deref(),
-                Some("Completed" | "Error" | "OOMKilled")
-            ) || terminated.container_id.as_deref() != Some(expected.container_id.as_str())
-                || terminated.finished_at.as_ref()? < terminated.started_at.as_ref()?
-            {
-                return None;
-            }
+            exits.push(exact_exit(
+                expected,
+                status.state.as_ref()?.terminated.as_ref()?,
+            )?);
         }
-        coordinate(pod.metadata.resource_version.as_deref())
+        Some((coordinate(pod.metadata.resource_version.as_deref())?, exits))
     })();
-    proof.map_or(PodProcessTermination::Unknown, |resource_version| {
-        PodProcessTermination::Observed(ObservedPodProcessExit {
-            binding: binding.clone(),
-            resource_version,
-        })
-    })
+    proof.map_or(
+        PodProcessTermination::Unknown,
+        |(resource_version, exits)| {
+            PodProcessTermination::Observed(Box::new(ObservedPodProcessExit {
+                binding: binding.clone(),
+                resource_version,
+                exits,
+            }))
+        },
+    )
 }
 
 #[cfg(test)]
