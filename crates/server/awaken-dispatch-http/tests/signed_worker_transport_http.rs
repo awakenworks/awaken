@@ -27,8 +27,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_dispatch::{
-    AttemptAdmission, DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
-    DispatchExecution as _, DispatchReads as _, DispatchSettlement as _, MemoryDispatchStore,
+    AttemptAdmission, DispatchEnqueue as _, DispatchReads as _, MemoryDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory,
     WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot,
     WorkerState,

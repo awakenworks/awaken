@@ -410,127 +410,6 @@ impl HttpDispatchQueue {
     }
 }
 
-#[cfg(test)]
-mod codec_admission_tests {
-    use super::*;
-
-    #[test]
-    fn every_claim_response_rejects_missing_row_or_registered_codec_before_resolution() {
-        use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
-        use awaken_worker_contract::{
-            PREPARED_SESSION_DISPATCH_CAPABILITY as PREPARED,
-            TOOL_RESULT_JOURNAL_CAPABILITY as JOURNAL, VersionRange, WorkerManifest,
-        };
-        let run = RunId("codec-run".into());
-        let ordinary = RunDispatch::new(RunActivation::new(
-            run.clone(),
-            ThreadId("codec-thread".into()),
-            ExecutableAgentSnapshot::builder("worker")
-                .model(
-                    awaken_runtime_contract::resolved::ModelBinding::parse(
-                        "provider", "model", "native",
-                    )
-                    .expect("complete fixture binding is admissible"),
-                )
-                .build(),
-            Vec::new(),
-        ))
-        .with_placement(awaken_dispatch_contract::PlacementRequirements::remote_preferred());
-        let marked = ordinary.clone().with_prepared_session_command_identity();
-        let mut offered = WorkerManifest {
-            runtime_protocol: VersionRange::exact(
-                awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
-            ),
-            ..Default::default()
-        };
-        offered
-            .capabilities
-            .extend([PREPARED.to_owned(), JOURNAL.to_owned()]);
-        let identity = WorkerIdentity::new("codec-worker", "boot", 1);
-        let client = || {
-            HttpDispatchQueue::new("http://control.invalid", identity.clone())
-                .with_worker_manifest(offered.clone())
-        };
-        // Causes: C1 ordinary old/unmarked vs complete prepared row; C2 offered
-        // registered capability omitted or its manifest absent;
-        // C3 ordinary/recovered/cancel/repair claim modes; C4 no claimed row.
-        // Effects: E1 missing persisted OR offered support rejects
-        // at the common HTTP decode boundary before a resolver/recovery/effect;
-        // E2 complete support preserves the full original claimed request.
-        // R1..R4 cross claim mode x missing-row/missing-offer/complete; R5 an
-        // absent manifest cannot certify marked codecs; R6 C4 stays None. Each of
-        // the five HTTP claim verbs calls this same decoder; no route owns a
-        // weaker alternate decoder and no test invents a journal transition.
-        for mode in 0..4 {
-            let response = |request: RunDispatch| {
-                let claimed = Claimed {
-                    request,
-                    lease: awaken_dispatch_contract::DispatchLease::from_persisted(
-                        run.clone(),
-                        "owner".into(),
-                        1000,
-                        1,
-                    )
-                    .unwrap(),
-                    session_work_authority: None,
-                    credential_bindings: Vec::new(),
-                    credential_deliveries: Vec::new(),
-                    cancellation_requested: mode == 2,
-                    pending: Vec::new(),
-                    recovered: mode == 1,
-                    session_activity_admission_required: mode == 3,
-                    sandbox: None,
-                    assignment: None,
-                };
-                serde_json::json!({ "claimed": claimed })
-            };
-            assert!(
-                client()
-                    .decode_claimed(&response(ordinary.clone()))
-                    .is_err(),
-                "R1 old Coordinator unmarked row"
-            );
-            let mut missing = marked.clone();
-            missing.placement.required_capabilities.clear();
-            assert!(
-                client().decode_claimed(&response(missing)).is_err(),
-                "R2 metadata omission"
-            );
-            for capability in [PREPARED, JOURNAL] {
-                let mut old = offered.clone();
-                old.capabilities.remove(capability);
-                let old = HttpDispatchQueue::new("http://control.invalid", identity.clone())
-                    .with_worker_manifest(old);
-                assert!(
-                    old.decode_claimed(&response(marked.clone())).is_err(),
-                    "R3 v5 missing offered codec"
-                );
-            }
-            assert_eq!(
-                client()
-                    .decode_claimed(&response(marked.clone()))
-                    .unwrap()
-                    .unwrap()
-                    .request,
-                marked,
-                "R4 exact full request"
-            );
-            let unknown = HttpDispatchQueue::new("http://control.invalid", identity.clone());
-            assert!(
-                unknown.decode_claimed(&response(marked.clone())).is_err(),
-                "R5 unknown offers cannot certify marked codecs"
-            );
-            assert!(
-                unknown
-                    .decode_claimed(&serde_json::json!({ "claimed": null }))
-                    .unwrap()
-                    .is_none(),
-                "R6 no row needs no codec evidence"
-            );
-        }
-    }
-}
-
 #[async_trait]
 impl ClaimedStreamPublisher for HttpDispatchQueue {
     async fn publish(&self, claim: &RunClaim, event: StreamEvent) -> Result<(), StreamError> {
@@ -1179,5 +1058,126 @@ impl HttpDispatchQueue {
                 SettleOutcome::Fenced
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod codec_admission_tests {
+    use super::*;
+
+    #[test]
+    fn every_claim_response_rejects_missing_row_or_registered_codec_before_resolution() {
+        use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
+        use awaken_worker_contract::{
+            PREPARED_SESSION_DISPATCH_CAPABILITY as PREPARED,
+            TOOL_RESULT_JOURNAL_CAPABILITY as JOURNAL, VersionRange, WorkerManifest,
+        };
+        let run = RunId("codec-run".into());
+        let ordinary = RunDispatch::new(RunActivation::new(
+            run.clone(),
+            ThreadId("codec-thread".into()),
+            ExecutableAgentSnapshot::builder("worker")
+                .model(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "provider", "model", "native",
+                    )
+                    .expect("complete fixture binding is admissible"),
+                )
+                .build(),
+            Vec::new(),
+        ))
+        .with_placement(awaken_dispatch_contract::PlacementRequirements::remote_preferred());
+        let marked = ordinary.clone().with_prepared_session_command_identity();
+        let mut offered = WorkerManifest {
+            runtime_protocol: VersionRange::exact(
+                awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            ),
+            ..Default::default()
+        };
+        offered
+            .capabilities
+            .extend([PREPARED.to_owned(), JOURNAL.to_owned()]);
+        let identity = WorkerIdentity::new("codec-worker", "boot", 1);
+        let client = || {
+            HttpDispatchQueue::new("http://control.invalid", identity.clone())
+                .with_worker_manifest(offered.clone())
+        };
+        // Causes: C1 ordinary old/unmarked vs complete prepared row; C2 offered
+        // registered capability omitted or its manifest absent;
+        // C3 ordinary/recovered/cancel/repair claim modes; C4 no claimed row.
+        // Effects: E1 missing persisted OR offered support rejects
+        // at the common HTTP decode boundary before a resolver/recovery/effect;
+        // E2 complete support preserves the full original claimed request.
+        // R1..R4 cross claim mode x missing-row/missing-offer/complete; R5 an
+        // absent manifest cannot certify marked codecs; R6 C4 stays None. Each of
+        // the five HTTP claim verbs calls this same decoder; no route owns a
+        // weaker alternate decoder and no test invents a journal transition.
+        for mode in 0..4 {
+            let response = |request: RunDispatch| {
+                let claimed = Claimed {
+                    request,
+                    lease: awaken_dispatch_contract::DispatchLease::from_persisted(
+                        run.clone(),
+                        "owner".into(),
+                        1000,
+                        1,
+                    )
+                    .unwrap(),
+                    session_work_authority: None,
+                    credential_bindings: Vec::new(),
+                    credential_deliveries: Vec::new(),
+                    cancellation_requested: mode == 2,
+                    pending: Vec::new(),
+                    recovered: mode == 1,
+                    session_activity_admission_required: mode == 3,
+                    sandbox: None,
+                    assignment: None,
+                };
+                serde_json::json!({ "claimed": claimed })
+            };
+            assert!(
+                client()
+                    .decode_claimed(&response(ordinary.clone()))
+                    .is_err(),
+                "R1 old Coordinator unmarked row"
+            );
+            let mut missing = marked.clone();
+            missing.placement.required_capabilities.clear();
+            assert!(
+                client().decode_claimed(&response(missing)).is_err(),
+                "R2 metadata omission"
+            );
+            for capability in [PREPARED, JOURNAL] {
+                let mut old = offered.clone();
+                old.capabilities.remove(capability);
+                let old = HttpDispatchQueue::new("http://control.invalid", identity.clone())
+                    .with_worker_manifest(old);
+                assert!(
+                    old.decode_claimed(&response(marked.clone())).is_err(),
+                    "R3 v5 missing offered codec"
+                );
+            }
+            assert_eq!(
+                client()
+                    .decode_claimed(&response(marked.clone()))
+                    .unwrap()
+                    .unwrap()
+                    .request,
+                marked,
+                "R4 exact full request"
+            );
+            let unknown = HttpDispatchQueue::new("http://control.invalid", identity.clone());
+            assert!(
+                unknown.decode_claimed(&response(marked.clone())).is_err(),
+                "R5 unknown offers cannot certify marked codecs"
+            );
+            assert!(
+                unknown
+                    .decode_claimed(&serde_json::json!({ "claimed": null }))
+                    .unwrap()
+                    .is_none(),
+                "R6 no row needs no codec evidence"
+            );
+        }
     }
 }
