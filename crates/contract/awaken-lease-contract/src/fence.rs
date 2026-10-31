@@ -171,7 +171,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
-    use awaken_time::Expiry;
+    use awaken_time::{Expiry, UtcTime};
 
     struct Probe;
 
@@ -180,12 +180,24 @@ mod verification {
         type Holder = u8;
     }
 
+    /// Expiries the succession harnesses draw: the bottom of the `u64` wire
+    /// domain, its successor and its top. Sufficiency rests on
+    /// [`expiry_from_epoch_ms_is_strictly_monotone`]; see
+    /// [`fence_succession_is_exactly_renewal_or_epoch_advance`].
+    const EXPIRY_REPRESENTATIVES: [u64; 3] = [0, 1, u64::MAX];
+
+    fn any_expiry_representative() -> u64 {
+        let index: usize = kani::any();
+        kani::assume(index < EXPIRY_REPRESENTATIVES.len());
+        EXPIRY_REPRESENTATIVES[index]
+    }
+
     fn any_lease() -> (u8, u8, u64, u64, Lease<Probe>) {
         let subject: u8 = kani::any();
         let holder: u8 = kani::any();
         let epoch: u64 = kani::any();
         kani::assume(epoch != 0);
-        let expiry: u64 = kani::any();
+        let expiry = any_expiry_representative();
         let lease = Lease::new(
             Tenure::granted(subject, holder, Epoch::from_persisted(epoch).unwrap()),
             Expiry::from_epoch_ms(expiry),
@@ -193,9 +205,80 @@ mod verification {
         (subject, holder, epoch, expiry, lease)
     }
 
+    /// Lemma for every succession harness that draws expiries from
+    /// representatives: `Expiry::from_epoch_ms` is strictly monotone on
+    /// consecutive wire values, for every `u64` (one symbolic value).
+    ///
+    /// Consequence: `x < y` implies `from(x) < from(x + 1) < ... < from(y)`
+    /// by transitivity of the total order on `Expiry`, so the map is an order
+    /// embedding: `from(x).cmp(&from(y)) == x.cmp(&y)` for every pair. The
+    /// unsigned wire value is not clamped on the way in (only
+    /// `Expiry::to_persisted_ms` clamps to the signed SQL domain, and no
+    /// succession judgement reads it), so there is no saturation point at
+    /// which two distinct wire values could compare equal.
+    /// @obligation sandbox.effect_fence_succession_is_renewal_or_epoch_advance
+    /// @obligation session_realization.generation_authority_requires_every_immutable_axis
+    #[kani::proof]
+    fn expiry_from_epoch_ms_is_strictly_monotone() {
+        let wire: u64 = kani::any();
+        kani::assume(wire < u64::MAX);
+        let here = Expiry::from_epoch_ms(wire);
+        let next = Expiry::from_epoch_ms(wire + 1);
+        assert!(here < next);
+        kani::cover!(
+            wire % 1000 == 999,
+            "the successor carries into the next second"
+        );
+        kani::cover!(wire % 1000 != 999, "the successor stays within the second");
+    }
+
+    /// Lemma for every liveness harness that draws times from
+    /// representatives: the Unix-nanosecond image that [`fence_is_live_at`]
+    /// (and `Expiry::is_live_at` / `is_expired_at` on epoch milliseconds)
+    /// compares is strictly monotone on consecutive wire milliseconds, for
+    /// every `u64` (one symbolic value).
+    ///
+    /// Consequence: by transitivity the image is an order embedding of `u64`,
+    /// so `fence_is_live_at(expiry, now) == (now < expiry)` for every pair, and
+    /// a liveness predicate depends on its times only through their order. The
+    /// realization-lease and dispatch-deadline harnesses rely on this to draw
+    /// times from {0, 1, u64::MAX} instead of from all of `u64`: the image
+    /// goes through a `u64` division and a `u128` multiplication, which made
+    /// two free full-width times expensive enough that those harnesses were
+    /// narrowed to `u16` without a stated reason.
+    /// @obligation run_ingress.a_deadline_passes_once_it_is_reached
+    /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+    #[kani::proof]
+    fn unix_nanos_of_epoch_ms_is_strictly_monotone() {
+        let wire: u64 = kani::any();
+        kani::assume(wire < u64::MAX);
+        let here = UtcTime::from_epoch_ms(wire).as_unix_nanos();
+        let next = UtcTime::from_epoch_ms(wire + 1).as_unix_nanos();
+        assert!(here < next);
+        kani::cover!(
+            wire % 1000 == 999,
+            "the successor carries into the next second"
+        );
+        kani::cover!(wire % 1000 != 999, "the successor stays within the second");
+    }
+
     /// The succession law as production derives its inputs: `Lease::succession`
     /// compares the subjects, the complete tenures and the expiries itself, so
     /// the harness feeds it symbolic coordinates, never a free "same" bit.
+    ///
+    /// Expiries come from [`EXPIRY_REPRESENTATIVES`], not from all of `u64`.
+    /// Why that loses nothing: `fence_succession` reads the two expiries only
+    /// through `successor >= predecessor`, and the oracle below reads the raw
+    /// wire values only through `>=` and `<`. By the lemma
+    /// [`expiry_from_epoch_ms_is_strictly_monotone`] the `Expiry` order equals
+    /// the wire order, so both sides depend on an expiry pair only through
+    /// which of `<`, `=`, `>` relates it, and the other coordinates are drawn
+    /// independently of it. The representatives realise every one of the three
+    /// relations ((0, 1), (0, 0), (1, 0)), and also at the top of the domain
+    /// ((1, MAX), (MAX, MAX), (MAX, 1)). So every `u64` pair behaves exactly
+    /// as some representative pair, which this harness checks. Two full-width
+    /// expiries carried a `u64` division by 1,000 each through every branch
+    /// and did not finish within the batch deadline.
     /// @obligation sandbox.effect_fence_succession_is_renewal_or_epoch_advance
     #[kani::proof]
     fn fence_succession_is_exactly_renewal_or_epoch_advance() {
@@ -221,5 +304,29 @@ mod verification {
         if !same_subject || next_epoch < epoch {
             assert!(succession.is_none());
         }
+        kani::cover!(
+            succession == Some(FenceSuccession::Reassignment),
+            "reassignment"
+        );
+        kani::cover!(
+            succession == Some(FenceSuccession::Renewal) && next_expiry > expiry,
+            "renewal that extends the expiry"
+        );
+        kani::cover!(
+            succession == Some(FenceSuccession::Renewal) && next_expiry == expiry,
+            "renewal at an equal expiry"
+        );
+        kani::cover!(
+            succession.is_none() && same_tenure,
+            "the exact tenure refused for shortening its expiry"
+        );
+        kani::cover!(
+            succession.is_none() && !same_subject && next_epoch > epoch,
+            "a foreign subject at a higher epoch refused"
+        );
+        kani::cover!(
+            succession.is_none() && same_subject && !same_tenure && next_epoch == epoch,
+            "another holder at the same epoch refused"
+        );
     }
 }

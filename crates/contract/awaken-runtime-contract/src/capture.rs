@@ -187,16 +187,6 @@ mod kani_proofs {
         );
         assert_eq!(level.allows_content(), level == ContentCapture::Full);
     }
-
-    /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
-    #[kani::proof]
-    fn non_full_capture_fails_closed_before_redaction() {
-        let level = arbitrary_capture();
-        if level != ContentCapture::Full {
-            assert_eq!(level.projection(), ContentProjection::Omit);
-            assert!(!level.allows_content());
-        }
-    }
 }
 
 impl Default for CaptureDecision {
