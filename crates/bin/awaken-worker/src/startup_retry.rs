@@ -63,6 +63,24 @@ impl StartupBackoff {
         self.retries
     }
 
+    /// The one action for a failed registration: the delay before the next
+    /// attempt, or the message the process exits with (permanent cause, or a
+    /// transient one past the budget; the Never-restart Pod is then replaced).
+    pub(crate) fn delay_after(
+        &mut self,
+        error: &WorkerRegistrationError,
+    ) -> Result<Duration, String> {
+        if classify_registration(error) == StartupFailureClass::Permanent {
+            return Err(error.to_string());
+        }
+        self.next_delay().ok_or_else(|| {
+            format!(
+                "worker registration still unavailable after {} retries: {error}",
+                self.retries
+            )
+        })
+    }
+
     /// The delay before the next attempt, or `None` once the budget is spent.
     pub(crate) fn next_delay(&mut self) -> Option<Duration> {
         if self.retries >= Self::MAX_RETRIES {
@@ -114,6 +132,27 @@ mod tests {
         ] {
             assert_eq!(classify_registration(&error), expected, "{error}");
         }
+    }
+
+    #[test]
+    fn a_failed_registration_maps_to_one_retry_or_exit_action() {
+        // A1 permanent => exit now with the transport's message, no retry spent;
+        // A2 transient within budget => the next backoff delay;
+        // A3 transient past the budget => exit naming the retry count.
+        let mut backoff = StartupBackoff::new("uid-a");
+        let rejected = WorkerRegistrationError::Rejected("invalid manifest".into());
+        assert_eq!(
+            backoff.delay_after(&rejected),
+            Err("invalid manifest".into()),
+            "A1"
+        );
+        assert_eq!(backoff.retries(), 0, "A1");
+        let refused = WorkerRegistrationError::Unavailable("Connection refused".into());
+        for _ in 0..StartupBackoff::MAX_RETRIES {
+            assert!(backoff.delay_after(&refused).is_ok(), "A2");
+        }
+        let exhausted = backoff.delay_after(&refused).unwrap_err();
+        assert!(exhausted.contains("after 24 retries"), "A3 {exhausted}");
     }
 
     #[test]

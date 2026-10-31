@@ -1440,20 +1440,9 @@ impl WorkerNode {
                 Ok(registration) => break registration,
                 Err(error) => error,
             };
-            if startup_retry::classify_registration(&error)
-                == startup_retry::StartupFailureClass::Permanent
-            {
-                return Err(std::io::Error::other(error.to_string()).into());
-            }
             // Exhaustion exits non-zero: the Never-restart Pod ends and the
             // fleet controller replaces it with a fresh UID.
-            let Some(delay) = backoff.next_delay() else {
-                return Err(std::io::Error::other(format!(
-                    "worker registration still unavailable after {} retries: {error}",
-                    backoff.retries()
-                ))
-                .into());
-            };
+            let delay = backoff.delay_after(&error).map_err(std::io::Error::other)?;
             eprintln!(
                 "worker registration waiting for Coordinator (retry {} in {delay:?}): {error}",
                 backoff.retries()
