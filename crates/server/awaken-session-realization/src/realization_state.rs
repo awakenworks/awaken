@@ -572,7 +572,16 @@ pub struct EnvironmentHoldingState {
     /// RebuildFromCommittedTruth replacement. This is a process-local command
     /// projection; the Session aggregate receipt remains the only transition
     /// authority and clears it after durable publication.
-    pub rebuild_source: Option<(String, Option<String>)>,
+    pub rebuild_source: Option<PendingRebuildSource>,
+}
+
+/// The source one admitted Rebuild replaces, and the evidence its admission
+/// carried, so the replacement asks the aggregate for the same operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingRebuildSource {
+    pub binding: String,
+    pub source_generation_id: Option<String>,
+    pub evidence: awaken_session_contract::RebuildSourceEvidence,
 }
 
 /// Per-Session state held under the installed Session lock.

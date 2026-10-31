@@ -485,26 +485,27 @@ impl crate::environment_holding::EnvironmentHolding {
         let rebuild_source = realizations
             .read_realization(thread, |r| r.environment().rebuild_source.clone())?
             .flatten();
-        let (kind, source_binding) = match &rebuild_source {
-            Some((source_binding, source_generation_id)) => (
-                awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
-                    source_generation_id: source_generation_id.clone(),
-                },
-                Some(source_binding.as_str()),
-            ),
-            None => (
+        // A Rebuild asks for the exact operation its closed-source admission
+        // recorded, carrying the same source evidence.
+        let intent = match &rebuild_source {
+            Some(source) => peers
+                .authority
+                .new_environment_effect_intent(
+                    thread,
+                    awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
+                        source_generation_id: source.source_generation_id.clone(),
+                    },
+                    Some(source.binding.as_str()),
+                )?
+                .with_rebuild_source(source.evidence),
+            None => peers.authority.new_environment_effect_intent(
+                thread,
                 awaken_session_contract::SessionEnvironmentEffectKind::Create,
                 None,
-            ),
+            )?,
         };
         let effect = self
-            .authorize_environment_effect_before_io(
-                peers,
-                thread,
-                &peers
-                    .authority
-                    .new_environment_effect_intent(thread, kind, source_binding)?,
-            )
+            .authorize_environment_effect_before_io(peers, thread, &intent)
             .await?;
         if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,

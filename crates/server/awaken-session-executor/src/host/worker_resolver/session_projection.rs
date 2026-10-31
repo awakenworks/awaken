@@ -1523,8 +1523,9 @@ mod tests {
          * before MCP stage; E2 never consult current
          * Agent publication; E3 preserve the Sandbox handle and generation; E4 a
          * cold lease-only replay without the exact snapshot fails closed; E5
-         * Managed rebuild stays pending until accepted Source closure/access
-         * accompanies the claimed Run's explicit recovery policy;
+         * Managed rebuild stays pending until the realization's evidence shows
+         * the source closed (a cold Worker-process source needs its
+         * incarnation's recorded end) under the claimed Run's recovery policy;
          * E6 no MCP effect runs when a first-use stdio stage lacks that snapshot;
          * E7 C6 persists exactly once and MCP stage observes the Store-read Resident
          * owner rather than the earlier Unmaterialized projection.
@@ -1536,7 +1537,7 @@ mod tests {
          * | R3 | ready | no | no | yes | either | E4 |
          * | R4 | no | no | yes | no | either | ordinary resume (covered by O1) |
          * R5/R6 run as separate cold_rebuild/cold_continuity tests below.
-         * | R5 | missing | no | yes | no | rebuild | E5: pending, no accepted Source closure/access |
+         * | R5 | missing | no | yes | no | rebuild | E5: pending, Worker-process source end unrecorded |
          * | R6 | missing | no | yes | no | continuity | fail closed |
          * | R7 | none yet | no | yes | yes | either | E7; install publication, then stage |
          * | R8 | none yet | no | no | yes | either | E4 + E6 |
@@ -2087,14 +2088,17 @@ mod tests {
                 &rebuild_activation.snapshot,
             ))
             .await;
-        // R5 safety behavior changed: the old typed UID is definitively gone,
-        // but local stop/inode loss is not the Root's missing Source closure/
-        // domain-access witness. The old synthetic sink accepted a new handle;
-        // canonical Managed Rebuild now stays MaterializationPending. A future
-        // complete closure/access slice must add a separate real positive.
-        // Rule: known loss + unknown accepted source witness => retryable exact
-        // pending error, zero target Create/publication, original intent/binding
-        // retained. No ignore/skip or fake grant substitutes for this boundary.
+        // R5: the aggregate now admits a Rebuild whose realization evidence
+        // shows a closed source with something to rebuild from (transition
+        // table T13, rebuild_source tables RS/RA). This cold consumer still
+        // stays pending, for a narrower reason: the lost source is a local
+        // Worker-process source, the provider proves its root absent, but the
+        // incarnation that ran it is not this one and its process end is not
+        // recorded here (row RS3), so the source is not proven closed.
+        // Rule: Worker-process source + absent root + unrecorded incarnation
+        // end => retryable exact pending error, zero target Create/publication,
+        // original intent/binding retained. No ignore/skip or fake grant
+        // substitutes for this boundary.
         // The claim boundary preserves the owner's diagnostic: assert its
         // Unavailable kind, exact stable code and unchanged original message,
         // rather than accepting a string-only error that loses retry semantics.
@@ -2120,7 +2124,7 @@ mod tests {
         .map_err(
             awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
         )
-        .expect_err("R5 canonical Managed Rebuild needs accepted Source closure/access");
+        .expect_err("R5 a cold Worker-process source needs its incarnation's recorded end");
         match error {
             awaken_dispatch_execution::Error::Execution(
                 awaken_runtime_contract::execution::Error::Diagnostic(diagnostic),

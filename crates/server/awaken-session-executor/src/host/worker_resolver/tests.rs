@@ -1767,7 +1767,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     // Adoption cause/effect decision table:
     // | rule | provider observation | recovery policy | resident | effect |
     // | A1 | Ready exact handle | continuity | absent | adopt exact binding |
-    // | A2 | definitively unavailable | rebuild | absent | classify RebuildRequired; actual target pending without accepted closure/access |
+    // | A2 | definitively unavailable | rebuild | absent | Root pending: a cold Worker-process source's incarnation end is unrecorded (rebuild_source RS3) |
     // | A3 | definitively unavailable | continuity | absent | fail, zero mutation |
     // The dead-resident companion test covers A2 with a resident Arc: only the
     // exact observed Arc is discarded before rebuild is projected. Parameter
@@ -1874,7 +1874,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
             true,
         )
         .await
-        .expect_err("A2 missing UID cannot substitute for original source closure/access");
+        .expect_err("A2 missing UID cannot substitute for the source incarnation's recorded end");
     assert_eq!(
         refusal.disposition(),
         crate::realization_error::Disposition::Retry,
@@ -1892,7 +1892,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     );
     // The original Root guard runs before consuming a protected source owner.
     // It therefore refuses recovery classification as well as a target effect
-    // until closure/access is accepted. Ordinary context opening separately
+    // until the source is proven closed. Ordinary context opening separately
     // requires prior adoption; its existing missing-binding precondition must
     // reject before another effect, rather than bypassing the Root refusal.
     let error = match replacement.run_assembly.ctx_for(missing_thread, None).await {
