@@ -152,10 +152,6 @@ struct ContainerProcessBinding {
 /// An observation obtained from this adapter's authenticated Kubernetes client.
 /// Deliberately not deserializable: caller-supplied JSON is not provider evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one observation per poll, moved straight to its consumer; boxing adds an allocation and saves no copy"
-)]
 pub enum PodProcessTermination {
     Unknown,
     /// Exact non-restarting container terminated. This variant is an observation,
