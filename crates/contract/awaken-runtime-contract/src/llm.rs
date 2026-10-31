@@ -304,15 +304,12 @@ pub trait ModelRequestGate: Send + Sync {
     ) -> Result<ModelRequestAdmission>;
 }
 
-// Compatibility for existing SDK consumers. Internal value-only consumers
-// depend on the defining Agent contract rather than the engine SPI.
-pub use awaken_agent_contract::thread::usage::{
-    THREAD_USAGE_STATE_KEY, ThreadUsage, ThreadUsageKey,
-};
-
 #[cfg(test)]
 mod thread_usage_key_tests {
     use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope, StateKey, Store};
+    use awaken_agent_contract::thread::usage::{
+        THREAD_USAGE_STATE_KEY, ThreadUsage, ThreadUsageKey,
+    };
 
     use super::*;
 
@@ -626,7 +623,8 @@ pub trait LlmExecutor: Send + Sync {
 
 #[cfg(test)]
 mod usage_tests {
-    use super::{ThreadUsage, TokenUsage};
+    use super::TokenUsage;
+    use awaken_agent_contract::thread::usage::ThreadUsage;
 
     fn u(p: u64, c: u64) -> TokenUsage {
         TokenUsage {

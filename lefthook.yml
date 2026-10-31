@@ -138,6 +138,16 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
 
+    # 3b. An SDK public-API change ships only with the crate version bump it
+    #     needs against the last SDK release, and a changelog entry for it
+    #     (docs/design/sdk-versioning.md). Pure Python over the committed
+    #     snapshots; check_public_api.sh proves the snapshots are current.
+    sdk-semver:
+      # >>> generated glob from check_sdk_semver.py INPUT_GLOBS — do not edit
+      glob: "{Cargo.toml,crates/**/CHANGELOG.md,crates/**/Cargo.toml,public-api/*.txt,scripts/ci/_arch_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_sdk_semver.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_sdk_semver.py
+
     # 3b. Dependency direction and ownership rules. It also runs inside the
     #     rust gate; as its own hook it still runs on commits that skip that gate.
     #     It reads no documentation, so a docs-only commit skips it; every run

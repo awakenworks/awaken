@@ -35,6 +35,7 @@ use awaken_agent_contract::stream::event::{
 };
 use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::usage::{ThreadUsage, ThreadUsageKey};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::attempt_termination::{
     ActiveNativeAttemptCoverage, NativeAttemptCoverage,
@@ -49,7 +50,7 @@ use awaken_runtime_contract::execution::{
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, ModelRequestAdmission,
-    StopReason, ThreadUsage, ThreadUsageKey,
+    StopReason,
 };
 use awaken_runtime_contract::permission::{GateAuthority, GateDecision, GateOutcome};
 use awaken_runtime_contract::plugin::{

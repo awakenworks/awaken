@@ -2654,7 +2654,7 @@ async fn a_usage_event_is_committed_as_thread_state() {
     // so a session's ACP usage is readable identically.
     use awaken_agent_contract::agent::state::Action;
     use awaken_agent_contract::audit::model_request::TokenUsage;
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
+    use awaken_agent_contract::thread::usage::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     let e = exec(vec![
         r#"{"type":"message","text":"hi"}"#.into(),
@@ -4935,8 +4935,8 @@ async fn usage_accumulates_across_relaunched_runs() {
     // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::state::Action;
     use awaken_agent_contract::audit::model_request::TokenUsage;
+    use awaken_agent_contract::thread::usage::{THREAD_USAGE_STATE_KEY, ThreadUsage};
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     // Every launched Run (the ScriptedSource re-emits its frames on each open) reports
     // the same usage; two Runs → the tally must double.
@@ -5005,7 +5005,7 @@ async fn usage_accumulates_across_independent_runs_with_a_rebuilt_reader() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::audit::model_request::TokenUsage;
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
+    use awaken_agent_contract::thread::usage::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     let frames = || {
         vec![

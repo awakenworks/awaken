@@ -146,8 +146,9 @@ The `neutral_role!` macro stops using `__macro_support`: it names the owners
 by absolute path (`::awaken_session_contract`, `::awaken_session_types`, …), and
 each invoking crate declares the owners its arm uses. The three
 `runtime-contract` paths to `ThreadUsage`, `ThreadUsageKey` and
-`THREAD_USAGE_STATE_KEY` are reviewed SDK facade paths (ADR-0086, public-API
-snapshot); they are removed only with the SDK SemVer release (plan item L).
+`THREAD_USAGE_STATE_KEY` were reviewed SDK facade paths (ADR-0086, public-API
+snapshot); item L removed them inside the pending runtime-contract `2.0.0`
+([SDK versioning](sdk-versioning.md)).
 When `contract-reexport` and `renamed-reexport` reach zero outside that
 facade, both ratchets become a plain deny rule and lose their baseline (S2).
 Re-exports of contract items by implementation crates (331 items, mostly

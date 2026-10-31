@@ -35,7 +35,7 @@ pub fn remember_ticket_await_target<'a>(
 pub fn fixture_usage_command(
     usage: awaken_session_contract::SessionUsage,
 ) -> awaken_agent_contract::agent::state::Command {
-    let mut attributed = awaken_runtime_contract::llm::ThreadUsage::default();
+    let mut attributed = awaken_agent_contract::thread::usage::ThreadUsage::default();
     let token_usage =
         |input, output, read, creation| awaken_agent_contract::audit::model_request::TokenUsage {
             prompt_tokens: input,
@@ -66,7 +66,7 @@ pub fn fixture_usage_command(
             );
         }
     }
-    <awaken_runtime_contract::llm::ThreadUsageKey as awaken_agent_contract::agent::state::StateKey>::write(&attributed)
+    <awaken_agent_contract::thread::usage::ThreadUsageKey as awaken_agent_contract::agent::state::StateKey>::write(&attributed)
 }
 
 /// One Thread's committed state commands, each with the commit that first

@@ -53,7 +53,6 @@
     "awaken-dispatch-contract": 58,
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,
-    "awaken-runtime-contract": 3,
     "awaken-session-application-contract": 3,
     "awaken-session-configuration-contract": 3,
     "awaken-session-execution-contract": 51,
@@ -128,9 +127,6 @@
     },
     "foreign-persistence-port": {
       "SandboxCheckpointStore <- awaken-session-realization": "R extraction onto main822: move existing SandboxCheckpointStore byte-custody use into the canonical resource component; Host still names its existing assembly/provider method arguments. Record that exact usage instead of claiming debt removal. Incoming main MemoryExecutionContent and narrow Memory roles are preserved; the former MemoryRepository trait/usage records stay deleted, with no compatibility route."
-    },
-    "contract-reexport": {
-      "awaken-runtime-contract": "{\"reason\": \"ADR-0088 amendment 2026-10-28: move the pure ThreadUsage vocabulary to Agent contract while preserving the three existing Runtime SDK import paths; new consumers import the owner directly.\", \"approved_by\": \"repository user: implement the reviewed crate and contract optimization, 2026-10-28\", \"date\": \"2026-10-28\", \"remove_when\": \"A reviewed SDK major migration removes the three legacy Runtime ThreadUsage import paths after downstream consumers adopt the Agent owner.\"}"
     },
     "aggregate-pub-field": {
       "BudgetReachTransition": "{\"approved_by\": \"integrator Root under user-approved consolidation\", \"date\": \"2026-10-30\", \"reason\": \"Inherited measurement only: 28 previously publicly reachable Event/Budget types retain exact original fieldsets, order, visibility, type identity and serde; no new public fields or helper reachability. Source provenance and before/after declarations in inherited-public-fields-before-after.json; old State field keys remain protected.\", \"remove_when\": \"original owned state is encapsulated through its canonical transitions; value DTO compatibility retained\"}",

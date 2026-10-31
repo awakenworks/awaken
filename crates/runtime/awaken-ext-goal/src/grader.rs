@@ -4,6 +4,7 @@
 //! Agent-backed Outcome grading over the ordinary Runtime Run boundary.
 
 use awaken_agent_contract::audit::model_request::TokenUsage;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 use awaken_agent_contract::{
     agent::{
         message::{Id as MessageId, Message, Role},
@@ -13,7 +14,6 @@ use awaken_agent_contract::{
     thread::read::{committed_thread_view::CommittedThreadView, transcript::TranscriptSliceSpec},
 };
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::ThreadUsage;
 use awaken_runtime_contract::resolved::InvalidModelBinding;
 use awaken_runtime_contract::{
     ExecutableAgentSnapshot, ModelBinding, RunActivation, RuntimeRunContext,
@@ -387,7 +387,7 @@ mod tests {
         awaken_agent_contract::agent::state::Command::set(
             awaken_agent_contract::agent::state::Scope::Thread,
             awaken_agent_contract::agent::state::MergePolicy::Commutative,
-            awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+            awaken_agent_contract::thread::usage::THREAD_USAGE_STATE_KEY,
             serde_json::to_value(usage).expect("a thread usage tally serializes"),
         )
     }

@@ -19,10 +19,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::llm::ThreadUsage;
 use crate::resume::ResumeResult;
 use crate::runtime_context::RuntimeRunContext;
 use crate::snapshot::AgentId;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 
 /// The single model-facing payload accepted by the delegation capability.
 ///

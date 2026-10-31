@@ -546,7 +546,7 @@ async fn historical_usage_prefix_failure_preserves_warm_frame_and_repair_rebuild
     ]);
     *runtime.state.lock().unwrap() = [5, 15]
         .map(|input_tokens| {
-            let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
+            let mut usage = awaken_agent_contract::thread::usage::ThreadUsage::default();
             usage.record(
                 "model",
                 awaken_agent_contract::audit::model_request::TokenUsage {
@@ -557,7 +557,7 @@ async fn historical_usage_prefix_failure_preserves_warm_frame_and_repair_rebuild
             Command::set(
                 Scope::Thread,
                 MergePolicy::Commutative,
-                awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+                awaken_agent_contract::thread::usage::THREAD_USAGE_STATE_KEY,
                 serde_json::to_value(usage).unwrap(),
             )
         })

@@ -122,8 +122,8 @@ impl Default for CoordinatedRuntimeFake {
 }
 
 impl CoordinatedRuntimeFake {
-    fn committed_usage(thread_id: &str) -> awaken_runtime_contract::llm::ThreadUsage {
-        let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
+    fn committed_usage(thread_id: &str) -> awaken_agent_contract::thread::usage::ThreadUsage {
+        let mut usage = awaken_agent_contract::thread::usage::ThreadUsage::default();
         usage.record(
             "test-model",
             awaken_agent_contract::audit::model_request::TokenUsage {
@@ -1449,7 +1449,7 @@ impl awaken_session_execution_contract::ThreadReads for CoordinatedRuntimeFake {
         // is committed with the Thread's own work, so a later disposition
         // commit does not move it.
         use awaken_agent_contract::agent::state::StateKey as _;
-        state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(
+        state.push(awaken_agent_contract::thread::usage::ThreadUsageKey::write(
             &Self::committed_usage(thread_id),
         ));
         state_commit_cursors.push(

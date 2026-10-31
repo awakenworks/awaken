@@ -16,7 +16,7 @@
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_runtime_contract::llm::ThreadUsage;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 
 use crate::config::latest_assistant_text;
 

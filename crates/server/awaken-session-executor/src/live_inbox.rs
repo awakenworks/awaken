@@ -68,9 +68,10 @@ impl LiveInboxes {
 impl awaken_session_execution_contract::LiveInboxAccess for LiveInboxes {
     async fn live_inbox_snapshot(&self, thread: &str) -> Result<LiveInboxSnapshot, LiveInboxError> {
         Ok(match self.live_inbox(thread).await? {
+            // A poisoned inbox has no version to report: a fault, as in L4.
             Some(inbox) => LiveInboxSnapshot {
                 active: true,
-                version: inbox.version(),
+                version: inbox.version().ok_or(LiveInboxError::Unavailable)?,
                 messages: inbox
                     .list()
                     .into_iter()
@@ -136,5 +137,6 @@ fn to_live_inbox_error(error: EditError) -> LiveInboxError {
         EditError::Closed => LiveInboxError::Inactive,
         EditError::UnknownMessage => LiveInboxError::UnknownMessage,
         EditError::StaleOrder => LiveInboxError::StaleOrder,
+        EditError::Unavailable => LiveInboxError::Unavailable,
     }
 }

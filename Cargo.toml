@@ -41,10 +41,17 @@ version = "1.0.0"
 edition = "2024"
 license = "Apache-2.0"
 
+# The last SDK release: its public-api snapshots and crate versions are the
+# SemVer reference for every published SDK crate (docs/design/sdk-versioning.md,
+# scripts/ci/check_sdk_semver.py). Move it to the release commit when the SDK
+# is published.
+[workspace.metadata.awaken]
+sdk_semver_baseline = "50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"
+
 [workspace.dependencies]
 awaken-process-win32 = { path = "crates/shared/awaken-process-win32", version = "1.0.0" }
 awaken-plugin-composition = { path = "crates/bin/awaken-plugin-composition" }
-awaken-web-policy-contract = { path = "crates/contract/awaken-web-policy-contract", version = "1.0.0" }
+awaken-web-policy-contract = { path = "crates/contract/awaken-web-policy-contract", version = "1.1.0" }
 awaken-ui-artifact = { git = "https://github.com/awakenworks/awaken-ui.git", rev = "15ab31ef4943042ac4795c27f0e82c78586a214e" }
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract", version = "2.0.0" }
 awaken-lease-contract = { path = "crates/contract/awaken-lease-contract", version = "1.0.0" }
@@ -83,9 +90,9 @@ awaken-runtime = { path = "crates/runtime/awaken-runtime", version = "2.0.0" }
 awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern", version = "0.1.0" }
 awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai", version = "2.0.0" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission", version = "2.0.0" }
-awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http", version = "1.0.0" }
+awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http", version = "1.1.0" }
 awaken-authority-clock = { path = "crates/runtime/awaken-authority-clock" }
-awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire", version = "0.1.0" }
+awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire", version = "0.1.1" }
 awaken-mcp-server-core = { path = "crates/server/awaken-mcp-server-core" }
 awaken-mcp-server-testkit = { path = "crates/server/awaken-mcp-server-testkit" }
 awaken-ext-mcp = { path = "crates/runtime/awaken-ext-mcp", version = "0.2.0" }
