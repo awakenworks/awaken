@@ -335,7 +335,7 @@ pub(super) async fn memory(
                     ))
                 })?;
                 let snapshot = awaken_session_run_delivery::resolve_auxiliary_snapshot(
-                    Some(publication_source.as_ref()),
+                    publication_source.as_ref(),
                     workspace,
                     agent_id,
                     fallback,
@@ -469,7 +469,7 @@ fn compact(
                 ))
             })?;
             let snapshot = awaken_session_run_delivery::resolve_auxiliary_snapshot(
-                Some(publication_source.as_ref()),
+                publication_source.as_ref(),
                 workspace,
                 &compact_config.agent_id,
                 fallback,

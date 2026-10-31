@@ -553,10 +553,13 @@ impl SessionExecutorBuilder {
         >,
     ) -> Self {
         assert!(
-            self.exec.acp.is_none(),
+            !matches!(
+                self.exec.acp,
+                crate::host::capability::AcpBackend::Installed(_)
+            ),
             "ACP projection policy cannot shadow an executor"
         );
-        self.exec.acp_projection_policy = Some(policy);
+        self.exec.acp = crate::host::capability::AcpBackend::Projection(policy);
         self
     }
 
@@ -567,8 +570,7 @@ impl SessionExecutorBuilder {
         mut self,
         factory: Arc<dyn awaken_session_environment_contract::AcpSessionExecutorFactory>,
     ) -> Self {
-        self.exec.acp_projection_policy = None;
-        self.exec.acp = Some(factory);
+        self.exec.acp = crate::host::capability::AcpBackend::Installed(factory);
         self
     }
 

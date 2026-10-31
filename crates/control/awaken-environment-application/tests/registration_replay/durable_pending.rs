@@ -118,7 +118,9 @@ where
             delegate.clone(),
             work.clone(),
         )),
-        None,
+        std::sync::Arc::new(
+            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+        ),
     );
     fault.arm().await;
     assert!(
@@ -256,7 +258,9 @@ where
             delegate.clone(),
             work.clone(),
         )),
-        None,
+        std::sync::Arc::new(
+            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+        ),
     );
     assert_eq!(application.drain_registration_intents().await.unwrap(), 2);
     assert_eq!(
@@ -401,7 +405,9 @@ async fn a_catalog_high_watermark_projection_is_rejected_by_the_convergence_verd
     let application = EnvironmentApplication::new(
         definitions,
         Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
-        None,
+        std::sync::Arc::new(
+            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+        ),
     );
     assert_eq!(application.drain_registration_intents().await.unwrap(), 2);
     assert_eq!(

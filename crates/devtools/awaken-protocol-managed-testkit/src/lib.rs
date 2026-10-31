@@ -5,10 +5,6 @@
 //! adapter itself depends on no concrete store: every fixture here reaches it
 //! behind the port it consumes, so its `test-support` feature no longer drags
 //! four stores and a catalog into every crate that enables it.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 
@@ -103,7 +99,7 @@ pub fn environment_fixture(clock: Arc<dyn awaken_time::WallClock>) -> Environmen
     let application = Arc::new(EnvironmentApplication::new(
         Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock)),
         registrar,
-        Some(sandbox_policies.clone()),
+        sandbox_policies.clone(),
     ));
     EnvironmentFixture {
         application,

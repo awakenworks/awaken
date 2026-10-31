@@ -111,7 +111,9 @@ pub async fn run_prepared_session_run<'p>(
                     // The canonical guarded composition owns the exact read,
                     // root CAS, expiry recheck and asynchronous release.
                     let recovery = if matches!(commit.as_ref(), SessionCommit::Local(_)) {
-                        Ok(Some(commit.as_ref() as &dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource))
+                        Ok(awaken_dispatch_contract::PreparedRunRecovery::OriginalAuthority(
+                            &*commit,
+                        ))
                     } else {
                         Err(pending("legacy Run adoption requires original committed authority"))
                     };

@@ -884,7 +884,7 @@ impl crate::environment_holding::EnvironmentHolding {
         if revoked_owner
             .as_ref()
             .is_some_and(|retiring| matches!(&retiring.owned, RetiringEnvironmentOwner::Unbound(_)))
-            && effect.provider_fence.is_none()
+            && effect.provider_effect.fence().is_none()
         {
             return Err(RealizationError::invariant(
                 "unacknowledged Candidate recovery requires current aggregate adoption authority",
@@ -910,23 +910,18 @@ impl crate::environment_holding::EnvironmentHolding {
             .as_ref()
             .map(|retained| retained.environment().as_ref())
             .or(revoked_environment.as_deref());
-        let authority = effect
-            .provider_fence
-            .as_ref()
-            .map(|fence| peers.authority.provider_effect_authority(thread, fence))
-            .transpose()?;
-        let provider_effect = awaken_provisioning_contract::SandboxEffect::from_parts(
-            effect.provider_fence.as_ref(),
-            authority.as_ref().map(|authority| {
-                authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
-            }),
-        )
-        .map_err(|error| {
-            RealizationError::authority_lost(
-                AuthorityLoss::AdoptionAuthorityLost,
-                error.to_string(),
-            )
-        })?;
+        // Re-capture the authority for this adoption's own provider steps.
+        let recaptured;
+        let provider_effect = match effect.provider_effect.fence() {
+            None => awaken_provisioning_contract::SandboxEffect::Unattached,
+            Some(fence) => {
+                recaptured = peers.authority.provider_effect_authority(thread, fence)?;
+                awaken_provisioning_contract::SandboxEffect::Fenced {
+                    fence,
+                    authority: &recaptured,
+                }
+            }
+        };
         let admit_original = || {
             provider_effect.admit().map_err(|error| {
                 RealizationError::authority_lost(

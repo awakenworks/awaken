@@ -325,7 +325,13 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(EnvironmentRegistrar::default());
-        let environments = Arc::new(EnvironmentApplication::new(envs, registrar, None));
+        let environments = Arc::new(EnvironmentApplication::new(
+            envs,
+            registrar,
+            std::sync::Arc::new(
+                awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+            ),
+        ));
         let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
         let supervisor = StaticRegistrationSupervisor::start_with_config(
             agents,
@@ -417,7 +423,13 @@ mod tests {
             registrations: Mutex::new(0),
             fail_custom_once: AtomicBool::new(true),
         });
-        let environments = Arc::new(EnvironmentApplication::new(envs, registrar, None));
+        let environments = Arc::new(EnvironmentApplication::new(
+            envs,
+            registrar,
+            std::sync::Arc::new(
+                awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+            ),
+        ));
         let agents = Arc::new(AgentRecovery {
             fail: AtomicBool::new(false),
         });

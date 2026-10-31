@@ -30,6 +30,33 @@ impl SandboxExecutionPolicyStore for DisabledPolicy {
     }
 }
 
+/// A selected policy store that cannot answer: the fresh-command refusal.
+struct UnavailablePolicy;
+
+#[async_trait]
+impl SandboxExecutionPolicyStore for UnavailablePolicy {
+    async fn create(&self, _: SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolicyError> {
+        panic!("create replay must not author policy")
+    }
+    async fn publish(
+        &self,
+        _: SandboxExecutionPolicyVersion,
+        _: SandboxExecutionPolicy,
+    ) -> Result<(), SandboxExecutionPolicyError> {
+        panic!("create replay must not publish policy")
+    }
+    async fn get_exact(
+        &self,
+        _: &SandboxExecutionPolicyRef,
+    ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
+        Err(unavailable_policy_store())
+    }
+}
+
+fn unavailable_policy_store() -> SandboxExecutionPolicyError {
+    SandboxExecutionPolicyError::StoreFailed("Sandbox execution policy store is unavailable".into())
+}
+
 fn policy_command(id: &str) -> CreateEnvironmentCommand {
     let mut command = create_command(id, "original");
     command.sandbox_policy = Some(EnvironmentSandboxPolicyRef {
@@ -48,11 +75,8 @@ async fn delivered_create_replays_original_facts_without_readmitting_current_pol
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
-        let valid = EnvironmentApplication::new(
-            store.clone(),
-            registrar.clone(),
-            Some(Arc::new(OnePolicy)),
-        );
+        let valid =
+            EnvironmentApplication::new(store.clone(), registrar.clone(), Arc::new(OnePolicy));
         let command = policy_command("exact-create");
         let original = valid.create(command.clone()).await.unwrap();
         let mut head = original.clone();
@@ -77,8 +101,8 @@ async fn delivered_create_replays_original_facts_without_readmitting_current_pol
             .unwrap();
         let registrations = registrar.registrations.lock().unwrap().len();
         let disabled = Arc::new(DisabledPolicy::default());
-        let policies: [Option<Arc<dyn SandboxExecutionPolicyStore>>; 2] =
-            [None, Some(disabled.clone())];
+        let policies: [Arc<dyn SandboxExecutionPolicyStore>; 2] =
+            [Arc::new(UnavailablePolicy), disabled.clone()];
         for policy in policies {
             let replay = EnvironmentApplication::new(store.clone(), registrar.clone(), policy)
                 .create(command.clone())
@@ -120,11 +144,12 @@ async fn create_replay_checks_fingerprint_while_new_commands_still_require_polic
     let registrar = Arc::new(RecordingRegistrar::default());
     let command = policy_command("existing");
     let original =
-        EnvironmentApplication::new(store.clone(), registrar.clone(), Some(Arc::new(OnePolicy)))
+        EnvironmentApplication::new(store.clone(), registrar.clone(), Arc::new(OnePolicy))
             .create(command.clone())
             .await
             .unwrap();
-    let unavailable = EnvironmentApplication::new(store.clone(), registrar, None);
+    let unavailable =
+        EnvironmentApplication::new(store.clone(), registrar, Arc::new(UnavailablePolicy));
     let mut conflicting = command.clone();
     conflicting.name = "different".into();
     assert!(matches!(
@@ -136,7 +161,7 @@ async fn create_replay_checks_fingerprint_while_new_commands_still_require_polic
     let fresh = policy_command("new-command");
     assert!(matches!(
         unavailable.create(fresh.clone()).await,
-        Err(EnvironmentApplicationError::PolicyStoreUnavailable)
+        Err(EnvironmentApplicationError::Policy(error)) if error == unavailable_policy_store()
     ));
     assert!(store.find_create_result(&fresh).await.unwrap().is_none());
     assert_eq!(store.list_all().await.unwrap(), vec![original]);
@@ -160,11 +185,8 @@ async fn pending_create_replay_keeps_commit_facts_and_requires_safe_delivery() {
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
         registrar.fail_registration.store(true, Ordering::SeqCst);
-        let valid = EnvironmentApplication::new(
-            store.clone(),
-            registrar.clone(),
-            Some(Arc::new(OnePolicy)),
-        );
+        let valid =
+            EnvironmentApplication::new(store.clone(), registrar.clone(), Arc::new(OnePolicy));
         let command = policy_command("pending-create");
         let original = valid
             .create(command.clone())
@@ -174,8 +196,11 @@ async fn pending_create_replay_keeps_commit_facts_and_requires_safe_delivery() {
             .unwrap()
             .clone();
         registrar.fail_registration.store(false, Ordering::SeqCst);
-        let policy = disabled_policy
-            .then(|| Arc::new(DisabledPolicy::default()) as Arc<dyn SandboxExecutionPolicyStore>);
+        let policy: Arc<dyn SandboxExecutionPolicyStore> = if disabled_policy {
+            Arc::new(DisabledPolicy::default())
+        } else {
+            Arc::new(UnavailablePolicy)
+        };
         let error = EnvironmentApplication::new(store.clone(), registrar.clone(), policy)
             .create(command.clone())
             .await
@@ -193,7 +218,7 @@ async fn pending_create_replay_keeps_commit_facts_and_requires_safe_delivery() {
         } else {
             assert!(matches!(
                 cause.as_ref(),
-                EnvironmentApplicationError::PolicyStoreUnavailable
+                EnvironmentApplicationError::Policy(error) if *error == unavailable_policy_store()
             ));
         }
         assert_eq!(store.list_all().await.unwrap(), vec![original.clone()]);

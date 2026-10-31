@@ -78,18 +78,18 @@ impl EnvironmentStore {
             Self::Sqlite(store) => awaken_environment_application::EnvironmentApplication::new(
                 store.clone(),
                 registrar,
-                Some(sandbox_policies),
+                sandbox_policies,
             ),
             Self::Postgres(store) => awaken_environment_application::EnvironmentApplication::new(
                 store.clone(),
                 registrar,
-                Some(sandbox_policies),
+                sandbox_policies,
             ),
             #[cfg(any(test, feature = "test-support"))]
             Self::InMemory(store) => awaken_environment_application::EnvironmentApplication::new(
                 store.clone(),
                 registrar,
-                Some(sandbox_policies),
+                sandbox_policies,
             ),
         }
     }

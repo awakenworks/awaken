@@ -53,8 +53,7 @@ pub fn create_session_environment<'a>(
     executor: &'a crate::realization_executor::RealizationExecutor,
     provider: &'a crate::session_environment::SandboxProviderRoles,
     spec: &'a awaken_provisioning_contract::SandboxSpec,
-    effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
-    authority: Option<&'a dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
+    effect: awaken_provisioning_contract::SandboxEffect<'a>,
     source_handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
     intent: awaken_session_environment_contract::EnvironmentRealizationKind,
 ) -> impl std::future::Future<
@@ -67,8 +66,7 @@ pub fn create_session_environment<'a>(
             executor.peers(),
             provider,
             spec,
-            effect_fence,
-            authority,
+            effect,
             source_handle,
             intent,
         )

@@ -228,7 +228,10 @@ async fn acp_fixture(
         .into_provider_roles(),
     );
     let factory = Arc::new(FaultFactory {
-        inner: host.exec.acp.as_ref().unwrap().clone(),
+        inner: match &host.exec.acp {
+            crate::host::capability::AcpBackend::Installed(factory) => factory.clone(),
+            _ => panic!("fixture installs an ACP executor"),
+        },
         fail_first: AtomicBool::new(fail_factory),
     });
     let host = (host.with_acp(factory))

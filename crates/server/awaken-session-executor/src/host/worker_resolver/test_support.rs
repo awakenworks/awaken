@@ -350,11 +350,7 @@ pub(crate) async fn available_local_environment_binding(
                     &spec,
                 )
                 .expect("validate exact available-Environment fixture spec");
-            let provider_effect = awaken_provisioning_contract::SandboxEffect::from_parts(
-                effect.provider_fence.as_ref(),
-                effect.provider_authority.as_deref(),
-            )
-            .expect("original captured available-Environment authority");
+            let provider_effect = effect.provider_effect.sandbox_effect();
             let environment = provider
                 .realizer()
                 .create_effective_for_effect(

@@ -95,7 +95,7 @@ impl ChildRunLauncher {
             sandbox,
             parent_snapshot,
             adapters,
-            Some(publication_source),
+            publication_source,
             workspace,
         )
         .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?

@@ -624,7 +624,7 @@ async fn authorize_artifact_effect(
                 return Err(StatusCode::BAD_REQUEST);
             }
             if verify_claim_owner(
-                Some(service.directory.as_ref()),
+                service.directory.as_ref(),
                 worker,
                 identity,
                 claim,

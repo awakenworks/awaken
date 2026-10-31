@@ -97,11 +97,9 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // two must reject before provider filesystem effects; only current proceeds
     // to the existing lazy-Hand checks. An immutable fence is not a grant.
     let denied = pc::test_support::EffectAuthority::denied();
-    // A fence without a source cannot even be projected into a provider
-    // effect; the denied source reaches the provider and is refused there.
-    assert!(
-        awaken_provisioning_contract::SandboxEffect::from_parts(Some(&create_fence), None).is_err()
-    );
+    // A fence without a source is unrepresentable as a provider effect
+    // (`SandboxEffect::Fenced` needs both); the denied source reaches the
+    // provider and is refused there.
     assert!(
         provider
             .realizer()

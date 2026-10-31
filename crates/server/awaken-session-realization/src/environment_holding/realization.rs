@@ -25,8 +25,7 @@ impl crate::environment_holding::EnvironmentHolding {
             peers,
             provider,
             spec,
-            None,
-            None,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
             None,
             awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
@@ -88,8 +87,7 @@ impl crate::environment_holding::EnvironmentHolding {
             peers,
             provider,
             spec,
-            effect.provider_fence.as_ref(),
-            effect.provider_authority.as_deref(),
+            effect.provider_effect.sandbox_effect(),
             source_handle.as_ref(),
             intent,
         )
@@ -102,26 +100,14 @@ impl crate::environment_holding::EnvironmentHolding {
         peers: crate::peers::Peers<'_>,
         provider: &crate::session_environment::SandboxProviderRoles,
         spec: &awaken_provisioning_contract::SandboxSpec,
-        effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
-        authority: Option<&dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
+        effect: awaken_provisioning_contract::SandboxEffect<'_>,
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
         intent: awaken_session_environment_contract::EnvironmentRealizationKind,
     ) -> Result<crate::session_environment::SessionEnvironment, RealizationError> {
         let spec = self.validate_session_environment_capabilities(peers, provider, spec)?;
-        // Capture before any preparation await. A same-byte replacement installed Session
-        // must not lend its proof to this in-flight creation or its retries.
-        let current_fence = match (effect_fence, authority) {
-            (Some(_), Some(authority)) => Some(authority),
-            (None, None) => None,
-            _ => {
-                return Err(RealizationError::invariant(
-                    "Environment create lacks captured authority",
-                ));
-            }
-        };
-        let effect =
-            awaken_provisioning_contract::SandboxEffect::from_parts(effect_fence, current_fence)
-                .map_err(RealizationError::from)?;
+        // The authority was captured before any preparation await. A same-byte
+        // replacement installed Session must not lend its proof to this
+        // in-flight creation or its retries.
         effect.admit().map_err(RealizationError::from)?;
         self.providers
             .cache_volume_prewarmer

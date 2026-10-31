@@ -81,7 +81,7 @@ pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), Str
                 .to_owned(),
         );
     }
-    run_service_with_adapters(args, role, None, None).await
+    run_service_with_adapters(args, role, None, EmbeddedWorker::NotLinked).await
 }
 
 /// Run the canonical AllInOne service with the Worker it co-locates.
@@ -89,7 +89,13 @@ pub async fn run_all_in_one(
     args: ServiceArgs,
     colocated: Arc<dyn crate::ColocatedWorkerPreparation>,
 ) -> Result<(), String> {
-    run_service_with_adapters(args, ServiceRole::AllInOne, None, Some(colocated)).await
+    run_service_with_adapters(
+        args,
+        ServiceRole::AllInOne,
+        None,
+        EmbeddedWorker::Colocated(colocated),
+    )
+    .await
 }
 
 /// Run the canonical AllInOne service with product-supplied infrastructure
@@ -105,7 +111,7 @@ pub async fn run_all_in_one_with_services(
         args,
         ServiceRole::AllInOne,
         Some((managed_services, coordinator_services)),
-        Some(colocated),
+        EmbeddedWorker::Colocated(colocated),
     )
     .await
 }
@@ -117,7 +123,7 @@ async fn run_service_with_adapters(
         crate::ManagedServiceAdapters,
         crate::CoordinatorServiceAdapters,
     )>,
-    colocated: Option<Arc<dyn crate::ColocatedWorkerPreparation>>,
+    embedded_worker: EmbeddedWorker,
 ) -> Result<(), String> {
     awaken_deployment_config::reject_ambient_api_key_environment()
         .map_err(|error| error.to_string())?;
@@ -182,7 +188,7 @@ async fn run_service_with_adapters(
     let local_worker = prepare_configured_local_worker(
         &mut deployment,
         role,
-        colocated.as_deref(),
+        &embedded_worker,
         seal_key.as_ref(),
         installations.platform_workspace_before_write()?,
         process_clock.clone(),
@@ -209,13 +215,31 @@ async fn run_service_with_adapters(
     result
 }
 
+/// Whether the launcher links a Worker into this process. The `awaken`
+/// launcher links one for AllInOne; the role binaries link none.
+///
+/// Decision table (`disabled_or_split_worker_startup_has_no_local_effects`):
+/// | Rule | role | local pool | embedded Worker | Effect |
+/// |---|---|---|---|---|
+/// | W1 | AllInOne | disabled | any | no preparation |
+/// | W2 | Control, Coordinator | any | any | no preparation |
+/// | W3 | AllInOne | enabled | `Colocated` | that Worker is prepared |
+/// | W4 | AllInOne | enabled | `NotLinked` | refused before any effect |
+enum EmbeddedWorker {
+    /// The launcher's co-located Worker, prepared only when the authored
+    /// setting and the role start a local Worker.
+    Colocated(Arc<dyn crate::ColocatedWorkerPreparation>),
+    /// No Worker is linked; an AllInOne local claim pool is refused.
+    NotLinked,
+}
+
 // Read the authored setting before preparation disables the Coordinator's
 // anonymous claim pool. A disabled embedded Worker must not discover ACPs,
 // open materialization stores, register, or later be restarted by the supervisor.
 async fn prepare_configured_local_worker(
     deployment: &mut ResolvedDeployment,
     role: ServiceRole,
-    colocated: Option<&dyn crate::ColocatedWorkerPreparation>,
+    embedded_worker: &EmbeddedWorker,
     seal_key: Option<&[u8; 32]>,
     workspace: Option<String>,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -228,8 +252,14 @@ async fn prepare_configured_local_worker(
     {
         return Ok(None);
     }
-    let colocated = colocated
-        .ok_or("the AllInOne local claim pool requires the launcher's co-located Worker")?;
+    let colocated = match embedded_worker {
+        EmbeddedWorker::Colocated(colocated) => colocated,
+        EmbeddedWorker::NotLinked => {
+            return Err(
+                "the AllInOne local claim pool requires the launcher's co-located Worker".into(),
+            );
+        }
+    };
     let (prepared_deployment, worker) = colocated
         .prepare(
             deployment.clone(),
@@ -1129,7 +1159,8 @@ mod tests {
     async fn disabled_or_split_worker_startup_has_no_local_effects() {
         // Cause/effect rules: W1 AllInOne + disabled => no preparation;
         // W2 Control/Coordinator + either flag => no preparation (role wins);
-        // W4 AllInOne + enabled + no co-located Worker supplied => refused.
+        // W3 AllInOne + enabled + Colocated => that Worker is prepared;
+        // W4 AllInOne + enabled + NotLinked => refused.
         // Effects: no data files, ACP observations, configuration mutation, or
         // Worker returned to the registration/restart lifecycle. No seal key or
         // Workspace is supplied: reaching preparation would fail. W3 enabled
@@ -1152,7 +1183,7 @@ mod tests {
                     prepare_configured_local_worker(
                         &mut deployment,
                         role,
-                        None,
+                        &EmbeddedWorker::NotLinked,
                         None,
                         None,
                         awaken_time::system_clock(),
@@ -1176,7 +1207,7 @@ mod tests {
         let refused = prepare_configured_local_worker(
             &mut deployment,
             ServiceRole::AllInOne,
-            None,
+            &EmbeddedWorker::NotLinked,
             None,
             None,
             awaken_time::system_clock(),
@@ -1187,6 +1218,23 @@ mod tests {
         assert!(refused.contains("co-located Worker"), "W4 {refused}");
         assert!(deployment.local_acp_observations.is_empty(), "W4");
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0, "W4");
+        // W3: the same enabled AllInOne pool with the launcher's co-located
+        // Worker reaches exactly that Worker's preparation.
+        let root = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(root.path().into());
+        deployment.run_local_pool = true;
+        let reached = prepare_configured_local_worker(
+            &mut deployment,
+            ServiceRole::AllInOne,
+            &EmbeddedWorker::Colocated(Arc::new(UnreachableColocatedWorker)),
+            Some(&[0; 32]),
+            None,
+            awaken_time::system_clock(),
+        )
+        .await
+        .err()
+        .expect("W3 reaches the co-located Worker's preparation");
+        assert!(reached.contains("continuity fence"), "W3 {reached}");
     }
 
     #[tokio::test]

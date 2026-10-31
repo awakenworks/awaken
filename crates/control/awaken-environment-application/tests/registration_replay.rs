@@ -331,7 +331,9 @@ where
             delegate.clone(),
             work.clone(),
         )),
-        None,
+        std::sync::Arc::new(
+            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+        ),
     );
     definitions.fail_next_acknowledgements(1);
     assert!(

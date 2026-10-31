@@ -1184,26 +1184,25 @@ mod provider_effect_tests {
 
     #[tokio::test]
     async fn provider_effect_is_named_and_never_degrades() {
-        // Decision table for the Host's single ownership projection.
-        // | Rule | fence | authority | Effect                                  |
-        // | P1   | none  | any       | Unattached; unattached observation      |
-        // | P2   | some  | some      | Fenced; effect observation with spec    |
-        // | P3   | some  | none      | FenceRejected, never Unattached         |
+        // Decision table for the Host's single ownership vocabulary.
+        // | Rule | variant             | Effect                                 |
+        // | P1   | Unattached          | unattached observation                 |
+        // | P2   | Fenced              | effect observation with spec           |
+        // | P3   | fence, no authority | unrepresentable: `Fenced` needs both   |
         let fence = pc::SandboxEffectFence::new("op", "owner", "boot", 1, u64::MAX).unwrap();
         let authority = pc::test_support::EffectAuthority::new(&fence);
         let spec = crate::test_support::spec();
-        for authority in [None, Some(&authority as &dyn pc::CurrentExecutionAuthority)] {
-            let effect = SandboxEffect::from_parts(None, authority).expect("P1");
-            assert!(matches!(effect, SandboxEffect::Unattached), "P1");
-            assert!(
-                matches!(
-                    effect.observation_basis(&spec),
-                    pc::SandboxObservationBasis::Unattached
-                ),
-                "P1 basis"
-            );
-        }
-        let effect = SandboxEffect::from_parts(Some(&fence), Some(&authority)).expect("P2");
+        assert!(
+            matches!(
+                SandboxEffect::Unattached.observation_basis(&spec),
+                pc::SandboxObservationBasis::Unattached
+            ),
+            "P1 basis"
+        );
+        let effect = SandboxEffect::Fenced {
+            fence: &fence,
+            authority: &authority,
+        };
         assert!(
             matches!(
                 effect.observation_basis(&spec),
@@ -1211,13 +1210,6 @@ mod provider_effect_tests {
                     if observed == &spec && effect_fence == &fence
             ),
             "P2 basis"
-        );
-        assert!(
-            matches!(
-                SandboxEffect::from_parts(Some(&fence), None),
-                Err(pc::SandboxError::FenceRejected(_))
-            ),
-            "P3"
         );
     }
 }

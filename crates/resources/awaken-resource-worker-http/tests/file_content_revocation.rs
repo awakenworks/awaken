@@ -225,15 +225,13 @@ async fn build_fixture() -> Fixture {
         inner: dispatch.clone(),
         gate: Gate::default(),
     });
-    let service = Arc::new(
-        WorkerFileContentService::new(
-            source.clone(),
-            gated_dispatch.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            clock.clone(),
-        )
-        .with_worker_directory(directory),
-    );
+    let service = Arc::new(WorkerFileContentService::new(
+        source.clone(),
+        gated_dispatch.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        clock.clone(),
+    ));
     let address = support::serve(worker_file_content_router(service)).await;
     let client = HttpFileContentSource::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),

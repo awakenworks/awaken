@@ -40,6 +40,7 @@ awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-time.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net"] }
 
 [lints]

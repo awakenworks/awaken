@@ -2,7 +2,6 @@
 //! resident attempt, when one is installed, is the local accelerator of
 //! `awaken_session_run_delivery::CoordinatedThreads::quiesce_terminal_delegations`.
 
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// One installed Session's resident context as the root attempt terminal
@@ -51,9 +50,10 @@ impl crate::SessionRuns {
             .threads
             .quiesce_terminal_delegations(
                 thread,
-                resident
-                    .as_ref()
-                    .map(|resident| resident as &dyn awaken_session_run_delivery::ResidentAttempt),
+                match &resident {
+                    Some(resident) => awaken_session_run_delivery::RootAttempt::Resident(resident),
+                    None => awaken_session_run_delivery::RootAttempt::Elsewhere,
+                },
             )
             .await?)
     }

@@ -212,9 +212,9 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             ),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(control(file_intent.clone()));
         let skill_service = WorkerSkillBundleService::new(
             Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
@@ -222,9 +222,9 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             )),
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
+            directory.clone(),
             awaken_time::system_clock(),
         )
-        .with_worker_directory(directory.clone())
         .with_session_control(control(skill_intent.clone()));
         let address = support::serve(
             worker_file_content_router(Arc::new(file_service))

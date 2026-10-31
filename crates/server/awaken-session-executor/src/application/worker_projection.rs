@@ -10,7 +10,7 @@ use awaken_session_realization::worker_projection::{
     SessionProjectionExecution, WorkerMcpEffects, WorkerProjectionSynchronizer,
 };
 
-pub async fn realize_session(
+pub(crate) async fn realize_session(
     host: &crate::RunAssembly,
     control: &dyn awaken_session_realization_contract::SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
@@ -48,7 +48,7 @@ pub async fn realize_session(
 
 /// Drive one already-serialized directive under the Session's realization
 /// lock so no caller can create a parallel phase driver.
-pub async fn drive_session_realization(
+pub(crate) async fn drive_session_realization(
     host: &crate::RunAssembly,
     control: &dyn awaken_session_realization_contract::SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
@@ -77,7 +77,7 @@ pub async fn drive_session_realization(
 
 /// Sole Runtime-to-contract effect path. The production entry and the
 /// test-only projection seam differ only in how they construct this adapter.
-pub async fn drive_session_realization_with_synchronizer(
+pub(crate) async fn drive_session_realization_with_synchronizer(
     control: &dyn awaken_session_realization_contract::SessionRealizationControl,
     directive: awaken_session_realization_contract::SessionRealizationDirective,
     synchronizer: WorkerProjectionSynchronizer<'_, crate::RunAssembly>,

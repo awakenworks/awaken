@@ -5,10 +5,6 @@
 //! The service is the only command path that coordinates authored definitions, exact
 //! sandbox-policy versions, and executable registration. HTTP, Admin Assistant,
 //! standalone Control, and AllInOne all reuse this implementation.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 
@@ -49,8 +45,6 @@ pub enum EnvironmentApplicationError {
     BuiltinImmutable,
     #[error(transparent)]
     Policy(#[from] SandboxExecutionPolicyError),
-    #[error("Sandbox execution policy store is unavailable")]
-    PolicyStoreUnavailable,
     #[error("Environment registration outbox invariant failed: {0}")]
     RegistrationInvariant(String),
     /// The definition transaction committed. Recovery must deliver its exact
@@ -89,7 +83,7 @@ pub struct EnvironmentApplication {
     queries: Arc<dyn EnvironmentDefinitionQueries>,
     definitions: Arc<dyn EnvironmentDefinitionStore>,
     delivery: Arc<EnvironmentRegistrationDelivery>,
-    sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
+    sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
 }
 
 impl EnvironmentApplication {
@@ -98,7 +92,7 @@ impl EnvironmentApplication {
     pub fn new<T>(
         definitions: Arc<T>,
         registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
-        sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
+        sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
     ) -> Self
     where
         T: EnvironmentDefinitionQueries
@@ -120,7 +114,7 @@ impl EnvironmentApplication {
         queries: Arc<dyn EnvironmentDefinitionQueries>,
         definitions: Arc<dyn EnvironmentDefinitionStore>,
         delivery: Arc<EnvironmentRegistrationDelivery>,
-        sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
+        sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
     ) -> Self {
         Self {
             queries,
@@ -133,22 +127,6 @@ impl EnvironmentApplication {
     #[must_use]
     pub fn registration_delivery(&self) -> Arc<EnvironmentRegistrationDelivery> {
         self.delivery.clone()
-    }
-
-    #[must_use]
-    pub fn with_sandbox_policies(
-        &self,
-        sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
-    ) -> Self {
-        Self::from_roles(
-            self.queries.clone(),
-            self.definitions.clone(),
-            Arc::new(
-                self.delivery
-                    .with_sandbox_policies(sandbox_policies.clone()),
-            ),
-            Some(sandbox_policies),
-        )
     }
 
     async fn deliver_committed_revision(
@@ -201,7 +179,7 @@ impl EnvironmentApplication {
             return self.deliver_committed_revision(item).await;
         }
         validate_environment_policy(
-            self.sandbox_policies.as_deref(),
+            self.sandbox_policies.as_ref(),
             &command.config,
             command.sandbox_policy.as_ref(),
         )
@@ -226,7 +204,7 @@ impl EnvironmentApplication {
             .apply(patch.clone())
             .map_err(EnvironmentStoreError::from)?;
         validate_environment_policy(
-            self.sandbox_policies.as_deref(),
+            self.sandbox_policies.as_ref(),
             &candidate.config,
             candidate.sandbox_policy.as_ref(),
         )
@@ -267,7 +245,7 @@ impl EnvironmentApplication {
             .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
         validate_environment_policy(
-            self.sandbox_policies.as_deref(),
+            self.sandbox_policies.as_ref(),
             &current.config,
             Some(&EnvironmentSandboxPolicyRef {
                 policy_id: reference.id.0.clone(),
@@ -349,15 +327,14 @@ impl EnvironmentApplication {
 }
 
 pub(crate) async fn validate_environment_policy(
-    sandbox_policies: Option<&dyn SandboxExecutionPolicyStore>,
+    sandbox_policies: &dyn SandboxExecutionPolicyStore,
     config: &EnvironmentConfig,
     reference: Option<&EnvironmentSandboxPolicyRef>,
 ) -> Result<Option<SandboxExecutionPolicy>, EnvironmentApplicationError> {
     let Some(reference) = reference else {
         return Ok(None);
     };
-    let store = sandbox_policies.ok_or(EnvironmentApplicationError::PolicyStoreUnavailable)?;
-    let policy = store
+    let policy = sandbox_policies
         .get_exact(&SandboxExecutionPolicyRef {
             id: awaken_provisioning_contract::SandboxExecutionPolicyId(reference.policy_id.clone()),
             version: SandboxExecutionPolicyVersion(reference.version),
@@ -433,6 +410,11 @@ mod tests {
     };
 
     use super::*;
+
+    /// The shared policy-store fixture for commands that reference no policy.
+    fn no_policies() -> Arc<dyn SandboxExecutionPolicyStore> {
+        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default())
+    }
 
     fn create_command(command_id: &str, name: &str) -> CreateEnvironmentCommand {
         CreateEnvironmentCommand {
@@ -562,7 +544,7 @@ mod tests {
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
             work.clone(),
         ));
-        let authoring = EnvironmentApplication::new(definitions.clone(), registrar, None);
+        let authoring = EnvironmentApplication::new(definitions.clone(), registrar, no_policies());
         let execution = EnvironmentExecutionApplication::new(work.clone(), catalog);
         let created = authoring
             .create(create_command("one-boundary", "initial"))
@@ -655,7 +637,8 @@ mod tests {
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
         registrar.fail_registration.store(true, Ordering::SeqCst);
-        let application = EnvironmentApplication::new(definitions.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(definitions.clone(), registrar.clone(), no_policies());
         assert!(
             application
                 .create(create_command("independent-delivery", "one"))
@@ -714,7 +697,8 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
-        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), no_policies());
         let created = application
             .create(CreateEnvironmentCommand {
                 command_id: "create-a".into(),
@@ -778,7 +762,8 @@ mod tests {
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
         registrar.fail_registration.store(true, Ordering::SeqCst);
-        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), no_policies());
 
         let result = application
             .create(CreateEnvironmentCommand {
@@ -866,7 +851,8 @@ mod tests {
         ));
         let envs = registry.clone();
         let registrar = Arc::new(RecordingRegistrar::default());
-        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), no_policies());
 
         registry.fail_next_acknowledgements(1);
         assert!(
@@ -996,7 +982,7 @@ mod tests {
         let application = Arc::new(EnvironmentApplication::new(
             envs.clone(),
             registrar.clone(),
-            None,
+            no_policies(),
         ));
         let (left, right) = tokio::join!(
             application.drain_registration_intents(),
@@ -1050,7 +1036,8 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
-        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), no_policies());
         let created = application
             .create(CreateEnvironmentCommand {
                 command_id: "withdrawal-outage".into(),
@@ -1131,7 +1118,7 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
-        let application = EnvironmentApplication::new(envs, registrar.clone(), None);
+        let application = EnvironmentApplication::new(envs, registrar.clone(), no_policies());
         application
             .create(create_command("unrelated", "Unrelated"))
             .await
@@ -1207,7 +1194,7 @@ mod tests {
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
         let application =
-            EnvironmentApplication::new(envs.clone(), registrar.clone(), Some(Arc::new(OnePolicy)));
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), Arc::new(OnePolicy));
         let created = application
             .create(CreateEnvironmentCommand {
                 command_id: "terminal-mutations".into(),
@@ -1301,7 +1288,7 @@ mod tests {
                     Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
                     work.clone(),
                 )),
-                None,
+                no_policies(),
             );
             definitions.fail_next_acknowledgements(1);
             assert!(
@@ -1350,7 +1337,7 @@ mod tests {
                     )),
                     recovered_work.clone(),
                 )),
-                None,
+                no_policies(),
             );
             recovered.recover_registration_intents().await.unwrap();
             assert!(recovered_work.list(&created.id).await.unwrap().is_empty());
@@ -1370,7 +1357,8 @@ mod tests {
         let clock = awaken_time::system_clock();
         let definitions = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()));
         let bootstrap = Arc::new(RecordingRegistrar::default());
-        let authoring = EnvironmentApplication::new(definitions.clone(), bootstrap.clone(), None);
+        let authoring =
+            EnvironmentApplication::new(definitions.clone(), bootstrap.clone(), no_policies());
         let archived = authoring
             .create(create_command("highest-fails", "archive-target"))
             .await
@@ -1389,7 +1377,7 @@ mod tests {
                 delegate.clone(),
                 work.clone(),
             )),
-            None,
+            no_policies(),
         );
         assert!(recovering.recover_registration_intents().await.is_err());
         assert!(
@@ -1487,7 +1475,7 @@ mod tests {
             let authoring = EnvironmentApplication::new(
                 definitions.clone(),
                 Arc::new(RecordingRegistrar::default()),
-                None,
+                no_policies(),
             );
             definitions.fail_next_acknowledgements(1);
             assert!(
@@ -1518,7 +1506,7 @@ mod tests {
                     delegate.clone(),
                     work.clone(),
                 )),
-                None,
+                no_policies(),
             );
             for _ in 0..2 {
                 let result = recovering.drain_registration_intents().await;
@@ -1566,7 +1554,8 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
-        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), no_policies());
         registrar.fail_registration.store(true, Ordering::SeqCst);
         let command = create_command("committed-command", "original");
         let error = application.create(command.clone()).await.unwrap_err();
@@ -1612,7 +1601,8 @@ mod tests {
             awaken_time::system_clock(),
         ));
         let registrar = Arc::new(RecordingRegistrar::default());
-        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), no_policies());
         let original = application
             .create(create_command("mutations", "original"))
             .await
@@ -1669,7 +1659,7 @@ mod tests {
         let application = EnvironmentApplication::new(
             envs.clone(),
             Arc::new(RecordingRegistrar::default()),
-            None,
+            no_policies(),
         );
         let error = application
             .update(BUILTIN_LOCAL_ENVIRONMENT_ID, EnvUpdate::default())
