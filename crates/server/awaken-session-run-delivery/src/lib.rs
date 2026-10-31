@@ -85,6 +85,7 @@ pub use completion::{
 mod prepared_session_run;
 pub use delivery::{
     OutcomeRunExecutor, ResourceBindingVerifiers, WorkerPlacedSessions, WorkerPlacement,
+    read_run_settlement,
 };
 pub use dispatch_lifecycle::{SessionDispatchLifecycle, drain_session_dispatch};
 mod session_applications;

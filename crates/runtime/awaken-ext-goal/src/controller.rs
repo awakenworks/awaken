@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::{
     agent::{
         message::{Id as MessageId, Message, Role},
-        run::{EndCause, Id as RunId, RunState},
+        run::{Id as RunId, RunState},
         thread::Id as ThreadId,
     },
     thread::{
@@ -23,13 +23,13 @@ use awaken_agent_contract::{
         },
     },
 };
-use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::{RunActivation, RuntimeRunContext};
 
 use crate::outcome::{
     Definition, Evaluation, EvaluationResult, ExecutionFailure, Grade, GradeDecision, Grader,
     GraderError, GradingInput, Id, Phase, State, WorkerRunKind,
 };
+use crate::run_settlement::{OutcomeRuns, RunVerdict, Undecided, classify_run};
 use crate::state::{
     Aggregate, Binding, Error as StateError, ThreadOutcomeState, acknowledgment_run_id,
     grader_run_id, worker_run_id,
@@ -145,7 +145,7 @@ pub struct Controller<'a> {
     thread_id: &'a ThreadId,
     reader: &'a dyn CommittedThreadView,
     state: ThreadOutcomeState<'a>,
-    executor: Option<&'a dyn RunExecutor>,
+    executor: Option<&'a dyn OutcomeRuns>,
     run_context: RuntimeRunContext,
     grader: &'a dyn Grader,
 }
@@ -157,7 +157,7 @@ impl<'a> Controller<'a> {
         reader: &'a dyn CommittedThreadView,
         recovery: &'a dyn RunRecoverySource,
         coordinator: &'a dyn CommitOperationCoordinator,
-        executor: &'a dyn RunExecutor,
+        executor: &'a dyn OutcomeRuns,
         run_context: RuntimeRunContext,
         grader: &'a dyn Grader,
     ) -> Self {
@@ -364,8 +364,8 @@ impl<'a> Controller<'a> {
                         }
                         Err(error) => return Err(error),
                     };
-                    match worker.state {
-                        RunState::Ended(EndCause::NaturalEnd) => {
+                    match self.verdict(&run_id, &worker.state).await? {
+                        RunVerdict::Completed => {
                             let cursor = self.reader.committed_messages(self.thread_id).len();
                             aggregate
                                 .state
@@ -378,16 +378,17 @@ impl<'a> Controller<'a> {
                                 .map_err(domain_error)?;
                             self.commit(expected, &aggregate.state, None).await?;
                         }
-                        RunState::Ended(EndCause::Cancelled) => {
+                        RunVerdict::Interrupted => {
                             aggregate.state.interrupt();
                             self.commit(expected, &aggregate.state, None).await?;
                         }
-                        RunState::Awaiting => return Err(Error::WorkerAwaiting { run_id }),
-                        state => {
+                        RunVerdict::Awaiting => return Err(Error::WorkerAwaiting { run_id }),
+                        RunVerdict::Failed => {
                             aggregate
                                 .state
                                 .fail(ExecutionFailure::WorkerFailed(format!(
-                                    "Worker Run ended in {state:?}"
+                                    "Worker Run ended in {:?}",
+                                    worker.state
                                 )))
                                 .map_err(domain_error)?;
                             self.commit(expected, &aggregate.state, None).await?;
@@ -459,18 +460,18 @@ impl<'a> Controller<'a> {
                             }
                             Err(error) => return Err(error),
                         };
-                    match acknowledgment {
-                        RunState::Ended(EndCause::NaturalEnd) => aggregate
+                    match self.verdict(&run_id, &acknowledgment).await? {
+                        RunVerdict::Completed => aggregate
                             .state
                             .acknowledgment_completed(&run_id)
                             .map_err(domain_error)?,
-                        RunState::Ended(EndCause::Cancelled) => {
+                        RunVerdict::Interrupted => {
                             aggregate.state.interrupt();
                         }
-                        other => aggregate
+                        RunVerdict::Awaiting | RunVerdict::Failed => aggregate
                             .state
                             .fail(ExecutionFailure::WorkerFailed(format!(
-                                "acknowledgment Run ended in {other:?}"
+                                "acknowledgment Run ended in {acknowledgment:?}"
                             )))
                             .map_err(domain_error)?,
                     }
@@ -533,6 +534,22 @@ impl<'a> Controller<'a> {
             state,
             message_start: before.saturating_add(1),
         })
+    }
+
+    /// Classify one terminal Worker or acknowledgment Run (see
+    /// [`classify_run`]); only a fault reads the durable settlement, and a
+    /// settlement that is not durable yet leaves the Run to a later drive.
+    async fn verdict(&self, run_id: &RunId, state: &RunState) -> Result<RunVerdict, Error> {
+        let settlement = match classify_run(state, None) {
+            Err(Undecided::NeedsSettlement) => self
+                .executor
+                .ok_or_else(|| Error::Domain("Outcome preparation cannot execute a Run".into()))?
+                .settlement(run_id)
+                .await
+                .map_err(|error| Error::Persistence(error.to_string()))?,
+            decided => return decided.map_err(|_| unsettled(run_id)),
+        };
+        classify_run(state, Some(settlement)).map_err(|_| unsettled(run_id))
     }
 
     async fn drive_acknowledgment(
@@ -629,6 +646,12 @@ fn worker_execution_error(error: awaken_runtime_contract::execution::Error) -> E
         // Provider/execution errors retain the historical active-head and
         // lost-response recovery behavior; only typed admission is new here.
         Error::Execution(ExecutionFailure::WorkerFailed(error.to_string()))
+    }
+}
+
+fn unsettled(run_id: &RunId) -> Error {
+    Error::WorkerRunning {
+        run_id: run_id.clone(),
     }
 }
 
@@ -791,6 +814,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
+    use awaken_agent_contract::agent::run::EndCause;
     use awaken_agent_contract::{
         agent::{awaiting::ResumeTicket, state::Command as StateCommand},
         thread::{
@@ -805,10 +829,12 @@ mod tests {
             read::recovery::{RecoveryError, RunRecoverySnapshot, RunRecoverySource},
         },
     };
+    use awaken_runtime_contract::execution::RunExecutor;
     use awaken_store_inmem::MemoryCommitCoordinator;
 
     use super::*;
     use crate::outcome::Rubric;
+    use crate::run_settlement::RunSettlement;
 
     struct World {
         store: MemoryCommitCoordinator,
@@ -817,6 +843,7 @@ mod tests {
         states: Mutex<VecDeque<RunState>>,
         lost_response_after_commit: Mutex<Option<RunId>>,
         executions: AtomicUsize,
+        settlement: Mutex<RunSettlement>,
     }
 
     impl World {
@@ -828,7 +855,15 @@ mod tests {
                 states: Mutex::new(VecDeque::new()),
                 lost_response_after_commit: Mutex::new(None),
                 executions: AtomicUsize::new(0),
+                settlement: Mutex::new(RunSettlement::Settled {
+                    cancellation_requested: false,
+                }),
             }
+        }
+
+        fn with_settlement(self, settlement: RunSettlement) -> Self {
+            *self.settlement.lock().unwrap() = settlement;
+            self
         }
 
         fn with_states(self, states: Vec<RunState>) -> Self {
@@ -1009,6 +1044,16 @@ mod tests {
                 ));
             }
             Ok(state)
+        }
+    }
+
+    #[async_trait]
+    impl OutcomeRuns for World {
+        async fn settlement(
+            &self,
+            _run_id: &RunId,
+        ) -> awaken_runtime_contract::execution::Result<RunSettlement> {
+            Ok(*self.settlement.lock().unwrap())
         }
     }
 
@@ -1213,6 +1258,15 @@ mod tests {
                 }
             }
         }
+        #[async_trait]
+        impl OutcomeRuns for AdmissionExecutor<'_> {
+            async fn settlement(
+                &self,
+                run_id: &RunId,
+            ) -> awaken_runtime_contract::execution::Result<RunSettlement> {
+                self.world.settlement(run_id).await
+            }
+        }
         // Cause/effect graph: C1 initial/revision/ACK acquisition; C2 typed
         // durable Closed, typed Deferred, or same-text provider failure. E1
         // only Closed commits existing Errored(WorkerFailed) and clears active;
@@ -1313,6 +1367,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn interrupted_worker_fault_ends_the_outcome_interrupted_from_its_settlement() {
+        // Drive-loop rows of `run_settlement::classify_run` over a committed
+        // Worker fault. R3/R4: the settled cancel request makes the Outcome
+        // interrupted with no Outcome failure (the Run's own committed fault is
+        // the lifecycle's to publish). R6: no request keeps WorkerFailed. F2:
+        // an unsettled delivery yields WorkerRunning, commits nothing and
+        // leaves the Outcome active; once settled, the next drive is R3.
+        async fn drive(
+            world: &World,
+            outcome: &str,
+        ) -> (Result<Report, Error>, Option<CommittedOutcome>) {
+            let grader = RangeGrader;
+            let thread = ThreadId(format!("{outcome}-worker"));
+            let id = Id(outcome.into());
+            let controller = Controller::new(
+                &thread,
+                world,
+                world,
+                world,
+                world,
+                RuntimeRunContext::new(),
+                &grader,
+            );
+            let result = controller
+                .define_or_resume(
+                    id.clone(),
+                    Definition::new("ship", "FINAL", 3).unwrap(),
+                    binding(),
+                )
+                .await;
+            let projection = controller.committed_projection(&id).await.unwrap();
+            (result, projection)
+        }
+        for (rule, state) in [
+            ("R3", RunState::Ended(EndCause::Indeterminate)),
+            (
+                "R4",
+                RunState::Ended(EndCause::Error(
+                    awaken_agent_contract::agent::run::Failure::CapabilityBound,
+                )),
+            ),
+        ] {
+            let world = World::new(&[])
+                .with_states(vec![state.clone()])
+                .with_settlement(RunSettlement::Settled {
+                    cancellation_requested: true,
+                });
+            let (result, projection) = drive(&world, &format!("settled-cancel-{rule}")).await;
+            let report = result.expect(rule);
+            assert_eq!(
+                report.iterations.last().map(|cycle| cycle.result),
+                Some(EvaluationResult::Interrupted),
+                "{rule}"
+            );
+            assert!(
+                matches!(projection, Some(CommittedOutcome::Completed(_))),
+                "{rule} no Outcome failure"
+            );
+            assert_eq!(world.executions.load(Ordering::SeqCst), 1, "{rule}");
+        }
+
+        let plain = World::new(&[]).with_states(vec![RunState::Ended(EndCause::Indeterminate)]);
+        let (result, projection) = drive(&plain, "settled-plain").await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::Execution(ExecutionFailure::WorkerFailed(_)))
+            ),
+            "R6"
+        );
+        assert!(
+            matches!(projection, Some(CommittedOutcome::Errored { .. })),
+            "R6"
+        );
+
+        let pending = World::new(&[])
+            .with_states(vec![RunState::Ended(EndCause::Indeterminate)])
+            .with_settlement(RunSettlement::Unsettled);
+        let (result, projection) = drive(&pending, "unsettled").await;
+        assert!(
+            matches!(result, Err(Error::WorkerRunning { .. })),
+            "F2 no verdict before settlement"
+        );
+        assert_eq!(projection, None, "F2 the Outcome stays active");
+        *pending.settlement.lock().unwrap() = RunSettlement::Settled {
+            cancellation_requested: true,
+        };
+        let (result, _) = drive(&pending, "unsettled").await;
+        assert_eq!(
+            result
+                .expect("F2 then R3")
+                .iterations
+                .last()
+                .map(|cycle| cycle.result),
+            Some(EvaluationResult::Interrupted),
+            "F2 then R3"
+        );
+        assert_eq!(
+            pending.executions.load(Ordering::SeqCst),
+            1,
+            "F2 the settled Run is classified, never executed again"
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ mod durable_operations;
 mod inputs;
 mod memory;
 mod outcomes;
-pub use outcomes::OutcomeRunExecutor;
+pub use outcomes::{OutcomeRunExecutor, read_run_settlement};
 mod roles;
 mod thread_runs;
 

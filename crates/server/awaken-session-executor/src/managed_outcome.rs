@@ -26,7 +26,10 @@ pub(crate) async fn define(
         description,
         rubric,
         max_iterations,
-        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission),
+        &awaken_session_run_delivery::OutcomeRunExecutor::new(
+            admission,
+            host.session_runs.as_ref(),
+        ),
     )
     .await
     .map(progress)
@@ -53,7 +56,10 @@ pub(crate) async fn resume(
 ) -> Result<Option<OutcomeDrive>, RunError> {
     host.continue_outcome(
         thread,
-        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission),
+        &awaken_session_run_delivery::OutcomeRunExecutor::new(
+            admission,
+            host.session_runs.as_ref(),
+        ),
     )
     .await
     .map_err(to_run_error)

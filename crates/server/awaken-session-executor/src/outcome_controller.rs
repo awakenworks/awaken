@@ -23,7 +23,7 @@ enum OutcomeCommand<'a> {
     /// Continuing the active Outcome drives its Worker Run through the
     /// caller's executor; preparation never executes, so only this case has one.
     Resume {
-        executor: &'a dyn awaken_runtime_contract::execution::RunExecutor,
+        executor: &'a dyn awaken_ext_goal::run_settlement::OutcomeRuns,
     },
 }
 
@@ -42,7 +42,7 @@ impl crate::Outcomes {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-        executor: &dyn awaken_runtime_contract::execution::RunExecutor,
+        executor: &dyn awaken_ext_goal::run_settlement::OutcomeRuns,
     ) -> Result<HostOutcomeDrive, SessionExecutionError> {
         self.prepare_outcome(
             thread,
@@ -97,7 +97,7 @@ impl crate::Outcomes {
     pub async fn continue_outcome(
         &self,
         thread: &str,
-        executor: &dyn awaken_runtime_contract::execution::RunExecutor,
+        executor: &dyn awaken_ext_goal::run_settlement::OutcomeRuns,
     ) -> Result<Option<HostOutcomeDrive>, SessionExecutionError> {
         match self
             .execute_outcome_command(thread, OutcomeCommand::Resume { executor })
