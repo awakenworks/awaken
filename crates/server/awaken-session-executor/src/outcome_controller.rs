@@ -20,7 +20,11 @@ enum OutcomeCommand<'a> {
         rubric: &'a str,
         max_iterations: u32,
     },
-    Resume,
+    /// Continuing the active Outcome drives its Worker Run through the
+    /// caller's executor; preparation never executes, so only this case has one.
+    Resume {
+        executor: &'a dyn awaken_runtime_contract::execution::RunExecutor,
+    },
 }
 
 enum OutcomeCommandResult {
@@ -79,7 +83,6 @@ impl crate::Outcomes {
                     rubric,
                     max_iterations,
                 },
-                None,
             )
             .await?
         {
@@ -97,7 +100,7 @@ impl crate::Outcomes {
         executor: &dyn awaken_runtime_contract::execution::RunExecutor,
     ) -> Result<Option<HostOutcomeDrive>, SessionExecutionError> {
         match self
-            .execute_outcome_command(thread, OutcomeCommand::Resume, Some(executor))
+            .execute_outcome_command(thread, OutcomeCommand::Resume { executor })
             .await?
         {
             OutcomeCommandResult::Driven(progress) => Ok(progress),
@@ -111,7 +114,6 @@ impl crate::Outcomes {
         &self,
         thread: &str,
         command: OutcomeCommand<'_>,
-        executor: Option<&dyn awaken_runtime_contract::execution::RunExecutor>,
     ) -> Result<OutcomeCommandResult, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         let definition = match &command {
@@ -124,7 +126,7 @@ impl crate::Outcomes {
                 Definition::new(*description, *rubric, *max_iterations)
                     .map_err(|error| SessionExecutionError::bad_request(error.to_string()))?,
             ),
-            OutcomeCommand::Resume => None,
+            OutcomeCommand::Resume { .. } => None,
         };
         // A frozen Worker placement makes the Coordinator a scheduler/reader,
         // even after the Worker publishes a durable Environment binding. Reuse
@@ -155,17 +157,17 @@ impl crate::Outcomes {
             host: &self.session_runs,
             session_foreground: ctx.foreground.clone(),
         };
-        let controller = match executor {
-            Some(executor) => Controller::new(
+        let controller = match &command {
+            OutcomeCommand::Resume { executor } => Controller::new(
                 &ctx.thread_id,
                 ctx.commit.as_ref(),
                 ctx.commit.as_ref(),
                 ctx.commit.as_ref(),
-                executor,
+                *executor,
                 awaken_runtime_contract::RuntimeRunContext::new(),
                 &host_grader,
             ),
-            None => Controller::preparation(
+            OutcomeCommand::Prepare { .. } => Controller::preparation(
                 &ctx.thread_id,
                 ctx.commit.as_ref(),
                 ctx.commit.as_ref(),
@@ -187,7 +189,7 @@ impl crate::Outcomes {
                     .map(OutcomeCommandResult::Prepared)
                     .map_err(controller_error)
             }
-            OutcomeCommand::Resume => {
+            OutcomeCommand::Resume { .. } => {
                 let _outcome = ctx.outcome.lock().await;
                 let _command = ctx.command.lock().await;
                 // A reply may already have dispatched the Outcome's stable
