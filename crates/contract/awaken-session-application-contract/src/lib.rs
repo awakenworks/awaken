@@ -1,4 +1,8 @@
 //! Application-facing Session ports that do not own durable state.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod event_admission;
 mod execution_observation;

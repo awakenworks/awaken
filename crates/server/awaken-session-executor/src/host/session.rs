@@ -17,6 +17,7 @@ mod environment_realization;
 mod input_projection;
 mod quiescence;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
 pub(super) use awaken_session_run_delivery::{

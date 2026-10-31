@@ -5,6 +5,7 @@
 // @formal reason: references this store never materializes. Evidence:
 // @formal reason: product.admin_console.console_workflows plus the shared MCP configuration repository
 // @formal reason: conformance; this is a product-requirement classification, not a direct proof claim.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_config::mcp_config::{
     McpConfigError, McpConfiguration, McpConfigurationRepository, validate_mcp_configuration_write,

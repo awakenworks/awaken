@@ -8,6 +8,10 @@
 //! wire. The evidence itself is the Session's (`CommittedSessionFacts` in
 //! `awaken-session-execution-contract`). Consumer: the Managed protocol adapter
 //! (identity, ordering and projection).
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod updates;
 pub use updates::derive_session_update_events;

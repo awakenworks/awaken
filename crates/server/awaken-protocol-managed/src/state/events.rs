@@ -2,6 +2,7 @@
 //! Event driving for [`ManagedState`]: projecting committed Runs/outcomes,
 //! the live-inbox surface, and `send_events`/`list_events`.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::types::{EvaluatedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;

@@ -10,6 +10,10 @@
 //! surface), `POST /v1/sessions/{id}/events` (`user.message`, HITL
 //! `user.tool_confirmation`, `user.custom_tool_result`, `user.define_outcome`,
 //! `user.interrupt`), `GET /v1/sessions/{id}/events`, and the SSE stream.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 // The crate is organized by concern:
 //

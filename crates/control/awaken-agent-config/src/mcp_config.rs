@@ -268,6 +268,7 @@ pub fn validate_mcp_configuration_write(
 // Unknown transport fields (including credential material) never disappear into
 // the permissive historical Agent transport decoder.
 mod transport_wire {
+    #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
     use super::*;
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

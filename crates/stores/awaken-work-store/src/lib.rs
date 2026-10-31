@@ -40,6 +40,10 @@
 //! authority and Session digest. Its successful retry returns the stopped
 //! decision without sampling a clock or restoring either grant. Historical
 //! rows without a recorded stop subject cannot be attributed retroactively.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -94,6 +98,7 @@ mod schema;
 #[path = "../tests/support/work_postgres.rs"]
 mod work_postgres_fixture;
 use awaken_time::WallClockExt;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use schema::*;
 mod session_access;
 

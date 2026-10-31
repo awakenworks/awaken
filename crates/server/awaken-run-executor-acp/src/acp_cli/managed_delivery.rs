@@ -2,6 +2,7 @@
 // @formal surface obligation=credential.http_effect_usage_binds_exact_fields_and_placements
 // @formal reason: Managed ACP credential delivery boundary.
 #[cfg(feature = "execution")]
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 pub use awaken_acp_contract::managed_credential::{
     CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,

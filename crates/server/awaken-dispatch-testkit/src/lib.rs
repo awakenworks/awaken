@@ -8,6 +8,10 @@
 //! The suite intentionally depends only on the public contract: passing it proves a
 //! wrapper preserves the worker-visible claim, fencing, and recovery semantics rather
 //! than merely delegating a convenient subset of methods.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod observed_clock;
 pub use observed_clock::ObservedStoreClock;

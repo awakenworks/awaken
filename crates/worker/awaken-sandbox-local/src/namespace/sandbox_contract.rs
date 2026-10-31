@@ -4,6 +4,7 @@
 // @formal reason: root and realization evidence, with destructive cleanup requiring the
 // @formal reason: aggregate-projected effect fence; it creates no parallel Sandbox authority and is not a
 // @formal reason: direct formal-proof claim.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[async_trait]

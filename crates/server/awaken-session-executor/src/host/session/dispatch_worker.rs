@@ -16,6 +16,7 @@
 //! Split out of `session.rs`; this is the dispatch Worker construction seam and shares no state
 //! with the snapshot/context assembly that remains there.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::host::session_ctx::ForegroundRunDelivery;
 

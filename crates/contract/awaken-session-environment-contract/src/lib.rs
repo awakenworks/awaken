@@ -49,6 +49,10 @@
 //! Auxiliary Agent Runs (judge, compactor, Memory selection and extraction,
 //! isolated Skill forks) use the separate [`AuxiliarySandboxFactory`] port:
 //! they never share the Session-owned environment.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub mod tool_export;
 

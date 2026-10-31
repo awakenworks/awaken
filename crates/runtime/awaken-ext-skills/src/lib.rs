@@ -23,6 +23,10 @@
 //! a capability. The Runtime Host composition layer materializes the exact
 //! hash-verified bundle before constructing this extension's registry, keeping
 //! this crate independent of repositories, tenancy, and sandbox implementation.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod registry;
 mod spec;

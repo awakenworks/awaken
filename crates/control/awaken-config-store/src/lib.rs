@@ -6,6 +6,10 @@
 //! Durable SQLite and Postgres adapters for the Agent Config repository ports.
 
 #![forbid(unsafe_code)]
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod codec;
 mod postgres;

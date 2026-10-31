@@ -4,6 +4,7 @@
 //! Model invocation evidence uses the same incremental commit owner as tools.
 //! There is no receipt store, recovery scheduler, or new execution authority.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_runtime_contract::model_operation::{
     ActiveModelOperation, ModelOperation, ModelOperationContext, ModelOperationPhase,

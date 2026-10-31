@@ -1,6 +1,7 @@
 // @formal entrypoint model_route.fallback_preserves_the_complete_publication_pin
 //! Frozen dispatch-envelope resolution and exact root tool-format binding.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl crate::RunAssembly {

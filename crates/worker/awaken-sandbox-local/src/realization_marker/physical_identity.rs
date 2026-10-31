@@ -4,6 +4,7 @@
 // @formal reason: removed-source recovery accepts only the exact completed checkpoint participant
 // @formal reason: fingerprint, without owning lifecycle state or authorization; this is not a direct
 // @formal reason: formal-proof claim.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) fn new_physical_incarnation() -> Result<String, pc::SandboxError> {

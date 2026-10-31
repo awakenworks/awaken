@@ -17,6 +17,10 @@
 //! so mixing them would cross a bounded-context line (ADR-0039 "one repository per
 //! aggregate"). Secrets never land here — only the wire-echo MCP `{name,type,url}`
 //! values, per the port's contract (G3).
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]

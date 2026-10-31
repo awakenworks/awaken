@@ -16,6 +16,10 @@
 //! `spawn` launches opaque agent processes. Mount bytes resolve through an injected
 //! [`BlobSource`] port (ADR-0038 D6, dependency-inverted): this worker-tier crate
 //! links no durable store; the composition root adapts the content-addressed store.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;

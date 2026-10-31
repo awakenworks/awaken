@@ -1,4 +1,8 @@
 #![doc = include_str!("../README.md")]
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod approval;
 mod circuit_breaker;

@@ -8,6 +8,10 @@
 //! Coordinator-local Session, and the Runtime Host's Worker resolver drives a
 //! claimed one. Keeping the drivers in neither lets each depend on them
 //! without one context reaching into the other's application.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod control_deadline;
 mod session_realization_driver;

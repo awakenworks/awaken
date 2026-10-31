@@ -9,6 +9,7 @@
 //! The bearer is minted by the issuing application; this store only persists
 //! the pre-minted digest in the same statement that writes the lease epoch.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_executable_environment_contract::SessionAccessDigest;
 use awaken_time::WallClockExt;

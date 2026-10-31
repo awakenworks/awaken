@@ -4,6 +4,7 @@
 //! lives in the realization marker; weak handles here only deliver live cutoff
 //! refresh/stop requests and can never reconstruct authorization after a crash.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_local_process::scoped::{ExecutionDeadline, ScopedCommand, ScopedProcess, ScopedStdio};
 use pc::ProcessHandle as _;

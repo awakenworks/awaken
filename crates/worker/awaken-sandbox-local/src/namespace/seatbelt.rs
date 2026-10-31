@@ -1,5 +1,6 @@
 //! Pure macOS Seatbelt runtime and path projection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 fn runtime_projection_root(entry: PathBuf) -> Option<PathBuf> {

@@ -2,7 +2,9 @@
 // @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Authenticated Session realization and terminal-cleanup HTTP handlers.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::session_requests::*;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) async fn session_preparation_claim_next(

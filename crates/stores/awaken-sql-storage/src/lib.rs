@@ -6,6 +6,10 @@
 //! Every PostgreSQL adapter's
 //! pool is built from `postgres_pool_options`, so a transaction-poisoned or
 //! dead connection is retired before another borrower sees it.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod stored_u64;
 

@@ -8,6 +8,10 @@
 //! A second host (for example a flow/resource runtime) implements the tiny
 //! [`McpConformanceDriver`] over its facade and runs the same suite; no awaken
 //! runtime vocabulary enters these assertions.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use async_trait::async_trait;
 use awaken_mcp_server_core::{McpHttpBody, McpHttpMethod, McpHttpReply, NotifySink};

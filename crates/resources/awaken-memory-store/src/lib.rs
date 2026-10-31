@@ -7,6 +7,10 @@
 //!
 //! Recall, extraction, API history, and mounts all use this same store-scoped
 //! aggregate; there is no Host-global extraction directory.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 /// Path-addressed, CAS memory model (ADR-0053): the Memory capability ports a write-through
 /// FUSE mount projects.

@@ -1,6 +1,10 @@
 //! `awaken-eval <dataset.json>` — replay a dataset through the real runtime, print
 //! the scored report as JSON, and exit non-zero if any case failed. This is the
 //! process entry point the e2e harness drives.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::path::PathBuf;
 use std::process::ExitCode;

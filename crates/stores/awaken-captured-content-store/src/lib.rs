@@ -3,6 +3,10 @@
 //! Consent and erasure-job state remain in Control's data-subject application/store;
 //! this crate owns only capture records, restriction state, TTL, and subject
 //! erasure at the Coordinator boundary.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 #[cfg(any(test, feature = "test-support"))]
 mod capture_store;

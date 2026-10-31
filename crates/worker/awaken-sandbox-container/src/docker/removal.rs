@@ -2,6 +2,7 @@
 //! One Docker deletion boundary shared by ordinary, exact-replacement and
 //! unreceipted-scope cleanup. Callers retain their existing authority guards.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_container_contract::RuntimeError;
 use std::time::Duration;

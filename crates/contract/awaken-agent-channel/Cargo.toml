@@ -16,3 +16,6 @@ separation = "contract"
 
 [dependencies]
 tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

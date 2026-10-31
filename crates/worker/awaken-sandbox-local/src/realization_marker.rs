@@ -618,6 +618,7 @@ mod physical_identity;
 use physical_identity::{new_physical_incarnation, validate_removed_restore_source};
 
 mod marker_paths;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use marker_paths::*;
 fn classify(path: &Path) -> Result<PathEntry, pc::SandboxError> {
     awaken_fs_durability::classify_nofollow(path).map_err(|error| {

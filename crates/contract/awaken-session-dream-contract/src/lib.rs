@@ -1,6 +1,10 @@
 // @formal entrypoint dream.lifecycle_is_closed_exact_and_terminal_absorbing
 // @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Neutral Coordinator Dream request and projection vocabulary.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use async_trait::async_trait;
 use awaken_runtime_contract::agent_bindings::InferenceSpeed;

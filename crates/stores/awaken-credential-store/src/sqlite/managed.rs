@@ -9,6 +9,7 @@
 //! Complete decoded-row admission and BEGIN IMMEDIATE own snapshot CAS. Keyed
 //! ownership and affected-row checks remain; JSON spelling is not a second fence.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl SqliteCredentialRepo {

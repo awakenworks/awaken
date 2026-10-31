@@ -3,6 +3,10 @@
 //! Provides types and functions for matching tool calls by name (glob/regex/exact)
 //! and optionally by argument-level conditions on JSON fields. Used by permission
 //! rules, state-machine rules, and other extensions that need to match tool calls.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod matcher;
 mod parser;

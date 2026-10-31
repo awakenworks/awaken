@@ -1,5 +1,6 @@
 //! Terminal Managed projection for durable Session activation failures.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ManagedState {

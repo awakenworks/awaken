@@ -6,6 +6,7 @@
 //! Session construction consumes these classifiers; prompt, mount, Native, and
 //! ACP adapters never derive their own mode.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Immutable evidence available when choosing the Session-wide Skill delivery

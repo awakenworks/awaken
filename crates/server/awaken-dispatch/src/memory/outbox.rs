@@ -7,6 +7,7 @@
 //! The parent module still owns the one mutex-backed state and validation
 //! helpers. This module is only the `Outbox` port projection over that authority.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[async_trait]

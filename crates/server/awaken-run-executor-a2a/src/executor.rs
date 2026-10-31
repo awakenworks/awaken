@@ -9,6 +9,7 @@
 // @formal entrypoint session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
 //! Execution of one publication-pinned remote A2A attempt.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
 

@@ -1,5 +1,6 @@
 //! Publication freshness operations over the scope-aware configuration edge.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ConfigPlane {

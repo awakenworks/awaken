@@ -16,6 +16,7 @@ use std::{collections::HashMap, sync::MutexGuard};
 
 use awaken_sync::InvariantLock;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[derive(Clone)]

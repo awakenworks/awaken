@@ -12,6 +12,10 @@
 //! tenant fencing, and push-notification configuration and webhook delivery. It
 //! shares the same neutral host as every other adapter, so callers through A2A
 //! and the managed protocols interact with the same runtime state.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod card;
 pub mod client;

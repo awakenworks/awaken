@@ -7,6 +7,7 @@
 //! later stage of the candidate borrows this value; nothing here mutates the
 //! record. Consumer: the candidate builder in `committed_projection`.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_managed_session_events::LifecycleAcceptance;

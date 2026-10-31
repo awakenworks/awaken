@@ -15,6 +15,7 @@
 
 use super::completion::canonical_thread_artifact_receipt_fingerprint;
 use super::state::SessionCleanupState;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::state::SessionId;
 use awaken_resource_contract::ArtifactPublicationReceipt;

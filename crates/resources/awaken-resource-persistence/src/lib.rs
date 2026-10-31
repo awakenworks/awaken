@@ -4,6 +4,10 @@
 //! Resource Registry, and reclamation adapters as one application. Coordinator,
 //! Runtime, and protocol crates consume the returned application and never
 //! select or reopen a Resources database.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::path::Path;
 use std::sync::Arc;

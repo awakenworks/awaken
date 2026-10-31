@@ -11,6 +11,7 @@
 //! model-supply authorities, preserving authored order and Cloud account pools.
 //! Component regression tests remain in the parent publication test suite.
 use super::credential_publication::PublicationCredentialLookup;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_config_resolver::InferenceProfile;
 

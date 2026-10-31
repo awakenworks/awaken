@@ -12,6 +12,7 @@
 //! inputs (one ignored `self_hosted`, one ignored the runtime placement), so a
 //! new placement could be read three different ways.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_session_types::SessionRuntimePlacement;
 

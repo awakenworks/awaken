@@ -3,6 +3,10 @@
 //! This crate owns the Coordinator-side HTTP boundary and its paired Worker
 //! clients. Resource identity and lifecycle remain in `awaken-resource-application`;
 //! dispatch claim authority remains in `awaken-dispatch`.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod artifact_publication_http;
 mod file_content_http;

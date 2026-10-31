@@ -5,6 +5,10 @@
 //! harness and fixture admission; an admitted PostgreSQL fixture is a fresh
 //! namespace per admission. Each domain test still owns its durable marker,
 //! tables and behavioral assertions.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 #[cfg(feature = "postgres")]
 mod fixture;

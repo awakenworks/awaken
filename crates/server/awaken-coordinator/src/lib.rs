@@ -23,6 +23,10 @@
 //! co-located root that builds the Session executor (`awaken-session-executor`)
 //! and selects these ports from it; this crate links no executor, realization
 //! or Sandbox implementation.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub mod admin;
 pub mod application_access;

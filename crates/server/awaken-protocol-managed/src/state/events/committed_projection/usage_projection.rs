@@ -5,6 +5,7 @@
 // @formal reason: state machine.
 //! Usage projection from the same committed Thread prefix as transcript recovery.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Read and price one logical Thread's usage without opening an independent

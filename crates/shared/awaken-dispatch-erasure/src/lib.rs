@@ -15,6 +15,10 @@
 //! at the trait boundary, so composing it into the daemon's spawned task stays
 //! `Send` (a direct enum match over the concrete sqlx store trips the sqlx
 //! higher-ranked "implementation of Send is not general enough" limitation).
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod binding;
 mod bundle;

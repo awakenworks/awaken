@@ -13,6 +13,7 @@ use crate::vocab::{Artifact, MountAccess, MountRequirement, RealizedMount};
 use std::sync::Arc;
 
 use super::fence::SandboxEffectFence;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::foundation::*;
 use super::handle::SandboxHandle;
 use super::restore_contract::{SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget};

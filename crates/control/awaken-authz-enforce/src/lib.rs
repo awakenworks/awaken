@@ -21,6 +21,10 @@
 //! `Workspace{ws_local}` cannot reach `Workspace{ws_other}`, because the scope
 //! graph resolves that up through `Global`, never to `ws_local`. So an
 //! out-of-tenant request is denied even for an `admin` token.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod org_admission;
 pub use org_admission::{

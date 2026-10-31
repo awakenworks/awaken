@@ -17,6 +17,7 @@
 //! (same-crate privates included), exactly like `inference`.
 
 use super::delegation::is_resolved_advisor_call;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::agent::state::Action as StateAction;
 

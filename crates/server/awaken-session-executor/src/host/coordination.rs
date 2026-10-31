@@ -5,6 +5,7 @@
 //! Foreground observation of one Session-owned reply, over the coordinated
 //! Thread admission of `awaken_session_run_delivery::CoordinatedThreads`.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[cfg(test)]

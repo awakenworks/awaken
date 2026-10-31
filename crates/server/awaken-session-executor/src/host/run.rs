@@ -3,6 +3,7 @@
 //! Run driving for [`ExecutorComponents`]: the neutral `run`/`resume`/`define_outcome`
 //! entry points, step finalization, queries, and the durable-ops verbs.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 mod quiescence;

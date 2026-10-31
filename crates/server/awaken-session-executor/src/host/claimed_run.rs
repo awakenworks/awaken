@@ -1,6 +1,7 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // Original Run assembly consumes the already-admitted dispatch and its unchanged commit, permission and credential owners.
 //! Reconstructs the existing child Run executor from its frozen inputs.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_dispatch_execution::{DispatchWorker, Error};
 pub(super) async fn construct_claimed_child(

@@ -1,5 +1,6 @@
 //! Awaken extension: inspect retained candidates without changing the vendor
 //! Memory/version schema. Uses the same store visibility and page authority.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[derive(Clone, Serialize)]

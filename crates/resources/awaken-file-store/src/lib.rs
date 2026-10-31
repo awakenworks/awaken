@@ -17,6 +17,10 @@
 //! Files API identity/metadata. Its opaque `file_...` ids are deliberately not
 //! the content ids described above: equal bytes deduplicate without merging two
 //! logical Files or their lifecycles.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;

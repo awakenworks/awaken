@@ -9,6 +9,7 @@
 //! Terminal mutations of the one held filesystem removal participant. Each
 //! destructive or authority-advancing edge takes the admitted effect guard and
 //! then performs the marker compare-and-swap under the held lifecycle lock.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl RemovalGuard {

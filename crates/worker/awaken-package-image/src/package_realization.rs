@@ -681,6 +681,7 @@ mod facts;
 mod identity;
 mod projection;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use facts::*;
 pub use identity::immutable_image;
 use identity::{
@@ -688,6 +689,7 @@ use identity::{
     metadata_uid, object_namespace, runtime_error, valid_fingerprint,
 };
 pub use projection::stamp_sandbox_release_annotations;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use projection::*;
 pub(crate) use projection::{
     bind_package_job_to_config, package_build_name, package_config_annotations,

@@ -21,6 +21,10 @@
 //! port; tests may substitute an anonymous or scripted transport.
 //! Each outbound message first commits a versioned Prepared operation to the
 //! existing Run StateCell; only the exact returned task advances it to Accepted.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::sync::Arc;
 
@@ -66,9 +70,13 @@ mod task_state;
 #[cfg(test)]
 use awaken_protocol_a2a::HttpTransport;
 use awaken_protocol_a2a::Transport;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use message_identity::*;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use run_commit::*;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use task_projection::*;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use task_state::*;
 
 /// Resolves one publication-pinned remote candidate into a live transport.

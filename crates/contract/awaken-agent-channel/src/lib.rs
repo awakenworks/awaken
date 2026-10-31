@@ -11,6 +11,10 @@
 //! [`SplitChannel`]); a distributed provider backs the same channel with a
 //! socket — the consumer (an ACP bridge) is written once against
 //! [`AgentChannel`].
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use tokio::io::{AsyncRead, AsyncWrite};
 

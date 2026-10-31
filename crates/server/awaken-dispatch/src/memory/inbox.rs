@@ -1,6 +1,7 @@
 // @formal entrypoint ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
 //! In-memory Inbox projection over the canonical dispatch state.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::inbox_mutation::{
     PendingInputMutation, PendingInputMutationPlan, plan_pending_input_mutation,

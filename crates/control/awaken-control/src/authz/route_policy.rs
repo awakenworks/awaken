@@ -1,5 +1,6 @@
 //! Sole bounded route-family policy table shared by the PEP and Hosted export.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[

@@ -5,6 +5,7 @@
 //! Attempt-local MCP bytes over the Session's existing attached process channel.
 //! Tool execution and approval remain in the original guarded export set.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use std::time::Duration;
 use tokio::io::AsyncReadExt as _;

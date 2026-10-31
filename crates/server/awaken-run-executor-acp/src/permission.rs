@@ -13,6 +13,7 @@
 //! alias consensus, resumed one-shot decisions, and the attempt's audit ledger.
 //! Every decision made here is recorded the way the native gate records its
 //! own, so a session run by an external CLI leaves the same committed facts.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Bridges the ACP driver's [`PermissionResolver`] port onto the single neutral

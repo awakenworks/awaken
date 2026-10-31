@@ -4,6 +4,7 @@
 // @formal reason: contract admission. This is a product-boundary classification, not proof.
 //! Workdir child command preparation shared by process and Agent-channel spawn.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use tokio::process::Command as TokioCommand;
 

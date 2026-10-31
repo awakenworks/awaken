@@ -4,6 +4,7 @@
 // @formal reason: SessionStore root-CAS, tombstone, idempotency and create-replay rows split from the
 // @formal reason: existing trait-generic conformance owner. It remains tooling-only and every durable
 // @formal reason: backend invokes it through the same run_suite entrypoint.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[derive(Clone, Copy)]

@@ -23,6 +23,10 @@
 //! prefix. Whole committed lines are durable (fsynced) before acknowledgement.
 //! A retained OS lock makes one coordinator the directory owner across processes;
 //! format upgrades replace the log atomically before publishing their version.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};

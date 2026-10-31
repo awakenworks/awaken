@@ -1,6 +1,7 @@
 // @formal entrypoint credential_inventory.committed_material_is_preserved
 // @formal entrypoint credential_inventory.orphans_are_reported_and_retained_without_an_atomic_claim
 // @formal entrypoint credential_inventory.pending_intent_material_is_preserved
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// One-reference classification used by the generic credential inventory.

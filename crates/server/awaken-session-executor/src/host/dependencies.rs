@@ -14,6 +14,7 @@
 //! chainable `with_*` methods select the optional ones. Worker-only transports
 //! travel inside its [`crate::UpstreamAuthority`].
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 use awaken_dispatch_contract::RunClaim;
 use awaken_session_configuration_contract::SkillBundleSource;

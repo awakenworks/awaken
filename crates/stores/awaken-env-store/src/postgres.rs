@@ -8,6 +8,7 @@
 //! keeps the two backends one interpretation of a persisted Environment rather
 //! than two.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_time::WallClockExt;
 

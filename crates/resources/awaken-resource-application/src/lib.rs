@@ -6,6 +6,10 @@
 //! Persistence selection produces one [`ResourceAuthorities`]. This layer derives
 //! the application services shared by HTTP, Runtime artifact harvesting, and
 //! reclamation cleanup exactly once, without teaching those adapters about stores.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::sync::Arc;
 

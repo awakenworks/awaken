@@ -3,6 +3,10 @@
 //!
 //! Worker applications depend on this leaf; protocol adapters implement it.
 //! The contract owns no process, repository, discovery or JSON-RPC behavior.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::path::Path;
 

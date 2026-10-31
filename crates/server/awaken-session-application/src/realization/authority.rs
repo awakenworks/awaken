@@ -5,6 +5,7 @@
 // @formal reason: realization generation, preventing a second terminal lease state machine.
 //! Existing root-lease and terminal-claim admission helpers.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) fn verify_lease(

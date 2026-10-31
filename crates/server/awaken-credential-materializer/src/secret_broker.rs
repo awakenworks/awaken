@@ -2,6 +2,7 @@
 //! Claim-fenced one-shot secret delivery and the sole route to the injected
 //! Control Vault broker for local reads and write-back.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 const PROCESS_SECRET_REFERENCE_PREFIX: &str = "awaken-process-secret://";

@@ -1,6 +1,10 @@
 //! Durable and encrypted adapters for Credential Vault ports.
 
 #![forbid(unsafe_code)]
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 #[cfg(feature = "postgres")]
 pub mod postgres;

@@ -2,6 +2,10 @@
 //!
 //! Aggregate rules, repository ports, consent, enrollment, and erasure decisions
 //! live in `awaken-data-subject-application`; this crate only implements storage.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 #[cfg(feature = "postgres")]
 mod postgres;

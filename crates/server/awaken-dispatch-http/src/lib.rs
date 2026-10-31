@@ -3,6 +3,10 @@
 //! Durable operations and the complete registered-Worker dispatch surface are
 //! assembled here. The runtime Host supplies only execution/recovery ports; it
 //! does not own these routes.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod claimed_commit_http;
 mod durable_ops;

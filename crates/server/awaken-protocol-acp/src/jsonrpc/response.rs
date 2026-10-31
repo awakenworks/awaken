@@ -5,6 +5,7 @@
 //! with streamed Session facts and fail-closed permission requests. Handshake
 //! and prompt orchestration remain in the parent driver.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Read messages until the response to `target_id` arrives, meanwhile projecting

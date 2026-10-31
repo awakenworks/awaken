@@ -14,6 +14,10 @@
 //! no Session, claim, credential, repository, policy, cache, or persistence
 //! state. A [`SandboxControlService`] must resolve every request against its
 //! owning application's current authority.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::sync::Arc;
 

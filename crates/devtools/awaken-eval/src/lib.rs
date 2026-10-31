@@ -8,6 +8,10 @@
 //! JSON through [`store`]. `Purpose::EvalRecording` is the consent purpose a
 //! record-from-real-run path attributes captures to (see
 //! `awaken-data-subject-application`).
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub mod acp_runner;
 pub mod admin_authoring;

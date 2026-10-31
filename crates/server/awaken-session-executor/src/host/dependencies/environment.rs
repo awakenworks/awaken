@@ -6,6 +6,7 @@
 //! housekeeping sandboxes, checkpoint custody, CacheVolume preparation, the
 //! credential-file broker, and the Memory mount adapter every provider shares.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 impl SessionExecutorBuilder {

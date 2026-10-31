@@ -19,6 +19,10 @@
 //! decides; an unmatched call falls to the authored default. There is no second
 //! ambient axis — a toolset's own default compiles into `default_behavior`, so
 //! nothing can short-circuit the rule scan and neutralize a `deny`.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use async_trait::async_trait;
 use awaken_agent_contract::audit::permission::{PermissionPolicy, PermissionReasonCode};

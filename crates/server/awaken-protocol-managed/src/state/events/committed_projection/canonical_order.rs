@@ -11,6 +11,7 @@
 //! only the Managed concerns around that order: decoding public ids into those
 //! identities, live overlays, DTO timestamps and the final sort.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{AnchoredEvent, EventAnchor, OrderIndex, position_events};
 use std::collections::HashMap;

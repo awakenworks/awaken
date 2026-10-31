@@ -4,6 +4,10 @@
 //! JSON-RPC error mapping, progress ordering, cancellation, and the axum-free
 //! Streamable HTTP decision kernel. It deliberately knows nothing about an agent
 //! runtime, authorization, approval, resources, stores, principals, or scopes.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 #[cfg(any(test, kani))]
 mod formal;

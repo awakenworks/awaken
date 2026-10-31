@@ -25,6 +25,10 @@
 //! graph live in `awaken-iam`; a [`ScopeId`] is translated to a `ScopeRef` only at
 //! the PDP adapter (the ACL boundary), so this crate never depends on the authz
 //! engine.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 // The coordinate itself is a Runtime SDK value (ADR-0086 §6): the engine carries
 // it as a label and never interprets it. Re-exported so Platform paths, type

@@ -19,6 +19,10 @@
 //! Note there is deliberately **no `SecretSource` port**: a secret is resolved by
 //! reference through `awaken_provisioning_contract::BlobSource` straight into the
 //! sandbox, never surfaced as a value here.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

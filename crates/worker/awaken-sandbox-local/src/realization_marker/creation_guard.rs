@@ -1,6 +1,7 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Borrow current authority around the existing physical creation participant.
 //! No new lease or persisted state: marker identity and phase remain in `super`.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(crate) enum ProviderCreationGuard<'a> {

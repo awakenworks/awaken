@@ -31,6 +31,10 @@
 //! ```compile_fail
 //! let _: awaken_sandbox_container::CreateTicket;
 //! ```
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;

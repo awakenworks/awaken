@@ -11,6 +11,7 @@
 //! is authoritative. Wire DTOs project its desired manifest; Runtime owns
 //! realization of that manifest.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ManagedState {

@@ -4,6 +4,7 @@
 //! Durable-foreground observation: the [`ExecutorComponents`] pool-submit/await
 //! methods over the completion relay (`awaken-session-run-delivery`).
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 #[cfg(test)]
 use awaken_dispatch_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};

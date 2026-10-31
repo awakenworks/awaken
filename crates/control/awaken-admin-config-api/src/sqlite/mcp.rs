@@ -5,6 +5,7 @@
 // @formal reason: the other refuses. Evidence: product.admin_console.console_workflows plus the shared MCP
 // @formal reason: configuration repository conformance; this is a product-requirement classification, not
 // @formal reason: a direct proof claim.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_config::mcp_config::{
     McpConfigError, McpConfiguration, McpConfigurationRepository, validate_mcp_configuration_write,

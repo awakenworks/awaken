@@ -5,6 +5,7 @@
 //! plugins and their configuration, WebSearch providers, the gate override,
 //! and management tools installed on every thread.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 impl SessionExecutorBuilder {

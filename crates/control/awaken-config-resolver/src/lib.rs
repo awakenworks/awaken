@@ -15,6 +15,10 @@
 //! `InferenceProfile` failover, and `Pin` are P1.
 
 #![forbid(unsafe_code)]
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub use awaken_agent_config::{AgentEnvironmentBinding, AgentInputConfig};
 pub use awaken_agent_contract::ModelTarget;

@@ -248,6 +248,19 @@ proptest = "1"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+# A crate's surface is what it re-exports. A crate that still has unreachable
+# `pub` items carries `#![expect(unreachable_pub)]` in its root, which fails
+# once the crate is clean (docs/design/guard-consolidation.md R8).
+unreachable_pub = "warn"
+
+# Rules the compiler holds instead of Python guards (plan v5 S1). The
+# production pass of scripts/ci/check-rust.sh (`--lib --bins`) denies them; the
+# all-targets pass allows the disallowed_* lints and unreachable_pub, so tests
+# may use std locks, clocks and the environment. `clippy.toml` lists the paths.
+[workspace.lints.clippy]
+wildcard_imports = "warn"
+disallowed_methods = "warn"
+disallowed_types = "warn"
 
 # Ordinary builds retain source locations for failures without generating
 # type/variable debug records for every independently linked test executable.

@@ -6,6 +6,10 @@
 //! This crate deliberately knows neither Agent nor Environment commands. It
 //! owns only the durable cursor decision that both projections must implement
 //! identically; each bounded context keeps its canonical state machine.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

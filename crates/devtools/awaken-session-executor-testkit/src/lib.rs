@@ -10,6 +10,10 @@
 //! package default. Workspace callers select it explicitly. Without `host`,
 //! the original extraction-repository and volatile-authority factories remain
 //! available to core unit fixtures without an Executor/Resources assembly.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::path::Path;
 use std::sync::Arc;

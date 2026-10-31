@@ -10,6 +10,10 @@
 //! exposure are intentionally separate.  This module is the one admission
 //! kernel shared by model, MCP and resource adapters; adapters realize an exact
 //! admitted plan and never choose a different holder after failure.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::collections::BTreeSet;
 

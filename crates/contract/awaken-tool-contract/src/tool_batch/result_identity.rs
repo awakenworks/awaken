@@ -2,6 +2,7 @@
 //! The aggregate remains the only source of the Run/Step coordinate and call
 //! membership; this module adds no result state or publication path.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ToolBatch {

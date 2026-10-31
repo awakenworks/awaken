@@ -1,6 +1,7 @@
 // @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 //! Routes claimed work through the canonical Session preparation and Run factory.
 //! The resolver holds the roles its construction was given and nothing else.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::session_execution::*;
 use crate::{DispatchWorker, Error, WorkerResolver};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};

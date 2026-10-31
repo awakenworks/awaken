@@ -9,6 +9,10 @@
 //! outcome hook (advance state + emit reminders), and a run-end continuation
 //! guard, all under its declared `CapabilityBound`. See
 //! `docs/design/tool-state-machine.md`.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod config;
 mod engine;

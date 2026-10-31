@@ -3,6 +3,7 @@
 // @formal reason: Rehydrates disposable projections from canonical Session truth.
 //! Cold reconstruction of disposable Managed Session projections.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_session_application::SessionRecoveryPurpose;
 

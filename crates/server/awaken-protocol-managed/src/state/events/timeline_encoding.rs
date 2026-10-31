@@ -13,6 +13,7 @@
 //!
 //! Consumers: every Managed projector that publishes a timeline fact.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{
     DerivedSessionEvent, ManagedEventType, RunFault, SessionEventKind, StopFact,

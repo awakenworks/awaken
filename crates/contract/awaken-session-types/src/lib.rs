@@ -1,4 +1,8 @@
 //! Low-level Session identity, source ordering and runtime failure vocabulary.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::borrow::Borrow;
 use std::fmt;

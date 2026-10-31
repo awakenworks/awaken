@@ -7,6 +7,10 @@
 //! extension owns both the descriptors and their in-process implementations
 //! (ADR-0007): typed [`Tool`]s erased into
 //! the runtime's `RawTool` registry.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod agent;
 mod coordination;

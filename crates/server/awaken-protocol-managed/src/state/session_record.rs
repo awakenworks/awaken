@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 mod event_page_index;

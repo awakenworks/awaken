@@ -3,6 +3,10 @@
 //! This shared owner carries the one Worker/Pool execution path, its claim-bound
 //! attempt context, and process-local capacity. Durable queue/storage and
 //! transport factories remain with their Coordinator and Worker owners.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod admission_error;
 mod attempt_termination;

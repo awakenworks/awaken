@@ -4,6 +4,7 @@
 // @formal reason: DeploymentRepository CAS, capacity and scheduled-claim rows split from the existing
 // @formal reason: SessionStore conformance owner because both ports share the same root transaction. It
 // @formal reason: remains tooling-only and creates no product admission path.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentView {

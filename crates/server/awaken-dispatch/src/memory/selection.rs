@@ -6,6 +6,7 @@
 // @formal reason: own the behavior evidence; no whole-selection or liveness proof is claimed.
 //! The reference store's one broad claim selection policy.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an

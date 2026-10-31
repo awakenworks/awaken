@@ -6,6 +6,7 @@
 //! This module maps concrete product stores and provider adapters onto
 //! `awaken-control` ports. It contains no Control business implementation.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_credential_vault::VaultApplication;
 

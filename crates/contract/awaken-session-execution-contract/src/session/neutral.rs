@@ -9,6 +9,7 @@
 //! Neutral behaviour for [`SessionRuns`] roles a runtime does not own: [`neutral_role!`]
 //! writes it once per role and [`NeutralRuntime`] is that behaviour as a value partial doubles forward to.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Implement one [`SessionRuns`] role for a type with the **neutral** behaviour a

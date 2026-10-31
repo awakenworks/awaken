@@ -4,6 +4,7 @@
 //! Construction of [`ExecutorComponents`] from its [`SessionExecutorBuilder`] (the one
 //! constructor), per-thread registration, and the process dispatch pool.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 

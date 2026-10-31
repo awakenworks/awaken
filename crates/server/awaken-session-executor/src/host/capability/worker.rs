@@ -4,6 +4,7 @@
 //! publisher, terminal cleanup, Memory reference encoder) belong to its
 //! [`crate::UpstreamAuthority`] instead.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 /// Claim-fenced Control clients. Consumer: Session realization, coordination,

@@ -7,6 +7,7 @@
 // @formal reason: product-requirement classification, not a direct proof claim.
 //! Config-page credential choices, MCP inspection, and the
 //! `mcp_oauth_validate` route over the existing Vault owner.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_vault::{CredentialError, CredentialStatus};

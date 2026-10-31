@@ -1,5 +1,6 @@
 //! The read-only committed-truth port behind Session projections.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Project the original exact-Run fallback from an already-read prefix.

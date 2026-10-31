@@ -3,6 +3,7 @@
 //! No persisted PID is ever used as signal authority. The same lifecycle lock
 //! serializes pre-GO publication against cold adoption, snapshot and deletion.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 #[cfg(target_os = "linux")]
 use awaken_local_process::ProcessExecutionIdentity;

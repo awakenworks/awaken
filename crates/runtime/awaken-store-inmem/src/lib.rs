@@ -15,6 +15,10 @@
 //! plane split honest: live stream events go to [`MemoryStreamSink`] and never
 //! become truth, while durable facts/events/messages are written atomically by
 //! [`MemoryCommitCoordinator`] and read back for replay (G1/G13).
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::collections::HashMap;
 use std::sync::Arc;

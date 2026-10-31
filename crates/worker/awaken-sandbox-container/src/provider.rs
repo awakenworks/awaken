@@ -5,6 +5,7 @@
 //! provider creation, adoption, observation, and trait projection. Terminal
 //! takeover and retained-handle reconstruction live with the existing recovery owner.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_container_contract::RuntimeError;
 use awaken_provisioning_contract::{

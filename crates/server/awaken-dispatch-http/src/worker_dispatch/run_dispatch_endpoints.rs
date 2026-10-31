@@ -5,6 +5,7 @@
 //! The parent `WorkerDispatchService` remains the single application service;
 //! these handlers add no queue, clock, identity, or lease authority.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_credential_contract::CredentialEnvelopeValidation;
 

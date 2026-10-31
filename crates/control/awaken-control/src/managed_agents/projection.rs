@@ -4,6 +4,7 @@
 // @formal reason: resolves no secret material, and adds no authoring authority.
 //! Managed Agent wire/domain projections and boundary validation.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) fn register_roster_name(

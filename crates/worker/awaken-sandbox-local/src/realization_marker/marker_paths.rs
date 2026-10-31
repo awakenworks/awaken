@@ -1,3 +1,4 @@
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) fn private_stage_leaf(

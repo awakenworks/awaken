@@ -9,6 +9,7 @@
 // @formal evidence model_operation.coverage_commit_strictly_precedes_model_entry
 //! The Agent step loop and its per-step orchestration.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::resilience::{Classify, Disposition};
 

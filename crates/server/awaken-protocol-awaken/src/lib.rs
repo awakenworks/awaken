@@ -6,6 +6,10 @@
 //! application ports; concrete application services are injected only by the
 //! composition root. Extensions of the Anthropic Managed Agents protocol (they
 //! speak its envelope, ids and headers) live in `awaken-protocol-managed`.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod common;
 mod dream_policies;

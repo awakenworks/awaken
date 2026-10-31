@@ -10,6 +10,10 @@
 //!
 //! It deliberately stays out of the contract: framing, Tokio tasks, and socket
 //! file names are execution mechanics, not domain vocabulary.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod codec;
 mod publication;

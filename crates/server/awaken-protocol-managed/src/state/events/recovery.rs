@@ -3,6 +3,7 @@
 // @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Committed recovery snapshots, pending-tool identity resolution, and projection qualification.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{
     PendingTicketAdmission, PendingTicketObservation, answered_pending_commit_cursor,

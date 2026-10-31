@@ -3,6 +3,7 @@
 // @formal evidence resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
 //! Coordinator/AllInOne process startup over canonical domain components.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 use cloud_plane::{CloudPlane, assemble_cloud_plane};

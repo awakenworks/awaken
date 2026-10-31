@@ -5,6 +5,7 @@
 //! model, per-thread model routing, the remote attempt adapter, the Outcome
 //! Judge, and the immutable Agent publications the Host executes.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 /// Inference and Agent-publication wiring. Consumer: Session context

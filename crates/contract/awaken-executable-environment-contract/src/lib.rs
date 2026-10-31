@@ -7,6 +7,10 @@
 //! selects. The two stages share one lifecycle and are always consumed together,
 //! so they are one contract. Environment *definitions* stay in
 //! `awaken-environment-contract`, which does not depend on provisioning.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod image_realization;
 mod registration;

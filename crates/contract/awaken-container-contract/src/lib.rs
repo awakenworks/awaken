@@ -17,6 +17,10 @@
 //! result.validate().unwrap();
 //! let _ = CreateReplyProfile::WholeJoin.encode_body(&RequestJoin::Unknown).unwrap();
 //! ```
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod create;
 mod create_broker;

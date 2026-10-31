@@ -3,6 +3,10 @@
 //!
 //! This leaf owns no HTTP framework, identity store, authorization policy, or
 //! domain command. Adapters pass raw header bytes after transport parsing.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::path::PathBuf;
 use std::sync::Arc;

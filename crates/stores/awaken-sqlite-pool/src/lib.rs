@@ -14,6 +14,10 @@
 //! adapters opening the same file cannot silently disagree about locking or
 //! foreign-key enforcement. Stores reach SQLite only through
 //! [`EmbeddedSqlite`] and the [`EmbeddedPool`] handle it opens.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::time::Duration;
 

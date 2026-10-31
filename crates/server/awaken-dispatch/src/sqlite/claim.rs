@@ -12,6 +12,7 @@
 //! admission, epoch advancement, operational events, and pending-input freeze
 //! therefore cannot diverge between the two entry points.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) async fn claim_retry_exhausted_transaction(

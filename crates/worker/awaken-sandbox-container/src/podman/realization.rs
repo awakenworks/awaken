@@ -1,5 +1,6 @@
 //! Podman physical-container naming, launch labels, and restore identity inspection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_container_contract::RuntimeError;
 

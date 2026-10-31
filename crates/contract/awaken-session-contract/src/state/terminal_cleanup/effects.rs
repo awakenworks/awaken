@@ -7,6 +7,7 @@
 //! Executable terminal effects, exact Memory reconciliation, and completion errors.
 
 use super::state::SessionCleanupState;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::state::SessionId;
 

@@ -6,6 +6,7 @@
 //! Atomic publication of one fully reduced Managed projection candidate.
 
 use super::super::delivery::committed_projection_delivery_delta;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use std::collections::HashMap;

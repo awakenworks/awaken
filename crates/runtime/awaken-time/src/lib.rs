@@ -26,6 +26,10 @@
 //! This crate belongs to the Runtime SDK and is a depth-0 contract leaf: it
 //! depends on no awaken crate. The Platform's ownership-fence kernel,
 //! `awaken-lease-contract`, depends on it for `Expiry` and `UtcTime`.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod clock;
 mod expiry;

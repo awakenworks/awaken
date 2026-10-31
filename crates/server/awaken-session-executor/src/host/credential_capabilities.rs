@@ -3,6 +3,7 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Process-local credential realization capabilities.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_credential_contract::{
     ACP_CREDENTIAL_CONSUMER_PREFIX, CredentialRealizationCapabilities, CredentialRealizationProfile,

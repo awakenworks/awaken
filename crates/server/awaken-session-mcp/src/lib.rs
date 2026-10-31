@@ -3,6 +3,10 @@
 //! application input, and the Worker relay that keeps authenticated MCP
 //! credentials out of a sandbox. The Runtime Host holds one [`SessionMcpState`]
 //! in each Session slot and drives it through [`McpSessions`].
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod mcp;
 mod mcp_material;

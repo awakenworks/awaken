@@ -4,6 +4,7 @@
 // @formal reason: receipts become request context, never another SDK history or acknowledgement store.
 //! ACP handoff to the existing Runtime-owned tool phase and request-only
 //! projection of its committed receipts. No transport or persistence owner lives here.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 mod automatic;

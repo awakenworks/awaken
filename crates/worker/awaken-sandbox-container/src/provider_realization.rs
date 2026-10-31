@@ -5,6 +5,7 @@
 //! accepts only a canonical `SandboxRestoreRequest`, so it cannot become a
 //! parallel environment-realization path.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_container_contract::RuntimeError;
 

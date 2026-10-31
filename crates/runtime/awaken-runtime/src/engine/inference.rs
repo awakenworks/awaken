@@ -11,6 +11,7 @@
 //! module stays within the file-length limit. Items are shared through
 //! `use super::*` (same-crate privates included).
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_runtime_contract::llm::{
     Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest,

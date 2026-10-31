@@ -1,4 +1,8 @@
 //! Runtime-facing contract: activation data, snapshot execution, and narrow ports.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub mod activation;
 pub mod agent_bindings;

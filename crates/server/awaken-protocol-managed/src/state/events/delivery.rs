@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(crate) type CommittedDeliveryPage = Vec<((u64, usize), Event)>;

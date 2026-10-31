@@ -1,3 +1,4 @@
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// The Coordinator↔Worker claim lives in `awaken-worker-contract`; dispatch

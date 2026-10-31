@@ -4,6 +4,7 @@
 //! This stays inside the Memory store's single authority mutex and consumes the
 //! same settlement plan as the two durable SQL adapters.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl MemoryDispatchStore {

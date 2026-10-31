@@ -4,6 +4,7 @@
 // @formal entrypoint session.visible_row_always_owned
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_sql_storage::postgres_pool_options as pool_options;
 

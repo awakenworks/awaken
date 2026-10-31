@@ -1,6 +1,7 @@
 //! The dispatch owner a Session executor reads from its authority, and the
 //! executor's handle on this process's dispatch.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 /// The Coordinator dispatch owner when this process's authority holds it

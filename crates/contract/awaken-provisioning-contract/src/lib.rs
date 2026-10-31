@@ -28,6 +28,10 @@
 //! The two planes are named distinctly: [`EnvironmentKind`] is the *declared*
 //! control-plane config (persisted, admitted); a live realized environment is the
 //! provider's own type behind [`Sandbox`].
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod admission;
 mod claimed_effect;

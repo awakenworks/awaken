@@ -24,6 +24,10 @@
 //!       Linux-only trusted PID-namespace role; stdin is a private control socket.
 //!   awaken-sandbox repository-effect
 //!       Linux-only internal Repository workflow; bounded private stdio transport.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod control_forwarder;
 mod git_credential;

@@ -6,6 +6,7 @@
 //! Run command handling for native execution, resume, cancellation, stopping,
 //! and committed scheduled actions.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[derive(Debug, thiserror::Error)]
