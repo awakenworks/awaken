@@ -677,6 +677,7 @@ impl WorkerRequestAuthenticator for MtlsWorkerAuthenticator {
             worker_id: principal.worker_id.clone(),
             identity: principal.identity.clone(),
             credential_id: Some(format!("mtls:{}", principal.certificate_sha256)),
+            provider_incarnation_required: false,
         })
     }
 }
@@ -1124,6 +1125,9 @@ pub struct VerifiedWorkerContext {
     worker_id: String,
     identity: Option<WorkerIdentity>,
     credential_id: Option<String>,
+    // Only an authenticated provider-identified execution domain sets this.
+    // Its registration may never fall back to a process-proposed incarnation.
+    provider_incarnation_required: bool,
 }
 
 impl VerifiedWorkerContext {
@@ -1138,6 +1142,7 @@ impl VerifiedWorkerContext {
             worker_id: worker_id.into(),
             identity: None,
             credential_id: None,
+            provider_incarnation_required: false,
         }
     }
 
@@ -1146,6 +1151,22 @@ impl VerifiedWorkerContext {
             worker_id,
             identity,
             credential_id: Some(credential_id),
+            provider_incarnation_required: false,
+        }
+    }
+
+    /// A process inside a provider-identified execution domain (an
+    /// authenticated Kubernetes Pod). Its incarnation is the provider's
+    /// observation of the running process, never the value it proposes.
+    #[cfg(feature = "kubernetes")]
+    fn provider_identified(
+        worker_id: String,
+        identity: Option<WorkerIdentity>,
+        credential_id: String,
+    ) -> Self {
+        Self {
+            provider_incarnation_required: true,
+            ..Self::signed(worker_id, identity, credential_id)
         }
     }
 
@@ -1162,6 +1183,14 @@ impl VerifiedWorkerContext {
     #[must_use]
     pub fn credential_id(&self) -> Option<&str> {
         self.credential_id.as_deref()
+    }
+
+    /// Registration must take its incarnation from the Coordinator's binding
+    /// source; without that provider evidence it is refused. This is neither
+    /// a Registry generation nor a physical stop receipt.
+    #[must_use]
+    pub fn requires_provider_incarnation(&self) -> bool {
+        self.provider_incarnation_required
     }
 }
 
@@ -1744,5 +1773,8 @@ mod tests {
         let verified = MtlsWorkerAuthenticator.authenticate(&parts).await.unwrap();
         assert_eq!(verified.identity(), Some(&identity));
         assert_eq!(verified.credential_id(), Some("mtls:sha256:certificate"));
+        // An mTLS process keeps its registered incarnation; only a
+        // provider-identified domain requires provider-observed evidence.
+        assert!(!verified.requires_provider_incarnation());
     }
 }

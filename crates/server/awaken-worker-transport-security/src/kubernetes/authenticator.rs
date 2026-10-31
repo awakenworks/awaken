@@ -179,8 +179,9 @@ impl WorkerRequestAuthenticator for KubernetesWorkerAuthenticator {
         }
         // The Worker ID is the Pod; its incarnation is a container instance.
         // Registration does not trust a process-proposed incarnation: the
-        // Coordinator's binding source derives it from the running container.
-        Ok(VerifiedWorkerContext::signed(
+        // Coordinator's binding source derives it from the running container,
+        // and without that evidence registration is refused.
+        Ok(VerifiedWorkerContext::provider_identified(
             worker_id.into(),
             identity,
             format!("k8s-pod:{}", pod.uid()),

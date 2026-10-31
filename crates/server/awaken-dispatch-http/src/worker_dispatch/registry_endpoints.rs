@@ -48,11 +48,24 @@ pub(super) async fn register_worker(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
         }
-        if let Some(source) = &service.execution_bindings
-            && let Some(incarnation) = source
-                .registration_incarnation(&request.registration)
-                .await?
-        {
+        let observed = match &service.execution_bindings {
+            Some(source) => {
+                source
+                    .registration_incarnation(&request.registration)
+                    .await?
+            }
+            None => None,
+        };
+        if observed.is_none() && worker.requires_provider_incarnation() {
+            // A provider-identified domain (an authenticated Kubernetes Pod)
+            // is admitted only under the incarnation the provider observes.
+            // Without that evidence the process's own proposal is never
+            // trusted: refuse instead of accepting it on the process's word.
+            return Err(ApplicationError::invalid(
+                "Worker registration requires the provider-observed incarnation of its execution domain",
+            ));
+        }
+        if let Some(incarnation) = observed {
             // The provider identifies the process (a Kubernetes container
             // instance); a process-proposed incarnation is never trusted. A
             // different current incarnation of this Worker ID is a restarted
