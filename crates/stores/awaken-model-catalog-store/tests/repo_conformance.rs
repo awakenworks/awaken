@@ -633,9 +633,12 @@ mod postgres {
             !output.status.success(),
             "G2 configured failure must fail the test process"
         );
+        // Admission itself connects to create the fixture's own namespace, so
+        // an unreachable configured database fails there, before any domain
+        // setup runs.
         assert!(
             String::from_utf8_lossy(&output.stderr)
-                .contains("configured PostgreSQL must be reachable"),
+                .contains("configured PostgreSQL fixture must connect"),
             "G2 must fail at fixture admission, not because the test was never selected"
         );
     }
