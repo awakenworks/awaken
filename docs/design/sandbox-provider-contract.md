@@ -184,3 +184,19 @@ real-adapter tests and the shared CLI composition retain their own dependencies.
 There is no new crate, provider facade, optional role discovery, protocol version
 or state authority. Existing wire fields, ticket identity, error classification,
 claim retention and cleanup rules keep their current owners and behavior.
+
+## Session role handles (2026-10-31)
+
+The Session names no provider of its own. It carries the deployment-selected
+`SandboxProvider` as `SandboxProviderRoles`
+([`awaken-session-environment-contract`](../../crates/contract/awaken-session-environment-contract/src/provider.rs)),
+one handle per consuming role over the same adapter instance. Readiness and
+installation are provisioning roles; Hand assembly and effective-spec projection
+(`EnvironmentRealizer`), retained-instance rebinding (`EnvironmentAdoption`) and
+terminal readability (`EnvironmentTerminalRealization`) stay as three Session
+roles. The decision is the
+[ADR-0088 amendment of 2026-10-31](../adr/0088-bounded-context-map-and-sdk-platform-contract.md#amendment-2026-10-31-the-session-carries-the-one-sandbox-provider-as-role-handles);
+it awaits the batched verification. Historical k3d container E2E and the
+11-stage distributed suite (including successor source retention) ran before
+this change, so the final integrated source is requalified with container and
+distributed E2E.

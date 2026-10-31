@@ -333,3 +333,62 @@ group successful for the exact candidate, may write full-gate qualification.
 Current focused results, partial environments, per-crate counters and quick
 plans must retain their stated scope. See the existing
 [full-gate policy](../adr/0080-full-gate-freshness-and-declared-tool-environment.md).
+
+### Served-process E2E coverage
+
+`scripts/ci/e2e-coverage.sh` measures deterministic served-process API coverage
+and prints the current total and executed numerator. `stage_change_coverage_e2e.ts`
+owns uniquely identified functional obligations, including the served-process
+deployment mappings used to assess the G42/G43 Target guardrails; those rows do
+not change guardrail status or replace the formal qualification profiles. The
+post-rebase 2026-07-22 changed-line audit against `t` measured 1589/1662 =
+95.61%, above the enforced strict threshold of >95%; 264 non-API-reachable
+production lines are separately bounded and audited rather than hidden by broad
+exclusions.
+
+### Distributed role E2E scope
+
+[ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md)'s
+P2-B process-level acceptance ([k3d guide](../../deploy/k3d/README.md),
+`e2e/k3d/distributed_control_e2e.sh`) runs the production Control process with
+only a deterministic model-publication fact injected at its existing SPI,
+replicated shipped Coordinator roles, two shipped `awaken-worker` processes,
+signed Worker traffic, exact Credential/File/Memory/Skill realization, four
+owner databases, one public API endpoint, active-active projection refresh,
+Worker incarnation restart, Pod/node/Provider faults, PostgreSQL standby
+promotion and concurrent load. It also hard-stops a retained Pod-bound Native
+Worker, independently proves the exact old Pod exited, classifies the committed
+closed `ModelOnlyV1` surface, retires only that predecessor Dispatch slot and
+settles through a new Pod UID without another provider request. Worker Pods
+receive no authority database or seal configuration and are checked for zero
+PostgreSQL sockets.
+
+### Qualification checkpoints and cohorts
+
+Each recorded outcome binds its exact source, declared inputs, artifact,
+toolchain, platform and execution scope. A composing product records the actual
+Native, Cloud and Flow revisions and resolved artifacts in its existing BOM.
+An old cohort remains evidence for that cohort; it does not certify a new one.
+
+Provider execution, physical cleanup, native-platform behavior and SDK artifact
+consumption retain separate observations. Required fixture absence is not a
+successful run. A platform-specific historical packet does not select the
+platform for unrelated source work.
+
+## Integrated-source qualification record
+
+The existing Session evidence registry holds source identity, original hashes
+and scope summaries. Raw execution logs, source reconstruction patches and
+bundles are stored outside the tracked source tree. Restore them into the
+existing ignored `target/session-acceptance-evidence/` location when reviewing
+their bytes; absence remains unavailable evidence.
+
+Record a clean source identity and actual selected execution using the existing
+recorder. Bind the actual named assertions and outcomes using the existing
+acceptance owner. Preserve original bytes and their hashes when moving packets;
+write a distinct sanitized summary instead of editing a hashed receipt in place.
+
+Changing or rebasing source requires an explicit affected-input review before
+inheriting a result. It never updates an old receipt to a new successful source.
+The source/design checker can validate references without claiming that an
+unavailable artifact or an unexecuted platform passed.

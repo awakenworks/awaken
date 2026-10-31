@@ -122,7 +122,9 @@ domain problem it solves:
    before the Session authority port. The realization-language split comes before
    the realization crate moves out of the runtime host; the remote-port move after
    the Session authority port; the `session-runtime-contract` split with the
-   glossary renames (`session-state-contract` keeps its name; see the amendment). ADR-0086 is implemented in its own order
+   glossary renames (`session-state-contract` keeps its name; see the amendment;
+   note 2026-10-31: it was later merged into `awaken-session-contract`, see the
+   2026-10-30 amendment below). ADR-0086 is implemented in its own order
    (4, 3, 2, 6, 7).
 
 ## Alternatives
@@ -209,6 +211,9 @@ changing it amends this ADR.
   `agent_config` goes to `executable-agent-contract`, `SessionEnvironmentSource`
   moves up to the application contract, and `session-runtime-contract` is split by
   direction (decision 3). `session-state-contract` keeps its name.
+  *Note 2026-10-31: withdrawn by ADR-0091; the state, event, budget and
+  repository contracts were merged into `awaken-session-contract` (amendment
+  2026-10-30 below).*
 - `awaken-protocol-ag-ui` and `awaken-protocol-ai-sdk` stay separate (`protocol`):
   they adapt two external protocols that evolve independently. Seven functions
   (46 lines) are identical; that does not justify a shared module binding them.
@@ -826,7 +831,8 @@ other than a qualified container engine; baseline 39). The remaining
 `XxxRuntime` Session roles and `Runtime*` capability types are renamed when
 their code moves (ADR-0091 D9), not in a separate sweep.
 
-Not done here: `SessionEnvironmentProvider` (the record of Session environment
+*Note 2026-10-31: done by the amendment of that date below
+(`SandboxProviderRoles`).* Not done here: `SessionEnvironmentProvider` (the record of Session environment
 role handles) and its adapter `SandboxEnvironmentProvider` are not yet merged
 into `SandboxProvider`. That merge removes the five Session environment role
 traits in favour of the one supply abstraction; it is a design change across

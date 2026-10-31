@@ -25,7 +25,7 @@ The complete application retains the full repository for its existing use cases.
 
 Session Runtime composition uses `SessionExecutor::from(Arc<T>)`, where `T`
 implements `CompleteSessionRuntime`. Its thirteen role handles come from that
-one owner and are immutable after construction. `SessionRuntime` retains four
+one owner and are immutable after construction. `SessionRuns` retains four
 core operations; coordination reads, projection reads, realization, terminal
 cleanup, environment, budget and the other calling roles have explicit ports.
 Required capabilities cannot disappear behind optional getters or be replaced
@@ -427,3 +427,24 @@ same durable MCP intent, including on exact receipt replay. Adding, removing or
 changing a configured server still records its original immutable Agent fact.
 Existing historical facts are never rewritten, and a missing historical Agent
 snapshot is never reconstructed from the current catalog to admit renewal.
+
+## Application status (2026-10-31)
+
+Moved here from `STATUS.md`. Session use-case components own their
+collaborators over the `SessionMutations` CAS kernel, and `SessionApplication`
+implements no role. Worker MCP desired-set changes reconcile through the owning
+lease and the existing MCP state machine. Creation captures accepted Agent
+publications once per declared occurrence and reuses them for roster and Skill
+admission. Budget recovery gives existing accepted/refused receipts precedence
+over mutable policy; a fresh refusal rereads and uses the original root CAS,
+preserving a concurrent winner. Unused application forwarding wrappers were
+removed, private Run command origins and Worker construction are named by their
+responsibilities, and the application binding cell no longer uses `slot`.
+
+The eight execution roles carry responsibility names: `SessionRuns`,
+`StreamingRuns`, `ChildRunCoordination`, `ThreadReads`, `Outcomes`,
+`BudgetAccounting`, `TerminalCleanup` and `LiveInboxAccess`
+([`awaken-session-execution-contract`](../../crates/contract/awaken-session-execution-contract/src/session/roles.rs));
+the rename awaits the batched verification. The deployment `RunIngress` enum has
+no approved replacement name yet. Responsibility boundaries are reviewed as
+callers settle; function length alone requires no split.

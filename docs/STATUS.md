@@ -62,8 +62,10 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/session-branch-prefixes.md` | Product/downstream mapping | Not required | n/a |
 | `design/session-aggregate-and-dispatch-capabilities.md` | Role owner | Required | self |
 | `design/session-environment-transition.md` | Design narrative | Not required | n/a |
+| `design/contract-convergence.md` | Decision record | Not required | n/a |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
 | `design/test-validation.md` | Meta / introspection | Not required | n/a |
+| `design/guard-consolidation.md` | Meta / introspection | Not required | n/a |
 | `design/session-execution-test-acceptance.md` | Coverage map | Not required | n/a |
 | `design/session-execution-test-acceptance-cases-1.md` | Coverage map | Not required | n/a |
 | `design/session-execution-test-acceptance-cases-2.md` | Coverage map | Not required | n/a |

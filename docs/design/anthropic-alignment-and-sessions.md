@@ -90,7 +90,7 @@ Static ownership remains one-directional:
 |---|---|---|
 | Agent/Session/Environment DTO and lifecycle | `awaken-protocol-managed` | Identical on Linux, macOS, and Windows |
 | Frozen Environment/resource selection | Session projection and resource manifest | Provider-neutral IDs and logical mount paths |
-| Execution adapter | Runtime Host `DeploymentConfig` and `SessionEnvironmentProvider` | Linux Namespace, macOS Namespace, Windows Local by default |
+| Execution adapter | Runtime Host `DeploymentConfig` and `SandboxProviderRoles` over the selected `SandboxProvider` | Linux Namespace, macOS Namespace, Windows Local by default |
 | Host programs | Existing Local/Namespace process launcher | Discovered from host execution metadata; never authored by the Managed request |
 | Files, Repository, MemoryStore, Skill, output | Existing Resources applications and provider realization | Projected into the Session workspace; never exposed as an arbitrary host path |
 
