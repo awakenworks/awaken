@@ -336,12 +336,9 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     host.run_assembly
         .install_environment_projection(thread, &on_tool_use_environment())
         .unwrap();
-    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> =
-        Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-            Arc::downgrade(&host.run_assembly.installed_sessions),
-            Arc::downgrade(&host.realization_executor),
-            thread,
-        ));
+    let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
+        crate::lazy_sandbox::DeferredSandboxExecutor::new(&host.realization_executor, thread),
+    );
     host.run_assembly
         .installed_sessions
         .install_with(thread, |installed| {

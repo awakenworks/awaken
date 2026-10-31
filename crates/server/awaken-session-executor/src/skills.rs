@@ -41,20 +41,14 @@ pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
 /// absent. This is an adapter over the existing frozen projection, not another
 /// catalog or virtual workspace. `None` leaves ordinary files to lazy Hand.
 pub(crate) fn read_pinned_skill(
-    installed: &crate::installed_session::InstalledSession,
+    session: crate::session_realizations::SessionRealizationAccess<'_>,
     args: &awaken_ext_builtin_tools::ReadArgs,
 ) -> Option<Result<String, ToolError>> {
     use awaken_provisioning_contract::WorkspaceLayout;
     use std::path::Component;
 
-    if !installed.run.session_dispatch
-        || installed
-            .realization
-            .environment()
-            .owner
-            .resident()
-            .is_some()
-    {
+    let session_dispatch = session.run.session_dispatch();
+    if !session_dispatch || session.realization.environment().owner.resident().is_some() {
         return None;
     }
     let relative = WorkspaceLayout::relative(&args.path).unwrap_or(&args.path);
@@ -80,7 +74,7 @@ pub(crate) fn read_pinned_skill(
             .collect::<Result<Vec<_>, _>>()?;
         let (stem, file_parts) = parts.split_first().ok_or_else(failure)?;
         let directory = format!("{DELIVERED_SKILLS_SUBDIR}/{stem}");
-        if !installed
+        if !session
             .realization
             .staging()
             .skill_prompt
@@ -89,12 +83,12 @@ pub(crate) fn read_pinned_skill(
         {
             return Err(failure());
         }
-        let manifest = installed
+        let manifest = session
             .realization
             .staging()
-            .run_manifest(installed.run.session_dispatch)
+            .run_manifest(session_dispatch)
             .ok_or_else(failure)?;
-        if installed.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
+        if session.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
             return Err(failure());
         }
         let mut bindings = manifest
@@ -106,7 +100,7 @@ pub(crate) fn read_pinned_skill(
         if bindings.next().is_some() {
             return Err(failure());
         }
-        let version = installed
+        let version = session
             .realization
             .staging()
             .skills

@@ -154,8 +154,7 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
         .run_assembly
         .install_test_environment_binding_sink(sink.clone());
     let executor = Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host.run_assembly.installed_sessions),
-        Arc::downgrade(&host.realization_executor),
+        &host.realization_executor,
         "skill-race",
     ));
     let bash = ToolCall {
@@ -261,8 +260,7 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         .await
         .unwrap();
     let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host.run_assembly.installed_sessions),
-        Arc::downgrade(&host.realization_executor),
+        &host.realization_executor,
         "skill-change",
     );
     assert!(
@@ -528,8 +526,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
         .await
         .unwrap();
     let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host.run_assembly.installed_sessions),
-        Arc::downgrade(&host.realization_executor),
+        &host.realization_executor,
         "skill-write-fault",
     );
     let call = ToolCall {
@@ -786,11 +783,8 @@ async fn pinned_read_path_and_text_decision_table() {
         .ctx_for("text-table", Some("assistant"))
         .await
         .unwrap();
-    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host.run_assembly.installed_sessions),
-        Arc::downgrade(&host.realization_executor),
-        "text-table",
-    );
+    let executor =
+        crate::lazy_sandbox::DeferredSandboxExecutor::new(&host.realization_executor, "text-table");
     for (path, range, expected) in [
         (
             ".skills/files/references/guide.md",
@@ -932,11 +926,8 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
         .ctx_for("cold", Some("assistant"))
         .await
         .unwrap();
-    let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host.run_assembly.installed_sessions),
-        Arc::downgrade(&host.realization_executor),
-        "cold",
-    );
+    let executor =
+        crate::lazy_sandbox::DeferredSandboxExecutor::new(&host.realization_executor, "cold");
     assert_eq!(
         executor
             .invoke(&read_call(".skills/pinned/SKILL.md", None))
@@ -1084,8 +1075,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         })
         .expect("installed Sessions");
     let executor = crate::lazy_sandbox::DeferredSandboxExecutor::new(
-        Arc::downgrade(&host.run_assembly.installed_sessions),
-        Arc::downgrade(&host.realization_executor),
+        &host.realization_executor,
         "install-retry",
     );
     let call = ToolCall {
