@@ -1597,7 +1597,7 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
                 false,
                 false,
             ),
-            closing != 0,
+            closing,
             command_fingerprint,
         )?;
         let Some((request, next)) = adopted else {
