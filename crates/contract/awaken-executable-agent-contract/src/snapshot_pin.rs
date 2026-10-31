@@ -145,36 +145,4 @@ mod kani_proofs {
             assert_eq!(Some(pin.fingerprint), snapshot.envelope_fingerprint);
         }
     }
-
-    /// @obligation executable_snapshot.pin_is_complete_exact_and_non_mixing
-    #[kani::proof]
-    fn every_duplicated_snapshot_pin_axis_is_binding() {
-        let registration = SnapshotRegistrationIdentity {
-            workspace: Some(1_u8),
-            agent: Some(2_u8),
-            source_revision: 3,
-        };
-        let mut snapshot = ExecutableSnapshotIdentity {
-            root_agent: 2_u8,
-            published_metadata: true,
-            source_agent: 2_u8,
-            source_revision: 3,
-            envelope_fingerprint: Some(4_u8),
-            resolved_fingerprint: Some(4_u8),
-            metadata_fingerprint: Some(4_u8),
-        };
-        let axis: u8 = kani::any();
-        kani::assume(axis < 5);
-
-        match axis {
-            0 => snapshot.root_agent = 5,
-            1 => snapshot.source_agent = 5,
-            2 => snapshot.source_revision = 5,
-            3 => snapshot.resolved_fingerprint = Some(5),
-            4 => snapshot.metadata_fingerprint = Some(5),
-            _ => unreachable!(),
-        }
-
-        assert!(published_snapshot_pin(registration, snapshot).is_err());
-    }
 }

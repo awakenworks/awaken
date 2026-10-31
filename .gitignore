@@ -5,6 +5,8 @@ __pycache__/
 .ruff_cache/
 # Cargo targets may be symlinks to the dedicated build disk.
 target
+# Per-harness Kani results (`--output-into-files`); the formal gate removes them.
+/result_output_dir/
 node_modules/
 dist/
 build/

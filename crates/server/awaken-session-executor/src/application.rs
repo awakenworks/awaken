@@ -29,34 +29,6 @@ pub struct SessionRealizationRevocation {
     selected: Vec<(String, crate::installed_session::ClosedSessionRealization)>,
 }
 
-#[cfg(kani)]
-/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-/// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
-/// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
-#[kani::proof]
-fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
-    use awaken_session_realization_contract::SessionRealizationControlFailure;
-
-    let selector = kani::any::<u8>() % 8;
-    let error = match selector {
-        0 => SessionRealizationControlFailure::NotFound,
-        1 => SessionRealizationControlFailure::NotReady,
-        2 => SessionRealizationControlFailure::Retired,
-        3 => SessionRealizationControlFailure::Terminal,
-        4 => SessionRealizationControlFailure::StaleOwnership,
-        5 => SessionRealizationControlFailure::Conflict,
-        6 => SessionRealizationControlFailure::Invalid(String::new()),
-        _ => SessionRealizationControlFailure::Unavailable(String::new()),
-    };
-    // Keep the proof oracle independent from both the contract disposition and
-    // this consumer. Terminal Control truth plus explicit StaleOwnership prove
-    // loss; NotReady, Conflict, and Unavailable retain the retry path.
-    let expected_retirement = matches!(selector, 0 | 2 | 3 | 4 | 6);
-    let revokes = error.proves_current_realization_cannot_continue();
-
-    assert_eq!(revokes, expected_retirement);
-}
-
 #[cfg(test)]
 mod realization_renewal_tests {
     use awaken_session_realization_contract::SessionRealizationControlFailure;

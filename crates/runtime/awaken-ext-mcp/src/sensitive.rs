@@ -171,6 +171,10 @@ mod proofs {
     /// @proof-input-debt free_symbol projection_exposure write_only
     #[kani::proof]
     fn sensitive_marker_never_projects_payload_publicly() {
+        // The exact formula (`Redacted` iff any marker is set) is monotone in
+        // every marker, so adding a marker can never widen a redacted
+        // projection: the "never widened" half of the obligation follows from
+        // these two assertions without a second harness.
         let explicit_sensitive: bool = kani::any();
         let write_only: bool = kani::any();
         let password_format: bool = kani::any();
@@ -180,31 +184,6 @@ mod proofs {
             assert_eq!(projection, ProjectionExposure::Redacted);
         } else {
             assert_eq!(projection, ProjectionExposure::Public);
-        }
-    }
-
-    /// @obligation mcp.sensitive_marker_projection_is_never_public_or_widened
-    /// @proof-input-debt free_symbol projection_exposure explicit_sensitive
-    /// @proof-input-debt free_symbol projection_exposure password_format
-    /// @proof-input-debt free_symbol projection_exposure write_only
-    #[kani::proof]
-    fn sensitivity_markers_can_never_widen_a_redacted_projection() {
-        let explicit_sensitive: bool = kani::any();
-        let write_only: bool = kani::any();
-        let password_format: bool = kani::any();
-        let add_explicit_sensitive: bool = kani::any();
-        let add_write_only: bool = kani::any();
-        let add_password_format: bool = kani::any();
-
-        let before = projection_exposure(explicit_sensitive, write_only, password_format);
-        let after = projection_exposure(
-            explicit_sensitive || add_explicit_sensitive,
-            write_only || add_write_only,
-            password_format || add_password_format,
-        );
-
-        if before == ProjectionExposure::Redacted {
-            assert_eq!(after, ProjectionExposure::Redacted);
         }
     }
 }

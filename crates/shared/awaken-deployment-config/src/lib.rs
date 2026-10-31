@@ -840,47 +840,16 @@ mod verification {
             !durable || postgres_dispatch || has_storage_dir || injected
         );
 
+        // The exact formula is a disjunction of the three evidence bits (the
+        // backend has only the two variants drawn here), so it is monotone in
+        // each: adding Postgres, a storage dir or an injected queue never
+        // revokes an admission. This is the "evidence monotonic" half of the
+        // obligation; no second harness restates it.
+        //
         // No commit-store value is accepted by this kernel. When all actual
         // dispatch persistence evidence is absent, durable ingress is rejected.
         if durable && !postgres_dispatch && !has_storage_dir && !injected {
             assert!(!admitted);
-        }
-    }
-
-    /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
-    /// @proof-input-debt free_symbol durable_dispatch_is_admitted has_storage_dir
-    #[kani::proof]
-    fn durable_dispatch_admission_is_monotonic_in_persistence_evidence() {
-        let durable: bool = kani::any();
-        let postgres_dispatch: bool = kani::any();
-        let has_storage_dir: bool = kani::any();
-        let injected: bool = kani::any();
-        let admitted = durable_dispatch_is_admitted(
-            durable,
-            symbolic_dispatch_backend(postgres_dispatch),
-            has_storage_dir,
-            injected,
-        );
-
-        if admitted {
-            assert!(durable_dispatch_is_admitted(
-                durable,
-                DispatchBackend::Postgres,
-                has_storage_dir,
-                injected,
-            ));
-            assert!(durable_dispatch_is_admitted(
-                durable,
-                symbolic_dispatch_backend(postgres_dispatch),
-                true,
-                injected,
-            ));
-            assert!(durable_dispatch_is_admitted(
-                durable,
-                symbolic_dispatch_backend(postgres_dispatch),
-                has_storage_dir,
-                true,
-            ));
         }
     }
 

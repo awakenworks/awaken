@@ -210,7 +210,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(Path(lines[0]), target / "kani")
         self.assertEqual(
             lines[1],
-            "kani -p awaken-dispatch --output-format terse --verbose -j 1 "
+            "kani -p awaken-dispatch --output-format terse --verbose -Z unstable-options --output-into-files -j 1 "
             "--no-default-features --harness exact_claim",
         )
         self.assertEqual(deadline_call.read_text(), "37\n")
@@ -308,12 +308,13 @@ class EvidenceTests(unittest.TestCase):
         # final strict check with a solver process stub; this is not proof evidence.
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
         # The real runner decides the solver for every batch, so execute it
-        # (and its pinned-version helper) on the planned batch of the one
-        # harness whose own tag selects Z3 alone.
+        # (and its pinned-version helper) on the planned Z3 batch of
+        # awaken-protocol-managed, whose one harness the expectation names.
         import formal_plan
         runner = source[source.index("  run_kani() {"):source.index("  # The batches are derived, not listed")]
         [batch] = [batch for batch in formal_plan.batches(ROOT, "full")
-                   if batch.selection.profile == "solver-z3-v1"]
+                   if batch.selection.profile == "solver-z3-v1"
+                   and batch.selection.package == "awaken-protocol-managed"]
         invocation = "  run_kani " + " ".join(batch.argv()) + "\n"
         selection = runner + invocation
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
@@ -345,7 +346,7 @@ class EvidenceTests(unittest.TestCase):
                 invoked = installed and reported == version and version_exit == 0
                 self.assertEqual(calls.exists(), invoked)
                 if invoked:
-                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse --verbose -j 1 --solver z3 --exact --harness "
+                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse --verbose -Z unstable-options --output-into-files -j 1 --solver z3 --exact --harness "
                                      "resources::memory_stores::memory_time_filter_compares_visible_milliseconds_without_merging_them")
                 if not installed:
                     self.assertIn("skipped Z3", result.stdout)

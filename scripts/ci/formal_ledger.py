@@ -9,7 +9,11 @@ coverage ledger in its v1 shape:
 
 Each obligation row carries ``id``, ``formalizable``, ``status``, ``evidence``,
 ``proof_harnesses``, ``claim_scope``, ``proof_grade``, ``bounds``,
-``tcb_assumptions`` and ``production_entrypoints``.
+``tcb_assumptions`` and ``production_entrypoints``, and optionally
+``run_evidence``: ``"needs_rerun"`` on a ``kernel_proved`` row whose harnesses
+have no recorded passing run of their current text. The status states what the
+harnesses prove; the marker says that claim still waits for its run
+(``formal_inventory.py --obligations`` derives both from the transcripts).
 
 Storage. The assembled value is never committed. It is built from
 
@@ -64,7 +68,10 @@ OBLIGATION_DIRECTORY = "formal/obligations"
 OBLIGATION_PATH = re.compile(
     r"formal/obligations/(?P<prefix>[a-z0-9_]+)/(?P<name>[a-z0-9_]+)\.toml"
 )
-SCALAR_FIELDS = ("claim_scope", "proof_grade", "status")
+SCALAR_FIELDS = ("claim_scope", "proof_grade", "status", "run_evidence")
+# The one value ``run_evidence`` may hold; consumers: ``_obligation`` and
+# check_formal_coverage.py (the marker is valid only on a kernel_proved row).
+NEEDS_RERUN = "needs_rerun"
 # Stored in the obligation file. ``proof_harnesses`` is not: it is derived from
 # the `/// @obligation` anchors, and so is the evidence entry for each harness
 # file. Every array is a set; the assembled ledger lists it sorted.
@@ -109,6 +116,8 @@ def _obligation(relative: str, text: str) -> dict:
             if not isinstance(document[key], str):
                 raise LedgerError(f"{relative}: {key} must be a string")
             row[key] = document[key]
+    if row.get("run_evidence", NEEDS_RERUN) != NEEDS_RERUN:
+        raise LedgerError(f"{relative}: run_evidence must be {NEEDS_RERUN!r} when present")
     # The ledger's own rule, stated once: only repository-safety claims are
     # formalizable. Storing both would let them disagree.
     row["formalizable"] = row.get("claim_scope") == "repository_safety"
@@ -448,6 +457,8 @@ def self_test() -> None:
     Reader causes: C7 in a repository the staged and the on-disk bytes
     differ; C8 the same tree is not a repository; C9 a hook exported this
     repository with the index being committed; C10 a hook exported another.
+    Marker cause: C11 ``run_evidence`` is ``needs_rerun`` (read and stored)
+    or another value (E2).
     Effects: E1 load returns what was written, harness names and harness
     files derived from the anchors; E2 refusal naming the file (and line);
     E3 load reads the staged bytes; E4 load reads disk; E5 the hook's index.
@@ -514,6 +525,13 @@ def self_test() -> None:
             refused(root, f"unknown field(s) {field.split(' ')[0]}")
         safe.write_text(original.replace("tcb_assumptions = []", 'tcb_assumptions = ["x", "x"]', 1))
         refused(root, "tcb_assumptions repeats a value")
+        safe.write_text('run_evidence = "passed"\n' + original)
+        refused(root, "run_evidence must be 'needs_rerun' when present")
+        safe.write_text('run_evidence = "needs_rerun"\n' + original)
+        assert load(root)["obligations"][1]["run_evidence"] == NEEDS_RERUN, "C11 the marker is read"
+        marked = {**ledger, "obligations": [dict(rows[0], run_evidence=NEEDS_RERUN), rows[1]]}
+        assert 'run_evidence = "needs_rerun"' in files(marked, root)[safe.relative_to(root).as_posix()], (
+            "C11 the marker is stored")
         for stored_path in ("crates/a/src/other.rs", "web/src/x.ts"):
             safe.write_text(original.replace("evidence = []", f'evidence = ["{stored_path}"]', 1))
             refused(root, f"names {stored_path}, a source that states its own role")
