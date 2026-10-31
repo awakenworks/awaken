@@ -239,6 +239,11 @@ fn message_value(message: &crate::types::Message) -> Value {
     if let Some(task_id) = &message.task_id {
         value["taskId"] = Value::String(task_id.clone());
     }
+    // A status message's metadata carries a terminal reason code (for example
+    // `execution_unknown`); dropping it would hide why a v1 task failed.
+    if let Some(metadata) = &message.metadata {
+        value["metadata"] = serde_json::to_value(metadata).expect("A2A metadata serializes");
+    }
     value
 }
 
@@ -313,6 +318,23 @@ pub(crate) fn agent_card_value(model: &str, origin: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v1_status_message_keeps_the_terminal_reason_metadata() {
+        // Cause: a status message carries reason metadata. Effect: the v1
+        // ProtoJSON message keeps it exactly; a message without metadata has
+        // no metadata key.
+        let mut message = crate::types::Message::agent_text("m", "unknown");
+        assert!(message_value(&message).get("metadata").is_none());
+        message.metadata = Some(std::collections::BTreeMap::from([(
+            "reason".into(),
+            json!("execution_unknown"),
+        )]));
+        assert_eq!(
+            message_value(&message)["metadata"],
+            json!({"reason": "execution_unknown"})
+        );
+    }
 
     #[test]
     fn v1_projection_preserves_data_payload_and_metadata_exactly() {

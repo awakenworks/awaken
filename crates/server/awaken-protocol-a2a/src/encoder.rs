@@ -30,19 +30,44 @@ pub(crate) fn working_task(task_id: &str, thread: &str, timestamp: String) -> Ta
     }
 }
 
+/// The A2A status-message metadata key that names why a task is terminal.
+pub(crate) const REASON_METADATA_KEY: &str = "reason";
+
+/// The reason code of a Run whose physical result is unknown. It is the same
+/// neutral classification Managed surfaces as `ExecutionUnknown`: terminal,
+/// never automatically repeated.
+pub(crate) const EXECUTION_UNKNOWN_REASON: &str = "execution_unknown";
+
+const EXECUTION_UNKNOWN_MESSAGE: &str = "The execution result is unknown. This operation will not be automatically repeated. Do not repeat external actions until their outcome is verified.";
+
 /// Total projection from the authoritative runtime lifecycle to A2A state.
 ///
-/// `Running` and an indeterminate terminal observation remain non-terminal on
-/// the wire. Only exact successful, failed, or cancelled causes can strengthen
-/// the projection into the corresponding terminal A2A state.
+/// Decision table (C = committed RunState, E = A2A TaskState):
+///
+/// | Row | C | E |
+/// |---|---|---|
+/// | S1 | Running | Working |
+/// | S2 | Awaiting | InputRequired |
+/// | S3 | Ended(Error/MaxSteps/Stopped) | Failed |
+/// | S4 | Ended(Indeterminate) | Failed + `execution_unknown` reason |
+/// | S5 | Ended(Cancelled) | Canceled |
+/// | S6 | Ended(NaturalEnd) | Completed |
+///
+/// An indeterminate end is terminal: no later commit will change it, so a
+/// non-terminal `Working` would make an orchestrator wait forever. It never
+/// strengthens into `Completed` or `Canceled`; `Failed` carries the explicit
+/// reason so a caller cannot mistake it for an ordinary classified failure.
 #[must_use]
 pub(crate) fn task_state_for_run_state(state: &RunState) -> TaskState {
     match state {
-        RunState::Running | RunState::Ended(EndCause::Indeterminate) => TaskState::Working,
+        RunState::Running => TaskState::Working,
         RunState::Awaiting => TaskState::InputRequired,
-        RunState::Ended(EndCause::Error(_) | EndCause::MaxSteps | EndCause::Stopped(_)) => {
-            TaskState::Failed
-        }
+        RunState::Ended(
+            EndCause::Error(_)
+            | EndCause::MaxSteps
+            | EndCause::Stopped(_)
+            | EndCause::Indeterminate,
+        ) => TaskState::Failed,
         RunState::Ended(EndCause::Cancelled) => TaskState::Canceled,
         RunState::Ended(EndCause::NaturalEnd) => TaskState::Completed,
     }
@@ -71,6 +96,7 @@ pub fn encode_task(
             format!("{thread}-status"),
             failure.message(),
         )),
+        RunState::Ended(EndCause::Indeterminate) => Some(execution_unknown_status(thread)),
         RunState::Awaiting => outcome
             .pending()
             .map(|pending| {
@@ -108,6 +134,17 @@ pub fn encode_task(
     }
 }
 
+/// The status message of an indeterminate end: the fixed explanation plus the
+/// machine-readable `execution_unknown` reason in the message metadata.
+fn execution_unknown_status(thread: &str) -> Message {
+    let mut message = Message::agent_text(format!("{thread}-status"), EXECUTION_UNKNOWN_MESSAGE);
+    message.metadata = Some(std::collections::BTreeMap::from([(
+        REASON_METADATA_KEY.to_string(),
+        serde_json::Value::String(EXECUTION_UNKNOWN_REASON.to_string()),
+    )]));
+    message
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
@@ -131,14 +168,16 @@ mod proofs {
 
         let projected = task_state_for_run_state(&state);
         match projected {
-            TaskState::Working => assert!(matches!(
-                state,
-                RunState::Running | RunState::Ended(EndCause::Indeterminate)
-            )),
+            TaskState::Working => assert_eq!(state, RunState::Running),
             TaskState::InputRequired => assert_eq!(state, RunState::Awaiting),
             TaskState::Failed => assert!(matches!(
                 state,
-                RunState::Ended(EndCause::Error(_) | EndCause::MaxSteps | EndCause::Stopped(_))
+                RunState::Ended(
+                    EndCause::Error(_)
+                        | EndCause::MaxSteps
+                        | EndCause::Stopped(_)
+                        | EndCause::Indeterminate
+                )
             )),
             TaskState::Canceled => {
                 assert_eq!(state, RunState::Ended(EndCause::Cancelled))
@@ -304,6 +343,86 @@ mod tests {
         let task = encode_task("t", &history, &exhausted, TIMESTAMP.into());
         assert_eq!(task.status.state, TaskState::Failed);
         assert_eq!(task.status.message.unwrap().text(), "partial progress");
+    }
+
+    #[test]
+    fn run_state_projection_covers_every_decision_row() {
+        // Rows S1-S6 of `task_state_for_run_state`. Expected states are
+        // independent constants; S4 (Indeterminate) is terminal, not Working.
+        let rows = [
+            ("S1", RunState::Running, TaskState::Working),
+            ("S2", RunState::Awaiting, TaskState::InputRequired),
+            (
+                "S3",
+                RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
+                TaskState::Failed,
+            ),
+            ("S3", RunState::Ended(EndCause::MaxSteps), TaskState::Failed),
+            (
+                "S3",
+                RunState::Ended(EndCause::Stopped("stop".into())),
+                TaskState::Failed,
+            ),
+            (
+                "S4",
+                RunState::Ended(EndCause::Indeterminate),
+                TaskState::Failed,
+            ),
+            (
+                "S5",
+                RunState::Ended(EndCause::Cancelled),
+                TaskState::Canceled,
+            ),
+            (
+                "S6",
+                RunState::Ended(EndCause::NaturalEnd),
+                TaskState::Completed,
+            ),
+        ];
+        for (row, state, expected) in rows {
+            assert_eq!(task_state_for_run_state(&state), expected, "{row}");
+        }
+    }
+
+    #[test]
+    fn indeterminate_end_is_a_terminal_failed_task_with_the_execution_unknown_reason() {
+        // Row S4. Cause: the committed Run ended Indeterminate (its physical
+        // result is unknown). Effects: the Task is terminal Failed (an
+        // orchestrator stops waiting), its status message explains that the
+        // operation will not be repeated, and the message metadata carries the
+        // `execution_unknown` reason code Managed also uses. The last agent
+        // text never masks the reason.
+        let history = [
+            msg("u1", Role::User, "do it"),
+            msg("a1", Role::Assistant, "partial progress"),
+        ];
+        let outcome = StepOutcome::ended(Vec::new(), EndCause::Indeterminate);
+        let task = encode_task("t", &history, &outcome, TIMESTAMP.into());
+        assert_eq!(task.status.state, TaskState::Failed);
+        assert!(task.status.state.is_terminal());
+        let message = task.status.message.expect("indeterminate status message");
+        assert!(
+            message
+                .text()
+                .contains("will not be automatically repeated")
+        );
+        assert_eq!(
+            message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("reason")),
+            Some(&serde_json::Value::String("execution_unknown".into()))
+        );
+        // A classified failure carries no execution_unknown reason (row S3).
+        let failed = StepOutcome::ended(Vec::new(), EndCause::MaxSteps);
+        let failed = encode_task("t", &history, &failed, TIMESTAMP.into());
+        assert!(
+            failed
+                .status
+                .message
+                .and_then(|message| message.metadata)
+                .is_none()
+        );
     }
 
     #[test]
