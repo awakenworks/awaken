@@ -124,9 +124,9 @@ impl CompleteSessionRoot {
                 "compiled Session root is incomplete or not recoverable".into(),
             ));
         }
-        Ok(Self(SessionAggregate::try_from(session).map_err(
-            |error| SessionCreationError::Internal(error.to_string()),
-        )?))
+        Ok(Self(
+            SessionAggregate::try_from(session).map_err(crate::SessionStateViolation::from)?,
+        ))
     }
 
     pub(super) fn as_session(&self) -> &PersistedSession {
@@ -136,7 +136,7 @@ impl CompleteSessionRoot {
     pub(super) fn observe_creation(&mut self, now: u64) -> Result<(), SessionCreationError> {
         self.0
             .observe_creation(now)
-            .map_err(|error| SessionCreationError::Internal(error.to_string()))
+            .map_err(|error| crate::SessionStateViolation::from(error).into())
     }
 
     pub(super) fn into_session(self) -> PersistedSession {
@@ -477,6 +477,18 @@ pub enum SessionCreationError {
     Unavailable(String),
     #[error("Session creation failed because durable state is invalid: {0}")]
     Internal(String),
+    /// The Session aggregate refused the compiled root: the same permanent
+    /// class as `Internal`, carrying its typed source.
+    #[error("Session creation failed because durable state is invalid: {0}")]
+    Invalid(crate::SessionStateViolation),
+}
+
+/// Creation reuses the mutation boundary's single classification of a state
+/// violation, so a list-price outage stays retryable here too.
+impl From<crate::SessionStateViolation> for SessionCreationError {
+    fn from(violation: crate::SessionStateViolation) -> Self {
+        Self::mutation(violation.into())
+    }
 }
 
 impl SessionCreationError {
@@ -498,11 +510,21 @@ impl SessionCreationError {
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
             SessionMutationError::Internal(message) => Self::Internal(message),
+            SessionMutationError::Invalid(violation) => Self::Invalid(violation),
         }
     }
 
     fn realization(error: SessionRealizationDriveError) -> Self {
         Self::Rejected(error.into())
+    }
+
+    /// An outage or invalid durable state cannot prove a create receipt
+    /// absent; every other failure proves this exact receipt was not adopted.
+    fn leaves_adoption_unknown(&self) -> bool {
+        matches!(
+            self,
+            Self::Unavailable(_) | Self::Internal(_) | Self::Invalid(_)
+        )
     }
 }
 
@@ -797,9 +819,7 @@ impl SessionCreationCommands {
                         )
                         .await;
                     }
-                    Err(
-                        SessionCreationError::Unavailable(_) | SessionCreationError::Internal(_),
-                    ) => {
+                    Err(error) if error.leaves_adoption_unknown() => {
                         // An unavailable/corrupt replay query cannot prove the
                         // atomic root transaction absent. Preserve participants
                         // until exact durable truth can classify adoption.

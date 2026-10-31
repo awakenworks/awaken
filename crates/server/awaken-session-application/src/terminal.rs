@@ -231,7 +231,9 @@ impl From<SessionMutationError> for SessionArchiveWithRepositoryPublicationError
                 Self::Conflict
             }
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
-            error @ SessionMutationError::Internal(_) => Self::Rejected(error.into()),
+            error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
+                Self::Rejected(error.into())
+            }
         }
     }
 }

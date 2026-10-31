@@ -301,8 +301,7 @@ fn spawn_mount_inner(
             handle: Some(handle),
         }
     });
-    let session = fuser::spawn_mount2(fuse, mountpoint, &mount_options())
-        .map_err(|e| FuseError::Internal(e.to_string()))?;
+    let session = fuser::spawn_mount2(fuse, mountpoint, &mount_options()).map_err(FuseError::Io)?;
     Ok(MemoryMountHandle {
         session: Some(session),
         state,
@@ -474,7 +473,7 @@ impl MemoryFuse {
         Ok(Self {
             fs,
             store_id,
-            runtime: Runtime::new().map_err(|e| FuseError::Internal(e.to_string()))?,
+            runtime: Runtime::new().map_err(FuseError::Io)?,
             mount_time,
             inodes: Mutex::new(table),
             content_cache: Arc::new(Mutex::new(ContentLruCache::new(CONTENT_CACHE_CAPACITY))),
@@ -872,8 +871,7 @@ impl MemoryFuse {
     fn write_fh_bytes(&self, fh: u64, offset: i64, data: &[u8]) -> Result<(), FuseError> {
         let mut table = self.inodes.lock().expect("inode table mutex poisoned");
         let open = Self::dirty_open_file_mut(&mut table, fh)?;
-        let content = String::from_utf8(open.buffer.clone())
-            .map_err(|e| FuseError::Internal(e.to_string()))?;
+        let content = String::from_utf8(open.buffer.clone()).map_err(FuseError::NonUtf8)?;
         open.buffer = splice_bytes(&content, offset, data)?.into_bytes();
         Ok(())
     }
@@ -890,8 +888,7 @@ impl MemoryFuse {
         if !open.dirty {
             return Ok(());
         }
-        let content = String::from_utf8(open.buffer.clone())
-            .map_err(|e| FuseError::Internal(e.to_string()))?;
+        let content = String::from_utf8(open.buffer.clone()).map_err(FuseError::NonUtf8)?;
         let updated = match self.runtime.block_on(self.fs.update_head_as(
             &self.store_id,
             &open.generation,

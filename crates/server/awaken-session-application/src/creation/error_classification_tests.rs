@@ -68,3 +68,29 @@ fn creation_preserves_effect_kind_code_and_exact_message() {
         );
     }
 }
+
+#[test]
+fn only_outages_and_invalid_state_leave_create_adoption_unknown() {
+    // A1 outage, A2 fixed invariant, A3 typed aggregate refusal: the replay
+    // cannot prove the receipt absent, so participants are preserved.
+    // A4-A7 deterministic refusals prove this exact receipt was not adopted.
+    for (error, unknown) in [
+        (SessionCreationError::Unavailable("outage".into()), true),
+        (SessionCreationError::Internal("invariant".into()), true),
+        (
+            SessionCreationError::Invalid(crate::SessionStateViolation::Aggregate(
+                awaken_session_contract::SessionMutationValidationError::ReplacementRevisionMismatch,
+            )),
+            true,
+        ),
+        (SessionCreationError::Conflict, false),
+        (SessionCreationError::Tombstoned, false),
+        (SessionCreationError::IdempotencyMismatch, false),
+        (
+            SessionCreationError::Rejected(RunError::bad_request("refused")),
+            false,
+        ),
+    ] {
+        assert_eq!(error.leaves_adoption_unknown(), unknown, "{error:?}");
+    }
+}

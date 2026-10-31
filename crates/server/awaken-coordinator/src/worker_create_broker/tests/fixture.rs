@@ -485,7 +485,9 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
             WorkerRegistration {
                 worker_id: "k8s:sandbox-ns:worker:pod-uid".into(),
                 incarnation_id: "pod-uid".into(),
-                manifest: WorkerManifest::default(),
+                // A current Worker offers the compiled prepared/journal wire
+                // codecs; an exact claim of a Native Run requires the journal.
+                manifest: awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest(),
                 create_ledger: Some(anchor),
             },
             100,
