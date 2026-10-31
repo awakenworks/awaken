@@ -18,24 +18,25 @@
 //! | W1 | fails before insert | absent | participant compensated (Deleted) | - |
 //! | W2 | committed, response lost | finds root | create returns the root | Replayed root; participant Active, referenced |
 //! | W3 | committed, response lost | outage | participant preserved (unknown) | Replayed root adopts the original participant |
-//! | W4 | fails before insert | outage | participant preserved (unknown) | reproducer: no durable intent lets recovery find it |
+//! | W4 | fails before insert | outage | participant preserved (unknown) | recovery finds it by its durable intent and compensates it |
 //!
 //! T17-C01 (CrashProcess, file SQLite): child killed before / after the
 //! prepare. Before: no Registry effect, no root. After: the definition exists,
 //! no root; the original caller's exact retry adopts the SAME definition.
-//! Reproducer: recovery alone cannot find it (no intent outside the root).
+//! Without that caller, recovery finds it by its durable creation intent once
+//! the intent lease (`CREATION_INTENT_LEASE_MS`) has expired.
 //!
 //! T17-C02: the root insert fails and compensation's purge scheduling fails,
 //! hangs, or loses its response. The command never reports completion, the
 //! participant stays Active (pending, not falsely retired), and retrying the
-//! same compensation with the original receipt completes idempotently.
-//! Reproducer: the failure is only logged; a rebuilt service does not retry.
+//! same compensation with the original receipt completes idempotently. The
+//! pending compensation is durable: a rebuilt service's recovery completes it.
 //!
 //! T17-C03: two independent services continue the same prepare identity
 //! concurrently: one Registry object, one Applied + one Replayed receipt; only
 //! the Applied (exact) owner may clean up; a conflicting payload is rejected.
-//! Reproducer: compensation checks "not adopted" then retires without a fence,
-//! so a concurrent adopting create loses its participant.
+//! Compensation claims the creation intent right before retiring; a create
+//! that adopted the participant first wins, and the participant stays Active.
 use super::*;
 use crate::tests::run_admission::response_loss_store::ResponseLossStore;
 
@@ -187,14 +188,44 @@ async fn registry(root: &std::path::Path) -> Arc<dyn awaken_resource_contract::R
     .resource_registry()
 }
 
+/// A wall clock past every creation intent lease written by a service built
+/// on the system clock: the original caller's ownership has expired.
+struct AfterIntentExpiry;
+
+impl awaken_time::WallClock for AfterIntentExpiry {
+    fn now(&self) -> awaken_time::UtcTime {
+        use awaken_time::WallClockExt as _;
+        awaken_time::UtcTime::from_epoch_ms(
+            awaken_time::system_clock().now_ms()
+                + crate::repository_participants::CREATION_INTENT_LEASE_MS
+                + 1,
+        )
+    }
+}
+
 async fn service(store: Store, registry_root: &std::path::Path) -> Service {
+    service_on(store, registry_root, awaken_time::system_clock()).await
+}
+
+/// The service a later process builds after the original caller is gone.
+async fn rebuilt_after_lease(store: Store, registry_root: &std::path::Path) -> Service {
+    service_on(store, registry_root, Arc::new(AfterIntentExpiry)).await
+}
+
+async fn service_on(
+    store: Store,
+    registry_root: &std::path::Path,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Service {
     let loss = Arc::new(ResponseLossStore::new(store));
     let registry = registry(registry_root).await;
     let purge = Arc::new(PurgeScheduler::default());
-    let mut app = application_with_runtime(
+    let mut app = configured_application(
         Arc::new(RecordingCreateRuntime::default()),
-        loss.clone(),
+        SessionPersistence::new(loss.clone(), clock),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
     );
     app.set_resource_registry(registry.clone());
     app.set_resource_purge_scheduler(purge.clone());
@@ -437,7 +468,6 @@ fn postgres_prepared_participant_survives_root_failure_and_rebuild_fixture_admis
 }
 
 #[tokio::test]
-#[ignore = "product gap: no durable prepare intent; a participant prepared before an unknown root-insert outcome is held only in the failed call's memory, so a rebuilt service's recovery never finds or compensates it"]
 async fn orphaned_prepare_is_found_by_recovery_after_rebuild() {
     // W4: insert never happened, replay query outage -> participant
     // preserved; the original caller then disappears.
@@ -456,7 +486,7 @@ async fn orphaned_prepare_is_found_by_recovery_after_rebuild() {
         .create_session(command(id, configured))
         .await;
     drop(original);
-    let rebuilt = service(reopen().await, registry_dir.path()).await;
+    let rebuilt = rebuilt_after_lease(reopen().await, registry_dir.path()).await;
     let app = Arc::new(rebuilt.app);
     let _ = app.recovery().reconcile_pending_session_state().await;
     assert_eq!(
@@ -580,14 +610,12 @@ async fn crash_before_or_after_prepare_keeps_identity_for_the_original_intent() 
 }
 
 #[tokio::test]
-#[ignore = "product gap: no durable pre-root prepare intent; after the process dies between the Registry prepare and the root insert, only the original caller's retry can find the participant (discovery depends on a Session root or its caller)"]
 async fn crash_after_prepare_is_recoverable_without_the_original_caller() {
     if crash_child().await {
         return;
     }
-    // The child runs the shared, non-ignored crash test: libtest skips an
-    // `#[ignore]` test selected by `--exact` alone, so this reproducer's own
-    // name would exit 0 before reaching the prepare boundary.
+    // The child runs the shared crash test, which stops at the prepare
+    // boundary; this test's own body only recovers.
     const TEST: &str = "tests::creation::prepared_participants::crash_before_or_after_prepare_keeps_identity_for_the_original_intent";
     let directory = tempfile::tempdir().expect("T17 gap directory");
     crash_at(TEST, "after", directory.path()).await;
@@ -599,7 +627,7 @@ async fn crash_after_prepare_is_recoverable_without_the_original_caller() {
             .unwrap()
             .into(),
     );
-    let rebuilt = service(reopen().await, &directory.path().join("registry")).await;
+    let rebuilt = rebuilt_after_lease(reopen().await, &directory.path().join("registry")).await;
     let registry = rebuilt.registry.clone();
     let app = Arc::new(rebuilt.app);
     let _ = app.recovery().reconcile_pending_session_state().await;
@@ -703,7 +731,6 @@ async fn failing_compensation_reports_incompleteness_to_its_caller() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: compensation failure after a root-insert failure is only logged (repository_participants.rs compensate -> tracing::warn); no durable pending responsibility makes a rebuilt service retry it"]
 async fn failed_compensation_is_retried_by_a_rebuilt_service() {
     let directory = tempfile::tempdir().expect("T17-C02 gap directory");
     let reopen = sqlite_reopen(directory.path().join("gap.db").to_str().unwrap().into());
@@ -718,7 +745,7 @@ async fn failed_compensation_is_retried_by_a_rebuilt_service() {
         .create_session(command(id, configured))
         .await;
     drop(original);
-    let rebuilt = service(reopen().await, &directory.path().join("registry")).await;
+    let rebuilt = rebuilt_after_lease(reopen().await, &directory.path().join("registry")).await;
     let registry = rebuilt.registry.clone();
     let app = Arc::new(rebuilt.app);
     let _ = app.recovery().reconcile_pending_session_state().await;
@@ -834,7 +861,6 @@ async fn concurrent_continuations_share_one_external_object() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: abort_unadopted checks 'not adopted' by a root read and then retires with no fence, so a concurrent create that adopts the same prepare identity loses its participant"]
 async fn compensation_cannot_retire_a_participant_adopted_concurrently() {
     let directory = tempfile::tempdir().expect("T17-C03 gap directory");
     let reopen = sqlite_reopen(directory.path().join("c03-gap.db").to_str().unwrap().into());

@@ -112,12 +112,17 @@ impl ExecutableProjections {
 /// exposes the outbox only to its delivery consumer. It adds no behaviour a
 /// caller could miss.
 pub trait SessionStore:
-    awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox
+    awaken_session_contract::SessionRepository
+    + awaken_session_contract::LifecycleOutbox
+    + awaken_session_contract::PreparedParticipantIntents
 {
 }
 
 impl<
-    T: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox + ?Sized,
+    T: awaken_session_contract::SessionRepository
+        + awaken_session_contract::LifecycleOutbox
+        + awaken_session_contract::PreparedParticipantIntents
+        + ?Sized,
 > SessionStore for T
 {
 }

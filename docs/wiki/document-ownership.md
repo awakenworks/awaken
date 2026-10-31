@@ -170,6 +170,8 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [adr/0099-application-owned-credential-consumption.md](../adr/0099-application-owned-credential-consumption.md) | generic Native delivery and application-owned login/verification | [index.md](index.md) |
 | [adr/0100-credential-handling-and-execution-binding.md](../adr/0100-credential-handling-and-execution-binding.md) | platform/application handling modes and original live execution authority | [index.md](index.md) |
 | [adr/0101-acp-application-execution-context.md](../adr/0101-acp-application-execution-context.md) | opted-in native/ACP execution correlation and reserved metadata headers | [index.md](index.md) |
+| [adr/0102-session-execution-product-gap-closure.md](../adr/0102-session-execution-product-gap-closure.md) | pre-root creation intents, determinate admission refusal and bounded execution limits | [index.md](index.md) |
+| [adr/0103-session-execution-product-gap-closure-2.md](../adr/0103-session-execution-product-gap-closure-2.md) | running budget tightening, Stop receipts, classified adapter faults and cross-base realization takeover | [index.md](index.md) |
 | [INVARIANTS.md](../INVARIANTS.md) | guardrail registry and DDD review checklist | all fact pages |
 
 ## Cross-Theme Anchors

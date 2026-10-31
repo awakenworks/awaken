@@ -559,7 +559,7 @@
           "B-DOL-30",
           "B-DOL-56"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -578,12 +578,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "the takeover process cannot reuse the hard-killed process's local sandbox realization (no realization marker) and terminates the Session instead of finishing the held Run",
-          "follow_up": "Session takeover of a dead process's local realization (L)",
-          "reproducers": [
-            "reproduceRecoveredRunContinuesOnTheTakeoverProcess"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "the takeover process cannot reuse the hard-killed process's local sandbox realization (no realization marker) and terminates the Session instead of finishing the held Run",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],
@@ -633,7 +631,7 @@
           "B-DOL-57",
           "B-DOL-58"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -652,13 +650,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "the AI SDK and AG-UI explicit Stop answer 204 with no cancel receipt; only the Managed protocol gives the cancel its own receipt",
-          "follow_up": "AG-UI and AI SDK stop receipts (S)",
-          "reproducers": [
-            "explicit_stop_returns_its_own_receipt",
-            "t32_c01_explicit_stop_returns_an_independent_receipt"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "the AI SDK and AG-UI explicit Stop answer 204 with no cancel receipt; only the Managed protocol gives the cancel its own receipt",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {
@@ -822,7 +817,7 @@
           "B172",
           "B237"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -841,12 +836,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "未接纳与结果未知两类都表现为 Unavailable",
-          "follow_up": "run admission 错误分类（M）",
-          "reproducers": [
-            "unadmitted_and_unknown_failures_are_classified_apart"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "未接纳与结果未知两类都表现为 Unavailable",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {
@@ -886,7 +879,7 @@
           "B-DOL-63",
           "B-DOL-64"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -905,17 +898,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "MCP, ACP and the Hand relay drop the original authority, uncertainty or retry hint that the local and HTTP Worker paths keep",
-          "follow_up": "fault classification across MCP, ACP and Hand relay (M)",
-          "reproducers": [
-            "mcp_distinguishes_a_safe_retry_from_an_unknown_effect",
-            "mcp_http_chain_keeps_the_certain_and_retry_safe_tool_fault_classification",
-            "mcp_http_wire_distinguishes_certain_from_uncertain_tool_faults",
-            "acp_executor_keeps_the_retryable_class_of_the_injected_overloaded_upstream",
-            "acp_projection_keeps_the_native_authority_uncertainty_and_retry_hint",
-            "hand_relay_keeps_the_retry_safe_classification_of_an_undispatched_fault"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "MCP, ACP and the Hand relay drop the original authority, uncertainty or retry hint that the local and HTTP Worker paths keep",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],

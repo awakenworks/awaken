@@ -226,12 +226,21 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             Err(ToolError::AmbiguousTool(id)) => Err(McpHostError::Internal(format!(
                 "tool id `{id}` is ambiguous"
             ))),
-            Err(
-                ToolError::UnavailableBeforeDispatch(message)
-                | ToolError::StateInvalidatedAfterDispatch(message)
-                | ToolError::Indeterminate(message)
-                | ToolError::DefinitiveFailure(message),
-            ) => Err(McpHostError::Internal(message)),
+            // Certain faults keep their authority and retry hint on the wire;
+            // only an unknown effect stays the generic internal error.
+            Err(ToolError::UnavailableBeforeDispatch(message)) => Err(McpHostError::ToolFault(
+                awaken_mcp_wire::jsonrpc::TOOL_FAULT_UNAVAILABLE_BEFORE_DISPATCH,
+                message,
+            )),
+            Err(ToolError::DefinitiveFailure(message)) => Err(McpHostError::ToolFault(
+                awaken_mcp_wire::jsonrpc::TOOL_FAULT_DEFINITIVE_FAILURE,
+                message,
+            )),
+            Err(ToolError::StateInvalidatedAfterDispatch(message)) => Err(McpHostError::ToolFault(
+                awaken_mcp_wire::jsonrpc::TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH,
+                message,
+            )),
+            Err(ToolError::Indeterminate(message)) => Err(McpHostError::Internal(message)),
         }
     }
 }
@@ -544,7 +553,11 @@ mod tests {
         let err = handle(&service(), "tools/call", json!({ "name": "broken" }))
             .await
             .expect_err("protocol-level failure");
-        assert_eq!(err.code, -32603);
+        // A certain failure keeps its own tool-fault code (ADR-0103).
+        assert_eq!(
+            err.code,
+            awaken_mcp_wire::jsonrpc::TOOL_FAULT_DEFINITIVE_FAILURE
+        );
         assert!(err.message.contains("wire snapped"));
     }
 
@@ -553,7 +566,7 @@ mod tests {
         // Cause/effect decision table: C1 dispatch has already produced an
         // external effect; C2 the executor's catalog becomes unavailable;
         // C3 MCP has no Run lifecycle in which to retry or repair it. M1
-        // C1+C2+C3 => one Internal response, no model-visible tool result and
+        // C1+C2+C3 => one certain state-invalidated error (ADR-0103), no model-visible tool result and
         // no retry. M2 C1 + unknown effect outcome => the same protocol error,
         // never a completed ToolOutput/isError result. An MCP error is not a
         // physical stop receipt. Ordinary Execution is tested adjacent here.
@@ -567,7 +580,12 @@ mod tests {
             let err = handle(&service, "tools/call", json!({ "name": "invalidated" }))
                 .await
                 .expect_err("post-dispatch invalidation is terminal");
-            assert_eq!(err.code, -32603, "M1 protocol terminal");
+            let expected = if uncertain {
+                -32603
+            } else {
+                awaken_mcp_wire::jsonrpc::TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH
+            };
+            assert_eq!(err.code, expected, "M1 protocol terminal");
             assert!(
                 err.message.contains(if uncertain {
                     "effect outcome is unknown"

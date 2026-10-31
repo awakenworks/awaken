@@ -5,8 +5,8 @@
 //! |---|---|---|
 //! | B1 | writer fails on the 2nd snapshot head (mid-clone) | prepare fails; caller output (UpdateExisting) and source unchanged |
 //! | B2 | restart with the real writer | snapshot equals exactly one complete source snapshot (no duplicate/partial heads) |
-//! | B3 | B1 observed by a reader | no half snapshot is visible as an Active catalog entry (reproducer) |
-//! | B4 | snapshot purge fails during cleanup | cleanup reports the failure / leaves no private content (reproducer) |
+//! | B3 | B1 observed by a reader | no half snapshot is visible as an Active catalog entry |
+//! | B4 | snapshot purge fails during cleanup | cleanup reports the failure / leaves no private content |
 use super::*;
 use awaken_resource_contract::{MemErr, MemoryActor, MemoryGeneration, MemoryPurgeSummary};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -309,7 +309,6 @@ async fn interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_pro
 }
 
 #[tokio::test]
-#[ignore = "product gap: Dream prepare registers the snapshot catalog entry Active before its content is cloned, so an interrupted clone leaves a visible half snapshot"]
 async fn interrupted_snapshot_clone_never_exposes_a_half_snapshot() {
     let mut fixture = fixture("rebuild-b3").await;
     interrupted_clone(&mut fixture).await;
@@ -334,7 +333,6 @@ async fn interrupted_snapshot_clone_never_exposes_a_half_snapshot() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: Dream release_result discards set_state/purge errors, so cleanup reports Ok while private snapshot content remains"]
 async fn failed_snapshot_cleanup_is_reported_or_leaves_no_private_content() {
     let mut fixture = fixture("cleanup-b4").await;
     let authorities = fixture.resources.authorities();
@@ -539,7 +537,6 @@ async fn capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "product gap: Dream prepare maps MemErr::AtCapacity to the generic internal_error kind, so capacity exhaustion is not a distinct retryable class"]
 async fn capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind() {
     let dir = tempfile::tempdir().unwrap();
     let failure = capacity_exhausted_prepare(&dir.path().join("resources"), "capacity-kind").await;

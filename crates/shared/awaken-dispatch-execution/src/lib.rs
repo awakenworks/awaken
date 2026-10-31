@@ -3,10 +3,6 @@
 //! This shared owner carries the one Worker/Pool execution path, its claim-bound
 //! attempt context, and process-local capacity. Durable queue/storage and
 //! transport factories remain with their Coordinator and Worker owners.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod admission_error;
 mod attempt_termination;
@@ -35,7 +31,7 @@ mod worker_evidence;
 // Existing execution modules retain their contract vocabulary while the
 // Coordinator adapter depends inward on this one implementation.
 mod dispatch {
-    pub use awaken_dispatch_contract::dispatch::*;
+    pub(crate) use awaken_dispatch_contract::dispatch::*;
 }
 
 pub use admission_error::AdmissionError;
@@ -56,7 +52,10 @@ pub use error::{Error, NotReady};
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use placement::PreparationPlacement;
-pub use pool::{DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
+pub use pool::{
+    DispatchPool, DispatchReconciler, POOL_SHUTDOWN_GRACE, PoolDrainFence, PoolShutdown,
+    WorkerResolver,
+};
 pub use process_dispatch::{ClaimedRunsDrained, ProcessDispatch, ProcessDispatchLifecycle};
 pub use publication::DispatchPublication;
 pub use reconciliation::TerminalReconciliationScan;

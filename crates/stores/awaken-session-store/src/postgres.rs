@@ -676,6 +676,9 @@ impl SessionRepository for PostgresManagedSessionRepository {
                 SessionRepositoryConflict::Tombstoned,
             ));
         }
+        // The root adopts its prepared participants in this same transaction;
+        // an intent already claimed for abort retires the identity instead.
+        Self::adopt_creation_intent(&mut tx, session.session_id.as_str()).await?;
         Self::sync_session_indexes(&mut tx, &session).await?;
         sqlx::query(
             "INSERT INTO managed_session_idempotency
@@ -1219,6 +1222,8 @@ impl PostgresManagedSessionRepository {
         Ok(sessions)
     }
 }
+
+mod creation_intents;
 
 #[async_trait]
 impl LifecycleOutbox for PostgresManagedSessionRepository {

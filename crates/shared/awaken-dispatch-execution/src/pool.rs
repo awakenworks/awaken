@@ -936,20 +936,51 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             .map(JoinHandle::is_finished)
     }
 
-    /// Stop every task and wait for the in-flight drains to finish.
-    pub async fn shutdown(self) {
+    /// Stop every task and wait at most [`POOL_SHUTDOWN_GRACE`] for the
+    /// in-flight drains to finish.
+    pub async fn shutdown(self) -> PoolShutdown {
+        self.shutdown_within(awaken_time::mono::MonoDeadline::after(POOL_SHUTDOWN_GRACE))
+            .await
+    }
+
+    /// Stop every task and wait for them until `deadline`. A drain stuck in a
+    /// dependency that never returns is detached, not aborted: its claim
+    /// lease expires and recovery reclaims the Run, as process drain does.
+    pub async fn shutdown_within(self, deadline: awaken_time::mono::MonoDeadline) -> PoolShutdown {
         self.shutdown.cancel();
-        for drain in self.drains {
-            let _ = drain.await;
+        let tasks = self
+            .drains
+            .into_iter()
+            .chain(std::iter::once(self.wake_coordinator))
+            .chain(self.reconciler)
+            .chain(self.depth_sampler);
+        let mut unfinished = 0;
+        for task in tasks {
+            if tokio::time::timeout_at(deadline.instant(), task)
+                .await
+                .is_err()
+            {
+                unfinished += 1;
+            }
         }
-        let _ = self.wake_coordinator.await;
-        if let Some(reconciler) = self.reconciler {
-            let _ = reconciler.await;
-        }
-        if let Some(sampler) = self.depth_sampler {
-            let _ = sampler.await;
+        if unfinished == 0 {
+            PoolShutdown::Drained
+        } else {
+            PoolShutdown::Abandoned { unfinished }
         }
     }
+}
+
+/// How long [`DispatchPool::shutdown`] waits for in-flight work.
+pub const POOL_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The classified result of a bounded pool shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolShutdown {
+    /// Every task finished within the deadline.
+    Drained,
+    /// The deadline passed with tasks still running; they were detached.
+    Abandoned { unfinished: usize },
 }
 
 /// One drain task: claim a runnable dispatch, route it to its owning session's

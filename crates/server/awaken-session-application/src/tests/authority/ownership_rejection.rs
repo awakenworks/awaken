@@ -174,6 +174,59 @@ impl awaken_session_contract::LifecycleOutbox for CallerScopedOwnerRepository {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_session_contract::PreparedParticipantIntents for CallerScopedOwnerRepository {
+    async fn record_creation_intent(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        repository_id: &str,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<
+        awaken_session_contract::PreparedParticipantIntentRecord,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .record_creation_intent(
+                owner_scope,
+                session_id,
+                repository_id,
+                lease_expires_at_unix_ms,
+            )
+            .await
+    }
+
+    async fn claim_creation_abort(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<
+        awaken_session_contract::PreparedParticipantIntentClaim,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner.claim_creation_abort(session_id).await
+    }
+
+    async fn complete_creation_abort(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+        self.inner.complete_creation_abort(session_id).await
+    }
+
+    async fn recoverable_creation_intents(
+        &self,
+        now_unix_ms: u64,
+        limit: usize,
+    ) -> Result<
+        Vec<awaken_session_contract::PreparedParticipantIntent>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .recoverable_creation_intents(now_unix_ms, limit)
+            .await
+    }
+}
+
 struct OwnershipFixture {
     durable: Arc<awaken_session_store::SqliteManagedSessionRepository>,
     faulting: Arc<FaultingSessionRepository>,
@@ -356,6 +409,7 @@ async fn invoke(row: &str, app: &SessionApplication, session: &str) -> String {
                         Some(("t06-append".into(), "t06-append-fingerprint".into())),
                     )
                     .await
+                    .map(|batch| batch.expect("the Event batch is admitted"))
                     .map(|_| ())
             }
             .await
@@ -557,6 +611,7 @@ async fn owner_scoped_event_append_refuses_a_foreign_owner_like_missing() {
             Some(("t06-owner-key".into(), "t06-owner-fingerprint".into())),
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .expect("the owner's access appends");
     assert_eq!(
         fixture

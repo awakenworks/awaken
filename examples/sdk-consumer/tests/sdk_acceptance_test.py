@@ -8,8 +8,8 @@ Run from the repository root:
 | E1 | T02-C01 NC | real `cargo check` output of this consumer | `validate_task_evidence` (the gate's own validator) refuses it |
 | E2 | T02-C01 | real `cargo test --test tasks` output | the same validator accepts it (E1 is not vacuous) |
 | D1 | T02-C03 O0, NC | with E-code checking on (RUSTC_BOOTSTRAP=1): C3 copied verbatim from conversation.rs; C2/C3 bodies made to fail for an unrelated (unresolved path) reason; the C3 mutant without a pinned code | C3 passes; pinned mutants fail (code not produced); the unpinned mutant passes, so pinning is what detects them |
-| D2 | T02-C03 gap | C2 copied verbatim, E-code checking on | reproducer (AWAKEN_RUN_IGNORED=1): pinned E0412, rustc 1.96 reports E0425 |
-| D3 | T02-C03 gap | D1's mutants on the pinned stable toolchain, as the gates run doctests | reproducer (AWAKEN_RUN_IGNORED=1): stable rustdoc ignores E-codes, so the mutants pass |
+| D2 | T02-C03 | C2 copied verbatim, E-code checking on | its pinned code (E0425, ADR-0103) is the one rustc 1.96 reports |
+| D3 | T02-C03 | D1's mutants on the pinned stable toolchain, in the environment the doctest gate uses | the gate checks E-codes (ADR-0103), so the pinned mutants fail |
 | A1 | T02-C03 O0 | current awaken-runtime surface | equals public-api/awaken-runtime.txt |
 | A2 | T02-C03 O0/O1, NC | a copy with one `pub use` removed | exactly that item is reported as removed drift |
 
@@ -99,16 +99,16 @@ def compile_fail_pin_results(**env: str) -> tuple[dict[str, str], dict[str, str]
     unrelated-failure mutants in an independent crate; return observed and
     correct per-item results and the raw output."""
     source = CONVERSATION.read_text(encoding="utf-8")
-    c2 = doctest_block(source, "compile_fail,E0412")
+    c2 = doctest_block(source, "compile_fail,E0425")
     c3 = doctest_block(source, "compile_fail,E0599")
     assert "awaken_runtime::EmbeddedSession" in c2 and "use awaken_runtime::{" in c3
     c2_unrelated = c2.replace("awaken_runtime::EmbeddedSession", "awaken_runtime_absent::EmbeddedSession")
     c3_unrelated = c3.replace("use awaken_runtime::{", "use awaken_runtime_absent::{")
     assert c2_unrelated != c2 and c3_unrelated != c3
     items = {
-        "c2_verbatim": ("compile_fail,E0412", c2, "ok"),
+        "c2_verbatim": ("compile_fail,E0425", c2, "ok"),
         "c3_verbatim": ("compile_fail,E0599", c3, "ok"),
-        "c2_unrelated_import": ("compile_fail,E0412", c2_unrelated, "FAILED"),
+        "c2_unrelated_import": ("compile_fail,E0425", c2_unrelated, "FAILED"),
         "c3_unrelated_import": ("compile_fail,E0599", c3_unrelated, "FAILED"),
         "c3_unrelated_import_unpinned": ("compile_fail", c3_unrelated, "ok"),
     }
@@ -144,6 +144,15 @@ def cached_pin_results(**env: str) -> tuple[dict[str, str], dict[str, str], str]
     return _PIN_RUNS[key]
 
 
+def doctest_gate_environment() -> dict[str, str]:
+    """The environment assignments the workspace doctest step runs under."""
+    gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
+    match = re.search(r"\benv((?: [A-Z_]+=\S+)+) cargo test --workspace --doc\b", gate)
+    if match is None:
+        return {}
+    return dict(assignment.split("=", 1) for assignment in match.group(1).split())
+
+
 # rustdoc honours compile_fail E-codes only on a nightly-capable build;
 # RUSTC_BOOTSTRAP=1 enables that on the repository's own 1.96 toolchain.
 CODE_CHECKING = {"RUSTC_BOOTSTRAP": "1"}
@@ -161,14 +170,12 @@ class CompileFailPinTests(unittest.TestCase):
         self.assertIn("E0433", output, "the mutants fail for the unrelated reason")
         self.assertIn('Some expected error codes were not found: ["E0599"]', output)
 
-    @unittest.skipUnless(os.environ.get("AWAKEN_RUN_IGNORED") == "1", "product gap: conversation.rs C2 doctest pins E0412 but rustc 1.96 reports E0425 for the removed EmbeddedSession type")
     def test_d2_reproducer_c2_doctest_pin_matches_the_compiler_error_code(self):
         observed, _, output = cached_pin_results(**CODE_CHECKING)
         self.assertEqual(observed.get("c2_verbatim"), "ok", output[-4000:])
 
-    @unittest.skipUnless(os.environ.get("AWAKEN_RUN_IGNORED") == "1", "product gap: stable rustdoc ignores pinned compile_fail E-codes, so the C2/C3 doctests accept an unrelated failure in the normal gate")
     def test_d3_reproducer_stable_rustdoc_checks_pinned_codes(self):
-        observed, correct, output = cached_pin_results()
+        observed, correct, output = cached_pin_results(**doctest_gate_environment())
         self.assertEqual({row: observed.get(row) for row in MUTANT_ROWS},
                          {row: correct[row] for row in MUTANT_ROWS}, output[-4000:])
 

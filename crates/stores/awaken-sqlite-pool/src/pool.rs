@@ -28,10 +28,10 @@ use crate::clock_hold::ClockHold;
 use crate::embedded_pool::EmbeddedPool;
 use crate::settle::{COLLATION, ConnectedFile, LiveFile, file_key, settled};
 
-/// Admission waits like the former semaphore did: a caller queues until the one
-/// connection is free. The bound only keeps a wedged connection from hanging a
-/// caller forever; it is far above any write wait.
-const ADMISSION_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+/// Admission queues a caller until the one connection is free, for a bounded
+/// time: a wedged connection fails the next admission with a classified
+/// `PoolTimedOut` instead of hiding exhaustion behind an endless wait.
+const ADMISSION_WAIT: Duration = Duration::from_secs(10);
 
 static JOURNAL_MODE_CHANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -313,7 +313,7 @@ mod tests {
     ///
     /// | Rule | SQLite work | Pending timer | Effect |
     /// |---|---|---|---|
-    /// | C1 | opening the pool | the 24 h admission bound | open succeeds |
+    /// | C1 | opening the pool | the admission bound | open succeeds |
     /// | C2 | one statement | a 1 s timer | the statement finishes first |
     /// | C3 | back-to-back callers on the one connection | admission bounds | every caller is admitted |
     #[tokio::test(start_paused = true)]
@@ -761,7 +761,7 @@ mod tests {
         // These use the actual driver transaction manager and SQL engine, not
         // a mock depth counter or a second pool implementation.
         // R3 a leaked admission/rollback wait => bounded diagnostic failure,
-        // never the pool's production 24-hour admission wait.
+        // never the pool's production admission wait.
         tokio::time::timeout(Duration::from_secs(5), async {
             let memory = memory_pool().await;
             let mut connection = memory.acquire().await.unwrap();

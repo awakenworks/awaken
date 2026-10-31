@@ -149,10 +149,11 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | 组件 | T01-C01、T14-C01 | `current_clause_complete` | E13 |
 | 组件 | T06-C01、T07-C01、T11-C02、T12-C01、T13-C03、T15-C01、T27-C01、T27-C02、T41-C01 | `current_clause_complete` | E13、E40、E41 |
 | SQL、全后端与原生效果 | T05-C01、T11-C03、T18-C01、T26-C03、T25-C03、T24-C02、T20-C03、T34-C01、T34-C02、T07-C03、T28-C03、T28-C02 | `current_clause_complete` | E16（T26-C03 另有 E18） |
-| SQL、全后端与原生效果 | T04-C03、T17-C01、T17-C02、T17-C03、T12-C03、T33-C02、T38-C03、T23-C03、T08-C02、T08-C03、T09-C02、T10-C03、T38-C02、T06-C02、T16-C01 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
+| SQL、全后端与原生效果 | T08-C02、T08-C03、T09-C02、T10-C03、T16-C01 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
+| ADR-0102 修复，待批量执行 | T04-C03、T06-C02、T12-C03、T17-C01、T17-C02、T17-C03、T23-C03、T33-C02、T38-C02、T38-C03 | `source_binding_only` | 复现测试已取消忽略；本机 Windows 批量执行后改为条款绑定 |
 | 凭据读取与回执等待 | T15-C02 | `current_subset` | E42（Linux Provider/A2A 的具名等待断言）；完整场景未验收 |
 | 设计场景补测（SDK、组件、真实服务） | T02-C01、T03-C01、T03-C03、T14-C03、T27-C03、T30-C02、T30-C03、T32-C03 | `current_clause_complete` | E-DOL-RUST/SDK/SDKPY/E2E-*-20261031 |
-| 设计场景补测（SDK、组件、真实服务） | T02-C03、T13-C02、T25-C01、T31-C03、T32-C01、T33-C03 | `product_gap` | 已成立部分同上；E-DOL-GAPS、E-DOL-SDKPYGAP、E-DOL-E2E-MULTIPROCGAP 为复现测试的预期失败 |
+| 设计场景补测（SDK、组件、真实服务），ADR-0103 修复，待批量执行 | T02-C03、T13-C02、T25-C01、T31-C03、T32-C01、T33-C03 | `source_binding_only` | 已成立部分同上；复现测试已取消忽略，本机 Windows 批量执行后改为条款绑定（E-DOL-GAPS、E-DOL-SDKPYGAP、E-DOL-E2E-MULTIPROCGAP 记录的是修复前的预期失败） |
 | 设计场景补测（SDK、组件、真实服务） | T21-C04、T35-C01、T35-C03 | `current_subset` | E-DOL-E2E-CTRLCOORD、E-DOL-RUST；未覆盖切片见各场景 |
 | 设计场景补测（平台与能力） | T24-C03、T35-C02 | `platform_pending` | 需原生 Linux 内核 FUSE/namespace，本任务不执行 Linux |
 | 设计场景补测（平台与能力） | T40-C03 | `not_applicable` | E-DOL-RUST 的能力拒绝测试；无部署提供跨进程 live FUSE |

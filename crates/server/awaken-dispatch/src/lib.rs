@@ -24,10 +24,6 @@
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub use awaken_dispatch_execution::{
     NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
@@ -123,7 +119,7 @@ pub use awaken_dispatch_execution::{
     ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, ControlDispatch,
     DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService, DispatchServiceConfig,
     DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit, InferenceMaterializerFn,
-    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence,
+    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence, PoolShutdown,
     RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
     claim_bound_ownership_verifier, publish_dispatch_hint,
 };

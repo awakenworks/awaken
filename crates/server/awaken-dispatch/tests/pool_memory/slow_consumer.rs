@@ -5,8 +5,8 @@
 //! Oracles: execution growth stays within the configured width; Runs beyond
 //! it are classified as admitted-but-pending (backpressure), never dropped;
 //! a drain admits nothing new; shutdown completes within its budget once the
-//! dependency returns. Product-gap reproducers pin the unbounded LiveInbox and
-//! the deadline-free `DispatchPool::shutdown`.
+//! dependency returns, and is classified as abandoned within its bound when the
+//! dependency never returns; a stalled LiveInbox consumer meets backpressure.
 
 use super::*;
 use awaken_dispatch::DispatchState;
@@ -158,20 +158,18 @@ async fn saturated_pool_backpressures_without_dropping_and_drains_within_budget(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "product gap: DispatchPool::shutdown awaits every drain with no deadline, so a dependency that never returns blocks shutdown forever"]
 async fn shutdown_is_bounded_when_a_dependency_never_returns() {
     let saturated = saturated_pool().await;
     // The dependency never returns: no permits are ever added.
     let shutdown = tokio::time::timeout(Duration::from_secs(2), saturated.pool.shutdown()).await;
     assert!(
-        shutdown.is_ok(),
-        "shutdown must finish (or abandon with a classified result) within its budget"
+        matches!(shutdown, Ok(awaken_dispatch::PoolShutdown::Abandoned { unfinished }) if unfinished >= WIDTH),
+        "shutdown must abandon the stuck drains with a classified result within its budget: {shutdown:?}"
     );
     drop(saturated.release);
 }
 
 #[test]
-#[ignore = "product gap: LiveInbox::offer is unbounded; a stalled consumer lets the queue grow without backpressure"]
 fn live_inbox_applies_backpressure_to_a_stalled_consumer() {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     let inbox = awaken_runtime_contract::LiveInbox::new();

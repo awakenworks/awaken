@@ -799,6 +799,13 @@ fn parse_sse_or_json(text: &str) -> Result<Value, McpTransportError> {
 /// Extract the `result` from a JSON-RPC response, or map `error` to an error.
 fn extract_result(value: Value) -> Result<Value, McpTransportError> {
     if let Some(error) = value.get("error") {
+        if let Some(code) = error
+            .get("code")
+            .and_then(Value::as_i64)
+            .filter(|code| awaken_mcp_wire::jsonrpc::is_certain_tool_fault(*code))
+        {
+            return Err(McpTransportError::ToolFault(code, error.to_string()));
+        }
         return Err(McpTransportError::ServerError(error.to_string()));
     }
     Ok(value.get("result").cloned().unwrap_or(Value::Null))

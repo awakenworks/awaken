@@ -15,14 +15,13 @@
 //! | Row | Root | Batch | Expected |
 //! |---|---|---|---|
 //! | P1 | budget paused, idle | ordinary | retained; drive activates no Run and opens no epoch |
-//! | P2 | paused, P1 retained | interrupt-only | no-op: no retained batch (see reproducer) |
+//! | P2 | paused, P1 retained | interrupt-only | accepted no-op: no batch, no root fact |
 //! | P3 | paused, P1 retained | ordinary | retained after P1, order kept, still no activation |
 //! | P4 | file reopen | - | P1/P3 retained exactly once, still unactivated |
 //!
 //! Negative control: keeping the pause rule only in the protocol parser must
-//! fail. The ignored reproducer sends P2 through the application admission
-//! (the root-CAS boundary a second protocol or a racing pause transition
-//! reaches) and fails on the current product.
+//! fail. P2 goes through the application admission (the root-CAS boundary a
+//! second protocol or a racing pause transition reaches), not the parser.
 use super::*;
 
 const CONSUMED_MINOR: u64 = 2;
@@ -221,7 +220,6 @@ async fn budget_paused_session_retains_ordinary_batches_without_execution() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: the budget-pause interrupt-only no-op lives only in the protocol parser (protocol-managed admission.rs); application root-CAS admission retains the batch"]
 async fn budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission() {
     let id = "t12-paused-interrupt";
     let session = SessionId::from(id);
@@ -230,7 +228,19 @@ async fn budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission() {
         .await
         .expect("P1 ordinary batch");
     let before = fixture.store.get(&session).await.unwrap();
-    let _ = append(&fixture.app, &session, interrupt_only(), "p2").await;
+    let admitted = fixture
+        .app
+        .event_batches
+        .admit_session_event_batch_idempotent(
+            &session,
+            vec![interrupt_only()],
+            None,
+            None,
+            Some(("p2".into(), "fingerprint-p2".into())),
+        )
+        .await
+        .expect("P2/O0 the interrupt-only batch is accepted");
+    assert_eq!(admitted, None, "P2/O0 accepted as a no-op, with no batch");
     let after = fixture.store.get(&session).await.unwrap();
     assert_eq!(
         after.event_batches.len(),

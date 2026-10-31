@@ -36,6 +36,7 @@ impl From<SessionRepositoryError> for SessionMutationError {
             }
             SessionRepositoryError::Conflict(_conflict) => SessionMutationError::Conflict,
             SessionRepositoryError::AuthorityUnavailable(message) => Self::Unavailable(message),
+            SessionRepositoryError::NotApplied(message) => Self::NotApplied(message),
             SessionRepositoryError::Corrupt(message)
             | SessionRepositoryError::InvalidMutation(message) => Self::Internal(message),
         }
@@ -141,6 +142,10 @@ pub enum SessionMutationError {
     /// A dependency outage may be retried without changing the command.
     #[error("Session mutation repository is unavailable: {0}")]
     Unavailable(String),
+    /// The repository refused before applying the mutation: nothing changed,
+    /// and the same command may be retried.
+    #[error("Session mutation was not applied: {0}")]
+    NotApplied(String),
     /// Invalid durable state or a violated application invariant. Repeating the
     /// same command cannot repair this failure; adapters must preserve 500.
     #[error("Session mutation failed because durable state is invalid: {0}")]
@@ -173,7 +178,8 @@ impl From<SessionMutationError> for awaken_session_types::RunError {
             SessionMutationError::IdempotencyMismatch => {
                 Self::bad_request("Session idempotency key was reused with another payload")
             }
-            SessionMutationError::Unavailable(message) => Self::unavailable(message),
+            SessionMutationError::Unavailable(message)
+            | SessionMutationError::NotApplied(message) => Self::unavailable(message),
             SessionMutationError::Internal(message) => {
                 Self::classified("session_application_invalid", message)
             }
@@ -193,7 +199,8 @@ impl From<SessionMutationError>
         match error {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
-            SessionMutationError::Unavailable(detail) => Self::Unavailable(detail),
+            SessionMutationError::Unavailable(detail)
+            | SessionMutationError::NotApplied(detail) => Self::Unavailable(detail),
             SessionMutationError::Internal(detail) => Self::Internal(detail),
             // The serialized control failure crosses the Worker boundary as its
             // closed class plus text; this is the one place the typed cause is

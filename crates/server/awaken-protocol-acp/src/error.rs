@@ -97,9 +97,15 @@ impl CredentialKind {
 /// The neutral failure class of an ACP turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpFailureClass {
-    /// A windowed-quota exhaustion or in-flight backend drop — the source is
-    /// unusable now. `retry_after_secs` is the provider's reset hint, when named.
+    /// A windowed-quota exhaustion — the source is unusable now.
+    /// `retry_after_secs` is the provider's reset hint, when named.
     RateLimited { retry_after_secs: Option<u64> },
+    /// The backend cut an in-flight turn: whether the turn's effects happened
+    /// is unknown (ADR-0103).
+    ConnectionDropped,
+    /// The provider reported itself overloaded (529 `overloaded_error`); a
+    /// certain, retryable failure with the provider's hint, when named.
+    Overloaded { retry_after_secs: Option<u64> },
     /// A permanent credential death that stays broken until an operator acts.
     CredentialRejected { kind: CredentialKind },
     /// A transient stream/transport interruption (429/overloaded/timeout/5xx).
@@ -174,6 +180,20 @@ impl AcpFailure {
                     format!("The provider rejected the credential (invalid or expired key).{tail}")
                 }
             },
+            AcpFailureClass::ConnectionDropped => format!(
+                "The connection was cut mid-turn; whether the turn's effects happened is \
+                 unknown and the run stopped without retrying.{tail}"
+            ),
+            AcpFailureClass::Overloaded { retry_after_secs } => {
+                let when = match retry_after_secs {
+                    Some(s) => format!(" retry after ~{s}s;"),
+                    None => String::new(),
+                };
+                format!(
+                    "The model provider is overloaded;{when} the run stopped without \
+                     retrying.{tail}"
+                )
+            }
             AcpFailureClass::Transient => {
                 format!("A transient provider/stream interruption ended the turn.{tail}")
             }
@@ -231,9 +251,12 @@ pub fn classify_error(stage: Stage, err: &RawAcpError) -> AcpFailure {
         );
     }
     if stage == Stage::Prompt && is_connection_drop(err) {
+        return AcpFailure::new(AcpFailureClass::ConnectionDropped, err.message.clone());
+    }
+    if is_overloaded(err) {
         return AcpFailure::new(
-            AcpFailureClass::RateLimited {
-                retry_after_secs: None,
+            AcpFailureClass::Overloaded {
+                retry_after_secs: err.retry_after_secs,
             },
             err.message.clone(),
         );
@@ -333,6 +356,14 @@ fn provider_quota(err: &RawAcpError) -> Option<ProviderQuota> {
         });
     }
     None
+}
+
+/// The provider's own overload signal (529 `overloaded_error`).
+fn is_overloaded(err: &RawAcpError) -> bool {
+    err.kind_is("overloaded") || err.kind_is("overloaded_error") || {
+        let message = err.message.to_ascii_lowercase();
+        message.contains("overloaded")
+    }
 }
 
 fn is_connection_drop(err: &RawAcpError) -> bool {
@@ -444,19 +475,38 @@ mod tests {
     }
 
     #[test]
+    fn overload_signatures_keep_the_overloaded_class_and_hint() {
+        for sig in ["overloaded", "529 overloaded"] {
+            assert_eq!(
+                classify_error(Stage::Prompt, &err(sig)).class,
+                AcpFailureClass::Overloaded {
+                    retry_after_secs: None
+                },
+                "message `{sig}`"
+            );
+        }
+        let mut e = err_kind("overloaded_error");
+        e.retry_after_secs = Some(7);
+        assert_eq!(
+            classify_error(Stage::Prompt, &e).class,
+            AcpFailureClass::Overloaded {
+                retry_after_secs: Some(7)
+            }
+        );
+    }
+
+    #[test]
     fn plain_429_is_transient() {
         let f = classify_error(Stage::Prompt, &err("HTTP 429 too many requests"));
         assert_eq!(f.class, AcpFailureClass::Transient);
     }
 
     #[test]
-    fn connection_drop_at_prompt_is_rate_limited_but_at_init_is_permanent() {
+    fn connection_drop_at_prompt_is_an_unknown_outcome_but_at_init_is_permanent() {
         let drop = err("server disconnected unexpectedly");
         assert_eq!(
             classify_error(Stage::Prompt, &drop).class,
-            AcpFailureClass::RateLimited {
-                retry_after_secs: None
-            }
+            AcpFailureClass::ConnectionDropped
         );
         // Same drop while starting the adapter is a launch fault → permanent.
         assert_eq!(
@@ -488,7 +538,6 @@ mod tests {
     #[test]
     fn transient_message_signatures_all_classify_transient() {
         for sig in [
-            "overloaded",
             "request timed out",
             "connection reset by peer",
             "connection closed",
@@ -498,7 +547,6 @@ mod tests {
             "HTTP 502 bad gateway",
             "503 service down",
             "gateway 504",
-            "529 overloaded",
         ] {
             assert_eq!(
                 classify_error(Stage::Prompt, &err(sig)).class,
@@ -512,7 +560,6 @@ mod tests {
     fn transient_kind_signatures_all_classify_transient() {
         // The kind-based branch of `is_transient` (never exercised before).
         for kind in [
-            "overloaded_error",
             "timeout",
             "timeout_error",
             "stream_error",
@@ -573,12 +620,10 @@ mod tests {
     }
 
     #[test]
-    fn server_shut_down_at_prompt_is_rate_limited() {
+    fn server_shut_down_at_prompt_is_a_dropped_connection() {
         assert_eq!(
             classify_error(Stage::Prompt, &err("the server shut down")).class,
-            AcpFailureClass::RateLimited {
-                retry_after_secs: None
-            }
+            AcpFailureClass::ConnectionDropped
         );
     }
 

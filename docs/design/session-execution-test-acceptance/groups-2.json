@@ -889,7 +889,7 @@
           "B161",
           "B236"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -908,12 +908,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "仅 interrupt 的预算暂停 no-op 只在协议 parser 中，不在 root 接纳处",
-          "follow_up": "session-application event batch 接纳（S）",
-          "reproducers": [
-            "budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "仅 interrupt 的预算暂停 no-op 只在协议 parser 中，不在 root 接纳处",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],
@@ -995,7 +993,7 @@
           "B-DOL-17",
           "B-DOL-54"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -1016,12 +1014,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "a Running Session cannot be tightened before its next model effect: update_limit requires an Idle root execution",
-          "follow_up": "session-application: admit budget tightening during a Running root (M)",
-          "reproducers": [
-            "running_session_budget_tightening_governs_the_next_model_request"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "a Running Session cannot be tightened before its next model effect: update_limit requires an Idle root execution",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {

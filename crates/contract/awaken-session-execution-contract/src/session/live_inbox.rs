@@ -1,3 +1,6 @@
+// @formal surface obligation=live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal reason: The driving port's typed failures, including `Full` backpressure from a
+// @formal reason: bounded attempt inbox (ADR-0102 D5), never route around a live attempt.
 // Live-inbox value types and the driving port that edits them.
 //
 // Physically split out of `session.rs` to stay under the repository file limit
@@ -37,7 +40,8 @@ impl LiveInboxSnapshot {
 }
 
 /// Why a live-inbox operation failed. Mirrors the runtime contract's edit
-/// errors, plus `Inactive` for "no native Run in flight on this Session" and
+/// errors, plus `Inactive` for "no native Run in flight on this Session",
+/// `Full` for backpressure from a consumer that has not drained, and
 /// `Unavailable` for "the process cannot read which attempts it owns" -- a
 /// fault, never reported as an inactive queue the caller may route around.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -50,6 +54,8 @@ pub enum LiveInboxError {
     StaleOrder,
     #[error("the live-inbox owner registry is unreadable")]
     Unavailable,
+    #[error("the live inbox is full; retry after the Run drains it")]
+    Full,
 }
 
 /// Protocol-neutral application failure for the editable in-flight inbox.

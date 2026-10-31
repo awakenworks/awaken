@@ -633,6 +633,7 @@ impl Timeline for RootTimeline {
                         None,
                     )
                     .await
+                    .map(|batch| batch.expect("the Event batch is admitted"))
                     .unwrap();
                 let SessionEventCommand::UserMessage { run_id, .. } = &retained.events[0].event
                 else {

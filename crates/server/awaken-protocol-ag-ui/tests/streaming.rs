@@ -569,7 +569,7 @@ async fn owner_scoped_hangup_detaches_without_interrupting_the_turn() {
 async fn explicit_stop_uses_the_bound_ag_ui_thread() {
     // C1 a guarded DELETE presents the public Thread while the application
     // guard supplies its exact managed Session. E1 the existing interrupt port
-    // sees only that resolved Session and responds 204; passive hang-up above
+    // sees only that resolved Session and responds 202 with its own Stop receipt; passive hang-up above
     // still does not issue this command (R1=C1->E1).
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_threads = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -598,7 +598,7 @@ async fn explicit_stop_uses_the_bound_ag_ui_thread() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert!(interrupted.load(Ordering::SeqCst), "R1");
     assert_eq!(
         interrupted_threads.lock().unwrap().as_slice(),

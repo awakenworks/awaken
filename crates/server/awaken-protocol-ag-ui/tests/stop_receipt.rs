@@ -4,7 +4,7 @@
 //! | Row | Request | Expected |
 //! |---|---|---|
 //! | S1 | `DELETE /v1/ag-ui/threads/{t}/runs` | the Run's interrupt port is invoked exactly once, for `t` only |
-//! | S2 | the same Stop twice | each answer carries its own durable receipt id (reproducer) |
+//! | S2 | the same Stop twice | each answer carries its own receipt id (ADR-0103) |
 //!
 //! The passive hang-up rows (Local interrupts, owner-scoped detaches) are
 //! covered by this crate's streaming/interrupt tests; this file owns the
@@ -129,7 +129,6 @@ async fn explicit_stop_reaches_the_runs_interrupt_port_exactly_once() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: the AG-UI Stop (DELETE runs) answers 204 with no body; the interrupt port returns no receipt identifying the cancel command"]
 async fn explicit_stop_returns_its_own_receipt() {
     let runtime = Arc::new(StopRecorder::default());
     let first = stop(runtime.clone(), "t32-thread").await;

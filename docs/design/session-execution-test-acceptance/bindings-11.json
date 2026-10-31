@@ -148,22 +148,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 372,
+        "line": 370,
         "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 387
+        "line": 385
       },
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 411
+        "line": 409
       },
       {
         "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 412
+        "line": 410
       }
     ],
     "execution_witnesses": [

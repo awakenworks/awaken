@@ -27,10 +27,6 @@
 //! synchronous read ports are served from an in-memory projection rebuilt from
 //! the log on construction (durable across restart) and advanced in lockstep
 //! with each commit — never an independent authority.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 #![cfg_attr(
     not(test),
     deny(
@@ -1201,8 +1197,24 @@ fn json<T: serde::Serialize>(value: &T) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|err| Error::Rejected(err.to_string()))
 }
 
+/// SQLite primary result code for a full database or disk (`SQLITE_FULL`).
+const SQLITE_FULL: i32 = 13;
+
+/// Classify by SQLite result code, never by message text: a full store is
+/// capacity exhaustion, distinct from a logical rejection.
 fn reject(err: sqlx::Error) -> Error {
-    Error::Rejected(err.to_string())
+    let full = match &err {
+        sqlx::Error::Database(database) => database
+            .code()
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| code & 0xff == SQLITE_FULL),
+        _ => false,
+    };
+    if full {
+        Error::CapacityExhausted(err.to_string())
+    } else {
+        Error::Rejected(err.to_string())
+    }
 }
 
 #[cfg(test)]

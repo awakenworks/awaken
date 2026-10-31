@@ -5,8 +5,8 @@
 //! | X1 | growth capacity exhausted (bounded max_page_count seam) | commit_operation rejected; no commit/message/state row after reopen; database file stays bounded |
 //! | X2 | read-only seam | same as X1 |
 //! | X3 | capacity restored (reopen), same operation retried | applied exactly once; a further retry replays the ORIGINAL receipt |
-//! | X4 | classification | capacity failure has its own class, distinct from a logical rejection (reproducer) |
-//! | X5 | the single pooled connection is wedged | a second admission fails promptly with a classified error (reproducer: 24h acquire_timeout) |
+//! | X4 | classification | capacity failure has its own class, distinct from a logical rejection |
+//! | X5 | the single pooled connection is wedged | a second admission fails promptly with a classified error |
 
 use std::time::Duration;
 
@@ -134,17 +134,15 @@ async fn exhausted_capacity_rejects_atomically_and_retry_commits_once_with_origi
 }
 
 #[tokio::test]
-#[ignore = "product gap: coordinator Error has only Rejected(String); SQLITE_FULL/READONLY are not a distinct retryable capacity class"]
 async fn exhausted_capacity_has_a_distinct_classification() {
     let error = exhausted_then_restored("full").await;
     assert!(
-        !matches!(error, Error::Rejected(_)),
+        matches!(error, Error::CapacityExhausted(_)),
         "X4 capacity exhaustion must not share the logical-rejection class: {error:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "product gap: awaken-sqlite-pool ADMISSION_WAIT is 24h, so a wedged connection masks exhaustion instead of failing admission"]
 async fn wedged_single_connection_fails_admission_promptly() {
     let directory = tempfile::tempdir().unwrap();
     let pool = awaken_sqlite_pool::EmbeddedSqlite::file(directory.path().join("wedged.db"))

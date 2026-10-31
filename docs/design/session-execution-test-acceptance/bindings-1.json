@@ -5,7 +5,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-application/src/memory.rs",
-        "line": 673,
+        "line": 637,
         "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
       }
     ],
@@ -61,7 +61,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-application/src/memory.rs",
-        "line": 592,
+        "line": 556,
         "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
       }
     ],
@@ -159,7 +159,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/realization/worker_retirement.rs",
-        "line": 128,
+        "line": 137,
         "file_sha256": "8ae897ce88650a906023a84f53dec2edeba13e95559c938fcb91a7ca18f2c1f5"
       }
     ],
@@ -202,7 +202,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-environment-image-build/src/application.rs",
-        "line": 738,
+        "line": 863,
         "file_sha256": "86a7f8262ad3d7b1fbd0d5583166206c3549c399b7f0de53a9a970595c9d4016"
       }
     ],
@@ -298,7 +298,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/construction.rs",
-        "line": 285,
+        "line": 290,
         "file_sha256": "df6776d28167f3170a54caced2a62b543535d2602320ff8512ce89b997af232d"
       }
     ],
@@ -453,7 +453,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/continuation.rs",
-        "line": 2332,
+        "line": 2353,
         "file_sha256": "3ff58e93b4a88ccfd91feda39b9e5d2e65e4df3b7f44dd870a1a6cbcb565ad71"
       }
     ],
@@ -481,7 +481,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-application/src/memory.rs",
-        "line": 716,
+        "line": 680,
         "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
       }
     ],
@@ -593,7 +593,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/src/lib.rs",
-        "line": 958,
+        "line": 1069,
         "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c"
       }
     ],
@@ -649,7 +649,7 @@
     "source_locations": [
       {
         "path": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
-        "line": 234,
+        "line": 239,
         "file_sha256": "899cc23667538d31741439c3a38404c43f36c2588b938ee354f0e2ee38ed063b"
       }
     ],
@@ -745,7 +745,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches.rs",
-        "line": 1953,
+        "line": 1970,
         "file_sha256": "d5a835661f961f443c7799c1c209856d0b0966397c62e5cbb9e727f2d8dc1cd4"
       }
     ],
@@ -773,7 +773,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-application/src/memory.rs",
-        "line": 550,
+        "line": 514,
         "file_sha256": "eaf79be7fe2bac61582b1876ad5a1a0308d449080aaad95023fbabd6ccd5ff28"
       }
     ],
@@ -801,7 +801,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/src/lib.rs",
-        "line": 1194,
+        "line": 1174,
         "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c"
       }
     ],
@@ -829,7 +829,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/continuation.rs",
-        "line": 2228,
+        "line": 2246,
         "file_sha256": "3ff58e93b4a88ccfd91feda39b9e5d2e65e4df3b7f44dd870a1a6cbcb565ad71"
       }
     ],
@@ -885,7 +885,7 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-sandbox-container/src/tests.rs",
-        "line": 3975,
+        "line": 4103,
         "file_sha256": "b03c7c1daad74fa19d72acdb5916b3ab080877e898f96b9ec3640ed7e9e33f69"
       }
     ],
@@ -928,7 +928,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-env-store/src/lib.rs",
-        "line": 888,
+        "line": 999,
         "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c"
       }
     ],

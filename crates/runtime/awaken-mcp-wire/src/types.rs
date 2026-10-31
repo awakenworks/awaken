@@ -305,6 +305,11 @@ pub enum McpTransportError {
     ConnectionClosed,
     #[error("Server '{0}' is restarting")]
     ServerRestarting(String),
+    /// The server classified the tool's own failure as certain with one of the
+    /// `jsonrpc::TOOL_FAULT_*` codes; the second field is the JSON-RPC error
+    /// object as received.
+    #[error("Tool fault: {1}")]
+    ToolFault(i64, String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

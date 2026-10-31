@@ -78,7 +78,8 @@ impl From<awaken_session_contract::SessionRepositoryError> for StateError {
     fn from(error: awaken_session_contract::SessionRepositoryError) -> Self {
         match error {
             awaken_session_contract::SessionRepositoryError::NotFound => Self::NotFound,
-            awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(message) => {
+            awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(message)
+            | awaken_session_contract::SessionRepositoryError::NotApplied(message) => {
                 Self::Run(RunError::unavailable(message))
             }
             awaken_session_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
@@ -108,7 +109,10 @@ impl From<awaken_session_application::SessionMutationError> for StateError {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
-            SessionMutationError::Unavailable(message) => Self::Run(RunError::unavailable(message)),
+            SessionMutationError::Unavailable(message)
+            | SessionMutationError::NotApplied(message) => {
+                Self::Run(RunError::unavailable(message))
+            }
             error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
                 Self::Run(error.into())
             }

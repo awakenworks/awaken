@@ -75,7 +75,7 @@ replaces it with the rendered text.
 | ext-background-task, ext-compact, ext-permission, observability, store-inmem | 1.0.0 | 2.0.0 | expose Agent/Tool/Runtime contract 2.0 types |
 | ext-mcp, ext-skills, ext-state-machine | 0.1.0 | 0.2.0 | same, pre-1.0 |
 | web-policy-contract, outbound-http | 1.0.0 | 1.1.0 | additions only |
-| mcp-wire | 0.1.0 | 0.1.1 | additions only |
+| mcp-wire | 0.1.0 | 0.2.0 | `McpTransportError` gains a variant for the classified transport fault (ADR-0103) |
 | lease-contract, time, tool-pattern | unchanged | unchanged | no surface change |
 | sync, process-win32 | - | 1.0.0 | new SDK crates |
 

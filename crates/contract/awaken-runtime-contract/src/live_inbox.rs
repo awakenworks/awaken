@@ -84,14 +84,21 @@ pub struct LiveInboxMessage {
     pub message: Message,
 }
 
+/// Most undrained messages one [`LiveInbox`] holds. A consumer that stalls
+/// past this meets [`Offer::Full`] instead of unbounded queue growth.
+pub const LIVE_INBOX_CAPACITY: usize = 1024;
+
 /// Outcome of [`LiveInbox::offer`]. `Closed` is a routing decision, not an
 /// error: the sender falls back to the durable pending-input path or drops.
 /// A poisoned inbox routes the same way: it accepts nothing more.
+/// `Full` is backpressure: the queue is open but holds
+/// [`LIVE_INBOX_CAPACITY`] undrained messages; nothing was queued.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Offer {
     Accepted(LiveInboxMessageId),
     Closed,
+    Full,
 }
 
 /// Why an edit to the queue was refused.
@@ -273,6 +280,9 @@ impl LiveInbox {
         if !state.lifecycle.admits_mutation() {
             return Offer::Closed;
         }
+        if state.entries.len() >= LIVE_INBOX_CAPACITY {
+            return Offer::Full;
+        }
         let Some(id) = Self::next_message_id(state.next_id) else {
             // The identity space is finite in the implementation. Refuse the
             // offer without changing the queue instead of wrapping and
@@ -447,6 +457,7 @@ mod tests {
         match inbox.offer(msg(text)) {
             Offer::Accepted(id) => id,
             Offer::Closed => panic!("inbox unexpectedly closed"),
+            Offer::Full => panic!("inbox unexpectedly full"),
         }
     }
 
@@ -579,6 +590,7 @@ mod tests {
         let b = match inbox.offer_as(MessageOrigin::External, msg("b")) {
             Offer::Accepted(id) => id,
             Offer::Closed => panic!("inbox unexpectedly closed"),
+            Offer::Full => panic!("inbox unexpectedly full"),
         };
         let _c = offered(&inbox, "c");
 
@@ -844,6 +856,7 @@ mod tests {
                     match inbox.offer(msg(&format!("t{task}-{n}"))) {
                         Offer::Accepted(_) => {}
                         Offer::Closed => panic!("inbox closed mid-test"),
+                        Offer::Full => panic!("inbox full mid-test"),
                     }
                 }
             }));
@@ -896,6 +909,7 @@ mod tests {
                     assert_eq!(leftovers[0].id, id, "R1 exact owner");
                 }
                 Offer::Closed => assert!(leftovers.is_empty(), "R2"),
+                Offer::Full => panic!("a single offer cannot fill the inbox"),
             }
             assert!(inbox.is_closed());
             assert!(inbox.list().is_empty());
