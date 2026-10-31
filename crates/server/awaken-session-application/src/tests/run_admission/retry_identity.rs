@@ -277,3 +277,5 @@ async fn unadmitted_and_unknown_failures_are_classified_apart() {
         "Q3 the outcome is unknown until observed"
     );
 }
+
+mod epoch_authority;

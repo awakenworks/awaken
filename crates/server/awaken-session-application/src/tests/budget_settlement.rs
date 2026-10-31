@@ -137,3 +137,5 @@ async fn budget_settlement_keeps_failed_and_response_lost_cas_on_the_original_ro
         assert_eq!(store.pending_lifecycle().await.unwrap(), facts, "B10/E4");
     }
 }
+
+mod operation_identity;

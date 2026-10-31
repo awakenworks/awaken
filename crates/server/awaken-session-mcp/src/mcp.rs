@@ -19,6 +19,8 @@ use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
 
 mod attachment;
+#[cfg(test)]
+mod classification_tests;
 mod credential_target;
 mod error;
 mod input;

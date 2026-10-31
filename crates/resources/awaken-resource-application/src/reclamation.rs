@@ -191,6 +191,10 @@ fn skill_cleanup_error(error: SkillStoreError) -> ResourcePurgeError {
 }
 
 #[cfg(test)]
+#[path = "reclamation/tests/guard.rs"]
+mod guard_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

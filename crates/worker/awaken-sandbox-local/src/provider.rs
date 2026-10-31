@@ -1859,6 +1859,9 @@ impl LocalSandbox {
 }
 
 #[cfg(test)]
+#[path = "provider/path_boundary_tests.rs"]
+mod path_boundary_tests;
+#[cfg(test)]
 #[path = "provider/shred_tests.rs"]
 mod shred_tests;
 /// The Workdir-tier host helpers that replace the legacy `Environment` methods —

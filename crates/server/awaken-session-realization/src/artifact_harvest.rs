@@ -304,3 +304,6 @@ impl ArtifactHarvester {
         Ok(HarvestedArtifacts { receipts })
     }
 }
+
+#[cfg(test)]
+mod provenance_tests;

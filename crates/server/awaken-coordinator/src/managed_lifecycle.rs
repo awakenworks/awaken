@@ -92,6 +92,10 @@ pub fn prepare_managed_lifecycle_delivery(
 }
 
 #[cfg(test)]
+#[path = "managed_lifecycle/fanout_tests.rs"]
+mod fanout_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 

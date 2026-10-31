@@ -644,3 +644,5 @@ async fn reference_bracket_success_rules(explicit: bool) {
         }
     }
 }
+
+mod concurrent_replacement;

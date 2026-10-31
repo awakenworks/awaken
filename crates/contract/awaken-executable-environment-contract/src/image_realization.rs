@@ -377,6 +377,9 @@ pub trait EnvironmentImageReadiness: Send + Sync {
 }
 
 #[cfg(test)]
+mod identity_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use awaken_environment_contract::{EnvItem, EnvironmentPackages, EnvironmentRevision};

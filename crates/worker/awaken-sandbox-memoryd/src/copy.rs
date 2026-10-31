@@ -504,6 +504,10 @@ fn memory_path(relative: &Path) -> Result<String, FuseError> {
 }
 
 #[cfg(test)]
+#[path = "copy/snapshot_only_tests.rs"]
+mod snapshot_only_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use awaken_memory_store::{MemErr, Memory};
