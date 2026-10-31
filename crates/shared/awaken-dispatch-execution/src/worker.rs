@@ -60,7 +60,6 @@ use awaken_runtime_contract::runtime_context::{
 use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
-use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
@@ -80,6 +79,7 @@ mod terminal_recovery;
 use awaken_time::WallClockExt;
 use physical_attempt::{PhysicalAttemptOutcome, PhysicalAttemptRequest};
 
+use awaken_runtime_contract::cancellation::AttemptCancellation;
 pub(crate) use claim_renewal::{
     ClaimLeaseRenewal, combine_attempt_cancellation, renew_claim_while_active,
 };
@@ -117,7 +117,7 @@ pub struct DispatchWorker<S> {
     owner: String,
     execution_binding: Option<crate::dispatch::AttemptExecutionBinding>,
     lease_ms: u64,
-    cancellation: Option<CancellationToken>,
+    cancellation: Option<AttemptCancellation>,
     local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     worker_credential_resolver:
         Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
@@ -441,7 +441,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// child Run.
     #[must_use]
     pub fn with_context(mut self, context: RuntimeRunContext) -> Self {
-        self.cancellation = context.cancellation.clone();
+        // The host's cause cell travels with its token, so a parent stopped by
+        // authority loss never lets this child commit `Cancelled` either.
+        self.cancellation = context
+            .cancellation
+            .clone()
+            .map(|token| AttemptCancellation {
+                token,
+                cause: context.cancellation_cause.clone(),
+            });
         self.exec = self.exec.with_context(context);
         self
     }
@@ -608,8 +616,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// A runtime context bound to this worker's commit boundary, for an
     /// out-of-band commit such as a durable cancel.
     pub(crate) fn execution_context(&self) -> RuntimeRunContext {
+        let cancellation = self.cancellation.clone().unwrap_or_default();
         self.exec
-            .runtime_context(self.cancellation.clone().unwrap_or_default(), None)
+            .runtime_context(cancellation.token, None)
+            .with_cancellation_cause(cancellation.cause)
     }
 
     /// A run context for the attempt on `run_id` claimed under lease `epoch`, whose
@@ -624,7 +634,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
         credential_deliveries: &[AttemptCredentialDelivery],
-        attempt_cancellation: Option<&CancellationToken>,
+        attempt_cancellation: Option<&AttemptCancellation>,
     ) -> Result<RuntimeRunContext, Error> {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
@@ -637,15 +647,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
         let dispatch: Arc<dyn DispatchExecution> = self.store.clone();
         let ownership = claim_bound_ownership_verifier(self.store.clone(), claim.clone());
+        let cancellation = attempt_cancellation
+            .cloned()
+            .or_else(|| self.cancellation.clone())
+            .unwrap_or_default();
         let mut ctx = self
             .exec
-            .runtime_context(
-                attempt_cancellation
-                    .cloned()
-                    .or_else(|| self.cancellation.clone())
-                    .unwrap_or_default(),
-                Some(claim),
-            )
+            .runtime_context(cancellation.token, Some(claim))
+            .with_cancellation_cause(cancellation.cause)
             .with_commit(fenced)
             .with_ownership(ownership);
         // Durable ingress owns terminal delivery after committed truth is visible
@@ -880,7 +889,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: Claimed,
         clock: Arc<dyn WallClock>,
-        claim_cancellation: CancellationToken,
+        claim_cancellation: AttemptCancellation,
         execution_capacity: Option<ExecutionCapacity>,
     ) -> ClaimFuture<'_, Option<(RunId, RunState)>> {
         if claimed.session_activity_admission_required {
@@ -907,7 +916,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: Claimed,
         clock: Arc<dyn WallClock>,
-        claim_cancellation: CancellationToken,
+        claim_cancellation: AttemptCancellation,
         execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let (attempt_cancellation, _cancellation_relay) =

@@ -278,6 +278,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Convert a runtime-drive failure into a benign already-done when the
     /// canonical committed projection shows that a replacement already ended
     /// the Run. Any other error remains an execution failure.
+    ///
+    /// | Row | Executor error | Effect |
+    /// |---|---|---|
+    /// | W1 | abandoned for a cause that does not end the Run | no settlement and no claim release: the lease lapses and Dispatch recovery re-claims the Run |
+    /// | W2 | other; committed terminal visible | settle that terminal `Done` |
+    /// | W3 | other; claim fenced; coordinated Run | yield quietly to the replacement |
+    /// | W4 | other | raise the execution failure |
+    ///
+    /// W1 performs no store I/O: its typical cause (an expired ownership
+    /// proof) means the store could not be reached, and its attempt already
+    /// returned, so the physical slot was acknowledged on the way out.
     pub(super) fn settle_if_terminal_or_raise<'a>(
         &'a self,
         claimed: &'a Claimed,
@@ -286,6 +297,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> ClaimFuture<'a, Option<(RunId, RunState)>> {
         let err = err.into();
         Box::pin(async move {
+            if let Some(cause) = abandoned_cause(&err) {
+                tracing::warn!(
+                    run_id = %claimed.request.run_id().0,
+                    owner = %claimed.lease.owner(),
+                    lease_epoch = claimed.lease.epoch(),
+                    %cause,
+                    "attempt abandoned without a terminal commit; Dispatch recovery re-claims the Run"
+                );
+                return Ok(None);
+            }
             self.refresh_local_recovery_projection(
                 claimed.request.thread_id(),
                 claimed.request.run_id(),
@@ -635,5 +656,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self.runtime
             .metrics()
             .record_dispatch_commit(commit_outcome, duration);
+    }
+}
+
+/// The cancellation cause of an attempt the executor abandoned (row W1).
+fn abandoned_cause(
+    error: &Error,
+) -> Option<awaken_runtime_contract::cancellation::CancellationCause> {
+    match error {
+        Error::Execution(error) => {
+            awaken_runtime_contract::cancellation::abandoned_attempt_cause(error)
+        }
+        _ => None,
     }
 }

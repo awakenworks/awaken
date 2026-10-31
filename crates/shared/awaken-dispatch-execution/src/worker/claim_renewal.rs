@@ -3,36 +3,69 @@
 //!
 //! Durable lease truth stays in [`Dispatch`]. This module owns only the one
 //! process-local guard that keeps a current claim live and projects loss of
-//! provable ownership into Runtime's existing cooperative cancellation token.
+//! provable ownership into Runtime's existing cooperative cancellation token,
+//! tagged with the cause that decides whether the Run may end `Cancelled`.
 
 use awaken_dispatch_erasure::Dispatch;
 use std::sync::Arc;
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
+use awaken_runtime_contract::cancellation::{AttemptCancellation, CancellationCause};
 use awaken_time::mono;
 use tokio_util::sync::CancellationToken;
 
 use crate::dispatch::{LeaseRenewalOutcome, RunClaim};
+
+/// Why one claim's renewal loop fired the attempt's cancellation.
+///
+/// | Row | Renewal observation | Recorded cause | Run effect |
+/// |---|---|---|---|
+/// | RC1 | durable cancellation of this exact attempt | `Requested` | commit `Cancelled` |
+/// | RC2 | authoritative loss of the exact claim | `ClaimLost` | abandon, no commit |
+/// | RC3 | no renewal before the local proof window closed | `ProofExpired` | abandon, no commit |
+/// | RC4 | the owning drive dropped its renewal guard | `HostDrain` | abandon, no commit |
+///
+/// Only RC1 is the Run's cancellation authority. RC2–RC4 stop this process's
+/// attempt; the claim lapses and Dispatch recovery re-claims the Run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenewalStop {
+    DurableCancellation,
+    ClaimLost,
+    ProofExpired,
+    OwnerDropped,
+}
+
+impl RenewalStop {
+    pub(crate) const fn cause(self) -> CancellationCause {
+        match self {
+            Self::DurableCancellation => CancellationCause::Requested,
+            Self::ClaimLost => CancellationCause::ClaimLost,
+            Self::ProofExpired => CancellationCause::ProofExpired,
+            Self::OwnerDropped => CancellationCause::HostDrain,
+        }
+    }
+}
 
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
 /// owns the claim, rather than to each caller (pool, daemon, or foreground child),
 /// so every execution path has the same lease behavior.
 pub(crate) struct ClaimLeaseRenewal {
     shutdown: CancellationToken,
-    attempt_cancellation: CancellationToken,
+    attempt_cancellation: AttemptCancellation,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for ClaimLeaseRenewal {
     fn drop(&mut self) {
-        self.attempt_cancellation.cancel();
+        self.attempt_cancellation
+            .cancel(RenewalStop::OwnerDropped.cause());
         self.shutdown.cancel();
         self.task.abort();
     }
 }
 
 impl ClaimLeaseRenewal {
-    pub(crate) fn attempt_cancellation(&self) -> CancellationToken {
+    pub(crate) fn attempt_cancellation(&self) -> AttemptCancellation {
         self.attempt_cancellation.clone()
     }
 }
@@ -52,25 +85,44 @@ impl Drop for AttemptCancellationRelay {
     }
 }
 
+fn relay_host_signal(host: &AttemptCancellation, target: &AttemptCancellation) {
+    match host.cause.recorded() {
+        Some(cause) => target.cancel(cause),
+        None => target.token.cancel(),
+    }
+}
+
+/// The combined signal shares the claim's cause cell, so a claim-side cause is
+/// already recorded when the relay fires. A host-side signal carries the
+/// cause its own source recorded; an untagged host signal stays untagged
+/// (a direct request), exactly as before causes existed.
 pub(crate) fn combine_attempt_cancellation(
-    claim_cancellation: CancellationToken,
-    host_cancellation: Option<&CancellationToken>,
-) -> (CancellationToken, AttemptCancellationRelay) {
+    claim_cancellation: AttemptCancellation,
+    host_cancellation: Option<&AttemptCancellation>,
+) -> (AttemptCancellation, AttemptCancellationRelay) {
     let Some(host_cancellation) = host_cancellation.cloned() else {
         return (claim_cancellation, AttemptCancellationRelay { task: None });
     };
-    let combined = CancellationToken::new();
-    if claim_cancellation.is_cancelled() || host_cancellation.is_cancelled() {
-        combined.cancel();
+    let combined = AttemptCancellation {
+        token: CancellationToken::new(),
+        cause: claim_cancellation.cause.clone(),
+    };
+    if claim_cancellation.token.is_cancelled() {
+        combined.token.cancel();
+        return (combined, AttemptCancellationRelay { task: None });
+    }
+    if host_cancellation.token.is_cancelled() {
+        relay_host_signal(&host_cancellation, &combined);
         return (combined, AttemptCancellationRelay { task: None });
     }
     let relay_target = combined.clone();
     let task = tokio::spawn(async move {
         tokio::select! {
-            _ = claim_cancellation.cancelled() => {}
-            _ = host_cancellation.cancelled() => {}
+            _ = claim_cancellation.token.cancelled() => relay_target.token.cancel(),
+            _ = host_cancellation.token.cancelled() => {
+                relay_host_signal(&host_cancellation, &relay_target);
+            }
         }
-        relay_target.cancel();
     });
     (combined, AttemptCancellationRelay { task: Some(task) })
 }
@@ -91,7 +143,7 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
     // is a conservative proof window, not a second durable expiry authority.
     let proof_window = timing.proof_window();
     let shutdown = CancellationToken::new();
-    let attempt_cancellation = CancellationToken::new();
+    let attempt_cancellation = AttemptCancellation::default();
     let task_shutdown = shutdown.clone();
     let task_attempt_cancellation = attempt_cancellation.clone();
     let task = tokio::spawn(async move {
@@ -111,7 +163,7 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                         lease_epoch = claim.epoch,
                         "dispatch lease renewal could not prove ownership before safety deadline"
                     );
-                    task_attempt_cancellation.cancel();
+                    task_attempt_cancellation.cancel(RenewalStop::ProofExpired.cause());
                     break;
                 }
                 _ = tokio::time::sleep_until(next_attempt) => {
@@ -150,7 +202,8 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                             // The Dispatch row remains the sole authority. This
                             // projects its exact cancelled-attempt observation
                             // into Runtime's already-installed cooperative token.
-                            task_attempt_cancellation.cancel();
+                            task_attempt_cancellation
+                                .cancel(RenewalStop::DurableCancellation.cause());
                             break;
                         }
                         Ok(Ok(LeaseRenewalOutcome::Lost)) => {
@@ -164,7 +217,8 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                             // Wake Runtime's existing cooperative cancellation
                             // seam now; waiting for the provider call to return
                             // only creates stale checkpoints and wasted usage.
-                            task_attempt_cancellation.cancel();
+                            // The Run was not cancelled: the attempt abandons.
+                            task_attempt_cancellation.cancel(RenewalStop::ClaimLost.cause());
                             break;
                         }
                         Ok(Err(error)) => {

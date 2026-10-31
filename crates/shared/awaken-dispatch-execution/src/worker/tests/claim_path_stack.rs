@@ -81,7 +81,7 @@ async fn claim_path_futures_stay_small_enough_for_a_default_thread_stack() {
     let body = size_of_val(&worker.drive_claimed_inner(
         body_claim.clone(),
         clock(),
-        CancellationToken::new(),
+        AttemptCancellation::default(),
         None,
     ));
     let embedded_body = body + size_of_val(&body_claim);
@@ -119,7 +119,7 @@ async fn claim_path_futures_stay_small_enough_for_a_default_thread_stack() {
             size_of_val(&worker.drive_claimed_with_cancellation(
                 body_claim.clone(),
                 clock(),
-                CancellationToken::new(),
+                AttemptCancellation::default(),
                 None,
             )),
         ),
