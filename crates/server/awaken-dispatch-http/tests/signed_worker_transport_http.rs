@@ -305,6 +305,7 @@ fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProj
         },
     );
     awaken_session_realization_contract::FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id: "workspace".into(),
         revision: awaken_session_types::SessionRevision(2),
         baseline,

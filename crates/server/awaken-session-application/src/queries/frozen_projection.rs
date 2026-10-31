@@ -117,6 +117,7 @@ impl SessionQueries {
             None => None,
         };
         Ok(FrozenSessionProjection {
+            bound_source_end: None,
             workspace_id: owner_scope,
             revision: session.revision,
             baseline,

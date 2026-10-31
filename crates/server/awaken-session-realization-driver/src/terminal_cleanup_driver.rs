@@ -403,6 +403,7 @@ pub(crate) mod tests {
             },
         );
         FrozenSessionProjection {
+            bound_source_end: None,
             workspace_id: "workspace".into(),
             revision: awaken_session_types::SessionRevision(2),
             baseline,

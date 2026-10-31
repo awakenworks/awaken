@@ -43,6 +43,10 @@ pub struct FrozenSessionInputs {
     /// Rebuildable model-only context materialized from the Session baseline's
     /// immutable transcript-prefix reference. Never committed to this Thread.
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
+    /// The Coordinator's projection of the Registry-recorded process end of
+    /// the Worker incarnation holding the Resident source. Read only through
+    /// [`crate::session_realizations::SessionRealizations::recorded_source_end`].
+    pub bound_source_end: Option<awaken_session_realization_contract::BoundSourceEnd>,
 }
 
 impl FrozenSessionInputs {
@@ -105,6 +109,9 @@ impl FrozenSessionInputs {
             environment_projection: self.environment_projection.clone(),
             environment_snapshot: self.environment_snapshot.clone(),
             baseline: self.baseline.clone(),
+            // A durable Registry fact about the source's incarnation; the
+            // retained owner's retry may still need it.
+            bound_source_end: self.bound_source_end.clone(),
             ..Self::default()
         }
     }

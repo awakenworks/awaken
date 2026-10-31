@@ -1,5 +1,6 @@
 //! Session realization commands, projections, and control ports.
 
+mod bound_source_end;
 mod claimed_control;
 #[cfg(feature = "test-support")]
 pub mod realization_observation;
@@ -41,6 +42,7 @@ pub(crate) use {
     awaken_session_types::SessionRuntimePlacement,
 };
 
+pub use bound_source_end::{BoundSourceEnd, RecordedProcessEnd};
 pub use claimed_control::{ClaimedSessionControlError, ClaimedSessionRealizationControl};
 pub use resource_operation_fence::ResourceOperationFence;
 pub use session_realization::*;

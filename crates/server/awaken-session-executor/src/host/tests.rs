@@ -1278,6 +1278,7 @@ fn compile_complete_test_session_projection(
         crate::session_resource::ResolvedSessionResources::default(),
     );
     awaken_session_realization_contract::FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id,
         revision: awaken_session_types::SessionRevision(1),
         baseline,
@@ -2705,6 +2706,7 @@ fn remote_terminal_cleanup_projection_with_idle_retention(
         },
     );
     awaken_session_realization_contract::FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id: "terminal-workspace".into(),
         revision: awaken_session_types::SessionRevision(1),
         baseline,

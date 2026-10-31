@@ -252,6 +252,7 @@ fn empty_frozen_projection_with_model(
         },
     );
     awaken_session_realization_contract::FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id: workspace_id.into(),
         revision: awaken_session_types::SessionRevision(1),
         baseline,
