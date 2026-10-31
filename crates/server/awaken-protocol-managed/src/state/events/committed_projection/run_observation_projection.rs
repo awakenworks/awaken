@@ -7,6 +7,7 @@
 //! Projection of Runtime-owned model and context observations (decided by
 //! [`awaken_managed_session_events::run_observation_facts`]).
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ManagedState {

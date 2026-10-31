@@ -121,6 +121,10 @@ pub fn resolve_operator_executable(
 }
 
 /// [`resolve_operator_executable`] against this process's own `PATH`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the local process provider looks up operator executables and the rootless systemd bus in the host environment"
+)]
 pub fn resolve_operator_launcher(name: &str) -> Result<std::path::PathBuf, SandboxError> {
     resolve_operator_executable(name, &std::env::var_os("PATH").unwrap_or_default()).ok_or_else(
         || {

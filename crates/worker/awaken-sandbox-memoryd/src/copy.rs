@@ -75,6 +75,10 @@ pub(crate) fn validate_copy_entries<'a>(
 /// True when this host can mount FUSE (`/dev/fuse` present + `fusermount` /
 /// `fusermount3` on `PATH`). When false, use [`materialize`] / [`harvest`].
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the Memory daemon resolves its copy helper on the host PATH"
+)]
 pub fn fuse_available() -> bool {
     if !cfg!(target_os = "linux") {
         return false;

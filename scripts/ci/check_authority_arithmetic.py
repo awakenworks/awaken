@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Reject arithmetic patterns that can silently rewrite durable authority."""
+"""Reject arithmetic patterns that can silently rewrite durable authority.
+
+Raw integer casts in the SQL adapter modules are the compiler's: each module
+denies `clippy::cast_possible_wrap`, `cast_sign_loss` and
+`cast_possible_truncation` outside cfg(test) (docs/design/guard-consolidation.md
+R14; wider than this guard's ` as i64`/` as u64` text match, which saw only
+authority-named lines). What stays here is what no lint names: an epoch
+increment re-derived outside its proved transition, a clamp (`.max(0)`) that
+hides a negative persisted authority, and a codec `expect` on a durable
+revision. Retires when every epoch is an `Epoch` newtype with a private field
+and every persisted authority goes through `StoredU64`.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +25,8 @@ import _crate_boundary_workspace
 ROOT = Path(__file__).resolve().parents[2]
 RULES = {
     "crates/stores/awaken-work-store/src/session_access.rs": ("lease_epoch + 1",),
-    "crates/server/awaken-dispatch/src/postgres.rs": (" as i64", " as u64", ".max(0)"),
-    "crates/server/awaken-dispatch/src/sqlite.rs": (" as i64", " as u64", ".max(0)"),
-    "crates/server/awaken-worker-registry/src/postgres.rs": (" as i64", " as u64"),
-    "crates/server/awaken-worker-registry/src/sqlite.rs": (" as i64", " as u64"),
+    "crates/server/awaken-dispatch/src/postgres.rs": (".max(0)",),
+    "crates/server/awaken-dispatch/src/sqlite.rs": (".max(0)",),
     "crates/server/awaken-worker-registry/src/transition.rs": ("saturating_add(1)",),
     "crates/server/awaken-sandbox-policy-store/src/lib.rs": ("saturating_add(1)",),
     "crates/contract/awaken-executable-environment-contract/src/image_realization.rs": (
@@ -42,7 +51,7 @@ AUTHORITY_IDENTIFIERS = (
     "version",
     "watermark",
 )
-PERSISTED_INTEGER_FORBIDDEN = (" as i64", " as u64", ".max(0)")
+PERSISTED_INTEGER_FORBIDDEN = (".max(0)",)
 
 
 def persistence_authority_sources(root: Path = ROOT) -> list[Path]:
@@ -121,16 +130,18 @@ def violations(root: Path = ROOT) -> list[str]:
 
 def self_test() -> int:
     # Cause/effect graph: C1 a crate declares an authority; C2 it depends on a
-    # SQL driver; C3 an adapter performs a raw cast on an authority identifier.
-    # E1 discovery includes the adapter; E2 the raw cast is rejected. A non-SQL
-    # authority and a non-authority byte-size cast remain outside this rule.
+    # SQL driver; C3 an adapter clamps an authority identifier (`.max(0)`);
+    # C4 an adapter casts one. E1 discovery includes the adapter; E2 the clamp
+    # is rejected; E3 the cast is left to the module's clippy cast lints. A
+    # non-SQL authority and a non-authority clamp remain outside this rule.
     #
-    # | Rule | authority | SQL | authority cast | Effect |
-    # | D1 | yes | yes | yes | E1 + E2 |
-    # | D2 | yes | no | yes | not a SQL adapter |
-    # | D3 | yes | yes | no (size only) | E1, no violation |
+    # | Rule | authority | SQL | authority clamp | authority cast | Effect |
+    # | D1 | yes | yes | yes | no  | E1 + E2 |
+    # | D2 | yes | no  | yes | no  | not a SQL adapter |
+    # | D3 | yes | yes | no (size only) | no | E1, no violation |
+    # | D4 | yes | yes | no  | yes | E1 + E3, no violation here |
     assert all(isinstance(value, tuple) and value for value in RULES.values())
-    assert any(" as i64" in tokens for tokens in RULES.values())
+    assert not any(" as i64" in tokens or " as u64" in tokens for tokens in RULES.values()), "D4"
     sources = {path.as_posix() for path in persistence_authority_sources()}
     assert any("awaken-store-postgres/src/lib.rs" in path for path in sources)
     assert any("awaken-store-sqlite/src/lib.rs" in path for path in sources)
@@ -155,7 +166,9 @@ def self_test() -> int:
             encoding="utf-8",
         )
         sql_crate.joinpath("src", "postgres.rs").write_text(
-            "fn store(revision: u64, bytes: usize) { let _ = revision as i64; let _ = bytes as i64; }\n",
+            "fn store(revision: i64) { let _ = revision.max(0); }\n"
+            "fn size(bytes: i64) { let _ = bytes.max(0); }\n"
+            "fn cast(revision: i64) { let _ = revision as u64; }\n",
             encoding="utf-8",
         )
         non_sql = fixture / "crates" / "non-sql-authority"
@@ -164,14 +177,14 @@ def self_test() -> int:
             '[package.metadata.awaken]\nauthority = "fixture"\n', encoding="utf-8"
         )
         non_sql.joinpath("src", "postgres.rs").write_text(
-            "fn store(revision: u64) { let _ = revision as i64; }\n",
+            "fn store(revision: i64) { let _ = revision.max(0); }\n",
             encoding="utf-8",
         )
         fixture_sources = persistence_authority_sources(fixture)
         assert fixture_sources == [sql_crate / "src" / "postgres.rs"], "D1/D2"
         fixture_errors = violations(fixture)
-        assert len(fixture_errors) == 1 and "revision as i64" not in fixture_errors[0]
-        assert "forbidden ' as i64'" in fixture_errors[0], "D1/E2; size cast is ignored"
+        assert len(fixture_errors) == 1, "D1/E2 once; D3 size clamp and D4 cast are not this rule's"
+        assert "forbidden '.max(0)'" in fixture_errors[0], "D1/E2"
         assert "this context's StoredU64 codec" in fixture_errors[0], "D1/E2 names the owner"
     print("authority arithmetic guard self-test passed")
     return 0

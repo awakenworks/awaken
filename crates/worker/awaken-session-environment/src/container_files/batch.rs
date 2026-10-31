@@ -9,6 +9,7 @@
 // @formal reason: consumers verify fsGroup and retained data. This is a product-requirement
 // @formal reason: classification, not a direct formal proof of shell or filesystem behavior.
 //! Bounded detached transfer for the one atomic read-only tree installer.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 const COMMAND_BYTES: usize = 64 * 1024;

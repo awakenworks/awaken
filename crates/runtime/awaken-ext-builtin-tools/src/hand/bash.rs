@@ -144,6 +144,10 @@ struct BashSession {
 }
 
 impl BashSession {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the Hand's bash tool passes the host environment and PATH through to the shell it spawns"
+    )]
     fn spawn(context: &HandToolContext) -> Result<Self, ToolError> {
         let mut command = match &context.bash_launcher {
             Some(Ok((program, args))) => {
@@ -420,6 +424,10 @@ fn persistent_bash_command() -> tokio::process::Command {
 }
 
 #[cfg(windows)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the Hand's bash tool passes the host environment and PATH through to the shell it spawns"
+)]
 fn windows_posix_shell() -> Option<String> {
     for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let shell = directory.join("sh.exe");

@@ -280,6 +280,10 @@ async fn run_outcome_acp(args: &[String]) -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the evaluation runner is its own process root and reads its run configuration from the environment"
+)]
 fn acp_launch(argv_json: &str) -> Result<AcpLaunchArgs, String> {
     let argv: Vec<String> = serde_json::from_str(argv_json)
         .map_err(|error| format!("invalid ACP argv JSON: {error}"))?;

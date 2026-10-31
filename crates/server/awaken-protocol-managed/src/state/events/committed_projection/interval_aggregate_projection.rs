@@ -2,6 +2,7 @@
 //! Canonical aggregate projections for persisted Session runtime intervals,
 //! selected by the sole [`awaken_managed_session_events::plan_aggregate`].
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{AggregatePlan, EventIdentity};
 

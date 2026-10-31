@@ -13,6 +13,10 @@
 //! This crate deliberately separates the non-replaceable eligibility kernel from
 //! replaceable ranking policy. A policy may order workers that already satisfy the
 //! durable requirements, but it cannot widen authority; mutable adapters live elsewhere.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod capability_agreement;
 mod fleet_readiness;

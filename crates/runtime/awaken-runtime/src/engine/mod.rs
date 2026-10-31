@@ -105,12 +105,16 @@ use delegation::{
     stage_delegation_completed, stage_delegation_request,
 };
 use finalize::{finalize, finish};
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use inference::*;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use progress::*;
 pub(crate) use resume::ResumeContinuation;
 use resume::{drive_resumed, drive_tool_batch, fresh_resume_context};
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use run_loop::*;
 pub(crate) use tool_execution::RuntimeToolOperation;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use tool_execution::*;
 
 /// A Native-loop phase owned on the heap.

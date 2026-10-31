@@ -51,3 +51,6 @@ test-support = ["awaken-outbound-http/test-support"]
 [[test]]
 name = "webhook_e2e"
 required-features = ["test-support"]
+
+[lints]
+workspace = true

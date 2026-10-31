@@ -1,5 +1,6 @@
 //! Committed child transcript classification and coordination cross-post projection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_managed_session_events::{
     ChildTranscriptPlan, ChildTranscriptStep, DerivedSessionEvent, EventIdentity, FactProvenance,

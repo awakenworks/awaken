@@ -1,6 +1,7 @@
 // @formal surface requirement=control.admin_publication.audited_publication
 // @formal reason: This source implements the repository-controlled publication product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl CatalogModelPublicationResolver {

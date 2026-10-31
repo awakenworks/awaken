@@ -7,6 +7,7 @@
 
 use super::candidate_evidence::CandidateEvidence;
 use super::root_projection::RootProjection;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ManagedState {

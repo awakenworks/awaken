@@ -7,6 +7,7 @@
 
 use std::io::Read;
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) struct ProviderServerWebFetchTool;

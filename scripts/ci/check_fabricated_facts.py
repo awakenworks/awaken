@@ -18,11 +18,16 @@ incentive: a store takes a ``WallClock`` at construction, a test hands it a
 ``ManualClock``, and the durable value is a fact the test names.  So the clock
 may be read only inside the one crate that owns the wall-clock port
 (``CLOCK_PORT_CRATE``) or where the program is composed; everywhere else it
-arrives as an argument.  An ambient read is any spelling that reaches the real
-clock without a handle: ``SystemTime::now()``, ``Instant::now()``,
-``Utc::now()``, a concrete clock value asked for its time
-(``SystemClock.now_ms()``, ``Clock::now_ms(&SystemClock)``) and
-``system_clock().now()``.
+arrives as an argument.  The library reads (``SystemTime::now()``,
+``Instant::now()`` from std and tokio, ``Utc::now()``, ``Local::now()``,
+``OffsetDateTime::now_utc()``, under any alias) are denied by the workspace
+``clippy.toml`` in production code, where a reviewed composition-root site
+carries ``#[expect(clippy::disallowed_methods, reason = ..)]``
+(docs/design/guard-consolidation.md R13).  This rule keeps what clippy cannot
+name: a concrete clock *value* asked for its time (``SystemClock.now_ms()``,
+``Clock::now_ms(&SystemClock)``) and ``system_clock().now()``.  It is at zero
+and a hard rule; it retires when no concrete clock type outside the
+clock-port crate exposes a ``now*`` method.
 
 Three more shapes are how the clock *authority* splits even when every read goes
 through a port, and each one produced a live defect (``53c4fa0d36``,
@@ -57,7 +62,7 @@ without ``cfg(test)``/``cfg(kani)`` are removed, so ``cfg(any(test, feature =
 "x"))`` code — which ships when the feature is on — is scanned, and a braceless
 ``#[cfg(test)] use ...;`` removes that one item and nothing after it.
 
-R3, R4 and R5 reached zero and are hard rules (``HARD_RULES``): every
+R2, R3, R4 and R5 reached zero and are hard rules (``HARD_RULES``): every
 occurrence fails and the baseline holds no record for them (plan v5 S2).
 
 Every baseline entry carries an **owner and an expiry date**.  A ratchet with no
@@ -124,133 +129,16 @@ OBSERVATION_CONST = re.compile(
 CLOCK_PORT_CRATE = "awaken-time"
 
 AMBIENT_CLOCK = re.compile(
-    # The std, tokio and chrono ambient reads.
-    r"\b(?:SystemTime|Instant|Utc)\s*::\s*now\s*\(\s*\)"
-    r"|\bOffsetDateTime\s*::\s*now_utc\s*\(\s*\)"
     # A concrete clock *value* asked for its time: `SystemClock.now_ms()`,
     # `awaken_dispatch::SystemClock.now_ms()`, `TokioModelInferenceClock.now()`.
-    # A handle (`self.clock.now()`) is lower-case and is not matched.
-    r"|\b[A-Z]\w*Clock\s*(?:::\s*default\s*\(\s*\)\s*)?\.\s*now\w*\s*\("
+    # A handle (`self.clock.now()`) is lower-case and is not matched. The std,
+    # tokio, chrono and time reads are clippy's (clippy.toml, R13).
+    r"\b[A-Z]\w*Clock\s*(?:::\s*default\s*\(\s*\)\s*)?\.\s*now\w*\s*\("
     # The same read spelled as a qualified call: `Clock::now_ms(&SystemClock)`.
     r"|\b\w*Clock\s*::\s*now\w*\s*\(\s*&\s*(?:[A-Za-z_]\w*\s*::\s*)*[A-Z]\w*Clock\b"
     # The composition-root factory read in place instead of handed down.
     r"|\bsystem_clock\s*\(\s*\)\s*\.\s*now\w*\s*\("
 )
-
-# A renamed import or type alias is still the same ambient clock method. Keep
-# this inside R2's existing production/cfg/exception walk rather than adding a
-# second clock policy with a separate allow-list.
-CLOCK_DIRECT_ALIAS = re.compile(
-    r"(?m)(?:^|(?<=[;{}]))[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+"
-    r"(?:::)?"
-    r"(?P<path>(?:std|tokio)\s*::\s*time\s*::\s*(?:Instant|SystemTime)"
-    r"|chrono\s*::\s*Utc|time\s*::\s*OffsetDateTime)"
-    r"\s+as\s+(?P<alias>[A-Za-z_]\w*)\s*;"
-)
-CLOCK_GROUP_ALIAS = re.compile(
-    r"(?m)(?:^|(?<=[;{}]))[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+"
-    r"(?:::)?(?P<path>(?:std|tokio)(?:\s*::\s*time)?|chrono|time)\s*::\s*"
-    r"\{(?P<items>[^{}]*)\}\s*;"
-)
-CLOCK_TYPE_ALIAS = re.compile(
-    r"(?m)(?:^|(?<=[;{}]))[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?type[ \t]+"
-    r"(?P<alias>[A-Za-z_]\w*)\s*=\s*(?:::)?"
-    r"(?P<path>(?:std|tokio)\s*::\s*time\s*::\s*(?:Instant|SystemTime)"
-    r"|chrono\s*::\s*Utc|time\s*::\s*OffsetDateTime)\s*;"
-)
-CLOCK_ALIAS_SHADOW = re.compile(
-    r"\b(?:struct|enum|union|trait|type)\s+(?P<name>[A-Za-z_]\w*)\b"
-)
-CLOCK_ALIAS_IMPORT_SHADOW = re.compile(
-    r"(?m)(?:^|(?<=[;{}]))[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+"
-    r"(?P<path>(?:::)?[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)+)"
-    r"(?:\s+as\s+(?P<alias>[A-Za-z_]\w*))?\s*;"
-)
-
-
-def _ambient_alias_uses(production: str) -> list[re.Match[str]]:
-    """Resolve clock aliases within their visible brace scopes in R2's scan.
-
-    Reuse the production projection and its existing Rust literal boundaries;
-    this is not another cfg gate or a second clock-authority parser.
-    """
-    code = workspace.rust_syntax(production)
-    bindings: list[tuple[str, str, int]] = []
-
-    def retain(path: str, alias: str, position: int) -> None:
-        path = re.sub(r"\s+", "", path).removeprefix("::")
-        if path in {"std::time::Instant", "tokio::time::Instant", "std::time::SystemTime", "chrono::Utc"}:
-            method = "now"
-        elif path == "time::OffsetDateTime":
-            method = "now_utc"
-        else:
-            return
-        if alias not in {"Instant", "SystemTime", "Utc", "OffsetDateTime"}:
-            bindings.append((alias, method, position))
-
-    for pattern in (CLOCK_DIRECT_ALIAS, CLOCK_TYPE_ALIAS):
-        for match in pattern.finditer(code):
-            retain(match["path"], match["alias"], match.start())
-    for group in CLOCK_GROUP_ALIAS.finditer(code):
-        base = re.sub(r"\s+", "", group["path"])
-        for item in re.finditer(
-            r"\b(?:(time)\s*::\s*)?(Instant|SystemTime|Utc|OffsetDateTime)"
-            r"\s+as\s+([A-Za-z_]\w*)\b",
-            group["items"],
-        ):
-            prefix = f"{item[1]}::" if item[1] else ""
-            retain(f"{base}::{prefix}{item[2]}", item[3], group.start())
-    if not bindings:
-        return []
-
-    aliases = {(name, method) for name, method, _ in bindings}
-    uses = [
-        (name, method, match)
-        for name, method in sorted(aliases)
-        for match in re.finditer(
-            rf"\b{re.escape(name)}\s*::\s*{method}\s*\(\s*\)", code
-        )
-    ]
-    shadows = [(match["name"], match.start()) for match in CLOCK_ALIAS_SHADOW.finditer(code)]
-    shadows.extend(
-        (
-            match["alias"] or re.sub(r"\s+", "", match["path"]).rsplit("::", 1)[-1],
-            match.start(),
-        )
-        for match in CLOCK_ALIAS_IMPORT_SHADOW.finditer(code)
-    )
-    positions = {position for _, _, position in bindings}
-    positions.update(match.start() for _, _, match in uses)
-    positions.update(position for _, position in shadows)
-    scopes: dict[int, tuple[int, ...]] = {}
-    stack: list[int] = []
-    for position, character in enumerate(code):
-        if position in positions:
-            scopes[position] = tuple(stack)
-        if character == "{":
-            stack.append(position)
-        elif character == "}" and stack:
-            stack.pop()
-
-    def visible(declared: int, used: int) -> bool:
-        scope = scopes[declared]
-        return scopes[used][: len(scope)] == scope
-
-    result = []
-    for name, method, match in uses:
-        clock_depth = max(
-            (len(scopes[position]) for alias, call, position in bindings
-             if alias == name and call == method and visible(position, match.start())),
-            default=-1,
-        )
-        shadow_depth = max(
-            (len(scopes[position]) for alias, position in shadows
-             if alias == name and visible(position, match.start())),
-            default=-1,
-        )
-        if clock_depth >= 0 and clock_depth >= shadow_depth:
-            result.append(match)
-    return result
 
 CLOCK_TRAIT = re.compile(r"\btrait\s+\w*Clock\b")
 
@@ -329,7 +217,9 @@ RULES: tuple[tuple[str, str], ...] = (
     ("shadow_clock_helper", "shadow `fn now*()` clock helper"),
 )
 # Rules at zero: plain denies with no baseline record.
-HARD_RULES = frozenset({"clock_trait_declaration", "defaulted_system_clock", "shadow_clock_helper"})
+HARD_RULES = frozenset(
+    {"ambient_clock_read", "clock_trait_declaration", "defaulted_system_clock", "shadow_clock_helper"}
+)
 
 # Every ratchet baseline in this repository must carry an owner and an expiry.
 # `check_degrading_defaults.py` holds its own, in the same shape, and is checked
@@ -435,7 +325,6 @@ def _clock_rule_violations(
     message: str,
     *,
     composition_roots_exempt: bool,
-    include_clock_aliases: bool = False,
 ) -> dict[str, list[str]]:
     """Findings of one clock-authority rule, keyed by file.
 
@@ -450,18 +339,10 @@ def _clock_rule_violations(
             continue
         if composition_roots_exempt and relpath in COMPOSITION_ROOTS:
             continue
-        alias_candidate = (
-            include_clock_aliases
-            and "::" in text
-            and "now" in text
-            and re.search(r"\b(?:as|type)\b", text) is not None
-        )
-        if pattern.search(text) is None and not alias_candidate:
+        if pattern.search(text) is None:
             continue
         production = _production(text)
         matches = list(pattern.finditer(production))
-        if include_clock_aliases:
-            matches.extend(_ambient_alias_uses(production))
         hits = [
             f"{relpath}:{_line_of(production, match.start())}: "
             f"`{' '.join(match.group(0).split())}` {message}"
@@ -483,7 +364,6 @@ def ambient_clock_violations(
         f"reads the real clock outside {CLOCK_PORT_CRATE}. Take its `WallClock` (or the "
         "caller's sampled instant) so a test can name the value this writes",
         composition_roots_exempt=True,
-        include_clock_aliases=True,
     )
 
 
@@ -623,24 +503,15 @@ def selftest() -> None:
     `#[cfg(test)]`; L4 the same inside a `tests/` file; L5 a date literal that
     reaches no observation field (a migration default keyed by another name, a
     version string); L6 a literal in a comment.
-    R2 causes: C1 `SystemTime::now()` in an ordinary module; C2 `Instant::now()`
-    likewise; C3 either inside the clock-port crate; C4 either in a named
-    composition root; C5 either inside `#[cfg(test)]`; C6 a file that declares
-    its own clock trait (formerly a whole-file exemption); C7 `Utc::now()`;
-    C8 a concrete clock value read in place (`SystemClock.now_ms()`, qualified,
+    R2 causes: C3 a concrete clock read inside the clock-port crate; C4 in a
+    named composition root; C5 inside `#[cfg(test)]`; C6 in a file that
+    declares its own clock trait (formerly a whole-file exemption); C8 a
+    concrete clock value read in place (`SystemClock.now_ms()`, qualified,
     UFCS, `TokioModelInferenceClock.now()`, `system_clock().now()`); C9 a read
     under `cfg(any(test, feature = ...))`, which ships with the feature; C10 a
     read after a braceless `#[cfg(test)] use ...;`; C11 a handle read
-    (`self.clock.now_ms()`); C12 a renamed direct clock import; C13 grouped
-    import and type aliases; C14 those aliases inside test-only code or a
-    composition root; C15 an unrelated alias; C16 a feature-shipping alias;
-    C17 `std::{time::Instant as X}`; C18 sibling module with a local type of
-    the same name; C19 alias and use in the same module; C20 a deeper block
-    whose type shadows a clock alias; C21 braces inside a string literal;
-    C22 module aliases whose final `Instant`/`Utc` segment R2 already sees;
-    C23 a local block shadows an alias only until that block ends; C24 an
-    inline module's import and use are in the same scope; C25 a child module
-    imports an unrelated type under the parent's clock-alias name.
+    (`self.clock.now_ms()`); C26 a std/tokio/chrono library read, aliased or
+    not (C1, C2, C7, C12-C25 before): clippy.toml's, not this rule's.
     R3 causes: T1 `trait *Clock` in an ordinary module; T2 inside the
     clock-port crate; T3 inside `#[cfg(test)]`.
     R4 causes: D1 `Arc::new(SystemClock)`; D2 the same path-qualified across
@@ -651,8 +522,7 @@ def selftest() -> None:
     S3 inside the clock-port crate; S4 inside `#[cfg(test)]`.
     Effects: E1 admitted, E2 reported.
     Rules: R1: L1|L2 => E2; L3|L4|L5|L6 => E1.
-           R2: C1|C2|C6|C7|C8|C9|C10|C12|C13|C16|C17|C19|C21|C22|C23|C24 => E2;
-               C3|C4|C5|C11|C14|C15|C18|C20|C25 => E1.
+           R2: C6|C8|C9|C10 => E2; C3|C4|C5|C11|C26 => E1.
            R3: T1 => E2; T2|T3 => E1.   R4: D1|D2|D3|D6 => E2; D4|D5|D7 => E1.
            R5: S1|S2 => E2; S3|S4 => E1.
            Expiry: X1 a future expiry with an owner => E1; X2 a past expiry =>
@@ -690,33 +560,22 @@ def selftest() -> None:
     # ── R2 ──
     port = frozenset({"crates/runtime/awaken-time/src/clock.rs"})
     port_file = sorted(port)[0]
+    concrete = "SystemClock.now_ms()"
 
-    c1 = {"a.rs": "fn stamp() -> u64 { SystemTime::now().elapsed() }\n"}
-    assert ambient_clock_violations(c1), "C1/E2"
-
-    c2 = {"a.rs": "fn started() -> Instant { Instant::now() }\n"}
-    assert ambient_clock_violations(c2), "C2/E2"
-
-    c3 = {
-        port_file: "pub trait WallClock { fn now(&self); }\n"
-        "impl WallClock for SystemWallClock { fn now(&self) { SystemTime::now() } }\n"
-    }
+    c3 = {port_file: "fn read() -> u64 { system_clock().now_ms() }\n"}
     assert not ambient_clock_violations(c3, port), "C3/E1"
 
     root = sorted(COMPOSITION_ROOTS)[0]
-    assert not ambient_clock_violations({root: "let t = Instant::now();\n"}), "C4/E1"
+    assert not ambient_clock_violations({root: f"let t = {concrete};\n"}), "C4/E1"
 
-    c5 = {"a.rs": "#[cfg(test)]\nmod tests {\n    fn t() { let _ = Instant::now(); }\n}\n"}
+    c5 = {"a.rs": f"#[cfg(test)]\nmod tests {{\n    fn t() {{ let _ = {concrete}; }}\n}}\n"}
     assert not ambient_clock_violations(c5), "C5/E1"
 
     c6 = {
         "worker.rs": "pub trait WorkerClock { fn now_ms(&self) -> u64; }\n"
-        "fn request_id() -> u64 { SystemTime::now().x() }\n"
+        f"fn request_id() -> u64 {{ {concrete} }}\n"
     }
     assert ambient_clock_violations(c6), "C6/E2 declaring a clock no longer exempts a file"
-
-    c7 = {"a.rs": "let expiry = chrono::Utc::now() + ttl;\n"}
-    assert ambient_clock_violations(c7), "C7/E2"
 
     for spelling in (
         "let now = SystemClock.now_ms();",
@@ -730,13 +589,13 @@ def selftest() -> None:
 
     c9 = {
         "a.rs": '#[cfg(any(test, feature = "durable"))]\n'
-        "pub(crate) fn stamp() -> u64 { SystemTime::now().x() }\n"
+        f"pub(crate) fn stamp() -> u64 {{ {concrete} }}\n"
     }
     assert ambient_clock_violations(c9), "C9/E2 a feature-gated item ships"
 
     c10 = {
         "a.rs": "#[cfg(test)]\nuse crate::fixtures::Item;\n\n"
-        "pub fn stamp() -> u64 {\n    SystemTime::now().x()\n}\n"
+        f"pub fn stamp() -> u64 {{\n    {concrete}\n}}\n"
     }
     hits = ambient_clock_violations(c10).get("a.rs", [])
     assert len(hits) == 1 and hits[0].startswith("a.rs:5:"), f"C10/E2 {hits}"
@@ -744,90 +603,13 @@ def selftest() -> None:
     c11 = {"a.rs": "fn stamp(&self) -> u64 { self.clock.now_ms() }\n"}
     assert not ambient_clock_violations(c11), "C11/E1"
 
-    c12 = {
-        "a.rs": "use std::time::Instant as DeadlineInstant;\n"
-        "fn stamp() { let _ = DeadlineInstant::now(); }\n"
-    }
-    hits = ambient_clock_violations(c12).get("a.rs", [])
-    assert len(hits) == 1 and hits[0].startswith("a.rs:2:"), f"C12/E2 {hits}"
-
-    c13 = {
-        "a.rs": "use std::time::{SystemTime as WallNow, Instant as MonoNow};\n"
-        "type DateNow = time::OffsetDateTime;\n"
-        "fn stamp() { WallNow::now(); MonoNow::now(); DateNow::now_utc(); }\n"
-    }
-    assert len(ambient_clock_violations(c13).get("a.rs", [])) == 3, "C13/E2"
-
-    c14 = {
-        "a.rs": "#[cfg(test)]\nmod tests {\n"
-        "use chrono::Utc as WallNow;\nfn fixture() { WallNow::now(); }\n}\n"
-    }
-    assert not ambient_clock_violations(c14), "C14/E1 test-only"
-    assert not ambient_clock_violations({root: c12["a.rs"]}), "C14/E1 composition root"
-    c15 = {"a.rs": "use service::Clock as LocalClock;\nfn f() { LocalClock::now(); }\n"}
-    assert not ambient_clock_violations(c15), "C15/E1 unrelated alias"
-    c16 = {
-        "a.rs": '#[cfg(any(test, feature = "live"))]\n'
-        "mod live {\nuse tokio::time::Instant as ClockInstant;\n"
-        "fn stamp() { ClockInstant::now(); } }\n"
-    }
-    assert ambient_clock_violations(c16), "C16/E2 feature-shipping alias"
-
-    c17 = {"a.rs": "use std::{time::Instant as X};\nfn f() { X::now(); }\n"}
-    assert ambient_clock_violations(c17), "C17/E2 nested grouped import"
-    c18 = {
-        "a.rs": "mod a {\n use std::time::Instant as ClockInstant;\n}\n"
-        "mod b {\n struct ClockInstant; impl ClockInstant { fn now() {} }\n"
-        " fn f() { ClockInstant::now(); }\n}\n"
-    }
-    assert not ambient_clock_violations(c18), "C18/E1 sibling alias is not visible"
-    c18_inline = {
-        "a.rs": "mod a { use std::time::Instant as ClockInstant; } "
-        "mod b { struct ClockInstant; fn f() { ClockInstant::now(); } }\n"
-    }
-    assert not ambient_clock_violations(c18_inline), "C18/E1 inline sibling"
-    c19 = {
-        "a.rs": "mod a {\n use std::time::Instant as ClockInstant;\n"
-        " fn f() { ClockInstant::now(); }\n}\n"
-    }
-    assert ambient_clock_violations(c19), "C19/E2 alias visible in its module"
-    c20 = {
-        "a.rs": "use std::time::Instant as ClockInstant;\n"
-        "fn f() {\n type ClockInstant = LocalClock;\n ClockInstant::now();\n}\n"
-    }
-    assert not ambient_clock_violations(c20), "C20/E1 inner type shadows import"
-    c21 = {
-        "a.rs": "use std::time::Instant as ClockInstant;\n"
-        'const BRACE: &str = "{";\nfn f() { ClockInstant::now(); }\n'
-    }
-    assert ambient_clock_violations(c21), "C21/E2 string braces do not change scope"
-    c22 = {
-        "a.rs": "use std::time as clock; use chrono as c;\n"
-        "fn f() { clock::Instant::now(); c::Utc::now(); }\n"
-    }
-    assert len(ambient_clock_violations(c22).get("a.rs", [])) == 2, "C22/E2 module aliases"
-    c23 = {
-        "a.rs": "use std::time::Instant as ClockInstant;\n"
-        "fn f() {\n {\n  type ClockInstant = LocalClock;\n"
-        "  ClockInstant::now();\n }\n ClockInstant::now();\n}\n"
-    }
-    assert len(ambient_clock_violations(c23).get("a.rs", [])) == 1, "C23 block shadow ends"
-    c23_inline = {
-        "a.rs": "use std::time::Instant as ClockInstant;\n"
-        "fn f() { { type ClockInstant = LocalClock; ClockInstant::now(); } ClockInstant::now(); }\n"
-    }
-    assert len(ambient_clock_violations(c23_inline).get("a.rs", [])) == 1, "C23 inline block"
-    c24 = {
-        "a.rs": "mod a { use std::time::Instant as ClockInstant; "
-        "fn f() { ClockInstant::now(); } }\n"
-    }
-    assert ambient_clock_violations(c24), "C24/E2 inline module alias"
-    c25 = {
-        "a.rs": "use std::time::Instant as ClockInstant;\n"
-        "mod child {\n use other::ClockInstant;\n"
-        " fn f() { ClockInstant::now(); }\n}\n"
-    }
-    assert not ambient_clock_violations(c25), "C25/E1 child import shadows parent alias"
+    for library_read in (
+        "fn stamp() -> u64 { SystemTime::now().elapsed() }",
+        "fn started() -> Instant { Instant::now() }",
+        "let expiry = chrono::Utc::now() + ttl;",
+        "use std::time::Instant as DeadlineInstant;\nfn stamp() { let _ = DeadlineInstant::now(); }",
+    ):
+        assert not ambient_clock_violations({"a.rs": library_read + "\n"}), f"C26/E1 clippy's {library_read}"
 
     # ── R3 ──
     assert clock_trait_violations({"a.rs": "pub trait RegistryClock: Send {}\n"}), "T1/E2"

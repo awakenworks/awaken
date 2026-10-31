@@ -3,6 +3,7 @@
 // @formal entrypoint acp.permission_tool_identity_normalization_is_exact
 //! Agent-to-client permission request handling for the ACP JSON-RPC driver.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::{PermissionConsensus, permission_consensus_class};
 

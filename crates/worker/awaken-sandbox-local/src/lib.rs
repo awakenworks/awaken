@@ -1057,6 +1057,10 @@ impl RuntimePathEnv {
         ]
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the local Sandbox provider passes the host PATH and passthrough variables to the processes it launches"
+    )]
     fn bash_env(&self) -> std::collections::BTreeMap<String, String> {
         let mut env = workdir_shell::workdir_bash_passthrough(std::env::vars());
         env.extend(

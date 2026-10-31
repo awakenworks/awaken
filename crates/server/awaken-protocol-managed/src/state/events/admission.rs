@@ -5,6 +5,7 @@
 // @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Atomic Managed inbound-event validation, lowering, retention, and receipt projection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::state::sessions::owned_session_access;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;

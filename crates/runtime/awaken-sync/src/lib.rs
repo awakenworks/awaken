@@ -26,8 +26,10 @@
 //! depends on no crate.
 
 #![warn(unreachable_pub)]
-// The one place the poisoning law reads the `std::sync` locks it wraps.
-#![allow(clippy::disallowed_methods)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "the one place the poisoning law reads the std::sync locks it wraps"
+)]
 
 use std::fmt;
 use std::sync::{

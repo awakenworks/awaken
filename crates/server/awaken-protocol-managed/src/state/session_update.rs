@@ -3,6 +3,7 @@
 // @formal reason: Session update mutation over revisioned truth.
 //! Managed wire projection around the canonical Session update command.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 impl ManagedState {

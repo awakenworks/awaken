@@ -3,6 +3,7 @@
 //! local File/Skill/reclamation authorities. Artifact publication belongs to
 //! the realization executor.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 /// Worker-side Resource content ports that must be installed as one unit.

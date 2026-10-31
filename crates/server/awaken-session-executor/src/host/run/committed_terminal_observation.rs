@@ -6,6 +6,7 @@
 //! delivers its terminal observation before ordinary Session construction may
 //! reach the Environment lifecycle (dispatch side: `host::dispatch_reconciliation`).
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 

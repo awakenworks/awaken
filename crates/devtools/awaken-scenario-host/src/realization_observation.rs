@@ -5,6 +5,10 @@ use awaken_session_realization_contract::realization_observation::{self, Realiza
 use awaken_sync::LeafLock;
 use std::{io::Write, path::PathBuf, sync::Arc};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub fn install_from_environment() {
     if let Some(directory) = std::env::var_os("AWAKEN_REALIZATION_OBSERVATION_DIR") {
         realization_observation::install(Arc::new(FileObserver {

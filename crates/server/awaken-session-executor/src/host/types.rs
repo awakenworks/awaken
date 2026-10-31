@@ -8,6 +8,7 @@
 //! Neutral value types produced/consumed by [`ExecutorComponents`]: pending tools,
 //! run results, resume commands, host errors, and outcome reports.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// The neutral resume command: answer a built-in tool's permission gate, or

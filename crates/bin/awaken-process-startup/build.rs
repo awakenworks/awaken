@@ -4,6 +4,10 @@ use std::process::Command;
 
 mod build_support;
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a build script reads the build environment Cargo sets"
+)]
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let workspace = manifest_dir

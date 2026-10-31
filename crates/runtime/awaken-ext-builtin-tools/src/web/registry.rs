@@ -3,6 +3,7 @@
 // @formal reason: descriptors carry no authorization and publication uses the same exact routes.
 //! Provider registration and its descriptor-derived configuration schema.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// One authoritative source for provider discovery and dispatch.

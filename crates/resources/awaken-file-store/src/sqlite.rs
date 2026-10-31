@@ -8,6 +8,14 @@
 //! immutable/dedup contract; the id is computed in the core, so equal bytes yield
 //! the same id on every backend. The store reaches SQLite through the embedded
 //! sqlx pool policy (ADR-0087).
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use async_trait::async_trait;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
@@ -42,6 +50,10 @@ fn cs(x: impl ToString) -> FileCatalogError {
     ce(e(x))
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+)]
 fn row_record(row: &SqliteRow) -> Result<FileRecord, sqlx::Error> {
     Ok(FileRecord {
         id: row.try_get(0)?,
@@ -190,6 +202,10 @@ impl SqliteFileStore {
         Ok(Ok(outcome))
     }
 
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn create_record(
         &self,
         record: FileRecord,
@@ -308,6 +324,10 @@ impl SqliteFileStore {
 
 #[async_trait]
 impl FileStore for SqliteFileStore {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);
         let size = bytes.len() as i64;
@@ -493,6 +513,10 @@ impl FileCatalog for SqliteFileStore {
         .map_err(cs)
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
+    )]
     async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
         sqlx::query_scalar::<_, i64>(&format!(
             "SELECT COALESCE(SUM(size_bytes),0) FROM {NS}_file \

@@ -1,6 +1,7 @@
 // @formal entrypoint session_creation.repository_receipt_is_the_only_post_create_effect_gate
 //! DeploymentRun idempotency at the existing Managed Session boundary.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 const DEPLOYMENT_RUN_ID: &str = "awaken.deployment_run_id";

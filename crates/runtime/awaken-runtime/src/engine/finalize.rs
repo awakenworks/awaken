@@ -4,6 +4,7 @@
 // @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! The single awaiting/terminal commit boundary for a Runtime step.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 

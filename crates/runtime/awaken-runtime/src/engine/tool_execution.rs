@@ -4,6 +4,7 @@
 // @formal entrypoint tool.executor_entry_order
 //! Tool authorization, execution selection, and resumed-result folding.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_tool_contract::tool::{
     DurableTaskExecutor, ToolTaskContinuation, start_executor_task, start_tool_task,

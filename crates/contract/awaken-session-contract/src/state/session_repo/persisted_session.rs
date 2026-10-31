@@ -8,6 +8,7 @@
 // @formal entrypoint session_resources.terminal_session_never_reactivates
 //! The durable Managed Session aggregate and its root-owned projections.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_session_configuration_contract::VisibleMcpServer;
 

@@ -83,6 +83,10 @@ pub mod worker_http {
     }
 
     #[must_use]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the conformance host stamps and advances its fixture time on the host wall clock"
+    )]
     pub fn unix_now_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -381,6 +385,10 @@ impl ConformanceClock for AuthoritativeWallClock {
         false
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the conformance host stamps and advances its fixture time on the host wall clock"
+    )]
     async fn advance_past(&self, deadline_ms: u64) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

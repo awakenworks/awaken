@@ -5,6 +5,10 @@
 //! The service is the only command path that coordinates authored definitions, exact
 //! sandbox-policy versions, and executable registration. HTTP, Admin Assistant,
 //! standalone Control, and AllInOne all reuse this implementation.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 use std::sync::Arc;
 

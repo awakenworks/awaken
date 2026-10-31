@@ -7,6 +7,10 @@ use std::ffi::OsString;
 /// Product processes invoke this before constructing any provider SDK or
 /// Worker so future adapters cannot accidentally revive SDK environment
 /// fallback. Only variable names are inspected; values are never read.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "process start refuses ambient API-key variables; only the variable names are read"
+)]
 pub fn reject_ambient_api_key_environment() -> Result<(), AmbientApiKeyEnvironmentError> {
     reject_ambient_api_key_names(std::env::vars_os().map(|(name, _)| name))
 }

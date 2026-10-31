@@ -7,6 +7,7 @@
 // @formal entrypoint credential.rotation_revision_cas
 // @formal entrypoint credential.visible_row_always_has_material
 // awaken-allow(file-limit-ceiling): 1724
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::persist_material_exact;
 use awaken_time::WallClock;

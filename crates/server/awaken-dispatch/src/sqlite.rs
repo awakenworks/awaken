@@ -10,6 +10,14 @@
 //! awaiting run with pending input, then a fresh run — matches
 //! the test-support `MemoryDispatchStore` reference backend exactly. Each
 //! operation holds the store's one sqlx connection (ADR-0087) for its whole span.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use crate::dispatch::{no_running_peer, thread_available_for_claim};
 use std::sync::Arc;

@@ -514,6 +514,10 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 /// owns the CLI's `.acp-config`; the resolver's host path is overwritten before
 /// launch, so the CLI never touches the operator's real `~/.claude`. Drives a
 /// real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_acp_real_mcp_router() -> Router {
     let deployment = scenario_deployment();
     let store_dir = deployment.storage_dir.clone();
@@ -625,6 +629,10 @@ pub async fn build_acp_gateway_router_with_deployment(
 /// Typed-deployment variant used by embedders and hermetic tests. The ordinary
 /// scenario entry point above remains fail-closed when its requested namespace
 /// cannot be created; callers must explicitly select `Local` to run unsandboxed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_acp_sandboxed_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
 ) -> Router {
@@ -747,6 +755,10 @@ pub(crate) async fn bind_acp_session_environment(
 /// deployment has no fixed-argv environment override. Needs `--features container-docker`, a production
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_acp_container_router() -> Router {
     let mut deployment = scenario_deployment();
     let storage_dir = deployment.storage_dir.clone().unwrap_or_else(|| {

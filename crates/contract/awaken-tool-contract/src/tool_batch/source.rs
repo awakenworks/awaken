@@ -1,5 +1,6 @@
 //! Committed tool invocation identity shared by Runtime and its read projections.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};

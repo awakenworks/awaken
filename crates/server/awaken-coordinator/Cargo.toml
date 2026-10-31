@@ -183,3 +183,6 @@ awaken-lease-testkit.workspace = true
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"
 awaken-observability = { workspace = true }
+
+[lints]
+workspace = true

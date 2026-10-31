@@ -46,6 +46,13 @@ pub fn boottime_elapsed() -> std::io::Result<std::time::Duration> {
 /// The scheduling half is the one monotonic scheduling point
 /// (`awaken_time::mono`); only the authority half reads this crate's
 /// clock, so scheduling never stands in for the physical cutoff's clock.
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        clippy::disallowed_methods,
+        reason = "without BOOTTIME the authority half samples the host monotonic clock directly"
+    )
+)]
 pub fn authority_proof_started() -> std::io::Result<AuthorityProofStarted> {
     let scheduled = awaken_time::mono::now();
     #[cfg(target_os = "linux")]

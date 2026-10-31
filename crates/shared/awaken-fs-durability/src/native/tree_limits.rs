@@ -16,14 +16,14 @@ pub(super) struct ReadBudget {
 }
 
 impl ReadBudget {
-    pub fn new(limits: TreeReadLimits) -> Self {
+    pub(super) fn new(limits: TreeReadLimits) -> Self {
         Self {
             bytes: limits.total_bytes,
             entries: limits.entries,
             limits,
         }
     }
-    pub fn entry(&mut self, path: &Path) -> std::io::Result<()> {
+    pub(super) fn entry(&mut self, path: &Path) -> std::io::Result<()> {
         if path.components().count() > self.limits.depth || self.entries == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

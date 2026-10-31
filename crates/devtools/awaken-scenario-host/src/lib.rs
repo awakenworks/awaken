@@ -112,6 +112,10 @@ const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
 
 /// Managed Outcome backend matrix: each Session independently selects a Native
 /// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_outcome_matrix_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_OUTCOME_ACP_SCRIPT),
@@ -233,6 +237,10 @@ pub async fn build_full_chain_router_with_deployment(
 /// model returns a fixed summary on the `compactor` sub-run and otherwise
 /// reports the compaction context it received, so an e2e can observe the folded
 /// summary being injected on a later Run. `AWAKEN_MODEL_MODE=compaction`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_compaction_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
     // Compaction changes run behavior, not deployment ownership. Reuse the
@@ -589,6 +597,10 @@ fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmEx
 /// dialect-aware executor factory used by worker materialization, exposed as a server mode
 /// so the TypeScript e2e can drive a real Run through the Managed / AI SDK / A2A
 /// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 async fn real_platform() -> deployment::ScenarioPlatform {
     let key = std::env::var("ANTHROPIC_API_KEY")
         .or_else(|_| std::env::var("KIMI_API_KEY"))
@@ -624,6 +636,10 @@ pub async fn build_real_service() -> (Router, awaken_service_lifecycle::ServiceL
 /// (default `global`), `GEMINI_MODEL` (default `gemini-2.5-flash`). Exposed as a
 /// server mode so the TypeScript e2e can drive a real Gemini Run — proving the
 /// OAuth + Gemini path through the managed / ai-sdk adapters.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_real_gemini_router() -> Router {
     use awaken_credential_vault::{CommandTokenSource, TokenSource};
 
@@ -664,6 +680,10 @@ pub async fn build_real_gemini_router() -> Router {
 /// persists a credential, freezes one complete model candidate, then lets the
 /// worker adapter materialize exactly that candidate. Env:
 /// `ANTHROPIC_API_KEY`/`KIMI_API_KEY` (+ `*_BASE_URL`, `*_MODEL`).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_resolved_real_router() -> Router {
     use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
@@ -790,6 +810,10 @@ pub async fn build_resolved_real_router() -> Router {
 /// The minted token becomes the executor's API key, so a run succeeds only if the
 /// worker realization path actually ran the helper. `AWAKEN_MODEL_MODE=
 /// oauth-resolved` with a fake upstream that authenticates exactly that token.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_oauth_resolved_router() -> Router {
     use awaken_agent_config::ModelSelection;
     use awaken_credential_contract::CredentialSourceId;
@@ -1217,6 +1241,10 @@ pub async fn build_schedule_router() -> Router {
 /// to a REMOTE A2A Agent at `AWAKEN_REMOTE_AGENT_URL`. The ordinary child Run
 /// crosses `message:send` → poll `get_task`, then projects its reply on the child
 /// Thread independently from the parent's admission receipt.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
 pub async fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");

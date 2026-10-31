@@ -24,7 +24,7 @@ use tokio::time::timeout;
 const CONTROL_EXCHANGE_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
-pub enum ControlForwarderError {
+pub(crate) enum ControlForwarderError {
     #[error("invalid control-forwarder invocation")]
     InvalidInvocation,
     #[error("Sandbox control forwarder is unavailable")]
@@ -222,7 +222,7 @@ fn ready_marker_is_current(path: &Path) -> bool {
             .is_ok_and(|process| process.uid() == metadata.uid())
 }
 
-pub fn check_ready(args: &[String]) -> Result<(), ControlForwarderError> {
+pub(crate) fn check_ready(args: &[String]) -> Result<(), ControlForwarderError> {
     let marker = parse_ready_args(args)?;
     #[cfg(target_os = "linux")]
     if ready_marker_is_current(&marker) {
@@ -233,7 +233,7 @@ pub fn check_ready(args: &[String]) -> Result<(), ControlForwarderError> {
 }
 
 #[cfg(target_os = "linux")]
-pub async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
+pub(crate) async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
     let (unix_path, listen, ready_path) = parse_args(args)?;
     remove_stale_marker(&ready_path)?;
     prepare_socket(&unix_path)?;
@@ -271,7 +271,7 @@ pub async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
+pub(crate) async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
     let _ = parse_args(args)?;
     Err(ControlForwarderError::Unavailable)
 }

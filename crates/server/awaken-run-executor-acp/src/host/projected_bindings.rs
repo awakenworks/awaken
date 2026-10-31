@@ -2,6 +2,7 @@
 //! Read-only host-login binding projection. The external projector owns intent;
 //! this adapter owns only bounded reads and execution-time liveness evidence.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use tokio::io::AsyncReadExt;
 

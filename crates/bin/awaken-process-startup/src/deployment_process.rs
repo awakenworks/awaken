@@ -3,6 +3,7 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Deployment-selected runtime process and migration process.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 pub(super) async fn prepare_runtime_process(

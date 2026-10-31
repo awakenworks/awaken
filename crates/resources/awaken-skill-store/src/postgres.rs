@@ -1,6 +1,14 @@
 // @formal evidence skill.pinned_version_survives_retirement
 //! Postgres [`SkillStore`] over the crate's `skill_store` migration scope — the
 //! multi-node sibling of the sqlite backend, the same portable bundle.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;

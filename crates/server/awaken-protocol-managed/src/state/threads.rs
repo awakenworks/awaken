@@ -1,6 +1,7 @@
 //! Session thread projections for [`ManagedState`]: the primary thread and
 //! subagent child threads.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::types::EvaluatedPermission;
 

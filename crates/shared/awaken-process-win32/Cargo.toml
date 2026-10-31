@@ -30,3 +30,9 @@ tempfile = "3"
 [lints.rust]
 unsafe_code = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unreachable_pub = "warn"
+
+[lints.clippy]
+wildcard_imports = "warn"
+disallowed_methods = "warn"
+disallowed_types = "warn"

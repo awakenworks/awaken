@@ -139,6 +139,10 @@ fn positive_limit(
     })
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the Sandbox process's Hand role reads its process limits from the environment its launcher set"
+)]
 fn open_operation_ledger() -> Result<Arc<dyn HandOperationLedger>, String> {
     let root = operation_ledger_root(std::env::var_os(HAND_LEDGER_DIR));
     let max_entries = positive_limit(
@@ -206,6 +210,10 @@ pub async fn serve(bind: HandBind, clock: Arc<dyn awaken_time::WallClock>) -> Re
 
 /// Serve with an explicitly scoped ledger. SessionEnvironment embeddings and
 /// tests use this seam to bind the ledger lifetime to the Environment owner.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the Sandbox process's Hand role reads its process limits from the environment its launcher set"
+)]
 pub async fn serve_with_operation_ledger(
     bind: HandBind,
     ledger: Arc<dyn HandOperationLedger>,

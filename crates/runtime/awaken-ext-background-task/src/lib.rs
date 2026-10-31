@@ -3,6 +3,10 @@
 //! The extension owns typed aggregates and pure transitions. It has no SQL,
 //! repository, migration, or application-service dependency. Tools read an
 //! immutable State snapshot and return commands for Runtime to commit.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod model;
 mod notification;

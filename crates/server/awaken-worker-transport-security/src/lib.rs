@@ -5,6 +5,10 @@
 //! trust is established. The default header authenticator is suitable for local
 //! and test compositions behind a trusted network. Managed deployments replace it
 //! with WorkerLease/mTLS verification without changing dispatch semantics.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 pub mod kubernetes;
 mod worker_bootstrap;

@@ -1,6 +1,7 @@
 // @formal entrypoint sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing
 //! Linux Namespace realization of the provider-neutral Sandbox control port.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 #[cfg(target_os = "linux")]
 use awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;

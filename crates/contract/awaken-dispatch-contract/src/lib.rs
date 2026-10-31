@@ -10,6 +10,10 @@
 //! (caller-specific dispatch roles / `Inbox` / `Outbox`) and the
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live
 //! handles (G3). Worker wiring stays private to the host.
+#![expect(
+    unreachable_pub,
+    reason = "pending: narrow the unreachable items to pub(crate)"
+)]
 
 mod claimed_commit;
 mod claimed_stream;

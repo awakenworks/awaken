@@ -6,6 +6,14 @@
 //! Only boundary commands are persisted. Startup and every mutation replay the
 //! canonical in-memory catalog state machine, so SQL never becomes a parallel
 //! lifecycle implementation.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 
 use std::sync::Arc;
 

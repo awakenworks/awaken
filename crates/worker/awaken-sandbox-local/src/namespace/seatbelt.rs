@@ -1,5 +1,6 @@
 //! Pure macOS Seatbelt runtime and path projection.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 fn runtime_projection_root(entry: PathBuf) -> Option<PathBuf> {
@@ -96,6 +97,10 @@ pub(super) fn is_projectable_runtime_root(
     !HOST_STATE_ROOTS.iter().any(|state| root.starts_with(state))
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the seatbelt profile admits the runtime roots under the host HOME"
+)]
 fn push_runtime_projection(roots: &mut Vec<String>, entry: PathBuf) {
     let Some(root) = runtime_projection_root(entry) else {
         return;
@@ -144,6 +149,10 @@ pub(super) fn projected_runtime_roots_for_command(
 /// the retained descriptor's actual kernel pathname; macOS emits grants for
 /// the canonical target so a substituted alias does not grant its new target.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the seatbelt profile admits the runtime roots under the host HOME"
+)]
 pub(super) fn prepare_runtime_root(
     destination: &str,
 ) -> Result<Option<(PathBuf, awaken_fs_durability::ProjectionRoot)>, pc::SandboxError> {

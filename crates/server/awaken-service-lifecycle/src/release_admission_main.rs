@@ -1,7 +1,7 @@
 // @formal entrypoint assembly_role.release_consumption_requires_exact_artifact_profile_and_completed_proofs
 // @formal entrypoint assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint
 #[cfg(feature = "standalone-release-admission")]
-mod release_admission;
+pub mod release_admission;
 
 #[cfg(not(feature = "standalone-release-admission"))]
 use awaken_service_lifecycle::release_admission::{

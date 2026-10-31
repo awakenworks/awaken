@@ -1,4 +1,12 @@
 // @formal entrypoint environment_image_build.single_claim_exact_reclaim_and_stale_fence
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )
+)]
 use std::sync::Arc;
 
 use async_trait::async_trait;

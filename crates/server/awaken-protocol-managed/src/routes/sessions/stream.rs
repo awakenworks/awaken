@@ -2,6 +2,7 @@
 // @formal evidence session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
 //! Managed SSE delivery over the one committed projection and live preview port.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

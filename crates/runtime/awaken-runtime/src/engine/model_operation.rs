@@ -4,6 +4,7 @@
 //! Model invocation evidence uses the same incremental commit owner as tools.
 //! There is no receipt store, recovery scheduler, or new execution authority.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_runtime_contract::model_operation::{
     ActiveModelOperation, ModelOperation, ModelOperationContext, ModelOperationPhase,
@@ -213,7 +214,7 @@ pub(super) struct ModelOperationJournal<'a> {
 }
 
 impl<'a> ModelOperationJournal<'a> {
-    pub fn new(
+    pub(super) fn new(
         ledger: &'a mut StepLedger,
         store: &'a mut Store,
         context: &'a RuntimeRunContext,
@@ -230,11 +231,11 @@ impl<'a> ModelOperationJournal<'a> {
         }
     }
 
-    pub fn failed(&self) -> bool {
+    pub(super) fn failed(&self) -> bool {
         self.failed
     }
 
-    pub fn verify_reentry(
+    pub(super) fn verify_reentry(
         &mut self,
         recovering_checkpoint: bool,
     ) -> awaken_runtime_contract::llm::Result<Option<ModelOperation>> {
@@ -245,7 +246,7 @@ impl<'a> ModelOperationJournal<'a> {
         })
     }
 
-    pub async fn enter(
+    pub(super) async fn enter(
         &mut self,
         binding: &ModelBinding,
         effect_scope: awaken_runtime_contract::model_operation::ModelEffectScope,
@@ -265,7 +266,7 @@ impl<'a> ModelOperationJournal<'a> {
         Ok(identity)
     }
 
-    pub async fn returned(
+    pub(super) async fn returned(
         &mut self,
         timed_out: bool,
         execution: awaken_runtime_contract::model_operation::ModelExecutionEvidence,

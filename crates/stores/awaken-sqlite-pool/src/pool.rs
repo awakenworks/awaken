@@ -15,7 +15,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+#[expect(
+    clippy::disallowed_types,
+    reason = "awaken-sqlite-pool is the one owner of SQLite connect options (ADR-0087)"
+)]
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::{Connection as _, TransactionManager as _};
 
 use crate::WRITE_WAIT;
@@ -98,6 +103,11 @@ impl EmbeddedSqlite {
     }
 
     /// Open the store's one-connection pool under the embedded policy.
+    #[expect(
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        reason = "the one SQLite pool policy: options, admission and connection hooks (ADR-0087)"
+    )]
     pub async fn open(&self) -> Result<EmbeddedPool, SqlitePoolError> {
         let options = match &self.location {
             Location::File(path) => SqliteConnectOptions::new()

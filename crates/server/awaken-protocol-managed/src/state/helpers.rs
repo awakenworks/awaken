@@ -1,6 +1,7 @@
 //! Free helpers shared by the [`ManagedState`] event path: rubric normalization,
 //! usage projection, and content-block text extraction.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::types::{ServerToolUsage, SessionThreadCacheCreationUsage};
 

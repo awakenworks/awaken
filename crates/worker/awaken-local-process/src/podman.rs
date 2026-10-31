@@ -36,6 +36,10 @@ pub fn rootless_systemd_bus(_runtime_dir: Option<&OsStr>) -> Option<OsString> {
 /// Sole production constructor for Podman child processes. Keeping the
 /// rootless-session adaptation here prevents run/exec/signal from drifting into
 /// three subtly different host-environment contracts.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the local process provider looks up operator executables and the rootless systemd bus in the host environment"
+)]
 pub fn podman_command(bin: &str) -> OsCommand {
     let mut command = OsCommand::new(bin);
     command.kill_on_drop(true);
@@ -59,6 +63,10 @@ pub fn podman_command(bin: &str) -> OsCommand {
 /// application supervisor, remote daemon, cgroup migration or network rewrite.
 /// Readiness/exec/stop/rm stay call-owned. An unavailable user manager fails
 /// activation; it must not fall back to a service-bound container.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the local process provider looks up operator executables and the rootless systemd bus in the host environment"
+)]
 pub fn podman_subcommand(bin: &str, args: &[String]) -> OsCommand {
     let activation = matches!(args.first().map(String::as_str), Some("run" | "start"));
     let managed = std::env::var_os("INVOCATION_ID").is_some_and(|id| !id.is_empty());

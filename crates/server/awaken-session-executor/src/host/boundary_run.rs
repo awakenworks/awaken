@@ -1,6 +1,7 @@
 // @formal entrypoint session_execution.terminal_state_never_reopens
 // Existing SDK observation and cancellation capabilities configure the shared Session-bound Worker.
 //! SDK-only observation and attempt capabilities around the shared commit factory.
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Select the original SDK raw commit and recovery sources. The shared factory

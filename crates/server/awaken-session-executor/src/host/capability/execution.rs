@@ -5,6 +5,7 @@
 //! exporter and attempt decorator around the per-Session attempt router, and
 //! the credential/session-blob adapters those executors share.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
 
 /// Attempt-executor wiring. Consumer: the per-Session attempt router built in

@@ -125,6 +125,10 @@ fn exports() -> Vec<McpExportedTool> {
 }
 
 #[tokio::main(flavor = "current_thread")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the MCP demo binary is its own process root and reads its listener configuration from the environment"
+)]
 async fn main() {
     let source = Arc::new(SharedExports::new(exports()));
     if let Ok(delay) = std::env::var("AWAKEN_MCP_DEMO_LIST_CHANGED_MS")

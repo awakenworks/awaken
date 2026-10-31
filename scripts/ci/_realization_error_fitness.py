@@ -4,7 +4,7 @@ Plan v4 D3 and principles P6/P7. `awaken-session-realization` reports every
 failure as a `RealizationError`, whose `disposition()` is the one decision of
 what a caller does next. Two regressions would silently undo that, and the
 compiler cannot see either (a poisoned lock read through `.expect` is refused
-by `_poisoned_lock_fitness.py`, which covers the realization and the executor).
+by clippy.toml and `_poisoned_lock_fitness.py` across all production code).
 The executor's `SessionExecutionError` cannot appear in the realization at all:
 the executor depends on the realization, so Cargo refuses the reverse edge.
 
@@ -26,7 +26,26 @@ import re
 from pathlib import Path
 
 import _crate_boundary_workspace
-import _poisoned_lock_fitness
+
+AUTHORITIES = frozenset({"session-executor", "session-realization"})
+
+
+def scanned_manifests(repo_root: Path) -> list[Path]:
+    """Discover the two error owners from their declared Cargo authority.
+
+    A crate move must not remove its code from the rule. Source paths and the
+    production module closure are derived from the same manifests Cargo owns.
+    """
+    return [
+        path
+        for path in _crate_boundary_workspace.crate_manifests(repo_root / "crates")
+        if _crate_boundary_workspace.load_manifest(path)
+        .get("package", {})
+        .get("metadata", {})
+        .get("awaken", {})
+        .get("authority")
+        in AUTHORITIES
+    ]
 
 REALIZATION_SRC = "crates/server/awaken-session-realization/src"
 # check_crate_boundaries.py owns this helper's execution and hook inputs.
@@ -150,9 +169,9 @@ def selftest() -> None:
 
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
-    # Both error and poison rules consume the existing Cargo-authority/module
-    # discovery; there is no second hand-maintained list of compiled files.
-    for manifest in _poisoned_lock_fitness.scanned_manifests(repo_root):
+    # The Cargo-authority/module discovery; there is no second hand-maintained
+    # list of compiled files.
+    for manifest in scanned_manifests(repo_root):
         sources = {
             path.relative_to(repo_root.resolve()).as_posix(): path.read_text(encoding="utf-8")
             for path in _crate_boundary_workspace.production_module_files([manifest])
