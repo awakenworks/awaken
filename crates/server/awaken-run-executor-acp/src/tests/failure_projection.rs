@@ -4,17 +4,16 @@
 //! `awaken_protocol_acp::classify_error` at the Prompt stage and becomes the
 //! committed Run terminal through this crate's `failure_cause`.
 //!
-//! | fault | raw ACP error | Native authority (local row) | ACP today |
+//! | fault | raw ACP error | Native authority (local row) | ACP (ADR-0103) |
 //! |---|---|---|---|
-//! | F1 | `overloaded_error`, retry-after 7s | `Error(Inference{"overloaded"})`, retryable | `Error(Inference{"acp_failure"})` |
-//! | Q1 | provider `session_limit`, retry-after 30s | `rate_limited` with its reset hint | `acp_failure`, hint only in prose |
-//! | F2 | `server disconnected` mid-prompt (outcome unknown) | `Indeterminate` | `Error(Inference{"acp_failure"})` |
-//! | R1 | refusal | `Stopped` | `Stopped` (preserved) |
-//! | T1 | wall-clock deadline | `Stopped` | `Stopped` (preserved) |
+//! | F1 | `overloaded_error`, retry-after 7s | `Error(Inference{"overloaded"})`, retryable | same, hint in the message |
+//! | Q1 | provider `session_limit`, retry-after 30s | `rate_limited` with its reset hint | same |
+//! | F2 | `server disconnected` mid-prompt (outcome unknown) | `Indeterminate` | `Indeterminate` |
+//! | R1 | refusal | `Stopped` | `Stopped` |
+//! | T1 | wall-clock deadline | `Stopped` | `Stopped` |
 //!
 //! Oracles: O0 authority, uncertainty and retry hint are preserved; O1 no
-//! adapter turns the fault into a successful end. O1 and the R1/T1 authorities
-//! hold today; the O0 collapse is the reproducer below.
+//! adapter turns the fault into a successful end.
 //! Negative control (executed): the same checker rejects a silent-success
 //! mutant of the real ACP projection.
 
@@ -60,11 +59,7 @@ fn success_violation(row: &str, cause: &EndCause) -> Option<String> {
 
 #[test]
 fn acp_projection_never_downgrades_an_upstream_fault_to_success() {
-    for (row, raw) in [
-        ("F1", f1_overloaded()),
-        ("Q1", q1_quota()),
-        ("F2", f2_unknown_outcome()),
-    ] {
+    for (row, raw) in [("F1", f1_overloaded()), ("Q1", q1_quota())] {
         let cause = project(&raw);
         assert_eq!(success_violation(row, &cause), None, "{row}");
         let EndCause::Error(failure) = &cause else {
@@ -76,6 +71,11 @@ fn acp_projection_never_downgrades_an_upstream_fault_to_success() {
             failure.message()
         );
     }
+    // F2: an unknown outcome is never success either.
+    assert_eq!(
+        success_violation("F2", &project(&f2_unknown_outcome())),
+        None
+    );
     // R1/T1: the authorities ACP does keep distinct from failure.
     assert_eq!(
         failure_cause(&refusal("policy")),
@@ -106,7 +106,6 @@ fn acp_success_checker_rejects_a_silent_success_mutant_of_the_real_projection() 
 }
 
 #[test]
-#[ignore = "product gap: ACP failure_cause collapses every classified failure to Inference{acp_failure}, losing the overloaded/rate_limited authority, the retry hint and the unknown-outcome uncertainty the Native path keeps"]
 fn acp_projection_keeps_the_native_authority_uncertainty_and_retry_hint() {
     // F1: the same overloaded fault keeps the Native authority.
     match project(&f1_overloaded()) {

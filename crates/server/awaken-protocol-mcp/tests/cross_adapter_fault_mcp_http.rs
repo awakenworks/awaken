@@ -12,12 +12,11 @@
 //! | F3    | `DefinitiveFailure`         | `definitive_failure`          | no        | not retryable   |
 //!
 //! Oracles: O0 authority/uncertainty/retry hint preserved; O1 never success.
-//! Holds: O1 for every fault, and O0 for F2 (uncertainty survives). Gap: the
-//! service maps F1/F2/F3 alike to JSON-RPC -32603 with no classification
-//! (`McpToolService` `call_tool`), so the client must treat every one as
-//! Indeterminate; F1 loses its retry-safe hint and F3 its certainty. The two
-//! ignored reproducers assert the correct classification on the client and
-//! on the wire.
+//! Holds: O1 and O0 for every fault. Since ADR-0103 the service answers F1
+//! and F3 with their own certain tool-fault codes and the client maps them
+//! back; F2 stays the generic -32603 the client treats as Indeterminate. The
+//! former reproducers assert the classification on the client and on the
+//! wire.
 //! Negative control (executed): a server-side adapter mutant that swallows the
 //! fault into a successful result is served through the same HTTP chain; the
 //! same checker must flag the client's observation as success.
@@ -294,7 +293,6 @@ async fn mcp_http_fault_checker_detects_a_server_adapter_that_swallows_the_fault
 }
 
 #[tokio::test]
-#[ignore = "product gap: McpToolService maps UnavailableBeforeDispatch/Indeterminate/DefinitiveFailure all to JSON-RPC -32603, so the MCP client sees certain retry-safe and definitive faults as Indeterminate"]
 async fn mcp_http_chain_keeps_the_certain_and_retry_safe_tool_fault_classification() {
     let transport = serve(false).await;
     for fault in [InjectedFault::Retryable, InjectedFault::Definitive] {
@@ -323,7 +321,6 @@ async fn wire_class(transport: &Arc<HttpTransport>, fault: InjectedFault) -> ser
 }
 
 #[tokio::test]
-#[ignore = "product gap: over Streamable HTTP certain and uncertain tool faults reach the client as the same JSON-RPC error (-32603, no classification data)"]
 async fn mcp_http_wire_distinguishes_certain_from_uncertain_tool_faults() {
     let transport = serve(false).await;
     let unknown = wire_class(&transport, InjectedFault::Unknown).await;

@@ -245,7 +245,7 @@ async fn explicit_stop_reaches_the_exact_existing_interrupt_port() {
     // Causes: C1 the guarded browser DELETE names an external Thread and has
     // its exact resolved Session extension; C2 the same Stop is repeated.
     // Effects: E1/E2 the sole RunApplication interrupt sees only the bound
-    // Session, each response is 204, and no new Run or cancel store is made.
+    // Session, each response is 202 with its own Stop receipt, and no new Run or cancel store is made.
     let interrupted = Arc::new(Mutex::new(Vec::<String>::new()));
     let rt = Arc::new(InterruptRecorder {
         interrupted: interrupted.clone(),
@@ -273,7 +273,7 @@ async fn explicit_stop_reaches_the_exact_existing_interrupt_port() {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
     assert_eq!(
         interrupted.lock().await.as_slice(),

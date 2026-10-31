@@ -536,26 +536,26 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 248,
+        "line": 247,
         "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "line": 253
+      },
+      {
+        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 254
       },
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 255
+        "line": 258
       },
       {
         "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 259
-      },
-      {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 266
+        "line": 265
       }
     ],
     "execution_witnesses": [
@@ -589,26 +589,26 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 269,
+        "line": 268,
         "file_sha256": "8966185f68f1f821b2047f14aeb4249b570c15566a3bd2368c1bd674ecf1d668"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 272
+        "line": 271
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 278
+        "line": 277
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 280
+        "line": 279
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 282
+        "line": 281
       }
     ],
     "execution_witnesses": [

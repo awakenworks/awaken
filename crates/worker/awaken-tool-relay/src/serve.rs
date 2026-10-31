@@ -232,6 +232,10 @@ impl HandSession {
                 HandResult::err(HandError::unknown_tool(&tool_id))
             }
             Err(ToolError::Indeterminate(_)) => HandResult::Indeterminate,
+            Err(ToolError::UnavailableBeforeDispatch(message)) => HandResult::err(HandError::new(
+                HandErrorKind::UnavailableBeforeDispatch,
+                message,
+            )),
             Err(error) => {
                 HandResult::err(HandError::new(HandErrorKind::Execution, error.to_string()))
             }

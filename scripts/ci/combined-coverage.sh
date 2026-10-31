@@ -41,7 +41,7 @@ cargo metadata --no-deps --locked --format-version 1 --features "$workspace_feat
 
 echo "[1/3] Rust workspace tests (instrumented)"
 cargo nextest run --workspace --locked --features "$workspace_features"
-run_with_deadline "${AWAKEN_COVERAGE_DOCTEST_TIMEOUT_SECONDS:-600}" cargo test --workspace --doc --locked --features "$workspace_features"
+run_with_deadline "${AWAKEN_COVERAGE_DOCTEST_TIMEOUT_SECONDS:-600}" env RUSTC_BOOTSTRAP=1 cargo test --workspace --doc --locked --features "$workspace_features"
 
 echo "[2/3] build the server binary and drive the TS e2e suite"
 cargo build --locked --quiet --features "$workspace_features" -p awaken-scenario-host --bin awaken-scenario-host

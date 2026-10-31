@@ -396,11 +396,10 @@ async fn t32_c01_negative_control_socket_close_as_terminal_is_detected() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "product gap: AI SDK explicit Stop (DELETE /v1/ai-sdk/threads/{id}/runs) returns 204 with no cancel receipt"]
 async fn t32_c01_explicit_stop_returns_an_independent_receipt() {
     // O2: an explicit cancel must carry its own attributable receipt, distinct
     // per command, like the Managed `user.interrupt` event id/processed_at.
-    // RunApplication::interrupt returns `()`, so the route can only answer 204.
+    // RunApplication::stop answers each accepted Stop with its own receipt.
     let (run, _receiver) = ProbeRun::new();
     let app = owner_scoped_app(run);
     let mut receipts = Vec::new();

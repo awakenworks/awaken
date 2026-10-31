@@ -189,8 +189,8 @@ async fn interrupt_threaded(
     if thread.trim().is_empty() {
         return query_error(RunApplicationError::bad_request("thread id is required"));
     }
-    match rt.interrupt(&thread).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+    match rt.stop(&thread).await {
+        Ok(receipt) => (StatusCode::ACCEPTED, Json(receipt)).into_response(),
         Err(error) => query_error(error),
     }
 }

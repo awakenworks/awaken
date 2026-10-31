@@ -546,8 +546,11 @@ case "$mode" in
       else
         echo "   (skipping workspace execution until test binaries compile)" >&2
       fi
-      step "doctest" "re-run with: cargo test --workspace --doc <test_name> -- --nocapture" \
-        cargo test --workspace --doc --features "$workspace_features" "${locked[@]}"
+      # Stable rustdoc ignores a compile_fail block's pinned E-code, so a body
+      # failing for an unrelated reason would still pass. RUSTC_BOOTSTRAP=1
+      # makes rustdoc check the pinned codes (ADR-0103).
+      step "doctest" "re-run with: RUSTC_BOOTSTRAP=1 cargo test --workspace --doc <test_name> -- --nocapture" \
+        env RUSTC_BOOTSTRAP=1 cargo test --workspace --doc --features "$workspace_features" "${locked[@]}"
     else
       echo "   (skipping tests until the maximal graph lints clean)" >&2
     fi

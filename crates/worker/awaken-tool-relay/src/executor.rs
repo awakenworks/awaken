@@ -96,6 +96,10 @@ fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, Tool
             // Preserve the in-process display so a remote unknown-tool reads
             // identically to a local one.
             HandErrorKind::UnknownTool => Err(ToolError::UnknownTool(tool_id.to_string())),
+            // The Hand proved the tool never ran: keep the retry-safe class.
+            HandErrorKind::UnavailableBeforeDispatch => {
+                Err(ToolError::UnavailableBeforeDispatch(error.message))
+            }
             _ => Err(ToolError::DefinitiveFailure(error.message)),
         },
         (

@@ -23,7 +23,7 @@
 //! | G2 | Idle, live Run boundary | tighten 10 -> 3 minor | 25_000 | admitted; pins and consumed unchanged |
 //! | G3 | Idle, live Run boundary | (after G2) | 30_000 | denied; one reach transition |
 //! | NC | twin, creation limit only | none | 30_000 | admitted -> O1 check rejects it |
-//! | R1 | Running root execution | tighten 10 -> 3 minor | 30_000 | reproducer: tightening is refused today |
+//! | R1 | Running root execution | tighten 10 -> 3 minor | 30_000 | admitted (ADR-0103); next request denied |
 //!
 //! Scope: component (L1) proof of the application gate with fake Runtime
 //! boundaries; it does not sign off the L3 native-executor substrate, and no
@@ -271,7 +271,6 @@ async fn tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins()
 }
 
 #[tokio::test]
-#[ignore = "product gap: update_limit rejects budget tightening unless the root execution is Idle, so a Running Session cannot be tightened before its next model effect"]
 async fn running_session_budget_tightening_governs_the_next_model_request() {
     let id = "t13-c02-running";
     let run = RunId(format!("{id}-run"));

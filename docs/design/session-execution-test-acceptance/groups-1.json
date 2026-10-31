@@ -433,7 +433,7 @@
           "B-DOL-52",
           "B-DOL-53"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -453,13 +453,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "compile_fail doctest pins are not enforced by the stable doc gate, and the C2 pin (E0412) is stale: rustc 1.96 reports E0425",
-          "follow_up": "awaken-runtime conversation.rs doctest pins and a doc gate that checks E-codes (M)",
-          "reproducers": [
-            "test_d2_reproducer_c2_doctest_pin_matches_the_compiler_error_code",
-            "test_d3_reproducer_stable_rustdoc_checks_pinned_codes"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "compile_fail doctest pins are not enforced by the stable doc gate, and the C2 pin (E0412) is stale: rustc 1.96 reports E0425",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],

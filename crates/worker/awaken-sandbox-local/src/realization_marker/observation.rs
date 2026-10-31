@@ -111,9 +111,7 @@ fn observe_adoption_inner(
         };
     };
     let Some(marker) = marker else {
-        return Ok(incompatible(
-            "current sandbox handle has no realization marker",
-        ));
+        return observe_unmarked_current_handle(root, incarnation, lock);
     };
     if let Err(error) = validate_handle_marker(&marker, fingerprint, handle_fence, incarnation) {
         return Ok(incompatible(error));
@@ -176,6 +174,47 @@ fn observe_adoption_inner(
                 "removed sandbox tombstone has a physical root",
             )),
         },
+    }
+}
+
+/// A current handle whose marker is absent from this provider base (ADR-0103).
+///
+/// The handle is published only after its creator durably wrote the marker,
+/// so a missing marker means this base never held, or no longer holds, the
+/// realization: typically a takeover process with its own `data_dir`
+/// observing the realization of a dead process. When neither the published
+/// root nor the handle's private stage exists here, there is no physical
+/// participant to adopt, race or delete, and the observation is exact
+/// absence; the aggregate Rebuild transition, fenced by the current effect,
+/// then re-realizes the Environment on this process with a fresh marker. Any
+/// unmarked physical entry stays incompatible, because its owner is unproven.
+fn observe_unmarked_current_handle(
+    root: &Path,
+    incarnation: &str,
+    lock: Option<&awaken_fs_durability::ExclusiveFileLock>,
+) -> Result<pc::SandboxObservation, pc::SandboxError> {
+    let stage_leaf = PathBuf::from(private_stage_leaf(root, incarnation)?);
+    let (root_entry, stage_entry) = match lock {
+        Some(lock) => (
+            classify_locked(lock, root_leaf(root)?)?,
+            classify_locked(lock, &stage_leaf)?,
+        ),
+        None => {
+            let parent = root.parent().ok_or_else(|| {
+                pc::SandboxError::invalid("sandbox root has no provider-owned parent")
+            })?;
+            (classify(root)?, classify(&parent.join(&stage_leaf))?)
+        }
+    };
+    match (root_entry, stage_entry) {
+        (PathEntry::Absent, PathEntry::Absent) => {
+            Ok(pc::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: None,
+            })
+        }
+        _ => Ok(incompatible(
+            "current sandbox handle has no realization marker",
+        )),
     }
 }
 

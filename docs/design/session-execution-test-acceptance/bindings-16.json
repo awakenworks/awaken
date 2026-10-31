@@ -784,7 +784,7 @@
     "source_locations": [
       {
         "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 588,
+        "line": 583,
         "file_sha256": "94145ca86eb45ea2a0e2fa1c844f16bf937063a1e6dea2e1bbe2c10f1faf3bbc"
       }
     ],

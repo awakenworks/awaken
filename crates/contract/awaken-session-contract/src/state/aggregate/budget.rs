@@ -8,6 +8,14 @@ use super::{
 };
 use crate::budget::{BudgetReachTransition, ManagedListPriceError};
 
+/// Whether `limit` lowers the current threshold of an Active budget.
+fn budget_limit_tightens(budget: &SessionBudgetState, limit: Option<u64>) -> bool {
+    matches!(
+        (budget.max_list_cost_minor(), limit),
+        (Some(current), Some(next)) if next < current
+    )
+}
+
 impl SessionBudgetOperations<'_> {
     /// Recover the historical neutral cursor only from this root's budget fact.
     pub fn seed_legacy_usage(&mut self) -> bool {
@@ -49,9 +57,14 @@ impl SessionBudgetOperations<'_> {
 
     /// Adjust an existing budget while preserving accounting and price pins.
     /// None removes the threshold permanently; absence/removal cannot be undone.
+    /// Lowering an Active threshold is admitted on any live root, so a running
+    /// Run's next model effect obeys it; loosening or removal waits for Idle
+    /// (ADR-0103).
     pub fn update_limit(&mut self, limit: Option<u64>) -> Result<(), SessionAggregateCommandError> {
-        if self.aggregate.state.is_terminal()
-            || self.aggregate.state.execution != super::SessionExecutionState::Idle
+        let state = &self.aggregate.state;
+        if state.is_terminal()
+            || (state.execution != super::SessionExecutionState::Idle
+                && !budget_limit_tightens(&state.budget, limit))
         {
             return Err(SessionAggregateCommandError::ConfigurationNotIdle);
         }

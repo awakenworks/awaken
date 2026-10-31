@@ -2318,3 +2318,136 @@ fn closed_filesystem_observation_uses_absence_or_the_exact_marker_incarnation() 
         );
     }
 }
+
+#[test]
+fn unmarked_current_handle_is_absent_only_without_any_physical_entry() {
+    // ADR-0103 takeover table: C1 the provider base has no marker for a
+    // current handle (another process's data_dir realized it); C2 root and
+    // private stage absent vs present. U1 C1+absent => DefinitivelyUnavailable
+    // with no incarnation, so the fenced aggregate Rebuild re-realizes here;
+    // U2 C1+unmarked root => Incompatible, never adopted or deleted; U3 C1+
+    // unmarked private stage => Incompatible; U4 locked verification of U1 is
+    // physical unavailability, never Ready adoption.
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("takeover");
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("takeover"));
+    let created = fence("dead-process-create", 1);
+    let current = fence("takeover-rebuild", 2);
+    let observe = || {
+        observe_adoption(
+            &root,
+            Some(&fingerprint),
+            Some(&created),
+            Some("dead-root-uid"),
+            Some(&current),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        observe(),
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: None,
+        },
+        "U1"
+    );
+    assert!(
+        verify_adoption(
+            &root,
+            Some(&fingerprint),
+            Some(&created),
+            Some("dead-root-uid"),
+            Some(&current),
+        )
+        .is_err(),
+        "U4"
+    );
+
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(
+        matches!(observe(), pc::SandboxObservation::Incompatible { .. }),
+        "U2"
+    );
+    std::fs::remove_dir(&root).unwrap();
+
+    let stage = base
+        .path()
+        .join(private_stage_leaf(&root, "dead-root-uid").unwrap());
+    std::fs::create_dir_all(&stage).unwrap();
+    assert!(
+        matches!(observe(), pc::SandboxObservation::Incompatible { .. }),
+        "U3"
+    );
+}
+
+#[test]
+fn unmarked_rebuild_source_re_realizes_only_under_an_aggregate_successor() {
+    // ADR-0103 rebuild table: C1 the source handle has no marker in this
+    // base; C2 incoming effect is a distinct successor / stale; C3 the
+    // source private stage is absent / present. R1 C1+successor+absent =>
+    // fresh Creating marker with a new incarnation; R2 the exact same
+    // rebuild effect retries that Creating attempt; R3 a stale effect is
+    // fence-rejected before any write; R4 a residual source stage refuses.
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("takeover");
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("takeover"));
+    let created = fence("dead-process-create", 2);
+    let unmarked = |physical_incarnation: &str| RebuildSource {
+        fingerprint: &fingerprint,
+        effect_fence: &created,
+        physical_incarnation: physical_incarnation.to_owned(),
+    };
+    assert!(
+        begin(
+            &root,
+            &fingerprint,
+            &fence("stale-rebuild", 1),
+            Some(unmarked("dead-root-uid")),
+            None,
+        )
+        .is_err(),
+        "R3"
+    );
+    assert!(read_marker(&root).unwrap().is_none(), "R3 wrote nothing");
+
+    let stage = base
+        .path()
+        .join(private_stage_leaf(&root, "staged-root-uid").unwrap());
+    std::fs::create_dir_all(&stage).unwrap();
+    assert!(
+        begin(
+            &root,
+            &fingerprint,
+            &fence("takeover-rebuild", 3),
+            Some(unmarked("staged-root-uid")),
+            None,
+        )
+        .is_err(),
+        "R4"
+    );
+    assert!(read_marker(&root).unwrap().is_none(), "R4 wrote nothing");
+
+    let takeover = fence("takeover-rebuild", 3);
+    let first = begin(
+        &root,
+        &fingerprint,
+        &takeover,
+        Some(unmarked("dead-root-uid")),
+        None,
+    )
+    .expect("R1");
+    let incarnation = first.marker.physical_incarnation.clone();
+    assert_ne!(incarnation, "dead-root-uid", "R1 fresh incarnation");
+    assert_eq!(first.marker.phase, RealizationPhase::Creating, "R1");
+    drop(first);
+    let marker = read_marker(&root).unwrap().expect("R1 durable marker");
+    assert_eq!(marker.physical_incarnation, incarnation, "R1");
+    let retry = begin(
+        &root,
+        &fingerprint,
+        &takeover,
+        Some(unmarked("dead-root-uid")),
+        None,
+    )
+    .expect("R2");
+    assert_eq!(retry.marker.physical_incarnation, incarnation, "R2");
+}

@@ -212,6 +212,10 @@ const BODY_LIMIT: usize = 2 * 1024 * 1024;
 /// cannot even read credentials.
 const WORKSPACE_READ: &str = "workspace.read";
 const WORKSPACE_WRITE: &str = "workspace.write";
+/// Erasing an immutable Memory version's history is a distinct authority from
+/// writing Memory content: `workspace.write` alone does not grant it, while the
+/// `workspace.*` administrator and builder patterns still do (ADR-0103).
+const MEMORY_VERSION_REDACT: &str = "workspace.memory_redact";
 const APIKEY_READ: &str = "apikey.read";
 const APIKEY_WRITE: &str = "apikey.write";
 const MODEL_SUPPLY_READ: &str = "model_supply.read";
@@ -1398,6 +1402,12 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             RouteFamilyPolicy::TokenAdmin => Some(RouteAuthz::TokenAdmin),
         };
     }
+    if *method == Method::POST && is_memory_version_redaction(path) {
+        return Some(RouteAuthz::Resource {
+            action: MEMORY_VERSION_REDACT,
+            scope: ScopeClass::Workspace,
+        });
+    }
     Some(match descriptor.policy {
         RouteFamilyPolicy::Application => route_from_contract(application_route_policy(access)),
         RouteFamilyPolicy::Scoped { read, write } => RouteAuthz::Scoped {
@@ -1425,6 +1435,18 @@ fn route_from_contract(selection: RouteGuardSelection) -> RouteAuthz {
             scope: ScopeClass::Workspace,
         },
     }
+}
+
+/// `/v1/memory_stores/{id}/memory_versions/{vid}/redact`.
+fn is_memory_version_redaction(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/v1/memory_stores/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    matches!(
+        segments.as_slice(),
+        [store, "memory_versions", version, "redact"] if !store.is_empty() && !version.is_empty()
+    )
 }
 
 fn in_family(path: &str, prefix: &str) -> bool {

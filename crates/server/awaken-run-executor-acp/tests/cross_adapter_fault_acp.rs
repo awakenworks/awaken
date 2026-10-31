@@ -10,10 +10,9 @@
 //! | A2   | ordinary text, then end_turn (control)    | `NaturalEnd` (the checker sees real success)    |
 //!
 //! Oracles: O0 authority/uncertainty/retry hint preserved; O1 never success.
-//! O1 holds and is asserted below. O0's retry hint does not: the executor's
-//! `failure_cause` maps every Error-class `AcpFailure` to the opaque code
-//! `acp_failure`, so the native `overloaded` (retryable) classification is
-//! lost; the ignored reproducer asserts the correct classification.
+//! O1 is asserted below. Since ADR-0103 the executor's `failure_cause` keeps
+//! the native `overloaded` (retryable) classification, which the former
+//! reproducer asserts.
 //! Negative control (executed): A2 drives the same adapter to a genuine
 //! success, and a mutant projection of the real A1 terminal to `NaturalEnd`;
 //! the same checker must flag both as success.
@@ -334,7 +333,6 @@ async fn acp_fault_checker_detects_success_from_the_real_adapter_and_a_downgradi
 }
 
 #[tokio::test]
-#[ignore = "product gap: ACP failure_cause collapses every Error-class AcpFailure to code acp_failure, losing the retryable class/Retry-After hint of the injected 529"]
 async fn acp_executor_keeps_the_retryable_class_of_the_injected_overloaded_upstream() {
     let (state, _) = run_acp(injected_fault_frames()).await;
     check_retryable_authority("acp", &classify(&state))

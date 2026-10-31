@@ -10,10 +10,10 @@
 //! | F3    | `DefinitiveFailure`         | same: certain, not retryable, account  |
 //!
 //! Oracles: O0 authority/uncertainty/retry hint preserved; O1 never success.
-//! Holds: O1 for every fault; O0 for F2 and F3. Gap: `HandSession::dispatch`
-//! folds every non-Indeterminate error into `HandErrorKind::Execution`, which
-//! the executor maps to `DefinitiveFailure`, so F1's retry-safe hint is lost;
-//! the ignored reproducer asserts the correct classification.
+//! Holds: O1 and O0 for every fault. Since ADR-0103 `HandSession::dispatch`
+//! answers F1 with `HandErrorKind::UnavailableBeforeDispatch`, which the
+//! executor maps back to the retry-safe class; the former reproducer asserts
+//! it.
 //! Negative control (executed): a Hand-side mutant that swallows the fault
 //! into a successful output crosses the same relay; the same checker must
 //! flag the brain's observation as success.
@@ -259,7 +259,6 @@ async fn hand_relay_fault_checker_detects_a_hand_adapter_that_swallows_the_fault
 }
 
 #[tokio::test]
-#[ignore = "product gap: HandSession::dispatch folds UnavailableBeforeDispatch into HandErrorKind::Execution, which RemoteToolExecutor maps to DefinitiveFailure, losing the retry-safe hint"]
 async fn hand_relay_keeps_the_retry_safe_classification_of_an_undispatched_fault() {
     let result = invoke_through_relay(InjectedFault::Retryable, false).await;
     check(

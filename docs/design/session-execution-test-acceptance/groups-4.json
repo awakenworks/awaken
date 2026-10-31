@@ -711,7 +711,7 @@
           "B-DOL-24",
           "B-DOL-55"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -730,12 +730,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "redacting a memory version needs only workspace.write, the same action as a content write; there is no separate redact permission",
-          "follow_up": "awaken-control authz: a distinct memory version redact action (S)",
-          "reproducers": [
-            "redacting_a_version_requires_more_than_content_write"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0103",
+          "former_gap": "redacting a memory version needs only workspace.write, the same action as a content write; there is no separate redact permission",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {

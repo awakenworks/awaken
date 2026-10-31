@@ -38,6 +38,9 @@ pub enum McpHostError {
     NotFound(String),
     Rejected(String),
     Internal(String),
+    /// A tool's certain failure, with its `TOOL_FAULT_*` JSON-RPC code. An
+    /// uncertain tool fault stays `Internal`.
+    ToolFault(i64, String),
 }
 
 impl std::fmt::Display for McpHostError {
@@ -47,6 +50,7 @@ impl std::fmt::Display for McpHostError {
             Self::NotFound(message) => ("not found", message),
             Self::Rejected(message) => ("rejected", message),
             Self::Internal(message) => ("internal", message),
+            Self::ToolFault(_, message) => ("tool fault", message),
         };
         write!(formatter, "{kind}: {message}")
     }
@@ -336,6 +340,7 @@ fn map_host_error(error: McpHostError) -> ServerRequestError {
         McpHostError::Rejected(message) | McpHostError::Internal(message) => {
             ServerRequestError::internal(message)
         }
+        McpHostError::ToolFault(code, message) => ServerRequestError::tool_fault(code, message),
     }
 }
 

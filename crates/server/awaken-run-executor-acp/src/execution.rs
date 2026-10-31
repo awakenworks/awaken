@@ -47,7 +47,7 @@ use awaken_agent_contract::agent::state::{
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AcpProjectedEvent, AllowAll, AppendError, Injection, LaunchSink,
+    AcpError, AcpFailure, AcpFailureClass, AcpProjectedEvent, AllowAll, AppendError, Injection, LaunchSink,
     PermissionAsk, PermissionConsensus, PermissionResolver, PermissionVerdict, RawAcpError,
     RunFactAppender, Stage, SupervisePolicy, TerminationReason, TurnConfig, classify_error,
     combine_permission_consensus, permission_consensus_class,
@@ -441,14 +441,35 @@ fn end_cause(reason: TerminationReason) -> EndCause {
 
 /// Map a classified ACP failure to a terminal cause. The failure's prompt is
 /// committed as an assistant message (below) so the run surface explains it.
+/// Project a classified ACP failure onto the Run terminal with the same
+/// authority, uncertainty and retry hint the Native path keeps (ADR-0103).
 fn failure_cause(failure: &AcpFailure) -> EndCause {
+    let inference = |code: &str, retry_after_secs: Option<u64>| {
+        EndCause::Error(Failure::Inference {
+            code: code.to_string(),
+            message: match retry_after_secs {
+                Some(secs) => format!("{} (retry after {secs}s)", failure.message),
+                None => failure.message.clone(),
+            },
+        })
+    };
     match failure.termination() {
         TerminationReason::TimedOut => EndCause::Stopped("Step deadline exceeded".to_string()),
         TerminationReason::Refusal => EndCause::Stopped("agent refused".to_string()),
-        _ => EndCause::Error(Failure::Inference {
-            code: "acp_failure".to_string(),
-            message: failure.message.clone(),
-        }),
+        _ => match failure.class {
+            AcpFailureClass::ConnectionDropped => EndCause::Indeterminate,
+            AcpFailureClass::RateLimited { retry_after_secs } => {
+                inference("rate_limited", retry_after_secs)
+            }
+            AcpFailureClass::Overloaded { retry_after_secs } => {
+                inference("overloaded", retry_after_secs)
+            }
+            AcpFailureClass::Transient => inference("provider_error", None),
+            AcpFailureClass::CredentialRejected { .. }
+            | AcpFailureClass::Refusal
+            | AcpFailureClass::Timeout
+            | AcpFailureClass::Permanent => inference("acp_failure", None),
+        },
     }
 }
 

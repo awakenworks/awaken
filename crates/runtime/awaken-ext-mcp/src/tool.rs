@@ -226,9 +226,24 @@ impl DurableTaskTool for McpRawTool {
 
 // One adapter-owned classification for effectful MCP calls. Error strings,
 // HTTP status and protocol error responses are not termination evidence.
+// A server's explicit certain tool-fault code is the one protocol answer that
+// does carry termination evidence (ADR-0103).
 fn effect_error(error: McpTransportError) -> ToolError {
+    use awaken_mcp_wire::jsonrpc::{
+        TOOL_FAULT_DEFINITIVE_FAILURE, TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH,
+        TOOL_FAULT_UNAVAILABLE_BEFORE_DISPATCH,
+    };
     match error {
-        McpTransportError::NotDispatched(message) => ToolError::UnavailableBeforeDispatch(message),
+        McpTransportError::NotDispatched(message)
+        | McpTransportError::ToolFault(TOOL_FAULT_UNAVAILABLE_BEFORE_DISPATCH, message) => {
+            ToolError::UnavailableBeforeDispatch(message)
+        }
+        McpTransportError::ToolFault(TOOL_FAULT_DEFINITIVE_FAILURE, message) => {
+            ToolError::DefinitiveFailure(message)
+        }
+        McpTransportError::ToolFault(TOOL_FAULT_STATE_INVALIDATED_AFTER_DISPATCH, message) => {
+            ToolError::StateInvalidatedAfterDispatch(message)
+        }
         other => ToolError::Indeterminate(other.to_string()),
     }
 }
