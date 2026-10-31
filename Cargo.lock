@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-mcp-wire"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "awaken-time",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-outbound-http"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3888,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-web-policy-contract"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",

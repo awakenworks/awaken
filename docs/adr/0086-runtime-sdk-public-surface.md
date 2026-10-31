@@ -635,6 +635,22 @@ qualification remain distinct required evidence. This source/version decision
 neither publishes a registry artifact nor authorizes a push.
 
 
+### 2026-10-31: One versioning rule for every SDK crate
+
+The release decisions above were taken crate by crate. From now on one rule
+versions every published SDK crate, enforced per commit by
+`scripts/ci/check_sdk_semver.py`: the committed public-API snapshot is compared
+with the snapshot at the SDK baseline (`[workspace.metadata.awaken]
+sdk_semver_baseline`, today `50b3f3e22d`), and the crate version must carry the
+bump that difference requires in Cargo's compatibility positions, with a
+`CHANGELOG.md` section for it. Exposing another SDK crate's types makes that
+crate's major bump this crate's major bump, which reproduces the sixteen-package
+cohort above. Versions are relative to the baseline, so a pending major absorbs
+later breaks until it is released. The release qualifier keeps its role for what
+snapshot text cannot show. The table, the version map and the decisions on the
+`LiveInbox` lock, the three `ThreadUsage` forwarding paths and the SDK
+optional-role shapes are in [SDK versioning](../design/sdk-versioning.md).
+
 ## Amendment — 2026-10-23: inspect original Session configuration and model attempts
 
 With `include_inspection=true`, the existing execution-evidence read includes a safe configuration projection

@@ -336,6 +336,7 @@ run rust "rust" scripts/ci/check-rust.sh --full
 run rust "dependency-advisories" cargo deny --log-level error check advisories
 run rust "dependency-policy" cargo deny --exclude-dev --log-level error check -D unused-wrapper bans
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
+run api "sdk-semver" python3 scripts/ci/check_sdk_semver.py
 # Generated wire artifacts (JSON Schema, OpenAPI, TS types, the Managed SDK
 # oracle) are derived from Rust DTOs and the pinned official SDK. They drift
 # silently unless a gate regenerates and compares them.
