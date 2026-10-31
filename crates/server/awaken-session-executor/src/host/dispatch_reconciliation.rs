@@ -656,10 +656,9 @@ mod tests {
                 // not an owner string. Publish the existing protocol manifest,
                 // heartbeat Ready, then let claim_run_compatible freeze the
                 // exact WorkerAssignment before binding the physical attempt.
-                let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
-                manifest.runtime_protocol.min = 1;
-                manifest.runtime_protocol.max =
-                    awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+                // A current Worker offers the current wire codecs.
+                let manifest =
+                    awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest();
                 let registry_ttl = if rule == "live" { u64::MAX } else { 1 };
                 let identity = directory
                     .register(
@@ -711,7 +710,8 @@ mod tests {
                         ))
                         .with_placement(
                             awaken_dispatch_contract::PlacementRequirements::remote_required(),
-                        ),
+                        )
+                        .with_worker_codec_requirements(),
                     )
                     .await
                     .unwrap();

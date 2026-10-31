@@ -27,10 +27,15 @@ struct Facts {
     update_failure: AtomicBool,
 }
 
+/// A current Pod Worker: the current runtime protocol plus the compiled
+/// prepared/journal wire codecs a current Native request requires.
 fn manifest() -> awaken_dispatch::WorkerManifest {
     let mut manifest = awaken_dispatch::WorkerManifest::default();
     manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.capabilities.extend(
+        awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest().capabilities,
+    );
     manifest
 }
 
@@ -521,7 +526,8 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
             store
                 .enqueue(
                     awaken_dispatch::RunDispatch::new(model_only_activation("idle-retirement"))
-                        .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+                        .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+                        .with_worker_codec_requirements(),
                 )
                 .await
                 .unwrap();
@@ -671,7 +677,8 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         let activation = model_only_activation("cli-stop");
         let model_activation = activation.clone();
         let request = awaken_dispatch::RunDispatch::new(activation)
-            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+            .with_worker_codec_requirements();
         store.enqueue(request).await.unwrap();
         let mut snapshot = old.snapshot;
         snapshot.state = awaken_dispatch::WorkerState::Ready;

@@ -177,6 +177,20 @@ async fn spawn_transport_server() -> (
     (format!("http://{addr}"), store, now_ms, observed)
 }
 
+/// The client of a current registered Worker: it freezes the compiled
+/// prepared/journal wire codecs that Worker registered, so a current Native
+/// request (marked with `with_worker_codec_requirements`) is admissible.
+fn current_worker_queue(base: impl Into<String>, identity: WorkerIdentity) -> HttpDispatchQueue {
+    let mut manifest = awaken_worker_contract::WorkerManifest::default();
+    manifest.runtime_protocol.min = 1;
+    manifest.runtime_protocol.max = awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.capabilities.extend([
+        awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY.to_owned(),
+        awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_owned(),
+    ]);
+    HttpDispatchQueue::new(base, identity).with_worker_manifest(manifest)
+}
+
 fn run_id(v: &Value) -> RunId {
     RunId(v["run_id"].as_str().expect("run_id").to_string())
 }
@@ -911,7 +925,7 @@ async fn worker_stream_transport_posts_only_canonically_live_events() {
 #[tokio::test]
 async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let (base, store, clock, _) = spawn_transport_server().await;
-    let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    let queue = current_worker_queue(base, WorkerIdentity::new("worker-A", "boot-A", 1));
     let run = RunId("run-1".into());
 
     // Enqueue a run over the wire; the server-side store records it.
@@ -920,12 +934,14 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     activation.snapshot.resolved_spec.model_binding = candidate.clone();
     queue
         .enqueue(
-            RunDispatch::new(activation).with_inference_plaintext_holder(
-                awaken_agent_contract::credential::PlaintextHolder::new(
-                    awaken_agent_contract::credential::PlaintextBoundary::Worker,
-                    awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-                ),
-            ),
+            RunDispatch::new(activation)
+                .with_inference_plaintext_holder(
+                    awaken_agent_contract::credential::PlaintextHolder::new(
+                        awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                    ),
+                )
+                .with_worker_codec_requirements(),
         )
         .await
         .expect("enqueue over transport");
@@ -1044,11 +1060,12 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
     // exact ACK clears the slot. Decision rules: H1=C1+C2+C3 -> E1;
     // H2=C1+C2+C4 -> E2+E3. This is the real JSON client/server boundary.
     let (base, store, clock, _) = spawn_transport_server().await;
-    let queue_a =
-        HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
-    let queue_b = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-B", "boot-B", 1));
+    let queue_a = current_worker_queue(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
+    let queue_b = current_worker_queue(base, WorkerIdentity::new("worker-B", "boot-B", 1));
     queue_a
-        .enqueue(RunDispatch::new(activation("handoff-provenance")))
+        .enqueue(
+            RunDispatch::new(activation("handoff-provenance")).with_worker_codec_requirements(),
+        )
         .await
         .unwrap();
     clock.set(0);
@@ -1104,13 +1121,12 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
 #[tokio::test]
 async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen() {
     let (base, store, clock, _) = spawn_transport_server().await;
-    let queue_a =
-        HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
-    let queue_b = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-B", "boot-B", 1));
+    let queue_a = current_worker_queue(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
+    let queue_b = current_worker_queue(base, WorkerIdentity::new("worker-B", "boot-B", 1));
     let run = RunId("run-1".into());
 
     queue_a
-        .enqueue(RunDispatch::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")).with_worker_codec_requirements())
         .await
         .unwrap();
 

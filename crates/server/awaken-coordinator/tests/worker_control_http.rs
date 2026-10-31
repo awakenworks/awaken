@@ -33,13 +33,19 @@ use awaken_worker_transport_security::{
 
 // Registration requires explicit current protocol evidence. Default/ANY remains
 // a negative transport case; positive registry/credential rules use this owner.
+// A current Worker also offers the compiled prepared/journal wire codecs a
+// current Native request requires.
 fn current_manifest() -> WorkerManifest {
-    WorkerManifest {
+    let mut manifest = WorkerManifest {
         runtime_protocol: awaken_worker_contract::VersionRange::exact(
             awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
         ),
         ..Default::default()
-    }
+    };
+    manifest.capabilities.extend(
+        awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest().capabilities,
+    );
+    manifest
 }
 
 #[derive(Default)]
@@ -367,7 +373,10 @@ fn dispatch_with_capability(run: &str, capability: &str) -> RunDispatch {
     placement
         .required_capabilities
         .insert(capability.to_string());
-    RunDispatch::new(activation).with_placement(placement)
+    // A current producer publishes the Worker codecs its request requires.
+    RunDispatch::new(activation)
+        .with_placement(placement)
+        .with_worker_codec_requirements()
 }
 
 #[tokio::test]
@@ -527,7 +536,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     dispatch
         .enqueue(
             dispatch_with_capability("worker-private", WORKER_LOCAL_CREDENTIALS_CAPABILITY)
-                .with_placement(placement),
+                .with_placement(placement)
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
@@ -680,7 +690,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                 "worker-private-rotated",
                 WORKER_LOCAL_CREDENTIALS_CAPABILITY,
             )
-            .with_placement(rotated_placement),
+            .with_placement(rotated_placement)
+            .with_worker_codec_requirements(),
         )
         .await
         .unwrap();

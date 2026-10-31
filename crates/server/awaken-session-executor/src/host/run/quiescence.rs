@@ -124,7 +124,8 @@ mod terminal_scope_tests {
                         // remote Worker using the current protocol, not v0.
                         .with_placement(
                             awaken_dispatch_contract::PlacementRequirements::remote_required(),
-                        ),
+                        )
+                        .with_worker_codec_requirements(),
                 )
                 .await
                 .unwrap();

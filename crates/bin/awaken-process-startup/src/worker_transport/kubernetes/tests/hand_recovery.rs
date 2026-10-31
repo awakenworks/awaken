@@ -162,7 +162,8 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
         store
             .enqueue(
                 awaken_dispatch::RunDispatch::new(activation.clone())
-                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
+                    .with_worker_codec_requirements(),
             )
             .await
             .unwrap();
