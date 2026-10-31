@@ -9,6 +9,7 @@ use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationI
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_runtime_contract::cancellation::{AttemptCancellation, CancellationCause};
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
 use awaken_runtime_contract::execution::LiveInput;
@@ -24,7 +25,6 @@ use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgent
 use awaken_runtime_contract::{AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_tool_contract::tool::{RawTool, RawToolRegistry};
 use parking_lot::Mutex;
-use tokio_util::sync::CancellationToken;
 
 /// Opaque identity for one process-local attempt-control registration.
 ///
@@ -75,7 +75,7 @@ impl Drop for ActiveAttemptScope<'_> {
 struct ActiveAttemptControl {
     generation: u64,
     thread_id: ThreadId,
-    cancellation: Option<CancellationToken>,
+    cancellation: Option<AttemptCancellation>,
     pause: Option<PauseSignal>,
     live_inbox: Option<LiveInbox>,
     ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
@@ -125,7 +125,13 @@ impl ActiveAttemptControls {
             ActiveAttemptControl {
                 generation,
                 thread_id: thread_id.clone(),
-                cancellation: context.cancellation.clone(),
+                cancellation: context
+                    .cancellation
+                    .clone()
+                    .map(|token| AttemptCancellation {
+                        token,
+                        cause: context.cancellation_cause.clone(),
+                    }),
                 pause: context.pause.clone(),
                 live_inbox: context.live_inbox.clone(),
                 ownership: context.ownership.clone(),
@@ -650,7 +656,9 @@ impl Runtime {
     /// the caller-selected scope: deliberately shared cancellation tokens still
     /// signal that shared scope. Local revocation may signal after lease loss;
     /// this proves neither current ownership nor physical process termination.
-    pub fn registered_attempt_cancellation(&self, run_id: &RunId) -> Option<CancellationToken> {
+    /// The handle carries the attempt's cause cell, so a local revocation can
+    /// stop the attempt without ending its Run.
+    pub fn registered_attempt_cancellation(&self, run_id: &RunId) -> Option<AttemptCancellation> {
         self.active_attempt_controls
             .lock()
             .by_run
@@ -755,11 +763,13 @@ impl Runtime {
         command: LiveCommand,
     ) -> Result<(), ControlError> {
         match command {
+            // Live Cancel is the Run's cancellation authority (a direct caller,
+            // or the nudge after a durable cancellation was persisted).
             LiveCommand::Cancel { .. } => attempt
                 .cancellation
                 .as_ref()
                 .ok_or(ControlError::NotActive)
-                .map(CancellationToken::cancel),
+                .map(|cancellation| cancellation.cancel(CancellationCause::Requested)),
             LiveCommand::Pause { .. } => attempt
                 .pause
                 .as_ref()

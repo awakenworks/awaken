@@ -173,6 +173,9 @@ impl WorkerContext {
             .clone()
             .with_commit(self.commit.clone())
             .with_cancellation(cancel)
+            // A fresh cause per attempt; a claimed drive replaces it with its
+            // claim's own cell.
+            .with_cancellation_cause(Default::default())
             // A fresh pause signal per attempt, registered by the executor so live
             // control can await this run at its next safe boundary (ADR-0054).
             .with_pause(PauseSignal::new());

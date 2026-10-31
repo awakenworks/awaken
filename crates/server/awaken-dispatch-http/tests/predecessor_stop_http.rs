@@ -610,8 +610,12 @@ async fn resolution_backoff_returns_mutation_claim_even_if_stop_observation_fail
     // Extend B1: C6 provider query fails or exceeds the owned request budget;
     // C7 release is defer/retry. B4=C6(error)+C7(defer), B5=C6(timeout)+C7(retry):
     // return 503 visibly, still release the exact mutation claim, retain the
-    // original physical slot. Both keep its existing recovery count: the next
-    // recovery claim spends that attempt, so release must not count it twice.
+    // original physical slot. B5's failed release keeps its recovery count: the
+    // next recovery claim spends that attempt, so release must not count it
+    // twice. B4's deferral is a recovery re-claim blocked behind the occupied
+    // slot: it refunds the attempt its claim spent (bounded rule B1 of
+    // `blocked_reclaim_attempt_count`; formerly it kept the spent attempt, which
+    // burned the budget while the predecessor's closure was still progressing).
     // No permit in B5 forces an actually blocked provider Future; timeout is
     // never interpreted as a positive stop or complete-scope receipt.
     for timed_out in [false, true] {
@@ -661,7 +665,12 @@ async fn resolution_backoff_returns_mutation_claim_even_if_stop_observation_fail
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(after.attempt_count, before.attempt_count);
+        assert_eq!(before.attempt_count, 1, "the recovery claim spent one");
+        assert_eq!(
+            after.attempt_count,
+            before.attempt_count - u64::from(!timed_out),
+            "B4 refunds the blocked re-claim; B5 keeps it"
+        );
     }
 }
 
@@ -679,6 +688,10 @@ async fn resolution_backoff_reuses_existing_authority_and_no_stop_boundaries() {
     // | B12  | absent slot                      | release, no I/O |
     // | B13  | C1+C2+C3+C4+C5+C6, Unknown stop | recovery count unchanged, occupied |
     // | B14  | failed release with absent slot | spend one through existing reducer |
+    // An applied unfailed release behind the still-occupied predecessor slot
+    // (ordinary, live, unbound) refunds the attempt its recovery claim spent
+    // (rule B1 of `blocked_reclaim_attempt_count`); before that rule it kept
+    // the spent attempt and burned retry budget while closure progressed.
     // These are decision-table partitions, not the Cartesian product: B1-B5
     // own the interactions once provider observation is authorized. The
     // existing durable-handoff tests retain their execution path unchanged.
@@ -786,7 +799,8 @@ async fn resolution_backoff_reuses_existing_authority_and_no_stop_boundaries() {
             .unwrap();
         assert_eq!(
             after.attempt_count,
-            before.attempt_count + u64::from(rule == "retry-vacant"),
+            before.attempt_count + u64::from(rule == "retry-vacant")
+                - u64::from(matches!(rule, "ordinary" | "live" | "unbound")),
             "{rule}"
         );
     }

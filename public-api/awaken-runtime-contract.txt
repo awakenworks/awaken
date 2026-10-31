@@ -139,6 +139,34 @@ pub awaken_runtime_contract::boundary::BoundaryOutcome::Continue
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Continue::fold: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Idle
 pub fn awaken_runtime_contract::boundary::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
+pub mod awaken_runtime_contract::cancellation
+#[non_exhaustive] pub enum awaken_runtime_contract::cancellation::CancellationCause
+pub awaken_runtime_contract::cancellation::CancellationCause::ClaimLost
+pub awaken_runtime_contract::cancellation::CancellationCause::HostDrain
+pub awaken_runtime_contract::cancellation::CancellationCause::ProofExpired
+pub awaken_runtime_contract::cancellation::CancellationCause::Requested
+pub awaken_runtime_contract::cancellation::CancellationCause::WorkerRevoked
+impl awaken_runtime_contract::cancellation::CancellationCause
+pub const fn awaken_runtime_contract::cancellation::CancellationCause::ends_run(self) -> bool
+impl core::fmt::Display for awaken_runtime_contract::cancellation::CancellationCause
+pub fn awaken_runtime_contract::cancellation::CancellationCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_runtime_contract::cancellation::AbandonedAttempt
+impl awaken_runtime_contract::cancellation::AbandonedAttempt
+pub const fn awaken_runtime_contract::cancellation::AbandonedAttempt::cause(&self) -> awaken_runtime_contract::cancellation::CancellationCause
+pub struct awaken_runtime_contract::cancellation::AttemptCancellation
+pub awaken_runtime_contract::cancellation::AttemptCancellation::cause: awaken_runtime_contract::cancellation::CancellationCauseCell
+pub awaken_runtime_contract::cancellation::AttemptCancellation::token: tokio_util::sync::cancellation_token::CancellationToken
+impl awaken_runtime_contract::cancellation::AttemptCancellation
+pub fn awaken_runtime_contract::cancellation::AttemptCancellation::cancel(&self, awaken_runtime_contract::cancellation::CancellationCause)
+pub struct awaken_runtime_contract::cancellation::CancellationCauseCell(_)
+impl awaken_runtime_contract::cancellation::CancellationCauseCell
+pub fn awaken_runtime_contract::cancellation::CancellationCauseCell::cancel(&self, &tokio_util::sync::cancellation_token::CancellationToken, awaken_runtime_contract::cancellation::CancellationCause)
+pub fn awaken_runtime_contract::cancellation::CancellationCauseCell::new() -> Self
+pub fn awaken_runtime_contract::cancellation::CancellationCauseCell::record(&self, awaken_runtime_contract::cancellation::CancellationCause) -> awaken_runtime_contract::cancellation::CancellationCause
+pub fn awaken_runtime_contract::cancellation::CancellationCauseCell::recorded(&self) -> core::option::Option<awaken_runtime_contract::cancellation::CancellationCause>
+pub const awaken_runtime_contract::cancellation::ABANDONED_ATTEMPT_CODE: &str
+pub fn awaken_runtime_contract::cancellation::abandoned_attempt(awaken_runtime_contract::cancellation::CancellationCause) -> awaken_runtime_contract::diagnostic::Error
+pub fn awaken_runtime_contract::cancellation::abandoned_attempt_cause(&awaken_runtime_contract::diagnostic::Error) -> core::option::Option<awaken_runtime_contract::cancellation::CancellationCause>
 pub mod awaken_runtime_contract::capture
 pub enum awaken_runtime_contract::capture::ContentCapture
 pub awaken_runtime_contract::capture::ContentCapture::Full
@@ -1540,6 +1568,7 @@ pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::text_enve
 pub const fn awaken_runtime_contract::runtime_context::NormalizedModelInput::trace(&self) -> awaken_runtime_contract::runtime_context::ModelInputProjectionTrace
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation_cause: awaken_runtime_contract::cancellation::CancellationCauseCell
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::runtime_context::CredentialRealizationHandle>
@@ -1569,6 +1598,8 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_executor: 
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_output_spiller: core::option::Option<alloc::sync::Arc<dyn awaken_tool_contract::tool::ToolOutputSpiller>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::abandoned_by(&self) -> core::option::Option<awaken_runtime_contract::cancellation::CancellationCause>
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::admit_terminal_commit(&self, &awaken_agent_contract::agent::run::RunState) -> awaken_runtime_contract::diagnostic::Result<()>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::content_sink(&self) -> core::option::Option<(&alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>, &awaken_runtime_contract::data_subject::DataSubjectId)>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::for_child_run(&self) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
@@ -1576,6 +1607,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_pause_req
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::max_parallel_tools(&self) -> usize
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation_cause(self, awaken_runtime_contract::cancellation::CancellationCauseCell) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture(self, awaken_runtime_contract::capture::CaptureDecision) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture_sink(self, awaken_runtime_contract::data_subject::DataSubjectId, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>) -> Self
@@ -2147,6 +2179,7 @@ pub awaken_runtime_contract::RunEndContext::run_id: awaken_agent_contract::agent
 pub awaken_runtime_contract::RunEndContext::state: &'a awaken_agent_contract::agent::state::Store
 pub struct awaken_runtime_contract::RuntimeRunContext
 pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub awaken_runtime_contract::RuntimeRunContext::cancellation_cause: awaken_runtime_contract::cancellation::CancellationCauseCell
 pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::runtime_context::CredentialRealizationHandle>
@@ -2176,6 +2209,8 @@ pub awaken_runtime_contract::RuntimeRunContext::tool_executor: core::option::Opt
 pub awaken_runtime_contract::RuntimeRunContext::tool_output_spiller: core::option::Option<alloc::sync::Arc<dyn awaken_tool_contract::tool::ToolOutputSpiller>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::abandoned_by(&self) -> core::option::Option<awaken_runtime_contract::cancellation::CancellationCause>
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::admit_terminal_commit(&self, &awaken_agent_contract::agent::run::RunState) -> awaken_runtime_contract::diagnostic::Result<()>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::content_sink(&self) -> core::option::Option<(&alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>, &awaken_runtime_contract::data_subject::DataSubjectId)>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::for_child_run(&self) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
@@ -2183,6 +2218,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_pause_req
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::max_parallel_tools(&self) -> usize
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation_cause(self, awaken_runtime_contract::cancellation::CancellationCauseCell) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture(self, awaken_runtime_contract::capture::CaptureDecision) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture_sink(self, awaken_runtime_contract::data_subject::DataSubjectId, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>) -> Self

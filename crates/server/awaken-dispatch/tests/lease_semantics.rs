@@ -1810,8 +1810,10 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
 #[tokio::test]
 async fn native_cancelled_external_future_does_not_acknowledge_physical_return() {
     // N1: Native entered an external tool; N2: ownership loss cancels and drops
-    // that tool future; N3: Runtime returns a logical error. E1 no late write;
-    // E2 the physical slot stays occupied; E3 successor cannot re-enter. This
+    // that tool future; N3: Runtime abandons the attempt (the cause does not end
+    // the Run), so the Worker yields with no terminal and no settlement. E1 no
+    // late write; E2 the physical slot stays occupied; E3 successor cannot
+    // re-enter. This
     // differs from the adjacent cooperative-return case: future Drop is not
     // termination evidence, even when its enclosing Runtime future returned.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -1842,12 +1844,14 @@ async fn native_cancelled_external_future_does_not_acknowledge_physical_return()
         .await
         .unwrap()
         .unwrap();
-    assert!(
+    assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), driven)
             .await
             .unwrap()
             .unwrap()
-            .is_err()
+            .expect("N3 an abandoned attempt is no execution failure"),
+        None,
+        "N3 the abandoned attempt yields without a terminal"
     );
     release.add_permits(1);
     assert_eq!(commit.commit_count(), committed_before, "E1");
