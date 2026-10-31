@@ -53,7 +53,7 @@ pub use run_coordination::{
 pub use step_outcome::StepOutcome;
 pub use task_attention::{
     PRIVATE_TASK_INPUT_VERSION, PrivateTaskInput, PrivateTaskInputError, TaskAttention,
-    TaskAttentionAck, registered_task_holder,
+    TaskAttentionAck, WORKER_TASK_ATTENTION_PATH, registered_task_holder,
 };
 pub use usage::session_usage_from_thread_usage;
 

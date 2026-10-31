@@ -12,6 +12,9 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The registered Worker route that delivers a [`TaskAttention`].
+pub const WORKER_TASK_ATTENTION_PATH: &str = "/v1/worker/task/attention";
+
 /// The one admitted private Task input layout.
 pub const PRIVATE_TASK_INPUT_VERSION: u32 = 1;
 
