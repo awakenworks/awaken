@@ -1,6 +1,7 @@
 claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
+run_evidence = "needs_rerun"
 tcb_assumptions = []
 evidence = [
   "formal/tla/RunIngress.tla",
