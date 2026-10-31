@@ -12264,13 +12264,13 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     // C2 no ordinary failure lifecycle is yet visible; C3 the exact
     // `source_run_id` later appears as a root lifecycle failure; C4 warm
     // refreshers race and disposable state is rebuilt cold/restarted; C5 a
-    // root failure has no committed Outcome owner. Effects: E1 C1 emits one
+    // root failure has no committed Outcome. Effects: E1 C1 emits one
     // stable classified session.error in both Session and primary Thread;
-    // E2 Errored emits no partial Outcome spans or summary; E3 C3 does not
-    // duplicate E1; E4 C4 preserves the same id/payload and count; E5 C5
-    // remains owned by the ordinary lifecycle projector. Constraint: only
-    // exact typed RunId equality transfers ownership; message/code parsing,
-    // a protocol failure registry, and rubric `failed` are not involved.
+    // E2 Errored emits no partial Outcome spans or summary; E3 C3 appends the
+    // Run's own fault after E1 and leaves E1's id/payload unchanged (committed
+    // public history only grows; the Outcome never retracts or absorbs a Run
+    // fault); E4 C4 preserves the same ids/payloads and count; E5 C5 remains
+    // the ordinary lifecycle projector's.
     //
     // | Rule | Outcome terminal | lifecycle relation | cache       | Effect |
     // | R1   | Errored          | absent             | warm        | E1+E2  |
@@ -12388,7 +12388,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
             RunState::Ended(EndCause::Error(
                 awaken_agent_contract::agent::run::Failure::Inference {
                     code: "provider_request_failed".into(),
-                    message: "duplicate lifecycle failure must not surface".into(),
+                    message: "source Run failure".into(),
                 },
             )),
         ),
@@ -12399,7 +12399,18 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     );
     left.unwrap();
     right.unwrap();
-    assert_eq!(observe(&warm), initial, "R2/E1-E3");
+    let appended = observe(&warm);
+    assert_eq!(appended.0.len(), 2, "R2/E3 the Run fault is appended");
+    assert_eq!(
+        appended.0[0], initial.0[0],
+        "R2/E1 the Outcome error is unchanged"
+    );
+    assert_eq!(
+        appended.0[1].2, "source Run failure",
+        "R2/E3 the Run's own fault"
+    );
+    assert_eq!(appended.0, appended.1, "R2/E3 Session/primary parity");
+    assert_eq!((appended.2, appended.3), (0, 0), "R2/E2");
 
     for label in ["cold", "restart"] {
         let rebuilt = {
@@ -12416,7 +12427,7 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
             )
         };
         rebuilt.refresh_committed_events(session_id).await.unwrap();
-        assert_eq!(observe(&rebuilt), initial, "R3/E1-E4 {label}");
+        assert_eq!(observe(&rebuilt), appended, "R3/E1-E4 {label}");
     }
 
     let ordinary_session_id = "session-ordinary-root-error";
