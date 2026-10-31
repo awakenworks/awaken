@@ -11,7 +11,7 @@ use awaken_dispatch_contract::WakeSignal;
 use sqlx::postgres::PgPoolOptions;
 
 fn pg_url() -> Option<String> {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").ok()
+    awaken_reliability_testkit::postgres_fixture_url()
 }
 
 /// One bounded delivery observation for both initial connection and reconnect.

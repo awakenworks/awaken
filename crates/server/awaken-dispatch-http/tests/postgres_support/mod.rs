@@ -6,15 +6,13 @@ use std::time::Duration;
 const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
 const CONFIG_CHILD_EXIT_SLACK: Duration = Duration::from_secs(10);
 
+/// The shared fixture admission: each call is a fresh, isolated namespace.
 pub fn database_url() -> Option<String> {
-    match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => Some(url),
-        Err(std::env::VarError::NotPresent) => {
-            eprintln!("AWAKEN_TEST_DATABASE_URL absent; skipping PostgreSQL branch");
-            None
-        }
-        Err(_) => panic!("configured PostgreSQL URL must be Unicode"),
+    let url = awaken_reliability_testkit::postgres_fixture_url();
+    if url.is_none() {
+        eprintln!("AWAKEN_TEST_DATABASE_URL absent; skipping PostgreSQL branch");
     }
+    url
 }
 
 pub async fn connect<T, E: std::fmt::Debug>(
@@ -59,6 +57,7 @@ pub fn assert_configuration_contract(tests: &[&str]) {
                 .args(["--exact", test, "--nocapture"])
                 .env_remove("AWAKEN_TEST_DATABASE_URL")
                 .env_remove("AWAKEN_TEST_POSTGRES_URL")
+                .env_remove("AWAKEN_TEST_REQUIRE_POSTGRES")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             if let Some(url) = url {

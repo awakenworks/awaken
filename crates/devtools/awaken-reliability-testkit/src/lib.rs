@@ -2,14 +2,17 @@
 //!
 //! This crate owns no product state and implements no domain transition. It
 //! gives existing integration suites one shared parent-side process-kill
-//! harness and fixture admission. Each domain test still owns its durable
-//! marker, schema and behavioral assertions.
+//! harness and fixture admission; an admitted PostgreSQL fixture is a fresh
+//! namespace per admission. Each domain test still owns its durable marker,
+//! tables and behavioral assertions.
 
+#[cfg(feature = "postgres")]
 mod fixture;
 mod nats_fixture;
 #[cfg(feature = "postgres")]
-pub use fixture::postgres_fixture_pool;
-pub use fixture::{assert_postgres_fixture_child_contract, postgres_fixture_url};
+pub use fixture::{
+    assert_postgres_fixture_child_contract, postgres_fixture_pool, postgres_fixture_url,
+};
 pub use nats_fixture::{
     assert_nats_fixture_child_contract, nats_fixture_url, report_nats_fixture_exercised,
 };

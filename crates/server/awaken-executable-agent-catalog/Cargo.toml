@@ -31,7 +31,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-resource-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }
 tower = { version = "0.5", features = ["util"] }

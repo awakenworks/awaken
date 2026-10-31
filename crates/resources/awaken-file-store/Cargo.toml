@@ -52,6 +52,6 @@ object-store = ["dep:object_store", "dep:futures"]
 
 [dev-dependencies]
 proptest.workspace = true
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
