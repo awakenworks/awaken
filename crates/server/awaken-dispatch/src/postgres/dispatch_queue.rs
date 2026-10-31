@@ -934,8 +934,8 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
         if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
             sqlx::query(&format!(
                 "INSERT INTO {p}_dispatch_completion \
-                 (run_id, request_fingerprint, thread_id, session_thread_id) \
-                 VALUES ($1, $2, $3, $4) \
+                 (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested) \
+                 VALUES ($1, $2, $3, $4, $5) \
                  ON CONFLICT (run_id) DO NOTHING"
             ))
             .bind(&run_id.0)
@@ -947,6 +947,7 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
                     .as_ref()
                     .map(|thread| thread.0.as_str()),
             )
+            .bind(i64::from(cancellation_requested != 0))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;

@@ -395,6 +395,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0008__dispatch_operation_run_sequence.sql",
                 include_str!("migrations/V0008__dispatch_operation_run_sequence.sql"),
             )?,
+            portable_migration(
+                9,
+                "V0009__dispatch_completion_cancellation.sql",
+                include_str!("migrations/V0009__dispatch_completion_cancellation.sql"),
+            )?,
         ],
     )
 }
@@ -437,7 +442,8 @@ mod tests {
                 1,
                 "declare inherited dispatch table ownership for lint",
                 "CREATE TABLE {prefix}_dispatch (run_id TEXT); \
-                 CREATE TABLE {prefix}_dispatch_operation (run_id TEXT, sequence BIGINT)",
+                 CREATE TABLE {prefix}_dispatch_operation (run_id TEXT, sequence BIGINT); \
+                 CREATE TABLE {prefix}_dispatch_completion (run_id TEXT)",
             )
             .expect("lint owner marker"),
         ];
@@ -482,7 +488,7 @@ mod tests {
             let applied = runner.run_bundle(&full).await.unwrap();
             assert_eq!(
                 applied.iter().map(|row| row.version).collect::<Vec<_>>(),
-                [7, 8],
+                [7, 8, 9],
                 "I1"
             );
             let observed: (i64, String, i64) = sqlx::query_as(
@@ -649,12 +655,13 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9],
             "S1/E1"
         );
         for (table, column) in [
             ("runtime_dispatch_completion", "request_fingerprint"),
             ("runtime_dispatch_completion", "thread_id"),
+            ("runtime_dispatch_completion", "cancel_requested"),
             ("runtime_pending", "context_messages"),
             ("runtime_dispatch", "active_attempt_epoch"),
             ("runtime_dispatch", "active_attempt_binding"),

@@ -22,7 +22,7 @@ pub(crate) async fn load_run_identity_evidence(
     sqlx::query(&format!(
         "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
          d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
-         c.thread_id, c.session_thread_id FROM (SELECT $1::TEXT AS run_id) k \
+         c.thread_id, c.session_thread_id, c.cancel_requested FROM (SELECT $1::TEXT AS run_id) k \
          LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
          LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
     ))
@@ -90,6 +90,10 @@ pub(crate) fn decode_dispatch_completion(row: &PgRow) -> Result<DispatchCompleti
             .map_err(store_error)?
             .map(awaken_agent_contract::agent::thread::Id),
         request_fingerprint: row.try_get("request_fingerprint").map_err(store_error)?,
+        cancellation_requested: row
+            .try_get::<i64, _>("cancel_requested")
+            .map_err(store_error)?
+            != 0,
     })
 }
 
@@ -138,8 +142,8 @@ pub(crate) async fn load_completion_events(
     })?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let rows = sqlx::query(&format!(
-        "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
-         FROM {prefix}_dispatch_completion \
+        "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id, \
+         cancel_requested FROM {prefix}_dispatch_completion \
          WHERE sequence > $1 ORDER BY sequence LIMIT $2"
     ))
     .bind(after_sequence)

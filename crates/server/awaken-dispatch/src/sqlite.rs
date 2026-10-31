@@ -113,7 +113,7 @@ async fn load_run_identity_evidence(
     sqlx::query(&format!(
         "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
          d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
-         c.thread_id, c.session_thread_id FROM (SELECT ?1 AS run_id) k \
+         c.thread_id, c.session_thread_id, c.cancel_requested FROM (SELECT ?1 AS run_id) k \
          LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
          LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
     ))
@@ -178,6 +178,10 @@ fn decode_dispatch_completion(row: &SqliteRow) -> Result<DispatchCompletion, Dis
             .map_err(store_error)?
             .map(ThreadId),
         request_fingerprint: row.try_get("request_fingerprint").map_err(store_error)?,
+        cancellation_requested: row
+            .try_get::<i64, _>("cancel_requested")
+            .map_err(store_error)?
+            != 0,
     })
 }
 
@@ -543,7 +547,7 @@ mod migration_history_tests {
         // index; C2 restart after applying V8. Effects: E1 retain exact V7
         // checksum; E2 both effects exist once; E3 reopen creates no receipts.
         // R1=C1 closure -> append index@8; R2=C1 index -> append closure@8;
-        // R3=R1/R2+C2 -> same 8 receipts. Unknown V7 is tested separately.
+        // R3=R1/R2+C2 -> same 9 receipts (V9 completion cancel fact appends). Unknown V7 is tested separately.
         for index_first in [false, true] {
             let pool = EmbeddedSqlite::memory().open().await.unwrap();
             let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
@@ -592,7 +596,7 @@ mod migration_history_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-            assert_eq!(receipts, 8, "E3 exact replay");
+            assert_eq!(receipts, 9, "E3 exact replay");
             let closed_columns: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('runtime_dispatch') WHERE name='active_attempt_closing'",
             )
@@ -693,8 +697,8 @@ mod migration_history_tests {
         .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 8,
-            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure"
+            converged_count, 9,
+            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure, completion cancel fact"
         );
     }
 }
