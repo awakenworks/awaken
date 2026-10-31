@@ -21,7 +21,7 @@ pub use crate::environment_providers::{TrustedHostPolicy, WarmPool};
 pub(crate) use agent::{AgentExecution, AgentSelection};
 pub(crate) use capture::ContentCaptureCapability;
 pub(crate) use dispatch::local_dispatch_owner;
-pub(crate) use execution::AttemptBackends;
+pub(crate) use execution::{AcpBackend, AttemptBackends};
 pub(super) use resources::ResourceInputs;
 pub use resources::WorkerContentAdapters;
 #[cfg(any(test, feature = "test-support"))]

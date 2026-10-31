@@ -160,7 +160,10 @@ mod tests {
             .build()
             .expect("validated Host dependencies");
         assert!(
-            host.run_assembly.capabilities.exec.acp.is_none(),
+            matches!(
+                host.run_assembly.capabilities.exec.acp,
+                crate::host::capability::AcpBackend::Projection(_)
+            ),
             "P2/E3 no execution factory"
         );
         assert!(
@@ -181,11 +184,10 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         assert!(
-            host.run_assembly
-                .capabilities
-                .exec
-                .acp_projection_policy
-                .is_none(),
+            matches!(
+                host.run_assembly.capabilities.exec.acp,
+                crate::host::capability::AcpBackend::Installed(_)
+            ),
             "P3 one effective policy owner"
         );
         let policy = host
@@ -220,7 +222,10 @@ mod tests {
             .capabilities
             .register_thread_backend_projection("t", "acp:claude");
         assert!(
-            host.run_assembly.capabilities.exec.acp.is_some(),
+            matches!(
+                host.run_assembly.capabilities.exec.acp,
+                crate::host::capability::AcpBackend::Installed(_)
+            ),
             "A1 executor"
         );
         assert_eq!(

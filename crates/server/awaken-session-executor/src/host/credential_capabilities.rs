@@ -82,8 +82,12 @@ impl crate::RunCapabilities {
         crate::realization_error::RealizationError,
     > {
         Ok(crate::agent_runner::ChildExecutionAdapters {
-            acp: self.exec.acp.as_ref().map(|acp| {
-                let acp = acp.clone();
+            acp: match &self.exec.acp {
+                crate::host::capability::AcpBackend::Installed(acp) => Some(acp.clone()),
+                crate::host::capability::AcpBackend::Absent
+                | crate::host::capability::AcpBackend::Projection(_) => None,
+            }
+            .map(|acp| {
                 let process = environment.agent_process().clone();
                 Arc::new(move |backend, permission| {
                     acp.create(awaken_session_environment_contract::AcpSessionExecution {
@@ -134,7 +138,7 @@ impl crate::RunCapabilities {
                 CredentialRealizationProfile::self_hosted_native().resource_holder,
                 awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
             ));
-            if let Some(acp) = &self.exec.acp {
+            if let crate::host::capability::AcpBackend::Installed(acp) = &self.exec.acp {
                 let policy = acp.adapter_policy();
                 let configured = self
                     .exec
@@ -149,7 +153,9 @@ impl crate::RunCapabilities {
                 }));
             }
         }
-        if let (Some(acp), Some(profile)) = (&self.exec.acp, &self.exec.acp_profile) {
+        if let (crate::host::capability::AcpBackend::Installed(acp), Some(profile)) =
+            (&self.exec.acp, &self.exec.acp_profile)
+        {
             profiles.extend(profile.cli_ids().filter_map(|cli| {
                 let backend =
                     awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli}"));

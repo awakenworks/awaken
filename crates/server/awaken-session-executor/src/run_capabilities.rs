@@ -171,14 +171,13 @@ impl RunCapabilities {
         >,
         crate::SessionExecutionError,
     > {
-        self.exec
-            .acp
-            .as_ref()
-            .map(|factory| factory.adapter_policy())
-            .or(self.exec.acp_projection_policy)
-            .ok_or_else(|| {
-                crate::SessionExecutionError::bad_request("ACP backend is not installed")
-            })
+        match &self.exec.acp {
+            crate::host::capability::AcpBackend::Installed(factory) => Ok(factory.adapter_policy()),
+            crate::host::capability::AcpBackend::Projection(policy) => Ok(*policy),
+            crate::host::capability::AcpBackend::Absent => Err(
+                crate::SessionExecutionError::bad_request("ACP backend is not installed"),
+            ),
+        }
     }
 
     /// The model id echoed by adapters in their session/agent objects.
