@@ -977,6 +977,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         },
     );
     let ordinary_projection = awaken_session_realization_contract::FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id: workspace_id.clone(),
         revision: awaken_session_types::SessionRevision(1),
         baseline,

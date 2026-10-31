@@ -141,6 +141,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         resources.clone(),
     );
     let projection = awaken_session_realization_contract::FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id: workspace.clone(),
         revision: awaken_session_types::SessionRevision(1),
         baseline,

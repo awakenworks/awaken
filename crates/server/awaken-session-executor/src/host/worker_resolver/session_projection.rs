@@ -8,8 +8,9 @@ mod tests {
     mod error_projection;
     use crate::host::tests::ManagedSessionRootFixture;
     use crate::host::worker_resolver::test_support::{
-        AdoptionModel, ToggleBindingSink, committed_environment, deferred_environment,
-        eager_environment, managed_test_host, test_activation, with_empty_session_resources,
+        AdoptionModel, ToggleBindingSink, adoption_dependencies_at, committed_environment,
+        deferred_environment, eager_environment, managed_test_host, test_activation,
+        with_empty_session_resources,
     };
     use awaken_dispatch_contract::DispatchClaims;
     use awaken_dispatch_contract::DispatchEnqueue;
@@ -247,6 +248,7 @@ mod tests {
 
     pub(super) struct RecoveryControl {
         projection: Arc<Mutex<awaken_session_realization_contract::FrozenSessionProjection>>,
+        failure_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl RecoveryControl {
@@ -255,6 +257,7 @@ mod tests {
         ) -> Self {
             Self {
                 projection: Arc::new(Mutex::new(projection)),
+                failure_calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
@@ -713,6 +716,8 @@ mod tests {
             _command: awaken_session_realization_contract::FailSessionRealization,
         ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure>
         {
+            self.failure_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
@@ -773,6 +778,7 @@ mod tests {
             },
         );
         awaken_session_realization_contract::FrozenSessionProjection {
+            bound_source_end: None,
             workspace_id: "workspace".into(),
             revision: awaken_session_types::SessionRevision(2),
             baseline,
@@ -1375,10 +1381,14 @@ mod tests {
     /// The callers vary only rebuild-vs-continuity and retain their original
     /// physical-result/no-replacement assertions. No read increments an epoch
     /// or revision, and this test assignment is not production takeover proof.
+    /// The recorded-end rows additionally supply existing canonical Resources;
+    /// only those rows select real Namespace plus shared Resource validation.
+    /// The optional input never supplies closure/access facts to the Root.
     async fn missing_environment_recovery_fixture(
         storage: &std::path::Path,
         thread: &str,
         publication: &awaken_runtime_contract::ExecutableAgentSnapshot,
+        source_resources: Option<crate::session_resource::ResolvedSessionResources>,
     ) -> (
         Arc<ExecutorComponents>,
         RecoveryControl,
@@ -1387,17 +1397,34 @@ mod tests {
         Arc<ManagedSessionRootFixture>,
     ) {
         let roots = Arc::new(ManagedSessionRootFixture::new().await);
-        let source_host = roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
-                    .await
-                    .with_store_dir(storage)
-                    .await,
+        let source_provider = source_resources.as_ref().map(|_| {
+            awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
+                storage.join("sandboxes"),
+                false,
+                Arc::new(awaken_session_environment::test_support::UnusedHandExecutorFactory),
+                "/bin/sh",
+                std::time::Duration::ZERO,
             )
+        });
+        let source_host_dependencies = roots.configure(adoption_dependencies_at(storage).await);
+        let source_host_dependencies = if let Some(provider) = &source_provider {
+            let mut dependencies =
+                crate::host::with_test_resource_validation(source_host_dependencies);
+            dependencies.env.session_provider = provider
+                .at_root(storage.join("sandboxes"))
+                .into_provider_roles();
+            dependencies
+        } else {
+            source_host_dependencies
+        };
+        let source_host = source_host_dependencies
             .build()
             .expect("C1 Root-backed original producer");
         let source = managed_test_host(source_host.clone());
         let mut initial = frozen_projection();
+        if let Some(resources) = source_resources.as_ref() {
+            initial.resources = resources.clone();
+        }
         initial.agent_publication = Some(publication.clone());
         let installed = roots
             .install_projection(&source, thread, initial.clone())
@@ -1455,13 +1482,17 @@ mod tests {
             "C3 old execution confirmed closed"
         );
         super::test_support::remove_local_environment_root(&source_host, thread);
-        let host = roots
-            .configure(
-                crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
-                    .await
-                    .with_store_dir(storage)
-                    .await,
-            )
+        let host_dependencies = roots.configure(adoption_dependencies_at(storage).await);
+        let host_dependencies = if let Some(provider) = &source_provider {
+            let mut dependencies = crate::host::with_test_resource_validation(host_dependencies);
+            dependencies.env.session_provider = provider
+                .at_root(storage.join("sandboxes"))
+                .into_provider_roles();
+            dependencies
+        } else {
+            host_dependencies
+        };
+        let host = host_dependencies
             .build()
             .expect("C4 Root-backed cold consumer");
         let managed = managed_test_host(host.clone());
@@ -2086,6 +2117,7 @@ mod tests {
                 storage.path(),
                 rebuild_thread,
                 &rebuild_activation.snapshot,
+                None,
             ))
             .await;
         // R5: the aggregate now admits a Rebuild whose realization evidence
@@ -2181,6 +2213,395 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_recorded_source_end_reaches_the_original_root_before_rebuild() {
+        use awaken_runtime_contract::diagnostic::RuntimeErrorKind;
+        use awaken_session_realization_contract::{BoundSourceEnd, RecordedProcessEnd};
+        use awaken_worker_contract::{WorkerProcessEnd, WorkerProcessExit};
+
+        // Actual Host/SQLite-Root decision table, not a pure evidence test:
+        // CE1 ExactExit / CE2 Superseded + exact frozen handle + removed inode
+        // and no Repository => Conflict (the existing HTTP409 classification).
+        // CE3 foreign owner/incarnation / CE4 no projected end => original
+        // Pending. The shared fixture owns Create/Stage/revocation/reassignment;
+        // BoundSourceEnd's existing BE table owns Registry projection validity.
+        // All rows keep the original Root and make zero replacement effects.
+        // CE1/CE2 are terminal resolutions; foreign/absent end stays retryable.
+        // One driver invocation reports its failure once; this counter does not
+        // claim durable failure replay or actual HTTP encoding was exercised.
+        for (rule, end, drift, kind, code, terminal) in [
+            (
+                "CE1",
+                Some(RecordedProcessEnd::ExactExit),
+                None,
+                RuntimeErrorKind::Conflict,
+                "session_environment_rebuild_source_unavailable",
+                true,
+            ),
+            (
+                "CE2",
+                Some(RecordedProcessEnd::Superseded),
+                None,
+                RuntimeErrorKind::Conflict,
+                "session_environment_rebuild_source_unavailable",
+                true,
+            ),
+            (
+                "CE3 owner",
+                Some(RecordedProcessEnd::ExactExit),
+                Some("owner"),
+                RuntimeErrorKind::Unavailable,
+                "session_environment_materialization_pending",
+                false,
+            ),
+            (
+                "CE3 incarnation",
+                Some(RecordedProcessEnd::Superseded),
+                Some("incarnation"),
+                RuntimeErrorKind::Unavailable,
+                "session_environment_materialization_pending",
+                false,
+            ),
+            (
+                "CE4",
+                None,
+                None,
+                RuntimeErrorKind::Unavailable,
+                "session_environment_materialization_pending",
+                false,
+            ),
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let thread = "cold-recorded-source-end";
+            let activation = test_activation(thread, "run-cold-recorded-source-end");
+            let (host, control, mut directive, handle, roots) =
+                Box::pin(missing_environment_recovery_fixture(
+                    storage.path(),
+                    thread,
+                    &activation.snapshot,
+                    None,
+                ))
+                .await;
+            let fence = handle
+                .evidence()
+                .and_then(awaken_provisioning_contract::HandleEvidence::effect_fence)
+                .expect("original Root-fenced handle");
+            directive.projection.bound_source_end = end
+                .and_then(|end| {
+                    let receipt = WorkerProcessExit::ended(
+                        "fixture-worker",
+                        "recorded-source-binding",
+                        "recorded-original-end",
+                        match end {
+                            RecordedProcessEnd::ExactExit => WorkerProcessEnd::ExactExit,
+                            RecordedProcessEnd::Superseded => WorkerProcessEnd::Superseded,
+                        },
+                    )
+                    .unwrap();
+                    BoundSourceEnd::from_registry(
+                        fence.owner().into(),
+                        fence.runtime_incarnation().into(),
+                        Some(&receipt),
+                    )
+                })
+                .map(|mut projected| {
+                    match drift {
+                        Some("owner") => projected.owner.push_str("-foreign"),
+                        Some("incarnation") => projected.runtime_incarnation.push_str("-foreign"),
+                        _ => {}
+                    }
+                    projected
+                });
+            *control.projection.lock().unwrap() = directive.projection.clone();
+            let before = roots
+                .read_projection(thread, &control.current_projection())
+                .await
+                .unwrap();
+            let error = Box::pin(crate::application::worker_projection::realize_session(
+                &host.run_assembly, &control, &awaken_session_types::SessionId::from(thread),
+                directive, None, Some(&activation.snapshot), true,
+            )).await.map_err(
+                awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
+            ).expect_err("closed source without access cannot be rebuilt");
+            assert_eq!(
+                error.is_terminal_resolution(),
+                terminal,
+                "{rule} only the permanent source conflict terminates resolution"
+            );
+            let diagnostic = match error {
+                awaken_dispatch_execution::Error::Execution(
+                    awaken_runtime_contract::execution::Error::Diagnostic(diagnostic),
+                )
+                | awaken_dispatch_execution::Error::TerminalResolution(
+                    awaken_runtime_contract::execution::Error::Diagnostic(diagnostic),
+                ) => diagnostic,
+                other => panic!("{rule} lost the original typed Root refusal: {other:?}"),
+            };
+            assert_eq!(diagnostic.kind(), kind, "{rule} exact source boundary");
+            assert_eq!(diagnostic.code(), code, "{rule} original owner code");
+            assert_eq!(
+                control
+                    .failure_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{rule} one report for this driver invocation"
+            );
+            assert!(
+                host.run_assembly
+                    .session_environment_handle(thread)
+                    .await
+                    .is_none(),
+                "{rule} no replacement publication"
+            );
+            assert!(
+                !host
+                    .storage_dir()
+                    .unwrap()
+                    .join("sandboxes")
+                    .join(thread)
+                    .exists(),
+                "{rule} no target physical effect"
+            );
+            let after = roots.read_projection(thread, &before).await.unwrap();
+            assert_eq!(
+                after.environment, before.environment,
+                "{rule} original binding"
+            );
+            assert_eq!(
+                after.environment_materialization, before.environment_materialization,
+                "{rule} no materialization receipt"
+            );
+        }
+    }
+
+    /// Arrange a real surviving Git source for the cold-Host decision rows.
+    /// This returns the existing canonical input model; no Root, Registry,
+    /// provider, classifier or replacement test service is constructed here.
+    #[cfg(target_os = "linux")]
+    fn cold_rebuild_repository_source(
+        storage: &std::path::Path,
+    ) -> crate::session_resource::ResolvedSessionResources {
+        let seed = storage.join("source-seed");
+        let remote = storage.join("source.git");
+        std::fs::create_dir(&seed).unwrap();
+        std::fs::write(seed.join("SOURCE.txt"), b"original Repository source\n").unwrap();
+        let commands = [
+            vec!["init", "--initial-branch=main", seed.to_str().unwrap()],
+            vec!["-C", seed.to_str().unwrap(), "add", "SOURCE.txt"],
+            vec![
+                "-C",
+                seed.to_str().unwrap(),
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-m",
+                "source",
+            ],
+            vec![
+                "clone",
+                "--bare",
+                seed.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        ];
+        for arguments in commands {
+            let mut command = std::process::Command::new("git");
+            command.current_dir(storage);
+            // Private fixture Git must never inherit a hook/index/worktree
+            // coordinate from the caller's unrelated repository.
+            for (key, _) in
+                std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("GIT_"))
+            {
+                command.env_remove(key);
+            }
+            let output = command.args(&arguments).output().unwrap();
+            assert!(
+                output.status.success(),
+                "source Git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        crate::session_resource::ResolvedSessionResources::try_new(
+            vec![crate::session_resource::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                binding_id: awaken_resource_contract::BindingId::from("cold-source"),
+                source: crate::session_resource::ResolvedInputSource::Repository {
+                    repository_id: awaken_resource_contract::RepositoryId::from("cold-source"),
+                    config: awaken_resource_contract::RepositoryConfigVersion {
+                        repository_id: "cold-source".into(),
+                        version: awaken_resource_contract::ConfigVersion::INITIAL,
+                        remote_url: remote.to_str().unwrap().into(),
+                        credential_binding: None,
+                        initial_branch: Some("main".into()),
+                        initial_commit: None,
+                        clone_policy: Default::default(),
+                    },
+                    credential: None,
+                },
+                mount_path: "/workspace/source".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cold_recorded_source_end_rebuilds_from_its_real_repository_source() {
+        use awaken_session_environment::test_support::SandboxEnvironmentAccess as _;
+        use awaken_session_realization_contract::{BoundSourceEnd, RecordedProcessEnd};
+        use awaken_worker_contract::{WorkerProcessEnd, WorkerProcessExit};
+
+        // CP1/CP2: exact frozen Exit/Superseded + the original provider's
+        // definitive inode-loss observation + an actually cloned Repository
+        // source => canonical Rebuild. The source seed/bare remote live outside
+        // the lost Sandbox. CP3 a fresh current directive repeats successfully
+        // without replacing that new binding or appending another receipt.
+        // The original R5/CE3/CE4 retain missing/foreign-end refusal. No source
+        // closure/access boolean, fake Registry or second Root is supplied.
+        for end in [
+            RecordedProcessEnd::ExactExit,
+            RecordedProcessEnd::Superseded,
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            // CP0 needs real Linux Namespace/path fidelity for the Repository,
+            // not weaker Workdir capabilities. Probe the same selected substrate
+            // strictly; no absent isolator becomes a skip or fake Hand success.
+            awaken_provisioning_contract::SandboxReadiness::probe_ready(
+                &awaken_sandbox_local::NamespaceProvider::new(storage.path().join("sandboxes")),
+            )
+            .await
+            .expect("CP0 actual Linux Namespace substrate");
+            let source_resources = cold_rebuild_repository_source(storage.path());
+            let thread = "cold-repository-source";
+            let activation = test_activation(thread, "run-cold-repository-source");
+            let (host, control, mut directive, handle, roots) =
+                Box::pin(missing_environment_recovery_fixture(
+                    storage.path(),
+                    thread,
+                    &activation.snapshot,
+                    Some(source_resources),
+                ))
+                .await;
+            let before = roots
+                .read_projection(thread, &control.current_projection())
+                .await
+                .unwrap();
+            let fence = handle
+                .evidence()
+                .and_then(awaken_provisioning_contract::HandleEvidence::effect_fence)
+                .expect("original materialization fence");
+            let receipt = WorkerProcessExit::ended(
+                "fixture-worker",
+                "recorded-source-binding",
+                "recorded-original-end",
+                match end {
+                    RecordedProcessEnd::ExactExit => WorkerProcessEnd::ExactExit,
+                    RecordedProcessEnd::Superseded => WorkerProcessEnd::Superseded,
+                },
+            )
+            .unwrap();
+            directive.projection.bound_source_end = BoundSourceEnd::from_registry(
+                fence.owner().into(),
+                fence.runtime_incarnation().into(),
+                Some(&receipt),
+            );
+            *control.projection.lock().unwrap() = directive.projection.clone();
+            Box::pin(crate::application::worker_projection::realize_session(
+                &host.run_assembly,
+                &control,
+                &awaken_session_types::SessionId::from(thread),
+                directive.clone(),
+                None,
+                Some(&activation.snapshot),
+                true,
+            ))
+            .await
+            .expect("CP1/CP2 rebuild only the exact closed source");
+            let rebuilt = roots
+                .read_projection(thread, &control.current_projection())
+                .await
+                .unwrap();
+            assert_ne!(
+                rebuilt.environment.binding(),
+                before.environment.binding(),
+                "CP1/CP2 a fresh binding is committed by the original Root"
+            );
+            assert!(
+                matches!(
+                    rebuilt
+                        .environment_materialization
+                        .as_deref()
+                        .unwrap()
+                        .origin()
+                        .unwrap()
+                        .kind(),
+                    awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. }
+                ),
+                "CP1/CP2 the actual receipt is a Rebuild"
+            );
+            let environment = host
+                .realization_executor
+                .environments()
+                .session_environment(thread)
+                .await
+                .unwrap()
+                .expect("CP1/CP2 published target");
+            // Read just the declared file through the existing Namespace command
+            // port. Git's legitimate object hardlinks must not be enumerated or
+            // used to relax the safe tree walker. cmp checks the exact newline too.
+            let source = environment
+                .sandbox_environment()
+                .run_test_command(awaken_provisioning_contract::Command::new([
+                    "sh",
+                    "-c",
+                    "printf 'original Repository source\\n' | cmp -s - source/SOURCE.txt",
+                ]))
+                .await
+                .unwrap();
+            assert_eq!(
+                source.code,
+                Some(0),
+                "CP1/CP2 original bytes came from the real surviving Git source"
+            );
+            assert_eq!(
+                control
+                    .failure_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            directive.projection = control.current_projection();
+            Box::pin(crate::application::worker_projection::realize_session(
+                &host.run_assembly,
+                &control,
+                &awaken_session_types::SessionId::from(thread),
+                directive,
+                None,
+                Some(&activation.snapshot),
+                true,
+            ))
+            .await
+            .expect("CP3 current projection replay");
+            let replayed = roots
+                .read_projection(thread, &control.current_projection())
+                .await
+                .unwrap();
+            assert_eq!(
+                replayed.environment, rebuilt.environment,
+                "CP3 same binding"
+            );
+            assert_eq!(
+                replayed.environment_materialization, rebuilt.environment_materialization,
+                "CP3 no extra receipt"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn cold_continuity_rejects_a_physically_missing_environment() {
         let storage = tempfile::tempdir().expect("storage");
         let continuity_thread = "cold-continuity-missing";
@@ -2191,6 +2612,7 @@ mod tests {
                 storage.path(),
                 continuity_thread,
                 &continuity_activation.snapshot,
+                None,
             ))
             .await;
         let error = crate::application::worker_projection::realize_session(

@@ -415,8 +415,10 @@ async fn restartable_stop_settles_by_container_instance_and_never_harms_a_newer_
     // | S1  | A running                                    | one exact UID/RV DELETE, Unknown          |
     // | S2  | A running, deletion accepted                 | Unknown, no second DELETE                 |
     // | S3  | B running, lastState A exited 137            | exact receipt, no DELETE                  |
-    // | S4  | C running, lastState B (restarted twice)     | Unknown (indeterminate), no DELETE        |
-    // | S5  | Pod deleted (404)                            | Unknown                                   |
+    // | S4  | C running, lastState B (restarted twice)     | Superseded receipt (no code), no DELETE   |
+    // | S4b | A terminated with a synthetic reason, no newer instance | Unknown (lost), no DELETE      |
+    // | S5  | Pod deleted (404)                            | Unknown, evidence Lost (quarantine)       |
+    // | S5b | same name, another UID                       | Unknown, evidence Lost, no DELETE         |
     // | S6  | B running: closed-idle retire / exit release | no DELETE, no finalizer release (B owns them) |
     // | S7  | A still current: closed-idle retire          | the Pod-level retirement (DELETE + release) |
     // | S8  | retention removed                            | error, no write                           |
@@ -446,23 +448,31 @@ async fn restartable_stop_settles_by_container_instance_and_never_harms_a_newer_
         "S1/S2 one DELETE"
     );
 
-    for (row, pod, observed) in [("S3", &once, true), ("S4", &twice, false)] {
+    for (row, pod) in [("S3", &once), ("S4", &twice)] {
         let fixture = Fixture::new(Fault::None);
         fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
         let binding = fixture.binding().await;
         fixture.facts.lock().unwrap().pod = Some(retained(pod.clone()));
         let result = fixture.stopper().request_stop(&binding).await.unwrap();
-        assert_eq!(
-            matches!(result, PodProcessTermination::Observed(_)),
-            observed,
-            "{row}"
-        );
-        if let PodProcessTermination::Observed(receipt) = result {
-            assert_eq!(
+        match (row, result) {
+            ("S3", PodProcessTermination::Observed(receipt)) => assert_eq!(
                 receipt.exits()[0].exit_code(),
                 137,
                 "{row} exact lastState exit"
-            );
+            ),
+            ("S4", PodProcessTermination::Superseded(receipt)) => {
+                assert_eq!(
+                    receipt.binding(),
+                    &binding,
+                    "{row} names the bound instance"
+                );
+                assert!(
+                    receipt.evidence_ref().contains("containerd://a")
+                        && !receipt.evidence_ref().contains("containerd://c"),
+                    "{row} evidence names only the bound instance"
+                );
+            }
+            (row, other) => panic!("{row}: unexpected {other:?}"),
         }
         // S6: B or C now owns the Pod; settling A touches nothing of theirs.
         fixture
@@ -481,10 +491,41 @@ async fn restartable_stop_settles_by_container_instance_and_never_harms_a_newer_
     let binding = fixture.binding().await;
     fixture.facts.lock().unwrap().pod = None;
     assert_eq!(
-        fixture.stopper().request_stop(&binding).await.unwrap(),
-        PodProcessTermination::Unknown,
+        fixture
+            .stopper()
+            .request_stop_observing_loss(&binding)
+            .await
+            .unwrap(),
+        (PodProcessTermination::Unknown, ProcessEvidence::Lost),
         "S5"
     );
+
+    let mut replaced = once.clone();
+    replaced["metadata"]["uid"] = json!("uid-b");
+    let mut lost = live.clone();
+    lost["status"]["containerStatuses"][0]["state"] = json!({"terminated":{
+        "containerID":"containerd://a", "exitCode": 137, "reason":"ContainerStatusUnknown",
+        "startedAt":"2026-09-08T00:00:00Z", "finishedAt":"2026-09-08T00:00:01Z"
+    }});
+    for (row, pod, evidence) in [
+        ("S5b", replaced, ProcessEvidence::Lost),
+        ("S4b", lost, ProcessEvidence::Retained),
+    ] {
+        let fixture = Fixture::new(Fault::None);
+        fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
+        let binding = fixture.binding().await;
+        fixture.facts.lock().unwrap().pod = Some(retained(pod));
+        assert_eq!(
+            fixture
+                .stopper()
+                .request_stop_observing_loss(&binding)
+                .await
+                .unwrap(),
+            (PodProcessTermination::Unknown, evidence),
+            "{row}"
+        );
+        assert_eq!(fixture.facts.lock().unwrap().accepted, 0, "{row} no DELETE");
+    }
 
     let fixture = Fixture::new(Fault::None);
     fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));

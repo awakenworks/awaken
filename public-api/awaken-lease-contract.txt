@@ -1,13 +1,26 @@
 pub mod awaken_lease_contract
 pub mod awaken_lease_contract::authority
+pub enum awaken_lease_contract::authority::AuthorityEnd
+pub awaken_lease_contract::authority::AuthorityEnd::AuthorityLost
+pub awaken_lease_contract::authority::AuthorityEnd::ProofExpired
+pub enum awaken_lease_contract::authority::RenewalDecision
+pub awaken_lease_contract::authority::RenewalDecision::Apply
+pub awaken_lease_contract::authority::RenewalDecision::RetryAfter(core::time::Duration)
+pub awaken_lease_contract::authority::RenewalDecision::Stop(awaken_lease_contract::authority::AuthorityEnd)
+pub enum awaken_lease_contract::authority::RenewalReply
+pub awaken_lease_contract::authority::RenewalReply::Applied
+pub awaken_lease_contract::authority::RenewalReply::Refused
+pub awaken_lease_contract::authority::RenewalReply::Unanswered
 pub struct awaken_lease_contract::authority::AuthorityLeaseTiming
 impl awaken_lease_contract::authority::AuthorityLeaseTiming
+pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::decide_renewal(self, core::time::Duration, awaken_lease_contract::authority::RenewalReply) -> awaken_lease_contract::authority::RenewalDecision
 pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(u64) -> Self
 pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::lease_ttl(self) -> core::time::Duration
 pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::proof_window(self) -> core::time::Duration
 pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::remaining_proof_after(self, core::time::Duration) -> core::time::Duration
 pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::remaining_proof_at(self, awaken_lease_contract::authority::AuthorityProofStarted, awaken_lease_contract::authority::AuthorityProofStarted) -> core::option::Option<core::time::Duration>
 pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::renew_interval(self) -> core::time::Duration
+pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::renewal_request_budget(self, core::time::Duration) -> core::option::Option<core::time::Duration>
 pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::request_timeout(self) -> core::time::Duration
 pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::retry_delay(self) -> core::time::Duration
 pub struct awaken_lease_contract::authority::AuthorityProofStarted

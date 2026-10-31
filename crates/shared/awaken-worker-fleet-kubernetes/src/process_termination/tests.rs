@@ -394,10 +394,14 @@ fn container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation
     // | C1  | running A                                    | y | alive: rebinding gives the same binding, Unknown |
     // | C2  | running B, lastState terminated A (137)      | y | exact exit of A from lastState; B binds as a new incarnation |
     // | C3  | terminated A in state (back-off, not restarted) | y | exact exit of A                  |
-    // | C4  | running C, lastState terminated B (twice)    | y | lost: Unknown (indeterminate); C binds |
-    // | C5  | running B, no lastState                      | y | lost: Unknown                    |
+    // | C4  | running C, lastState terminated B (twice)    | y | Superseded (no exit code); C binds |
+    // | C5  | running B, no lastState                      | y | Superseded (no exit code)        |
     // | C6  | lastState names A but UID/name/node differ   | y | Unknown (Pod fence)              |
-    // | C7  | lastState names A with a synthetic reason    | y | lost: Unknown                    |
+    // | C7  | lastState names A with a synthetic reason or another start, newer B running | y | Superseded |
+    // | C8  | A terminated with a synthetic reason, no newer instance | y | lost: Unknown          |
+    // | C9  | another ID whose start is not later than A's | y | lost: Unknown                    |
+    // Superseded relies on kubelet running one instance per container name in
+    // a Pod UID: a newer started instance proves the bound one stopped.
     // | R2a | Always Pod without retained evidence         | n | no binding: cannot become an incarnation |
     // | R2b | retention removed after binding              | n | Unknown                          |
     // restartCount is not part of identity: only the container ID and start.
@@ -457,10 +461,27 @@ fn container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation
     );
 
     let twice = restarted(&once, "containerd://b", "containerd://c", 137, "Error");
+    let PodProcessTermination::Superseded(superseded) = observe(&binding, &decode(twice.clone()))
+    else {
+        panic!("C4 a newer instance supersedes A");
+    };
+    assert_eq!(superseded.binding(), &binding, "C4 subject");
+    let mut rerestarted = restarted(&twice, "containerd://c", "containerd://d", 1, "Error");
+    rerestarted["metadata"]["resourceVersion"] = json!("r9");
+    let PodProcessTermination::Superseded(again) = observe(&binding, &decode(rerestarted)) else {
+        panic!("C4 replay after another restart");
+    };
     assert_eq!(
-        observe(&binding, &decode(twice.clone())),
-        PodProcessTermination::Unknown,
-        "C4"
+        again.evidence_ref(),
+        superseded.evidence_ref(),
+        "C4 evidence names only A, so later restarts replay it"
+    );
+    assert!(
+        superseded
+            .evidence_ref()
+            .starts_with("k8s-container-superseded:v1:")
+            && !superseded.evidence_ref().contains("exit_code"),
+        "C4 no exit code"
     );
     assert_eq!(
         bind("ns", "worker", "uid-a", &decode(twice))
@@ -471,9 +492,11 @@ fn container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation
     );
     let mut no_last = once.clone();
     no_last["status"]["containerStatuses"][0]["lastState"] = json!({});
-    assert_eq!(
-        observe(&binding, &decode(no_last)),
-        PodProcessTermination::Unknown,
+    assert!(
+        matches!(
+            observe(&binding, &decode(no_last)),
+            PodProcessTermination::Superseded(_)
+        ),
         "C5"
     );
     for (pointer, value) in [
@@ -481,6 +504,16 @@ fn container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation
         ("/spec/nodeName", json!("node-b")),
         ("/spec/restartPolicy", json!("Never")),
         ("/status/containerStatuses/0/name", json!("other")),
+    ] {
+        let mut changed = once.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert_eq!(
+            observe(&binding, &decode(changed)),
+            PodProcessTermination::Unknown,
+            "C6 {pointer}"
+        );
+    }
+    for (pointer, value) in [
         (
             "/status/containerStatuses/0/lastState/terminated/reason",
             json!("ContainerStatusUnknown"),
@@ -492,12 +525,33 @@ fn container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation
     ] {
         let mut changed = once.clone();
         *changed.pointer_mut(pointer).unwrap() = value;
-        assert_eq!(
-            observe(&binding, &decode(changed)),
-            PodProcessTermination::Unknown,
-            "C6/C7 {pointer}"
+        assert!(
+            matches!(
+                observe(&binding, &decode(changed)),
+                PodProcessTermination::Superseded(_)
+            ),
+            "C7 {pointer}: no exact exit of A, but newer B runs"
         );
     }
+    let mut synthetic = live.clone();
+    synthetic["status"]["containerStatuses"][0]["state"] = json!({"terminated":{
+        "containerID":"containerd://a", "exitCode": 137, "reason":"ContainerStatusUnknown",
+        "startedAt":"2026-09-08T00:00:00Z", "finishedAt":"2026-09-08T00:00:01Z"
+    }});
+    assert_eq!(
+        observe(&binding, &decode(synthetic)),
+        PodProcessTermination::Unknown,
+        "C8"
+    );
+    let mut not_later = once.clone();
+    not_later["status"]["containerStatuses"][0]["lastState"] = json!({});
+    not_later["status"]["containerStatuses"][0]["state"]["running"]["startedAt"] =
+        json!("2026-09-08T00:00:00Z");
+    assert_eq!(
+        observe(&binding, &decode(not_later)),
+        PodProcessTermination::Unknown,
+        "C9"
+    );
     let mut unretained = live.clone();
     unretained["metadata"]["finalizers"] = json!([]);
     assert!(

@@ -14,6 +14,7 @@ use awaken_agent_contract::thread::commit::operation::{
 
 use crate::ClaimedCommitRequest;
 use awaken_dispatch_execution::validate_commit_dispatch_binding;
+use awaken_worker_contract::WorkerProcessEnd;
 
 /// Trusted Coordinator composition resolves an exact running execution domain
 /// before physical admission. Worker request JSON is never an implementation.
@@ -104,6 +105,27 @@ impl ClosedWorkerExecution {
         &self,
         evidence_ref: impl Into<String>,
     ) -> Result<WorkerProcessStopStatus, ApplicationError> {
+        self.observed_end(WorkerProcessEnd::ExactExit, evidence_ref)
+    }
+
+    /// Trusted adapters call this only after observing that the provider
+    /// started a newer instance of every bound process slot whose exact exit
+    /// is no longer reported (Kubernetes: a newer container of the same name
+    /// in the same Pod UID). Like an exact exit it proves only that the
+    /// bound processes stopped; it carries no exit code, and every external
+    /// effect of the attempt stays Indeterminate.
+    pub fn observed_superseded(
+        &self,
+        evidence_ref: impl Into<String>,
+    ) -> Result<WorkerProcessStopStatus, ApplicationError> {
+        self.observed_end(WorkerProcessEnd::Superseded, evidence_ref)
+    }
+
+    fn observed_end(
+        &self,
+        end: WorkerProcessEnd,
+        evidence_ref: impl Into<String>,
+    ) -> Result<WorkerProcessStopStatus, ApplicationError> {
         let evidence_ref = evidence_ref.into();
         if evidence_ref.trim().is_empty() {
             return Err(ApplicationError::invalid(
@@ -113,16 +135,19 @@ impl ClosedWorkerExecution {
         Ok(WorkerProcessStopStatus::Exited(ObservedWorkerProcessExit {
             binding: self.binding.clone(),
             evidence_ref,
+            end,
         }))
     }
 }
 
-/// Subject-bound LOCAL exit evidence. No wire deserialization and no conversion
-/// to whole-attempt acknowledgement. The provider still owns the physical fact.
+/// Subject-bound LOCAL process-end evidence. No wire deserialization and no
+/// conversion to whole-attempt acknowledgement. The provider still owns the
+/// physical fact; `end` records whether it was an exact exit or a supersession.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedWorkerProcessExit {
     binding: crate::AttemptExecutionBinding,
     evidence_ref: String,
+    end: WorkerProcessEnd,
 }
 
 impl ObservedWorkerProcessExit {
@@ -132,13 +157,26 @@ impl ObservedWorkerProcessExit {
     pub fn evidence_ref(&self) -> &str {
         &self.evidence_ref
     }
+    #[must_use]
+    pub const fn end(&self) -> WorkerProcessEnd {
+        self.end
+    }
 }
 
 /// Local process observation only. Neither value authorizes Dispatch retirement
 /// or replay: independent model, MCP and Sandbox participants may remain active.
+/// `Exited` covers every proved process end (exact exit or supersession): each
+/// closes the occupied attempt slot the same way, and neither proves anything
+/// about external effects.
+///
+/// `EvidenceLost` is Unknown that can never resolve: the provider no longer
+/// holds the bound process domain (Kubernetes: the Pod is gone or another UID
+/// holds its name). Dispatch treats it exactly as Unknown and raises the one
+/// operator quarantine signal; it never escapes as a stop result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerProcessStopStatus {
     Unknown,
+    EvidenceLost,
     Exited(ObservedWorkerProcessExit),
 }
 
@@ -398,6 +436,15 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
             .release_unregistered_ended_worker_evidence(directory)
             .await
     }
+
+    async fn record_occupied_worker_ends(
+        &self,
+        dispatch: &dyn PhysicalAttemptReads,
+        directory: &dyn crate::WorkerDirectory,
+        now_ms: u64,
+    ) -> Result<(), ApplicationError> {
+        record_occupied_worker_ends(dispatch, directory, self.source.as_ref(), now_ms).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -512,6 +559,93 @@ pub async fn release_closed_idle_worker_evidence(
     source
         .release_closed_idle_worker_evidence(identity, record.create_ledger.as_ref())
         .await
+}
+
+/// Record, from the maintenance tick, the process end of each closed Worker
+/// incarnation that still occupies a physical attempt slot, while the provider
+/// still reports it. Without this the end is observed only when the next
+/// incarnation registers (which settles only the current record's predecessor)
+/// or when a successor is blocked behind the slot; by then Kubernetes may have
+/// dropped the exit from `lastState`. Observation never stops a process,
+/// releases evidence or touches the slot; the blocked-successor path still
+/// owns closure and reuses the recorded receipt.
+///
+/// | Row | bound incarnation of an occupied slot           | effect                        |
+/// |-----|-------------------------------------------------|-------------------------------|
+/// | O1  | the provider does not own its evidence          | skipped, no Registry write    |
+/// | O2  | lease still live                                | skipped, not expired          |
+/// | O3  | closed, end already recorded                    | skipped, no provider read     |
+/// | O4  | closed, provider reports an exact exit or a supersession | receipt recorded       |
+/// | O5  | closed, provider reports nothing (running, lost, gone) | nothing recorded, no stop |
+///
+/// Each incarnation is visited once per pass; one failure does not stop the
+/// pass and the first failure is returned for the caller's retry log.
+pub async fn record_occupied_worker_ends(
+    dispatch: &dyn PhysicalAttemptReads,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    now_ms: u64,
+) -> Result<(), ApplicationError> {
+    let mut visited: Vec<crate::WorkerIdentity> = Vec::new();
+    let mut first_error = None;
+    for summary in dispatch
+        .list_dispatches()
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+    {
+        if !summary.physical_attempt_active {
+            continue;
+        }
+        let attempt = dispatch
+            .load_physical_attempt(&summary.run_id)
+            .await
+            .map_err(|e| ApplicationError::unavailable(e.to_string()))?;
+        let Some(identity) = attempt
+            .as_ref()
+            .and_then(|attempt| attempt.binding.as_ref())
+            .map(|binding| binding.worker().clone())
+        else {
+            continue;
+        };
+        if visited.contains(&identity) || !source.owns_worker_evidence(&identity) {
+            continue;
+        }
+        visited.push(identity.clone());
+        if let Err(error) = record_closed_worker_end(directory, source, &identity, now_ms).await {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn record_closed_worker_end(
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    identity: &crate::WorkerIdentity,
+    now_ms: u64,
+) -> Result<(), ApplicationError> {
+    if !ensure_worker_closed(directory, identity, now_ms).await? {
+        return Ok(());
+    }
+    let Some(record) = directory
+        .incarnation(identity)
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+    else {
+        return Ok(());
+    };
+    if record.process_exit.is_some() {
+        return Ok(());
+    }
+    observe_closed_worker_exit(
+        directory,
+        source,
+        identity,
+        record.create_ledger.as_ref(),
+        false,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn observe_closed_worker_exit(
@@ -729,7 +863,7 @@ async fn close_original_attempt(
                 .await?;
         let exit = match observation {
             Some(WorkerProcessStopStatus::Exited(exit)) => exit,
-            Some(WorkerProcessStopStatus::Unknown) => {
+            Some(WorkerProcessStopStatus::Unknown | WorkerProcessStopStatus::EvidenceLost) => {
                 return Ok(Some(WorkerProcessStopStatus::Unknown));
             }
             None => return Ok(None),
@@ -888,18 +1022,35 @@ async fn independently_close_worker(
     } else {
         source.stop_closed_worker(&closed).await?
     };
-    let WorkerProcessStopStatus::Exited(exit) = observation else {
-        return Ok(Some(WorkerProcessStopStatus::Unknown));
+    let exit = match observation {
+        WorkerProcessStopStatus::Exited(exit) => exit,
+        WorkerProcessStopStatus::Unknown => return Ok(Some(WorkerProcessStopStatus::Unknown)),
+        WorkerProcessStopStatus::EvidenceLost => {
+            // The operator quarantine signal: the attempt slot stays occupied
+            // and its effects Indeterminate until an operator resolves it.
+            tracing::warn!(
+                target: "awaken::worker_process_quarantine",
+                worker_id = %binding.worker().worker_id,
+                incarnation = %binding.worker().incarnation_id,
+                generation = binding.worker().generation,
+                run_id = %predecessor.claim.run_id.0,
+                epoch = predecessor.claim.epoch,
+                "Worker process evidence is lost (its Pod is gone or replaced); \
+                 the attempt stays quarantined with Indeterminate effects"
+            );
+            return Ok(Some(WorkerProcessStopStatus::Unknown));
+        }
     };
     if exit.binding() != binding {
         return Err(ApplicationError::internal(
             "Worker exit names another execution",
         ));
     }
-    let receipt = crate::WorkerProcessExit::new(
+    let receipt = crate::WorkerProcessExit::ended(
         binding.provider_id(),
         binding.execution_ref(),
         exit.evidence_ref(),
+        exit.end(),
     )
     .map_err(|error| ApplicationError::internal(error.to_string()))?;
     persist_worker_exit(
@@ -939,7 +1090,8 @@ async fn persisted_worker_exit(
         binding: binding.clone(),
         create_ledger: record.create_ledger,
     };
-    let WorkerProcessStopStatus::Exited(exit) = closed.observed_exit(receipt.evidence_ref())?
+    let WorkerProcessStopStatus::Exited(exit) =
+        closed.observed_end(receipt.end(), receipt.evidence_ref())?
     else {
         unreachable!()
     };
@@ -1144,6 +1296,7 @@ mod tests {
             process_exit: Some(ObservedWorkerProcessExit {
                 binding,
                 evidence_ref: "local-exit".into(),
+                end: WorkerProcessEnd::ExactExit,
             }),
         };
         assert!(command.observed_all_execution_stopped("\n\t").is_err());

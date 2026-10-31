@@ -181,6 +181,7 @@ impl ManagedSessionRootFixture {
             .frozen(thread)
             .expect("installed Sessions");
         let projection = awaken_session_realization_contract::FrozenSessionProjection {
+            bound_source_end: None,
             workspace_id: owner,
             revision: root.revision,
             baseline: root.frozen_baseline().cloned().ok_or_else(|| {

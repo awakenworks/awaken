@@ -42,6 +42,12 @@ pub struct FrozenSessionProjection {
     /// messages remain request-only and are never persisted as Thread truth.
     #[serde(default)]
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
+    /// The Registry-recorded process end of the Worker incarnation that holds
+    /// the Resident source, when the Coordinator could read one
+    /// ([`crate::BoundSourceEnd`]). A rebuildable Coordinator projection, never
+    /// Session truth; absent means unrecorded, and older Coordinators omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_source_end: Option<crate::BoundSourceEnd>,
 }
 
 /// The two valid installation intents for a complete frozen projection.

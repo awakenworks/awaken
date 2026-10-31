@@ -19,6 +19,8 @@ awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-dispatch-contract = { workspace = true }
+# The Registry's process-end vocabulary a Worker exit receipt records.
+awaken-worker-contract.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
@@ -63,7 +65,6 @@ nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 [dev-dependencies]
 awaken-tool-contract.workspace = true
 awaken-session-application-contract.workspace = true
-awaken-worker-contract.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-lease-contract.workspace = true
 awaken-store-conformance.workspace = true

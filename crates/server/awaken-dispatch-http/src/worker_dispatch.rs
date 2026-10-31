@@ -1254,10 +1254,12 @@ fn verify_worker_id(
 }
 
 /// A restarted process re-registers under the same Worker ID. Expire the
-/// previous incarnation once its lease has lapsed and record its exact exit
-/// when the provider still holds it (e.g. Kubernetes `lastState`); otherwise it
-/// stays Unknown and its occupied attempts keep their existing recovery. A
-/// live lease is left alone: the Registry then refuses the new incarnation.
+/// previous incarnation once its lease has lapsed and record its process end:
+/// the exact exit when the provider still holds it (e.g. Kubernetes
+/// `lastState`), else its supersession by the registering newer instance of
+/// the same process slot. Otherwise it stays Unknown and its occupied attempts
+/// keep their existing recovery. A live lease is left alone: the Registry then
+/// refuses the new incarnation.
 async fn settle_previous_incarnation(
     service: &WorkerDispatchService,
     previous: &WorkerIdentity,
