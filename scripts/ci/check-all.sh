@@ -285,6 +285,10 @@ run static "commit wrapper self-test" scripts/ci/commit.sh --self-test
 run static "release-package self-test" python3 scripts/release/package.py --self-test
 run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test
 run static "product release contract" python3 scripts/ci/check_product_release.py
+# Plan v5 S3: the principle table is printed by a command, never hand-counted.
+# The report is informational; only the tool's own decision table can fail.
+run static "principle status self-test" python3 scripts/ci/principle_status.py --self-test
+run static "principle status (informational)" python3 scripts/ci/principle_status.py --guards
 run static "observation-collapse self-test" python3 scripts/ci/check_observation_collapse.py --self-test
 run static "observation-collapse" python3 scripts/ci/check_observation_collapse.py
 # Three bounded groups retain every original decision row. Windows runs real

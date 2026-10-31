@@ -465,7 +465,7 @@
 
 ## T27 Sandbox 能力与同一物理实例
 
-责任组件：SessionEnvironmentProvider 与 Sandbox 能力构造。入口：[源码或现有门禁](../../crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs)。风险基准：P0。类型：行为域。
+责任组件：SandboxProviderRoles 与 Sandbox 能力构造。入口：[源码或现有门禁](../../crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。按消费者角色约束能力，保留同一物理实例；不要按方法机械拆 trait。
 

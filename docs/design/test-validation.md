@@ -333,3 +333,89 @@ group successful for the exact candidate, may write full-gate qualification.
 Current focused results, partial environments, per-crate counters and quick
 plans must retain their stated scope. See the existing
 [full-gate policy](../adr/0080-full-gate-freshness-and-declared-tool-environment.md).
+
+### Served-process E2E coverage
+
+`scripts/ci/e2e-coverage.sh` measures deterministic served-process API coverage
+and prints the current total and executed numerator. `stage_change_coverage_e2e.ts`
+owns uniquely identified functional obligations, including the served-process
+deployment mappings used to assess the G42/G43 Target guardrails; those rows do
+not change guardrail status or replace the formal qualification profiles. The
+post-rebase 2026-07-22 changed-line audit against `t` measured 1589/1662 =
+95.61%, above the enforced strict threshold of >95%; 264 non-API-reachable
+production lines are separately bounded and audited rather than hidden by broad
+exclusions.
+
+### Distributed role E2E scope
+
+[ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md)'s
+P2-B process-level acceptance ([k3d guide](../../deploy/k3d/README.md),
+`e2e/k3d/distributed_control_e2e.sh`) runs the production Control process with
+only a deterministic model-publication fact injected at its existing SPI,
+replicated shipped Coordinator roles, two shipped `awaken-worker` processes,
+signed Worker traffic, exact Credential/File/Memory/Skill realization, four
+owner databases, one public API endpoint, active-active projection refresh,
+Worker incarnation restart, Pod/node/Provider faults, PostgreSQL standby
+promotion and concurrent load. It also hard-stops a retained Pod-bound Native
+Worker, independently proves the exact old Pod exited, classifies the committed
+closed `ModelOnlyV1` surface, retires only that predecessor Dispatch slot and
+settles through a new Pod UID without another provider request. Worker Pods
+receive no authority database or seal configuration and are checked for zero
+PostgreSQL sockets.
+
+## Integrated-source qualification record
+
+Moved here from `STATUS.md`. Validation runs on the local Linux host; native
+Windows/MSVC checks run where a Windows host exists. Source candidates, bound
+runtime results, normal commits, protected fast-forwards and full13
+qualification are separate claims.
+
+- **Session checkpoint (2026-10-30).** Accepted Session checkpoint
+  `221ecbdd90ac` (accepted creation inputs and budget decisions), with Worker MCP
+  updates (`d2b03a68f6`) and shared live Thread subscription admission
+  (`68e55b3f0e`), was protected fast-forwarded after the formal/model update
+  (`6033b7c62a`) with all production commit hooks enabled.
+- **Owner/construction continuation.** Nine full package suites passed (1,939
+  passed, 21 original skips), plus the original default-stack Startup case,
+  full workspace Clippy and three focused Kani harnesses (30, 7 and 95 checks,
+  no failures). Its callback result aliases expand to the complete original
+  source bytes; pre-alias receipts keep their original subject. Fourteen full
+  package suites passed 3,456 tests with 40 pre-existing skips; seven Startup
+  cases include the default-stack two-Run MCP regression. Live PostgreSQL
+  conformance passed 10 cases with its original capacity filter, and the store
+  library passed 71. The initial Clippy refusal was repaired with a transparent
+  private alias; full workspace Clippy and all 379 Application tests then passed
+  on the repaired subject. The other thirteen package/Startup receipts keep their
+  original source subject: mechanical alias expansion proved byte equality,
+  without relabelling them as current-SHA executions.
+- **Capacity candidate.** 10,008 tests across all 154 packages passed (136
+  original skips) with workspace Clippy at its earlier `3268bf0eaf` base,
+  including the default-stack two-Run MCP/Vault test. A later `025fa1e2b9`
+  Linux ACP gate passed, and `b80a3ea2a5` workspace Clippy passed; the full b80
+  run did not finish. These receipts do not establish current-main execution.
+- **Recreated validation packages.** The reviewed packages of the stopped
+  `validation/claude-crc-native-20261030` orchestration were recreated as normal
+  commits on main after `3fb0605002`: Sandbox capacity/readiness/installation
+  convergence and the test-only dependency graph, ACP execution behind features
+  the Coordinator and Control products leave off, confined MemoryDir IO, the
+  separate `awaken-control-process` executable with keyset discovery and IAM
+  `29e073afe1`, prepared Run/Outcome admission with the phase-failure journal,
+  background heartbeat checkpoints and source retention, the single
+  `awaken-session-contract` and responsibility-named Session roles. They passed
+  the non-compiling commit guards only. Private remote Task control and SDK
+  SemVer tooling are not part of them.
+- **Fourth batched verification (`9b6505d856`).** The workspace built and fmt
+  and doctests passed; 39 of 10,166 tests failed, one overflowed the stack, and
+  Clippy reported 7 errors. About 30 failures and the Clippy errors were fixed
+  afterwards; the rest are open.
+- **Downstream cohort.** The earlier Cloud/Flow pin snapshot is historical. At
+  the 2026-10-30 review their main refs were Cloud `31c96165dfcc` and Flow
+  `b19871ca3f66`; inference-materializer imports and Flow's concrete CLI
+  composition callers have migrated. Exact manifests, independent composition
+  roots, locks, images and the runtime BOM must be frozen together for
+  acceptance.
+
+Still open: one final immutable BOM qualified through build, migrations, Linux
+k3d/distributed execution, a real Agent-authored Environment and
+coding/review/fix acceptance. Native source, unit, model and database results do
+not close Cloud product acceptance.
