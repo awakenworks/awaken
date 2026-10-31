@@ -419,6 +419,7 @@ impl SessionEventBatchCommands {
                     traceparent: command.traceparent,
                     execution_requirements: Default::default(),
                     replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+                    private_task_input: None,
                 })
                 .await
         })

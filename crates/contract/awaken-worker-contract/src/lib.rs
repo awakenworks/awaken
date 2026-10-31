@@ -13,10 +13,6 @@
 //! This crate deliberately separates the non-replaceable eligibility kernel from
 //! replaceable ranking policy. A policy may order workers that already satisfy the
 //! durable requirements, but it cannot widen authority; mutable adapters live elsewhere.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod capability_agreement;
 mod fleet_readiness;
@@ -35,8 +31,8 @@ pub use awaken_credential_contract::{
 };
 pub use fleet_readiness::{FleetReadiness, fleet_readiness};
 pub use manifest::{
-    CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, FingerprintError,
-    HOST_EXECUTOR_CAPABILITY, PREPARED_SESSION_DISPATCH_CAPABILITY,
+    BACKGROUND_TASK_CONTROL_CAPABILITY, CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION,
+    FingerprintError, HOST_EXECUTOR_CAPABILITY, PREPARED_SESSION_DISPATCH_CAPABILITY,
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredCapacity,
     SESSION_RESOURCES_CAPABILITY, SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY,
     TOOL_RESULT_JOURNAL_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,

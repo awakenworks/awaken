@@ -126,6 +126,7 @@ fn bypass_run(session: &str) -> AdmitSessionRun {
         traceparent: None,
         execution_requirements: Default::default(),
         replacement: Default::default(),
+        private_task_input: None,
     }
 }
 

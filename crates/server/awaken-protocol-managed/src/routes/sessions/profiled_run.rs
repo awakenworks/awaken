@@ -123,6 +123,7 @@ pub async fn submit_profiled_session_run(
             traceparent: None,
             execution_requirements: body.execution_requirements,
             replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+            private_task_input: None,
         },
     ))
     .await

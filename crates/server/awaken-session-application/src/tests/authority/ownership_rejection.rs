@@ -273,6 +273,7 @@ fn admit_command(session: &str) -> awaken_session_execution_contract::AdmitSessi
         traceparent: None,
         execution_requirements: Default::default(),
         replacement: Default::default(),
+        private_task_input: None,
     }
 }
 

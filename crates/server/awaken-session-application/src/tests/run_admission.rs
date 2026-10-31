@@ -1089,6 +1089,7 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
             traceparent: None,
             execution_requirements: Default::default(),
             replacement: Default::default(),
+            private_task_input: None,
         })
         .await
         .expect("R1 cold-replica response-loss recovery");
@@ -1343,6 +1344,82 @@ async fn background_attention_uses_canonical_session_admission_without_observing
             .execution,
         SessionExecutionState::Running,
         "B1/E3 background caller did not wait for settlement",
+    );
+}
+
+#[tokio::test]
+async fn task_attention_carries_its_private_input_and_acknowledges_the_activated_run() {
+    // Remote Task control ACK table: K1 admission and activation succeed =>
+    // the acknowledgement names the activated Run and the reserved command
+    // carries the private Task input unchanged; K2 the same operation id and
+    // input again => the same Run id (deterministic identity, no second Run id).
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .expect("session repository"),
+    );
+    create(
+        repository.as_ref(),
+        persisted("task-attention", false, "idle"),
+    )
+    .await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let sessions = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let protocol = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        sessions.run_admissions(),
+        sessions.coordination(),
+        |_| Ok("workspace".into()),
+        |_| Ok(Some("agent".into())),
+    );
+    let input = awaken_session_application_contract::PrivateTaskInput::new(vec![
+        serde_json::json!({"version": 1, "task_id": "task"}),
+    ])
+    .expect("input");
+    let attention = awaken_session_application_contract::TaskAttention {
+        operation_id: "background-task-attention-1".into(),
+        thread: "task-attention".into(),
+        holder: "holder".into(),
+        message: awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id("attention-message".into()),
+            awaken_agent_contract::agent::message::Role::System,
+            "Background task task has produced a terminal completion candidate.",
+        ),
+        input: Some(input.clone()),
+    };
+    let ack =
+        awaken_session_application_contract::SessionRunBackgroundApplication::submit_task_attention(
+            &protocol,
+            attention.clone(),
+        )
+        .await
+        .expect("K1 admitted");
+    {
+        let reservations = runtime.reservations.lock().unwrap();
+        assert_eq!(reservations.len(), 1, "K1 one reservation");
+        assert_eq!(reservations[0].run_id, ack.run_id, "K1 exact Run");
+        assert_eq!(
+            reservations[0].private_task_input,
+            Some(input),
+            "K1 private input carried unchanged"
+        );
+    }
+    {
+        let deliveries = runtime.deliveries.lock().unwrap();
+        assert_eq!(deliveries.len(), 1, "K1 activated");
+        assert_eq!(deliveries[0].run_id, ack.run_id, "K1 activated Run");
+    }
+    assert_eq!(
+        ack.run_id,
+        awaken_session_execution_contract::session_run_id(
+            &SessionId::from("task-attention"),
+            &attention.operation_id,
+        ),
+        "K2 the Run id is a function of the operation id"
     );
 }
 

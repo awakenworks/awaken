@@ -3,13 +3,10 @@
 //! The extension owns typed aggregates and pure transitions. It has no SQL,
 //! repository, migration, or application-service dependency. Tools read an
 //! immutable State snapshot and return commands for Runtime to commit.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod model;
 mod notification;
+mod observation;
 mod plugin;
 mod supervisor;
 mod tools;
@@ -22,6 +19,9 @@ pub use model::{
 };
 pub use notification::{
     TaskNotificationEvent, TaskNotificationFormat, TaskNotificationRule, TaskNotifications,
+};
+pub use observation::{
+    TASK_OBSERVATION_VERSION, TaskObservation, TaskObservationCodecError, TaskObservationRecord,
 };
 pub use plugin::{
     BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin,

@@ -25,33 +25,33 @@ use crate::{
     BackgroundTaskLifecycle, BackgroundTaskOrigin, task_state_cell,
 };
 
-pub struct RunInBackground {
+pub(crate) struct RunInBackground {
     allowed: Arc<BTreeSet<String>>,
     supervisor: Arc<BackgroundTaskSupervisor>,
 }
-pub struct ListBackgroundTasks;
-pub struct GetBackgroundTask;
-pub struct CancelBackgroundTask;
+pub(crate) struct ListBackgroundTasks;
+pub(crate) struct GetBackgroundTask;
+pub(crate) struct CancelBackgroundTask;
 
 impl RunInBackground {
-    pub const ID: &str = "run_in_background";
+    pub(crate) const ID: &str = "run_in_background";
 }
 impl ListBackgroundTasks {
-    pub const ID: &str = "list_background_tasks";
+    pub(crate) const ID: &str = "list_background_tasks";
 }
 impl GetBackgroundTask {
-    pub const ID: &str = "get_background_task";
+    pub(crate) const ID: &str = "get_background_task";
 }
 impl CancelBackgroundTask {
-    pub const ID: &str = "cancel_background_task";
+    pub(crate) const ID: &str = "cancel_background_task";
 }
 
 #[must_use]
-pub fn is_management_tool(id: &str) -> bool {
+pub(crate) fn is_management_tool(id: &str) -> bool {
     crate::management_tool_ids().contains(&id)
 }
 
-pub fn tools(
+pub(crate) fn tools(
     allowed: BTreeSet<String>,
     supervisor: Arc<BackgroundTaskSupervisor>,
 ) -> Vec<DynamicTool> {
