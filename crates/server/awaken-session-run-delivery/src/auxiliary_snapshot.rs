@@ -17,7 +17,7 @@ pub fn memory_extractor_snapshot(
         .as_deref()
         .unwrap_or(awaken_ext_memory::MEMORY_AGENT_ID);
     let agent = resolve_auxiliary_snapshot(
-        Some(publications),
+        publications,
         workspace_id,
         agent_id,
         awaken_ext_memory::default_memory_agent(
@@ -33,23 +33,22 @@ pub fn memory_extractor_snapshot(
 }
 
 /// Resolve one auxiliary Agent through the same Coordinator publication source
-/// as a foreground Session. The built-in snapshot is only the absent-publication
-/// default for the same id; it is not a second mutable catalog. A per-caller
+/// as a foreground Session. Every caller holds that source; the built-in
+/// snapshot is only the default when the source has no publication for the same
+/// id; it is not a second mutable catalog. A per-caller
 /// instruction override derives one complete snapshot and moves all fingerprint
 /// fields together.
 pub fn resolve_auxiliary_snapshot(
-    publications: Option<&dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
     workspace_id: &str,
     agent_id: &str,
     fallback: ExecutableAgentSnapshot,
     instructions_override: Option<&str>,
 ) -> Result<ExecutableAgentSnapshot, String> {
-    let published = publications.and_then(|source| {
-        source.current(
-            workspace_id,
-            &awaken_runtime_contract::snapshot::AgentId(agent_id.to_string()),
-        )
-    });
+    let published = publications.current(
+        workspace_id,
+        &awaken_runtime_contract::snapshot::AgentId(agent_id.to_string()),
+    );
     let mut snapshot = match published {
         Some(snapshot) if snapshot.root_agent_id.0 == agent_id => snapshot,
         Some(snapshot) => {
@@ -123,18 +122,26 @@ mod tests {
 
         let fallback = config("memory-extractor", "built-in");
         let published = config("memory-extractor", "published");
+        let unpublished = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([])
+            .expect("an empty publication source");
         assert_eq!(
-            resolve_auxiliary_snapshot(None, "ws", "memory-extractor", fallback.clone(), None)
-                .expect("the matching built-in is the default")
-                .resolved_spec
-                .instructions,
+            resolve_auxiliary_snapshot(
+                &unpublished,
+                "ws",
+                "memory-extractor",
+                fallback.clone(),
+                None,
+            )
+            .expect("the matching built-in is the default")
+            .resolved_spec
+            .instructions,
             "built-in",
             "R1"
         );
         let source = Publications(published.clone(), false);
         assert_eq!(
             resolve_auxiliary_snapshot(
-                Some(&source),
+                &source,
                 "ws",
                 "memory-extractor",
                 fallback.clone(),
@@ -145,7 +152,7 @@ mod tests {
             "R2/R4"
         );
         let derived = resolve_auxiliary_snapshot(
-            Some(&source),
+            &source,
             "ws",
             "memory-extractor",
             fallback,
@@ -160,7 +167,7 @@ mod tests {
         assert_ne!(derived.fingerprint, published.fingerprint, "R3");
         assert!(
             resolve_auxiliary_snapshot(
-                None,
+                &unpublished,
                 "ws",
                 "custom-extractor",
                 config("memory-extractor", "built-in"),
@@ -172,7 +179,7 @@ mod tests {
         let misrouted = Publications(config("another-agent", "unrelated"), true);
         assert!(
             resolve_auxiliary_snapshot(
-                Some(&misrouted),
+                &misrouted,
                 "ws",
                 "memory-extractor",
                 config("memory-extractor", "built-in"),
