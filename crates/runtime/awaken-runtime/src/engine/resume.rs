@@ -434,6 +434,14 @@ pub(super) async fn drive_resumed(
             }
             return Err(error);
         }
+        if batch.is_complete() {
+            // Not yet persisted: stage the completed batch so the continuation's
+            // recovery sees this call Completed and publishes it, instead of
+            // reprocessing the journalled raw return.
+            let command = ActiveToolBatch::write(&Some(batch));
+            store.apply(&command);
+            ledger.staged_state.push(command);
+        }
         ledger
     } else {
         transcript.extend(resumed.iter().cloned());
