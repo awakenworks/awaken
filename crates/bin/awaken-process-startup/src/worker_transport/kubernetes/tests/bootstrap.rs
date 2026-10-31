@@ -23,10 +23,10 @@ async fn bootstrap_retirement_requires_original_empty_ledger_before_any_pod_muta
     ] {
         let (transport, facts, client) = fixture_with_client();
         let ledger =
-            K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster")
+            K8sWorkerCreateLedger::new(client.clone(), "create-control", "workers", "test-cluster")
                 .unwrap();
         let (name, uid) = ledger
-            .initialize("workers", "worker-a", "uid-a")
+            .initialize("workers", "worker-a", "uid-a", "uid-a")
             .await
             .unwrap();
         let anchor = WorkerCreateLedger::new(
@@ -41,19 +41,22 @@ async fn bootstrap_retirement_requires_original_empty_ledger_before_any_pod_muta
             worker_namespace: "workers",
             worker_name: "worker-a",
             worker_uid: "uid-a",
+            worker_incarnation: "uid-a",
             ledger_name: &name,
             ledger_uid: &uid,
             configuration_fingerprint: ledger.configuration_fingerprint(),
         };
         let source = transport.binding_source().unwrap();
         if cause == "bound" {
-            source
-                .prepare_registration_physical_evidence(&WorkerRegistration {
-                    worker_id: "k8s:workers:worker-a:uid-a".into(),
-                    incarnation_id: "uid-a".into(),
-                    manifest: manifest(),
-                    create_ledger: None,
-                })
+            // A historical (Pod-UID incarnation) ledger that froze its process.
+            let process =
+                awaken_worker_fleet_kubernetes::PodProcessObserver::new(client.clone(), "workers")
+                    .unwrap()
+                    .bind_pod_process("worker-a", "uid-a")
+                    .await
+                    .unwrap();
+            ledger
+                .retain_process_binding(binding, &process)
                 .await
                 .unwrap();
         } else if cause == "ticket" {
@@ -175,7 +178,7 @@ async fn bootstrap_retirement_failure_keeps_deny_fence_and_retries_same_uid() {
     let ledger =
         K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster").unwrap();
     let (name, uid) = ledger
-        .initialize("workers", "worker-a", "uid-a")
+        .initialize("workers", "worker-a", "uid-a", "uid-a")
         .await
         .unwrap();
     let anchor = WorkerCreateLedger::new(
@@ -249,10 +252,23 @@ async fn ended_unregistered_worker_pods_release_retention_only_when_provably_unr
                         .unwrap();
                 facts.pod.lock().unwrap().1["metadata"]["finalizers"] =
                     json!(["awaken.dev/worker-process-evidence", "other.example/keep"]);
+                // The Pod's container instance names its incarnation and ledger.
+                let incarnation = transport
+                    .binding_source()
+                    .unwrap()
+                    .registration_incarnation(&WorkerRegistration {
+                        worker_id: "k8s:workers:worker-a:uid-a".into(),
+                        incarnation_id: "process-proposed".into(),
+                        manifest: manifest(),
+                        create_ledger: None,
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap();
                 match ledger_state {
                     "unbound" => {
                         ledger
-                            .initialize("workers", "worker-a", "uid-a")
+                            .initialize("workers", "worker-a", "uid-a", &incarnation)
                             .await
                             .unwrap();
                     }
@@ -262,7 +278,7 @@ async fn ended_unregistered_worker_pods_release_retention_only_when_provably_unr
                             .unwrap()
                             .prepare_registration_physical_evidence(&WorkerRegistration {
                                 worker_id: "k8s:workers:worker-a:uid-a".into(),
-                                incarnation_id: "uid-a".into(),
+                                incarnation_id: incarnation.clone(),
                                 manifest: manifest(),
                                 create_ledger: None,
                             })
@@ -277,7 +293,7 @@ async fn ended_unregistered_worker_pods_release_retention_only_when_provably_unr
                         .register(
                             WorkerRegistration {
                                 worker_id: "k8s:workers:worker-a:uid-a".into(),
-                                incarnation_id: "uid-a".into(),
+                                incarnation_id: incarnation.clone(),
                                 manifest: manifest(),
                                 create_ledger: None,
                             },

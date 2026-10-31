@@ -37,6 +37,16 @@ pub trait WorkerExecutionBindingSource: Send + Sync {
             "Worker bootstrap sealing is unavailable",
         ))
     }
+    /// The incarnation this provider observes for a registering process, when
+    /// it identifies processes itself (Kubernetes: the running container
+    /// instance of the authenticated Pod). Registration then uses it instead
+    /// of the process-proposed value. `None` keeps the proposed incarnation.
+    async fn registration_incarnation(
+        &self,
+        _registration: &crate::WorkerRegistration,
+    ) -> Result<Option<String>, ApplicationError> {
+        Ok(None)
+    }
     /// Prepare provider-owned physical evidence before the Registry's first
     /// insert. The caller atomically freezes a Create ledger UID when present;
     /// the process binding must already be durable before any registration

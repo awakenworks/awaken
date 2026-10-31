@@ -79,13 +79,27 @@ impl KubernetesPodIdentity {
         &self.uid
     }
 
-    /// One Pod UID has one incarnation. Registry still validates its allocated
-    /// generation; a new random boot id cannot reopen this physical domain.
+    /// The Worker ID is this Pod; an incarnation is one container instance of
+    /// it (a lowercase-hex container token), or, for incarnations registered
+    /// before container identity, the Pod UID. Registry still validates the
+    /// exact incarnation and generation; the binding source ties the token to
+    /// the observed container.
     pub fn matches_worker(&self, identity: &WorkerIdentity) -> bool {
         identity.worker_id == self.worker_id()
-            && identity.incarnation_id == self.uid
+            && (identity.incarnation_id == self.uid
+                || is_container_incarnation(&identity.incarnation_id))
             && identity.generation > 0
     }
+}
+
+/// A container-instance incarnation token: 1..=128 lowercase hex digits. It
+/// can never equal a Pod UID, which contains dashes.
+pub fn is_container_incarnation(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn dns_name(value: &str, max: usize) -> bool {

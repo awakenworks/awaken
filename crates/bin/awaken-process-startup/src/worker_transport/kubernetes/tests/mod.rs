@@ -372,7 +372,6 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
         ("/metadata/uid", json!("uid-replacement")),
         ("/metadata/finalizers", json!([])),
         ("/spec/restartPolicy", json!("OnFailure")),
-        ("/spec/restartPolicy", json!("Always")),
         (
             "/spec/containers/0/securityContext/allowPrivilegeEscalation",
             json!(true),
@@ -429,33 +428,55 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
 }
 
 #[tokio::test]
-async fn restarting_worker_pods_are_never_bound_through_the_same_transport_owner() {
-    // One Pod is one process. D1 reviewed UID + Registry incarnation + retained
-    // original container in a restartPolicy Never Pod => the existing binding
-    // source freezes it without any restartable fact. D2 the same retained Pod
-    // under Always (Deployment/StatefulSet) => Unavailable, never a binding a
-    // restarted container could reuse. No row issues a DELETE.
+async fn deployment_binding_freezes_the_container_instance_through_the_same_transport_owner() {
+    // The Worker ID is the Pod; an incarnation is one container instance.
+    // D1 reviewed UID + Registry incarnation + retained Always (Deployment)
+    // container => the existing binding source freezes it as restartable.
+    // D2 the finalizer removed before admission => Unavailable, never an
+    // unbound fallback. D3 a container-instance incarnation binds only its own
+    // running container; another instance of the same Pod is Unavailable.
+    // D4 the registration incarnation is the running container's token.
     let (transport, facts) = fixture();
     let source = transport.binding_source().unwrap();
     let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
     let mut pod = running();
+    pod["spec"]["restartPolicy"] = json!("Always");
     *facts.pod.lock().unwrap() = (StatusCode::OK, pod.clone());
     let binding = source.binding_for(&worker).await.unwrap();
     let coordinate: Value = serde_json::from_str(binding.execution_ref()).unwrap();
-    assert!(coordinate.get("restartable").is_none(), "D1");
+    assert_eq!(coordinate["restartable"], true, "D1");
     assert_eq!(
         coordinate["containers"][0]["container_id"],
         "containerd://exact"
     );
-    pod["spec"]["restartPolicy"] = json!("Always");
-    *facts.pod.lock().unwrap() = (StatusCode::OK, pod);
+    let registration = WorkerRegistration {
+        worker_id: worker.worker_id.clone(),
+        incarnation_id: "process-proposed".into(),
+        manifest: manifest(),
+        create_ledger: None,
+    };
+    let incarnation = source
+        .registration_incarnation(&registration)
+        .await
+        .unwrap()
+        .expect("D4 Kubernetes names the incarnation");
     assert!(
-        matches!(
-            source.binding_for(&worker).await.unwrap_err().kind,
-            awaken_session_execution_contract::ApplicationErrorKind::Unavailable
-        ),
-        "D2"
+        awaken_worker_transport_security::kubernetes::is_container_incarnation(&incarnation),
+        "D4 {incarnation}"
     );
+    let current = WorkerIdentity::new(&worker.worker_id, &incarnation, 1);
+    assert!(
+        source.binding_for(&current).await.is_ok(),
+        "D3 own instance"
+    );
+    let other = WorkerIdentity::new(&worker.worker_id, "0123abcd", 1);
+    assert!(
+        source.binding_for(&other).await.is_err(),
+        "D3 another instance"
+    );
+    pod["metadata"]["finalizers"] = json!([]);
+    *facts.pod.lock().unwrap() = (StatusCode::OK, pod);
+    assert!(source.binding_for(&worker).await.is_err(), "D2");
     assert!(facts.deletes.lock().unwrap().is_empty());
 }
 

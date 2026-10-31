@@ -409,47 +409,108 @@ async fn closed_idle_retirement_missing_or_unavailable_coordinates_never_mutate(
 }
 
 #[tokio::test]
-async fn historical_deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
-    // C1 retained Always Pod frozen before restarting Pods stopped being
-    // admitted (historical binding); C2 exact UID/RV; C3 deletion accepted;
-    // C4 original containers exited. P0 the same Pod is no longer bindable;
-    // P1(C1+C2) => one conditional DELETE and Unknown; P2(C1+C2+C3+!C4) =>
-    // read-only Unknown; P3(C1..C4) => local exit. No response loss/retry may
-    // become a new stop operation or Dispatch write; those faults use the same
-    // existing stopper matrix below.
+async fn restartable_stop_settles_by_container_instance_and_never_harms_a_newer_one() {
+    // Stopper decision table for a retained restartable binding of instance A:
+    // | Row | Pod (same UID)                               | effect                                   |
+    // | S1  | A running                                    | one exact UID/RV DELETE, Unknown          |
+    // | S2  | A running, deletion accepted                 | Unknown, no second DELETE                 |
+    // | S3  | B running, lastState A exited 137            | exact receipt, no DELETE                  |
+    // | S4  | C running, lastState B (restarted twice)     | Unknown (indeterminate), no DELETE        |
+    // | S5  | Pod deleted (404)                            | Unknown                                   |
+    // | S6  | B running: closed-idle retire / exit release | no DELETE, no finalizer release (B owns them) |
+    // | S7  | A still current: closed-idle retire          | the Pod-level retirement (DELETE + release) |
+    // | S8  | retention removed                            | error, no write                           |
+    let live = super::super::tests::retained_always();
+    let once =
+        super::super::tests::restarted(&live, "containerd://a", "containerd://b", 137, "Error");
+    let twice =
+        super::super::tests::restarted(&once, "containerd://b", "containerd://c", 137, "Error");
+
     let fixture = Fixture::new(Fault::None);
-    let binding = super::super::tests::historical_restartable(&fixture.binding().await);
-    let mut live = running();
-    live["spec"]["restartPolicy"] = json!("Always");
-    fixture.facts.lock().unwrap().pod = Some(retained(live));
-    let observer = fixture.observer();
-    assert!(
-        observer.bind_pod_process("worker", "uid-a").await.is_err(),
-        "P0 no new restartable binding"
-    );
-    let stopper = PodProcessStopper::new(observer);
+    fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
+    let binding = fixture.binding().await;
+    assert!(binding.restartable);
     assert_eq!(
-        stopper.request_stop(&binding).await.unwrap(),
+        fixture.stopper().request_stop(&binding).await.unwrap(),
         PodProcessTermination::Unknown,
-        "P1"
+        "S1"
     );
     assert_eq!(
-        stopper.request_stop(&binding).await.unwrap(),
+        fixture.stopper().request_stop(&binding).await.unwrap(),
         PodProcessTermination::Unknown,
-        "P2"
+        "S2"
     );
-    let mut exited = terminal();
-    exited["spec"]["restartPolicy"] = json!("Always");
-    exited["metadata"]["deletionTimestamp"] = json!("2026-09-08T00:00:02Z");
-    fixture.facts.lock().unwrap().pod = Some(retained(exited));
+    assert_eq!(
+        fixture.facts.lock().unwrap().accepted,
+        1,
+        "S1/S2 one DELETE"
+    );
+
+    for (row, pod, observed) in [("S3", &once, true), ("S4", &twice, false)] {
+        let fixture = Fixture::new(Fault::None);
+        fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
+        let binding = fixture.binding().await;
+        fixture.facts.lock().unwrap().pod = Some(retained(pod.clone()));
+        let result = fixture.stopper().request_stop(&binding).await.unwrap();
+        assert_eq!(
+            matches!(result, PodProcessTermination::Observed(_)),
+            observed,
+            "{row}"
+        );
+        if let PodProcessTermination::Observed(receipt) = result {
+            assert_eq!(
+                receipt.exits()[0].exit_code(),
+                137,
+                "{row} exact lastState exit"
+            );
+        }
+        // S6: B or C now owns the Pod; settling A touches nothing of theirs.
+        fixture
+            .stopper()
+            .retire_closed_idle_incarnation(&binding)
+            .await
+            .unwrap();
+        fixture.stopper().release_evidence(&binding).await.unwrap();
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!(facts.accepted, 0, "{row}/S6 no DELETE");
+        assert_eq!(facts.released, 0, "{row}/S6 no release");
+    }
+
+    let fixture = Fixture::new(Fault::None);
+    fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
+    let binding = fixture.binding().await;
+    fixture.facts.lock().unwrap().pod = None;
+    assert_eq!(
+        fixture.stopper().request_stop(&binding).await.unwrap(),
+        PodProcessTermination::Unknown,
+        "S5"
+    );
+
+    let fixture = Fixture::new(Fault::None);
+    fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
+    let binding = fixture.binding().await;
+    fixture
+        .stopper()
+        .retire_closed_idle_incarnation(&binding)
+        .await
+        .unwrap();
+    {
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!((facts.accepted, facts.released), (1, 1), "S7");
+    }
+
+    let fixture = Fixture::new(Fault::None);
+    fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
+    let binding = fixture.binding().await;
+    fixture.facts.lock().unwrap().pod = Some(decode(once));
+    let before = fixture.facts.lock().unwrap().calls.len();
     assert!(
-        matches!(
-            stopper.request_stop(&binding).await.unwrap(),
-            PodProcessTermination::Observed(_)
-        ),
-        "P3"
+        fixture.stopper().request_stop(&binding).await.is_err(),
+        "S8"
     );
-    assert_eq!(fixture.facts.lock().unwrap().accepted, 1);
+    let facts = fixture.facts.lock().unwrap();
+    assert_eq!(facts.calls.len(), before + 1, "S8 one read");
+    assert_eq!(facts.accepted, 0, "S8 no write");
 }
 
 fn status(code: u16) -> Response<Body> {

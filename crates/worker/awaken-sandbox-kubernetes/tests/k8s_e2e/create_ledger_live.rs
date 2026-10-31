@@ -31,6 +31,7 @@ impl ClaimOnlyBroker {
             worker_namespace: &self.sandbox_namespace,
             worker_name: "claim-worker",
             worker_uid: "claim-worker-uid",
+            worker_incarnation: "claim-worker-uid",
             ledger_name: &self.ledger_name,
             ledger_uid: &self.ledger_uid,
             configuration_fingerprint: self.ledger.configuration_fingerprint(),
@@ -382,13 +383,14 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
         K8sWorkerCreateLedger::new(client.clone(), &control_name, &sandbox_name, "provider-a")
             .unwrap();
     let (ledger_name, original_uid) = first
-        .initialize(&sandbox_name, "worker", "worker-uid")
+        .initialize(&sandbox_name, "worker", "worker-uid", "worker-uid")
         .await
         .unwrap();
     let binding = K8sLedgerBinding {
         worker_namespace: &sandbox_name,
         worker_name: "worker",
         worker_uid: "worker-uid",
+        worker_incarnation: "worker-uid",
         ledger_name: &ledger_name,
         ledger_uid: &original_uid,
         configuration_fingerprint: first.configuration_fingerprint(),
@@ -484,7 +486,7 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
         String::from_utf8_lossy(&deleted.stderr)
     );
     let (_, recreated_uid) = first
-        .initialize(&sandbox_name, "worker", "worker-uid")
+        .initialize(&sandbox_name, "worker", "worker-uid", "worker-uid")
         .await
         .unwrap();
     assert_ne!(recreated_uid, original_uid, "L4 name is not an identity");
@@ -600,12 +602,13 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             client.clone(), &control_name, &sandbox_name, "provider-isolation",
         )?;
         let (ledger_name, ledger_uid) = ledger
-            .initialize(&sandbox_name, "worker", "worker-uid")
+            .initialize(&sandbox_name, "worker", "worker-uid", "worker-uid")
             .await?;
         let anchor = K8sLedgerBinding {
             worker_namespace: &sandbox_name,
             worker_name: "worker",
             worker_uid: "worker-uid",
+            worker_incarnation: "worker-uid",
             ledger_name: &ledger_name,
             ledger_uid: &ledger_uid,
             configuration_fingerprint: ledger.configuration_fingerprint(),
@@ -780,7 +783,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         let claim_fence = effect_fence(&claim_scope, "create", "claim-worker", 1);
         let terminal_fence = effect_fence(&claim_scope, "terminal", "claim-worker", 2);
         let (claim_ledger_name, claim_ledger_uid) = ledger
-            .initialize(&sandbox_name, "claim-worker", "claim-worker-uid")
+            .initialize(&sandbox_name, "claim-worker", "claim-worker-uid", "claim-worker-uid")
             .await?;
         let claim_result = Arc::new(Mutex::new(None));
         let broker = Arc::new(ClaimOnlyBroker {

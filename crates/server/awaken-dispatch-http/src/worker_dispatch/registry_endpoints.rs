@@ -6,7 +6,8 @@
 use super::{
     ApplicationError, Arc, Extension, HeartbeatWorkerReq, Json, RegisterWorkerReq, State,
     StatusCode, Value, VerifiedWorkerContext, WorkerDispatchService, WorkerIdentityReq, directory,
-    json, release_closed_idle_worker_evidence, respond, verify_worker_id, verify_worker_identity,
+    json, release_closed_idle_worker_evidence, respond, settle_previous_incarnation,
+    verify_worker_id, verify_worker_identity,
 };
 use awaken_time::WallClockExt;
 use tracing::Instrument;
@@ -47,23 +48,25 @@ pub(super) async fn register_worker(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
         }
-        if let Some(incarnation) = worker.registration_incarnation() {
-            // All registrations through this authenticated domain select one
-            // immutable incarnation. The existing atomic register therefore
-            // only creates or retries it; expiry and close cannot become a new
-            // generation. Refuse historical identities instead of backfilling
-            // a binding after their effects have already started.
-            if directory(&service)?
+        if let Some(source) = &service.execution_bindings
+            && let Some(incarnation) = source
+                .registration_incarnation(&request.registration)
+                .await?
+        {
+            // The provider identifies the process (a Kubernetes container
+            // instance); a process-proposed incarnation is never trusted. A
+            // different current incarnation of this Worker ID is a restarted
+            // process: settle it first from its retained exact evidence, or
+            // leave it Unknown, before the Registry may admit the new one.
+            let previous = directory(&service)?
                 .current(worker.worker_id())
                 .await
                 .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-                .is_some_and(|current| current.snapshot.identity.incarnation_id != incarnation)
-            {
-                return Err(ApplicationError::invalid(
-                    "immutable Worker domain has a different historical incarnation; replace the execution domain",
-                ));
+                .filter(|current| current.snapshot.identity.incarnation_id != incarnation);
+            if let Some(previous) = previous {
+                settle_previous_incarnation(&service, &previous.snapshot.identity).await?;
             }
-            request.registration.incarnation_id = incarnation.into();
+            request.registration.incarnation_id = incarnation;
         }
         if let Some(source) = &service.execution_bindings {
             request.registration.create_ledger = tokio::time::timeout(
@@ -71,7 +74,9 @@ pub(super) async fn register_worker(
                 source.prepare_registration_physical_evidence(&request.registration),
             )
             .await
-            .map_err(|_| ApplicationError::unavailable("Worker physical evidence preparation timed out"))??;
+            .map_err(|_| {
+                ApplicationError::unavailable("Worker physical evidence preparation timed out")
+            })??;
         }
         let record = match directory(&service)?
             .register(
@@ -95,19 +100,24 @@ pub(super) async fn register_worker(
         if record.snapshot.state == awaken_dispatch::WorkerState::Starting
             && let Some(source) = &service.execution_bindings
         {
-            tokio::time::timeout(std::time::Duration::from_secs(5),
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
                 source.retain_registered_worker_evidence(
                     &record.snapshot.identity,
                     record.create_ledger.as_ref(),
-                ))
-                .await.map_err(|_| ApplicationError::unavailable("Worker evidence retention timed out"))??;
+                ),
+            )
+            .await
+            .map_err(|_| ApplicationError::unavailable("Worker evidence retention timed out"))??;
             // Provider I/O can outlive closure. Re-read durable truth before
             // replying, then converge retention if admission closed meanwhile.
             release_closed_idle_worker_evidence(&service, &record.snapshot.identity).await?;
         }
         let identity = record.snapshot.identity.clone();
-        let record = directory(&service)?.current(&identity.worker_id)
-            .await.map_err(|e| ApplicationError::unavailable(e.to_string()))?
+        let record = directory(&service)?
+            .current(&identity.worker_id)
+            .await
+            .map_err(|e| ApplicationError::unavailable(e.to_string()))?
             .filter(|current| current.snapshot.identity == identity)
             .ok_or_else(|| ApplicationError::unavailable("registered Worker disappeared"))?;
         Ok(json!({

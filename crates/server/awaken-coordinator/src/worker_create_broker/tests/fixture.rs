@@ -467,7 +467,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         K8sWorkerCreateLedger::new(client.clone(), "control-ns", "sandbox-ns", "provider-a")
             .unwrap();
     let (ledger_name, ledger_uid) = ledger
-        .initialize("sandbox-ns", "worker", "pod-uid")
+        .initialize("sandbox-ns", "worker", "pod-uid", "pod-uid")
         .await
         .unwrap();
     let anchor = WorkerCreateLedger::new(

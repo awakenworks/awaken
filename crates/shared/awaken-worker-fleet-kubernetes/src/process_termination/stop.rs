@@ -3,9 +3,10 @@
 //! Retained stop observes exits; closed-idle retirement grants no exit or replay.
 
 use super::{
-    PodProcessBinding, PodProcessObserver, PodProcessTermination,
+    ContainerFate, PodProcessBinding, PodProcessObserver, PodProcessTermination,
     WORKER_PROCESS_EVIDENCE_FINALIZER, api_not_found, backend, bind, binding_retention_is_present,
-    coordinate, matching_statuses, observe, retention_finalizer,
+    container_incarnation, coordinate, matching_statuses, observe, restartable_fates,
+    retention_finalizer, runs_newer_container,
 };
 use crate::pod_metadata::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use awaken_container_contract::RuntimeError;
@@ -47,6 +48,29 @@ impl PodProcessStopper {
         self.release_closed_idle_pod_evidence(name, uid).await
     }
 
+    /// Retire one closed-idle Worker incarnation. If its restartable Pod already
+    /// runs a newer container instance, that newer incarnation owns the Pod
+    /// and its retention: nothing is deleted or released here. Otherwise this
+    /// is the Pod-level closed-idle retirement above.
+    pub async fn retire_closed_idle_incarnation(
+        &self,
+        binding: &PodProcessBinding,
+    ) -> Result<(), RuntimeError> {
+        if binding.namespace != self.observer.namespace {
+            return Err(backend("Pod process binding belongs to another namespace"));
+        }
+        let pod = match self.observer.pods.get(&binding.name).await {
+            Ok(pod) => pod,
+            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+        };
+        if runs_newer_container(binding, &pod) {
+            return Ok(());
+        }
+        self.retire_closed_idle_pod(&binding.name, &binding.uid)
+            .await
+    }
+
     /// A graceful Quiesced Worker may still be returning its deregistration
     /// RPC. Observe the exact running process without issuing DELETE; a Dead
     /// Worker uses the normal stop operation below instead.
@@ -85,18 +109,25 @@ impl PodProcessStopper {
             .await
     }
 
-    /// This namespace's ended Pods (phase Succeeded or Failed) that still carry
-    /// the Worker process-evidence finalizer, as exact `(name, UID)` pairs in
-    /// name order. Listing grants nothing; the caller decides which may release.
-    pub async fn ended_retained_worker_pods(&self) -> Result<Vec<(String, String)>, RuntimeError> {
-        let params = ListParams::default().fields("status.phase!=Running,status.phase!=Pending");
-        let pods = self.observer.pods.list(&params).await.map_err(backend)?;
+    /// This namespace's ended Pods that still carry the Worker process-evidence
+    /// finalizer, in name order. Ended means a terminal phase, or deletion
+    /// intent with every container terminated (an Always Pod being deleted).
+    /// Listing grants nothing; the caller decides which may release.
+    pub async fn ended_retained_worker_pods(
+        &self,
+    ) -> Result<Vec<EndedRetainedWorkerPod>, RuntimeError> {
+        let pods = self
+            .observer
+            .pods
+            .list(&ListParams::default())
+            .await
+            .map_err(backend)?;
         let mut ended: Vec<_> = pods
             .items
             .iter()
             .filter_map(ended_retained_worker_pod)
             .collect();
-        ended.sort();
+        ended.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(ended)
     }
 
@@ -123,7 +154,7 @@ impl PodProcessStopper {
         &self,
         name: &str,
         uid: &str,
-        admission: ReleaseAdmission,
+        admission: ReleaseAdmission<'_>,
     ) -> Result<(), RuntimeError> {
         if uid.is_empty() {
             return Err(backend("idle evidence release requires an exact UID"));
@@ -136,7 +167,7 @@ impl PodProcessStopper {
             &|| Ok(()),
             &|pod| {
                 let admitted = match admission {
-                    ReleaseAdmission::ExactExit => true,
+                    ReleaseAdmission::ExactExit(binding) => !runs_newer_container(binding, pod),
                     ReleaseAdmission::DeletionIntent => pod.metadata.deletion_timestamp.is_some(),
                     ReleaseAdmission::Ended => pod_has_ended(pod),
                 };
@@ -179,6 +210,9 @@ impl PodProcessStopper {
             Err(error) if api_not_found(&error) => return Ok(PodProcessTermination::Unknown),
             Err(error) => return Err(backend(error)),
         };
+        if binding.restartable {
+            return self.request_restartable_stop(binding, &pod).await;
+        }
         if matching_statuses(binding, &pod).is_none() {
             return Ok(PodProcessTermination::Unknown);
         }
@@ -194,6 +228,40 @@ impl PodProcessStopper {
         // read must establish both closure and the same exact process exits.
         self.request_exact_delete(&binding.name, &binding.uid, &pod)
             .await?;
+        Ok(PodProcessTermination::Unknown)
+    }
+
+    /// Container-instance stop for a restartable binding:
+    /// | bound containers         | effect                                   |
+    /// | every one exactly exited | local exit receipt; the Pod is untouched |
+    /// | one still running        | one exact UID/RV Pod DELETE, Unknown     |
+    /// | none running, one lost   | Unknown (indeterminate), no mutation     |
+    /// A foreign Pod (UID, node, policy, names) is Unknown; lost retention is
+    /// an error. A Pod that already runs a newer incarnation is never deleted:
+    /// the bound instance is then exited or lost, not running.
+    async fn request_restartable_stop(
+        &self,
+        binding: &PodProcessBinding,
+        pod: &Pod,
+    ) -> Result<PodProcessTermination, RuntimeError> {
+        let Some(fates) = restartable_fates(binding, pod) else {
+            return Ok(PodProcessTermination::Unknown);
+        };
+        if !binding_retention_is_present(binding, pod) {
+            return Err(backend("Worker process evidence retention was lost"));
+        }
+        if fates
+            .iter()
+            .all(|fate| matches!(fate, ContainerFate::Exited(_)))
+        {
+            return Ok(observe(binding, pod));
+        }
+        if pod.metadata.deletion_timestamp.is_none()
+            && fates.iter().any(|fate| *fate == ContainerFate::Running)
+        {
+            self.request_exact_delete(&binding.name, &binding.uid, pod)
+                .await?;
+        }
         Ok(PodProcessTermination::Unknown)
     }
 
@@ -248,16 +316,22 @@ impl PodProcessStopper {
         if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
             return Ok(());
         }
-        self.release_pod_evidence(&binding.name, &binding.uid, ReleaseAdmission::ExactExit)
-            .await
+        self.release_pod_evidence(
+            &binding.name,
+            &binding.uid,
+            ReleaseAdmission::ExactExit(binding),
+        )
+        .await
     }
 }
 
 /// What, besides the exact UID and the Worker finalizer, admits a release.
 #[derive(Clone, Copy)]
-enum ReleaseAdmission {
-    /// The Registry durably holds this binding's exact exit.
-    ExactExit,
+enum ReleaseAdmission<'a> {
+    /// The Registry durably holds this binding's exact exit. A restartable Pod
+    /// that already runs a newer container instance keeps its retention for
+    /// that newer incarnation; the release is then a no-op.
+    ExactExit(&'a PodProcessBinding),
     /// A closed-idle coordinate: the API must already have deletion intent.
     DeletionIntent,
     /// A never-registered domain: the Pod phase must be terminal.
@@ -265,16 +339,32 @@ enum ReleaseAdmission {
 }
 
 fn pod_has_ended(pod: &Pod) -> bool {
-    matches!(
-        pod.status
-            .as_ref()
-            .and_then(|status| status.phase.as_deref()),
-        Some("Succeeded" | "Failed")
-    )
+    let Some(status) = pod.status.as_ref() else {
+        return false;
+    };
+    matches!(status.phase.as_deref(), Some("Succeeded" | "Failed"))
+        || (pod.metadata.deletion_timestamp.is_some()
+            && status.container_statuses.as_ref().is_some_and(|statuses| {
+                !statuses.is_empty()
+                    && statuses.iter().all(|status| {
+                        status
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.terminated.is_some())
+                    })
+            }))
 }
 
-/// An ended Pod still retaining Worker evidence, as its exact coordinate.
-fn ended_retained_worker_pod(pod: &Pod) -> Option<(String, String)> {
+/// An ended Pod still retaining Worker evidence: its exact coordinate and the
+/// incarnation of its last container instance set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EndedRetainedWorkerPod {
+    pub name: String,
+    pub uid: String,
+    pub incarnation: String,
+}
+
+fn ended_retained_worker_pod(pod: &Pod) -> Option<EndedRetainedWorkerPod> {
     let retained = pod.metadata.finalizers.as_ref().is_some_and(|values| {
         values
             .iter()
@@ -283,10 +373,16 @@ fn ended_retained_worker_pod(pod: &Pod) -> Option<(String, String)> {
     if !retained || !pod_has_ended(pod) {
         return None;
     }
-    Some((
-        coordinate(pod.metadata.name.as_deref())?,
-        coordinate(pod.metadata.uid.as_deref())?,
-    ))
+    let statuses = pod.status.as_ref()?.container_statuses.as_ref()?;
+    let ids = statuses
+        .iter()
+        .map(|status| Some((status.name.as_str(), status.container_id.as_deref()?)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(EndedRetainedWorkerPod {
+        name: coordinate(pod.metadata.name.as_deref())?,
+        uid: coordinate(pod.metadata.uid.as_deref())?,
+        incarnation: container_incarnation(ids.into_iter()),
+    })
 }
 
 #[cfg(test)]
