@@ -1180,3 +1180,47 @@ no absence or exit receipt is inferred, and the hard-node-loss rule above still
 holds. An unguarded, unfenced, foreign or non-terminal deleting Pod, and a
 terminating claim without its Disposing evidence, remain unresolved exactly as
 before.
+
+## Amendment 2026-10-31: Worker Pods never restart in place
+
+A registered Kubernetes Worker Pod is one process. Its Pod UID is one Registry
+incarnation, one immutable Create ledger and one frozen process binding. Under
+`restartPolicy: Always` a crash, OOM kill or liveness kill restarted the
+container inside the same UID. The new process could never bind (a restart is
+outside the exact process proof), so the Worker retried registration forever
+and could not even request its own replacement. Deleting the Pod did not
+settle it either: the original exit survived only in `lastState`. The cell
+kept no Worker until an operator deleted the Pod by hand.
+
+Decision. The Coordinator binds only `restartPolicy: Never` Worker Pods; an
+Always, OnFailure or defaulted Pod is refused before admission
+(`PodProcessObserver::bind_pod_process`). A Worker's exit, whatever its cause,
+ends its Pod. The process-evidence finalizer retains the exact terminated
+status; the existing closed-idle maintenance (`release_closed_idle_worker_evidence`)
+expires the incarnation, issues the exact UID/resourceVersion DELETE, records
+the exit and releases the finalizer, and Dispatch retires or recovers an
+occupied attempt through `stop_expired_predecessor` exactly as for any exited
+Worker. The fleet is a Job with `podFailurePolicy` (product: `awaken-worker`;
+distributed: an Indexed Job of two), which creates a fresh Pod UID for every
+non-zero exit or disruption without spending its retry budget. The Worker no
+longer asks for its own deletion before exiting, and it retries transient
+registration failures with bounded jittered exponential backoff, then exits
+non-zero so its Pod is replaced; permanent rejections exit at once.
+
+Bindings persisted while Always Pods were admitted keep their `restartable`
+fact and their original closure rule (accepted deletion intent plus exact
+exits), so their incarnations still settle during migration; no new one is
+minted. A Worker in a Deployment or StatefulSet can no longer register: its
+operator must move it to the Never-restart Job shape first (awaken-cloud's
+Helm Worker Deployment included). This supersedes the restartable Deployment
+paragraph of ADR-0065.
+
+Evidence: the settlement decision table
+`worker_container_exit_settles_only_retained_exact_evidence_for_every_exit_kind`,
+the admission table
+`restarting_pods_are_never_bound_and_historical_restartable_bindings_keep_their_closure`,
+`restarting_worker_pods_are_never_bound_through_the_same_transport_owner`, the
+live `restarting_pod_is_never_bound_against_a_real_kubelet`, the startup table in
+`awaken-worker/src/startup_retry.rs`, and k3d stage 6b of
+`e2e/k3d/distributed_control_e2e.sh` (hard-kill one fleet Worker container,
+then join its replacement's registration, its exact exit and continued work).
