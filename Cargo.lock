@@ -1184,6 +1184,7 @@ dependencies = [
  "awaken-observability",
  "awaken-protocol-managed-testkit",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-application",
  "awaken-resource-store",
  "awaken-runtime",
@@ -3984,6 +3985,7 @@ name = "awaken-worker-registry"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-sql-storage",
  "awaken-sqlite-pool",

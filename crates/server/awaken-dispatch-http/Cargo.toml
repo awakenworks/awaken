@@ -57,6 +57,7 @@ awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-dispatch-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-runtime-contract.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }

@@ -310,13 +310,8 @@ async fn postgres_registry_conforms_when_configured() {
     // canonical transition kernel remains usable.
     // R3 missing/drifted ledger -> connect_existing fails closed (covered by the
     // shared scoped-migration verify suite used by this adapter).
-    let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => {
-            eprintln!("AWAKEN_TEST_DATABASE_URL not set; skipping Postgres registry conformance");
-            return;
-        }
-        Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
     PostgresWorkerDirectory::connect(&url, 5).await.unwrap();
     let store = Arc::new(

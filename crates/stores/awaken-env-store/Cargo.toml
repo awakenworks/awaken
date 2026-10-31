@@ -29,7 +29,7 @@ awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] 
 awaken-sqlite-pool.workspace = true
 
 [dev-dependencies]
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true
 # Property-based verification of the archive-vs-delete + fail-closed semantics (ADR-0059).
