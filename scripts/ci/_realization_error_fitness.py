@@ -2,13 +2,12 @@
 
 Plan v4 D3 and principles P6/P7. `awaken-session-realization` reports every
 failure as a `RealizationError`, whose `disposition()` is the one decision of
-what a caller does next. Three regressions would silently undo that, and the
+what a caller does next. Two regressions would silently undo that, and the
 compiler cannot see either (a poisoned lock read through `.expect` is refused
-by `_poisoned_lock_fitness.py`, which covers the realization and the executor):
+by `_poisoned_lock_fitness.py`, which covers the realization and the executor).
+The executor's `SessionExecutionError` cannot appear in the realization at all:
+the executor depends on the realization, so Cargo refuses the reverse edge.
 
-* `SessionExecutionError` (or its removed `HostError` name) appearing in the realization. The executor's error is not the
-  realization's vocabulary; mapping it back in would flatten every class into
-  the executor's kinds again.
 * A typed failure flattened into the text of a stated variant
   (`invariant(error.to_string())`, `invalid_request(error.to_string())`, a
   `format!` interpolating the error, or `HostError::internal(..)`). The typed
@@ -34,7 +33,6 @@ REALIZATION_SRC = "crates/server/awaken-session-realization/src"
 # Compiled source discovery follows Cargo authority and module reachability.
 TEST_FILES = re.compile(r"(^|/)(tests?|test_support)(\.rs|/)")
 
-EXECUTOR_ERROR = re.compile(r"\b(?:HostError|SessionExecutionError)\b")
 STATED = r"(?:\bRealizationError\s*::\s*)?\b(?:invariant|invalid_request|internal)\s*\("
 FLATTENED_TEXT = re.compile(STATED + r"\s*[\w.]*\.to_string\s*\(\s*\)")
 FLATTENED_FORMAT = re.compile(STATED + r"\s*format!\s*\(\s*\"[^\"]*\{(?:error|err|e|source)\}")
@@ -45,10 +43,9 @@ EXECUTOR_CLASSIFICATION = re.compile(r"\bSessionExecutionErrorKind\s*::")
 def realization_error_violations(sources: dict[str, str]) -> list[str]:
     """Rule violations in the realization's production sources.
 
-    Cause/effect graph: C1 the source is production realization code; C2 it
-    names an executor error; C3 it flattens a typed failure into a stated message.
-    E1 accept when C1 is false or neither C2 nor C3 holds; E2 reject and name
-    the file and rule.
+    Cause/effect graph: C1 the source is production realization code; C3 it
+    flattens a typed failure into a stated message. E1 accept when C1 is false
+    or C3 does not hold; E2 reject and name the file and rule.
     """
     errors: list[str] = []
     for relative, source in sorted(sources.items()):
@@ -59,10 +56,6 @@ def realization_error_violations(sources: dict[str, str]) -> list[str]:
         production = _crate_boundary_workspace.production_rust(source)
         text = _crate_boundary_workspace.rust_without_comments(production)
         syntax = _crate_boundary_workspace.rust_syntax(production)
-        if EXECUTOR_ERROR.search(syntax):
-            errors.append(
-                f"{relative}: the realization returns RealizationError; SessionExecutionError belongs to the executor"
-            )
         if FLATTENED_TEXT.search(syntax) or FLATTENED_FORMAT.search(text):
             errors.append(
                 f"{relative}: keep the typed failure in its RealizationError variant; "
@@ -104,7 +97,6 @@ def selftest() -> None:
     | E1 | typed variants, `?` into RealizationError               | accept |
     | E2 | the same text in a cfg(test) module or a test file      | accept |
     | E3 | the same text outside the realization crate             | accept |
-    | E4 | `HostError` or `SessionExecutionError` in realization code | reject |
     | E5 | `invariant(error.to_string())`                          | reject |
     | E6 | `invalid_request(format!("bad: {error}"))`              | reject |
     | E7 | the forbidden text only inside a comment or a string    | accept |
@@ -122,8 +114,6 @@ def selftest() -> None:
         {"crates/server/awaken-session-executor/src/host_error.rs": forbidden}
     ) == [], "E3"
     rejected = {
-        "E4": "fn f() -> Result<(), HostError> { Ok(()) }\n",
-        "E4 renamed": "fn f() -> Result<(), SessionExecutionError> { Ok(()) }\n",
         "E5": "fn f() { g().map_err(|error| RealizationError::invariant(error.to_string())); }\n",
         "E6": "fn f() { g().map_err(|error| RealizationError::invalid_request(format!(\"bad: {error}\"))); }\n",
     }
