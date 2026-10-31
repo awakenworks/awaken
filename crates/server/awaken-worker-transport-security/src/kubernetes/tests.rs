@@ -130,7 +130,8 @@ fn parts(identity: Option<&WorkerIdentity>) -> Parts {
 async fn one_pod_authenticates_only_its_container_instance_incarnations() {
     // The Worker ID is the Pod; an incarnation is one container instance.
     // I1 registration carries no identity and pins no incarnation: the
-    // Coordinator's binding source derives it from the running container.
+    // Coordinator's binding source must derive it from the running container,
+    // so the context requires that provider evidence (fail closed without it).
     // I2 the Pod's historical Pod-UID incarnation or a container-instance
     // token (lowercase hex) + positive generation => authenticated; Registry
     // still fences the exact incarnation and generation. I3 any other
@@ -139,6 +140,10 @@ async fn one_pod_authenticates_only_its_container_instance_incarnations() {
     let api = MockApi::new(Duration::from_secs(2), Duration::ZERO).await;
     let bootstrap = api.auth.authenticate(&parts(None)).await.unwrap();
     assert!(bootstrap.identity().is_none(), "I1");
+    assert!(
+        bootstrap.requires_provider_incarnation(),
+        "I1 provider evidence"
+    );
     let container = "a".repeat(64);
     for incarnation in [pod().uid(), "0f3a9c", container.as_str()] {
         let identity = WorkerIdentity::new(pod().worker_id(), incarnation, 1);
