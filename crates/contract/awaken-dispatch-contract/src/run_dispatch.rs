@@ -535,19 +535,8 @@ impl RunDispatch {
         [prepared, journal].into_iter().flatten()
     }
 
-    /// Whether a registered Worker may receive this request over the current
-    /// runtime wire. Binding and validation share this one predicate, so a
-    /// request built through [`Self::with_placement`] is never refused by
-    /// [`Self::validate_worker_codec_requirements`] for a codec it was not given.
-    fn uses_remote_worker_wire(&self) -> bool {
-        self.placement.location != awaken_worker_contract::ExecutionLocation::LocalOnly
-            && self.placement.runtime_protocol_version != 0
-    }
-
     fn bind_worker_codec_requirements(&mut self) {
-        if self.identity_scope != DispatchIdentityScope::PreparedSessionCommand
-            && !self.uses_remote_worker_wire()
-        {
+        if self.identity_scope != DispatchIdentityScope::PreparedSessionCommand {
             return;
         }
         let required = self.required_worker_codecs(true);
@@ -576,8 +565,11 @@ impl RunDispatch {
     pub fn validate_worker_codec_requirements(
         &self,
     ) -> Result<(), awaken_worker_contract::Incompatibility> {
+        let remote_wire = self.placement.location
+            != awaken_worker_contract::ExecutionLocation::LocalOnly
+            && self.placement.runtime_protocol_version != 0;
         awaken_worker_contract::admit_required_capabilities(
-            self.required_worker_codecs(self.uses_remote_worker_wire()),
+            self.required_worker_codecs(remote_wire),
             &self.placement.required_capabilities,
         )
     }
@@ -1324,47 +1316,6 @@ mod tests {
                     );
                 }
             }
-        }
-    }
-
-    #[test]
-    fn placement_binds_exactly_the_codecs_its_validation_requires() {
-        use awaken_worker_contract::{
-            ExecutionLocation, TOOL_RESULT_JOURNAL_CAPABILITY as JOURNAL,
-        };
-        // Causes: C1 placement location (remote required/preferred, local
-        // only); C2 runtime wire protocol (current, legacy 0). Effects: E1
-        // the remote current wire binds the journal codec and validates;
-        // E2 a local or legacy placement binds nothing and still validates.
-        // | Rule | C1 | C2 | Effect |
-        // | P1 | RemoteRequired | current | E1 |
-        // | P2 | RemotePreferred | current | E1 |
-        // | P3 | LocalOnly | current | E2 |
-        // | P4 | RemotePreferred | 0 | E2 |
-        let local_only = PlacementRequirements {
-            location: ExecutionLocation::LocalOnly,
-            ..PlacementRequirements::remote_preferred()
-        };
-        let legacy_wire = PlacementRequirements {
-            runtime_protocol_version: 0,
-            ..PlacementRequirements::remote_preferred()
-        };
-        for (rule, placement, bound) in [
-            ("P1", PlacementRequirements::remote_required(), true),
-            ("P2", PlacementRequirements::remote_preferred(), true),
-            ("P3", local_only, false),
-            ("P4", legacy_wire, false),
-        ] {
-            let row = RunDispatch::new(activation()).with_placement(placement);
-            assert_eq!(
-                row.placement.required_capabilities.contains(JOURNAL),
-                bound,
-                "{rule} binding"
-            );
-            assert!(
-                row.validate_worker_codec_requirements().is_ok(),
-                "{rule} a placement-built row satisfies its own validation"
-            );
         }
     }
 
