@@ -35,7 +35,7 @@ from _k8s_container_gate_fitness import (
 # The live graph reads Rust tests, E2E runners, workflow/gate commands and
 # imported fitness policies. Keep their ownership on the same generated hook.
 INPUT_GLOBS: tuple[str, ...] = (
-    "crates/**", "e2e/**", "scripts/ci/**", ".github/workflows/*.yml",
+    "crates/**", "e2e/**", "scripts/ci/**", "scripts/e2e/*.sh", ".github/workflows/*.yml",
     ".config/**", "lefthook.yml", "pnpm-lock.yaml",
 )
 

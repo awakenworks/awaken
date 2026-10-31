@@ -7,9 +7,10 @@ from __future__ import annotations
 # lockfile and toolchain pin (through `cargo tree`), the fitness modules and
 # baselines under scripts/ci, every file of the executable trees (deploy, e2e,
 # scripts), the console sources and the Managed upstream oracle. It reads no
-# documentation, so a docs-only commit does not run it. main() holds every run
-# to this declaration (_input_closure): a read outside it fails the check, so
-# the trigger rendered from it cannot fall behind what the checker reads. The
+# documentation, so a docs-only commit does not run it. The full gate holds
+# every hooked checker, this one included, to the trigger rendered from its
+# declaration (_input_closure.py), so the trigger cannot fall behind what the
+# checker reads. The
 # release static group invokes the same checker once; the Rust gate does not.
 INPUT_GLOBS: tuple[str, ...] = (
     "Cargo.toml",
@@ -61,7 +62,6 @@ import _single_owner_fitness
 import _store_pool_fitness
 import _wire_closure_fitness
 import _crate_boundary_workspace
-import _input_closure
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
 
 
@@ -1524,17 +1524,6 @@ def selftest_model_binding_producers_are_ratcheted() -> None:
 
 
 def main() -> int:
-    _input_closure.selftest()
-    with _input_closure.Confinement(REPO_ROOT, INPUT_GLOBS) as confinement:
-        status = check()
-    escapes = confinement.escapes()
-    if escapes:
-        _input_closure.report("check_crate_boundaries.py", escapes)
-        return 1
-    return status
-
-
-def check() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
     selftest_mcp_tool_identity_ownership()

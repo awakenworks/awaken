@@ -55,6 +55,13 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/**/*",
     "e2e/**/*",
     "deploy/**/*",
+    # Lanes outside the shell gates: the workflows, the root and package
+    # manifests whose scripts run executables, and the sources they cite.
+    ".github/workflows/*.yml",
+    "package.json",
+    "packages/**",
+    "contracts/**",
+    "web/scripts/**",
 )
 
 ROOT = Path(__file__).resolve().parents[2]

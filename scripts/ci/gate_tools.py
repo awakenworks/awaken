@@ -51,6 +51,13 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/check_node_dependencies.py",
     "scripts/ci/_provider_environment.sh",
     "scripts/ci/check-all.sh",
+    # The gate scripts whose tools its self-test resolves.
+    "scripts/ci/*.sh",
+    # The Node toolchain pins its self-test resolves.
+    "package.json",
+    "pnpm-workspace.yaml",
+    "e2e/package.json",
+    "web/package.json",
 )
 
 ROOT = Path(__file__).resolve().parents[2]

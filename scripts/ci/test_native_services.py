@@ -20,7 +20,12 @@ import native_services as services
 import _native_postgres as pg
 import _native_s3 as s3
 
-INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
+INPUT_GLOBS = (
+    "scripts/ci/**", ".github/workflows/windows-native-services.yml",
+    # The work-tier selection tests it imports read the acceptance ledger.
+    "docs/design/session-execution-test-acceptance/**",
+    "crates/stores/awaken-work-store/tests/work_queue_conformance/**",
+)
 
 
 class NativeServiceTests(unittest.TestCase):

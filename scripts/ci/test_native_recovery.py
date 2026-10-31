@@ -144,7 +144,12 @@ import os
 from unittest import mock
 import check_native_services as gate
 
-INPUT_GLOBS = ('scripts/ci/**', '.github/workflows/windows-native-services.yml')
+INPUT_GLOBS = (
+    "scripts/ci/**", ".github/workflows/windows-native-services.yml",
+    # The work-tier selection tests it imports read the acceptance ledger.
+    "docs/design/session-execution-test-acceptance/**",
+    "crates/stores/awaken-work-store/tests/work_queue_conformance/**",
+)
 
 
 class RecoveryControllerTests(unittest.TestCase):

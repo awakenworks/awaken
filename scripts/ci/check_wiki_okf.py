@@ -31,7 +31,8 @@ from _doc_anchors import mask_code_fences, resolve_link  # noqa: E402
 
 # Input set: the flat wiki page set this checker globs (`WIKI_ROOT.glob("*.md")`),
 # plus the shared anchor resolver used to prove each fact's Owner link resolves.
-INPUT_GLOBS: tuple[str, ...] = ("docs/wiki/*.md", "scripts/ci/_doc_anchors.py")
+# Wiki pages, and every page a wiki link may resolve to (ADRs, designs).
+INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "scripts/ci/_doc_anchors.py")
 
 WIKI_ROOT = Path("docs/wiki")
 REQUIRED_FACT_FIELDS = ("Status", "Owner", "Fact", "Links", "Verification")
