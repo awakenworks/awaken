@@ -142,6 +142,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 // Pool's exact-claim backoff instead of retrying this occupied
                 // slot on every lease-renewal interval. A first cancellation
                 // clears a prior deadline; failed cancellation retries do not.
+                // This deferral is not a failed attempt: the store refunds the
+                // attempt this recovery re-claim spent, within the bounded
+                // window of `awaken_dispatch_contract::BLOCKED_RECLAIM_LIMIT`,
+                // so a predecessor whose closure is progressing does not burn
+                // the retry budget, while one that never closes spends it; the
+                // budget never ends a Run over an occupied slot, only the
+                // slot's process-end evidence or operator quarantine does.
                 let retry_after_ms =
                     crate::pool::claim_failure_backoff(claim.epoch).as_millis() as u64;
                 crate::pool::defer_failed_claim(self.store.as_ref(), &claim, retry_after_ms)
@@ -159,7 +166,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
         if cancellation.is_cancelled() {
             return self
-                .acknowledge_unentered_operation(&claim, admission, &timing)
+                .acknowledge_unentered_operation(&claim, admission, &timing, context.abandoned_by())
                 .await;
         }
 
@@ -267,6 +274,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claim: &RunClaim,
         admission: AttemptAdmission,
         timing: &AuthorityLeaseTiming,
+        abandoned: Option<awaken_runtime_contract::cancellation::CancellationCause>,
     ) -> Result<PhysicalAttemptOutcome, Error> {
         if !admission.permits_pre_start_no_effect_ack() {
             // Causes: C1 cancellation arrives before this invocation builds
@@ -289,11 +297,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             AttemptReturnCause::OperationFutureNotEntered,
         )
         .await?;
-        Err(Error::Execution(
-            awaken_runtime_contract::execution::Error::Execution(
+        // An authority-loss cause abandons the unentered attempt like an entered
+        // one (no settlement, no spent retry); any other signal keeps the
+        // original failed-attempt path.
+        Err(Error::Execution(match abandoned {
+            Some(cause) => awaken_runtime_contract::cancellation::abandoned_attempt(cause),
+            None => awaken_runtime_contract::execution::Error::Execution(
                 "dispatch authority was lost before physical attempt start".to_string(),
             ),
-        ))
+        }))
     }
 }
 

@@ -107,8 +107,13 @@ impl crate::SessionRuns {
             // or cancel the global queue. It signals the Runtime registration
             // selected above (by foreground Run or installed claim) and the
             // foreground signal, never a later registration of the same Run.
+            // A Worker hosts no Session application, so this stop is its own
+            // authority loss, never the Run's cancellation: the attempt
+            // abandons and Dispatch recovery re-claims the Run.
             if let Some(local) = &selected.local {
-                local.interrupt();
+                local.revoke(
+                    awaken_runtime_contract::cancellation::CancellationCause::WorkerRevoked,
+                );
             }
             return Ok(());
         }

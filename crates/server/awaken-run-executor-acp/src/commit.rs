@@ -135,6 +135,12 @@ async fn commit_with_requested_tool(
     state: Vec<StateCommand>,
     requested: Option<ToolCall>,
 ) -> Result<()> {
+    // An ACP Step that ended `TerminationReason::Cancelled` maps to
+    // `Ended(Cancelled)`. That terminal commits only when the cancellation ends
+    // the Run (a durable cancel); an attempt stopped by authority loss writes
+    // nothing and the recovered Run is classified by Dispatch recovery
+    // (decision table in `awaken_runtime_contract::cancellation`).
+    context.admit_terminal_commit(&disposition.state())?;
     // A final/new-Await commit consumes the prior permission continuation. If
     // that exact decision never granted execution, settle its original ToolUse
     // here, atomically with ticket replacement/removal. Do not infer non-execution

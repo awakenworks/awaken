@@ -1302,6 +1302,18 @@ async fn defer_claim_is_request_local_on_sqlite() {
 }
 
 #[tokio::test]
+async fn blocked_reclaims_spend_no_budget_within_the_window_on_sqlite() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = SqliteDispatchStore::open_in_memory(clock.clock())
+        .await
+        .expect("open");
+    harness::blocked_reclaim::assert_blocked_reclaims_spend_no_budget_within_the_window(
+        &store, &clock,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn capacity_deferrals_hand_off_without_spending_budget_on_sqlite() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = SqliteDispatchStore::open_in_memory(clock.clock())

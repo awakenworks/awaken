@@ -47,10 +47,10 @@ use awaken_agent_contract::agent::state::{
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AcpFailureClass, AcpProjectedEvent, AllowAll, AppendError, Injection, LaunchSink,
-    PermissionAsk, PermissionConsensus, PermissionResolver, PermissionVerdict, RawAcpError,
-    RunFactAppender, Stage, SupervisePolicy, TerminationReason, TurnConfig, classify_error,
-    combine_permission_consensus, permission_consensus_class,
+    AcpError, AcpFailure, AcpFailureClass, AcpProjectedEvent, AllowAll, AppendError, Injection,
+    LaunchSink, PermissionAsk, PermissionConsensus, PermissionResolver, PermissionVerdict,
+    RawAcpError, RunFactAppender, Stage, SupervisePolicy, TerminationReason, TurnConfig,
+    classify_error, combine_permission_consensus, permission_consensus_class,
 };
 // Transitional executor facade for existing composition callers. The neutral
 // declarations live only in awaken-acp-contract; new consumers use that owner.
@@ -425,7 +425,9 @@ fn initial_prompt(
     normalized.text_envelope()
 }
 
-/// Map a clean ACP Step outcome to a terminal cause.
+/// Map a clean ACP Step outcome to a terminal cause. `Cancelled` is admitted
+/// to the commit only when the attempt's cancellation ends the Run; an
+/// authority-loss cause abandons the attempt at `commit::commit` instead.
 fn end_cause(reason: TerminationReason) -> EndCause {
     match reason {
         TerminationReason::NaturalEnd => EndCause::NaturalEnd,

@@ -357,6 +357,10 @@ pub struct RuntimeRunContext {
     pub reader: Option<Arc<dyn CommittedThreadView>>,
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
+    /// Who fired `cancellation`, recorded by its signal source before it fires.
+    /// Only a cause that ends the Run lets the attempt commit `Cancelled`
+    /// (see [`crate::cancellation`]); an untagged signal is a direct request.
+    pub cancellation_cause: crate::cancellation::CancellationCauseCell,
     /// A dropped external-call future or failed process cleanup cannot prove
     /// quiescence merely by returning a logical Run outcome.
     pub physical_quiescence: AttemptQuiescence,
@@ -480,7 +484,9 @@ impl RuntimeRunContext {
     /// whose identity belongs to one live Run are narrowed explicitly:
     ///
     /// - cancellation uses a child token, giving parent → child propagation
-    ///   without allowing a child cancellation to cancel its parent;
+    ///   without allowing a child cancellation to cancel its parent; the child
+    ///   shares the parent's cancellation cause, since the parent's signal is
+    ///   what stops it;
     /// - live input, live output, and pause handles are not inherited because
     ///   their address is the parent Run; a separately controlled child receives
     ///   its own handles from ingress.
@@ -607,6 +613,17 @@ impl RuntimeRunContext {
         self
     }
 
+    /// Share the cause cell its signal sources record into before they fire
+    /// this attempt's cancellation token.
+    #[must_use]
+    pub fn with_cancellation_cause(
+        mut self,
+        cause: crate::cancellation::CancellationCauseCell,
+    ) -> Self {
+        self.cancellation_cause = cause;
+        self
+    }
+
     #[must_use]
     pub fn with_model_cancellation_observation(
         mut self,
@@ -730,6 +747,38 @@ impl RuntimeRunContext {
         self.cancellation
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    /// The one admission of a terminal commit under this attempt's
+    /// cancellation (decision table in [`crate::cancellation`]).
+    ///
+    /// `Ended(Cancelled)` commits only when the cancellation ends the Run.
+    /// Every other state is admitted unchanged: a claim-fenced commit of real
+    /// progress or of another terminal is still the truth.
+    pub fn admit_terminal_commit(
+        &self,
+        state: &awaken_agent_contract::agent::run::RunState,
+    ) -> crate::diagnostic::Result<()> {
+        use awaken_agent_contract::agent::run::{EndCause, RunState};
+        match (state, self.abandoned_by()) {
+            (RunState::Ended(EndCause::Cancelled), Some(cause)) => {
+                Err(crate::cancellation::abandoned_attempt(cause))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The recorded cause when this attempt was cancelled for a reason that
+    /// does not end its Run; `None` while not cancelled, untagged, or
+    /// requested by the Run's cancellation authority.
+    #[must_use]
+    pub fn abandoned_by(&self) -> Option<crate::cancellation::CancellationCause> {
+        if !self.is_cancelled() {
+            return None;
+        }
+        self.cancellation_cause
+            .recorded()
+            .filter(|cause| !cause.ends_run())
     }
 
     /// True once an operator pause has been requested for this attempt (ADR-0054).
@@ -930,3 +979,83 @@ mod child_run_tests {
 
 mod attempt_quiescence;
 pub use attempt_quiescence::AttemptQuiescence;
+
+#[cfg(test)]
+mod cancellation_cause_tests {
+    use super::*;
+    use crate::cancellation::{
+        ABANDONED_ATTEMPT_CODE, CancellationCause, CancellationCauseCell, abandoned_attempt_cause,
+    };
+    use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
+
+    const ALL: [CancellationCause; 5] = [
+        CancellationCause::Requested,
+        CancellationCause::ProofExpired,
+        CancellationCause::ClaimLost,
+        CancellationCause::WorkerRevoked,
+        CancellationCause::HostDrain,
+    ];
+
+    #[test]
+    fn terminal_commit_admission_covers_every_row() {
+        // | Row | token | recorded cause | state | effect |
+        // | T1 | not cancelled | none | Cancelled | admit (direct Runtime cancel) |
+        // | T2 | cancelled | none | Cancelled | admit |
+        // | T3 | cancelled | Requested | Cancelled | admit |
+        // | T4 | cancelled | any authority loss | Cancelled | abandoned, cause kept |
+        // | T5 | cancelled | any authority loss | other terminal/awaiting/running | admit |
+        let cancelled = RunState::Ended(EndCause::Cancelled);
+        let unfired = RuntimeRunContext::new().with_cancellation(CancellationToken::new());
+        assert!(unfired.admit_terminal_commit(&cancelled).is_ok(), "T1");
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let untagged = RuntimeRunContext::new().with_cancellation(token);
+        assert!(untagged.admit_terminal_commit(&cancelled).is_ok(), "T2");
+
+        for cause in ALL {
+            let token = CancellationToken::new();
+            let cell = CancellationCauseCell::new();
+            cell.cancel(&token, cause);
+            let context = RuntimeRunContext::new()
+                .with_cancellation(token)
+                .with_cancellation_cause(cell);
+            let admission = context.admit_terminal_commit(&cancelled);
+            if cause.ends_run() {
+                assert!(admission.is_ok(), "T3 {cause:?}");
+                continue;
+            }
+            let error = admission.expect_err("T4 an authority loss never commits Cancelled");
+            assert_eq!(abandoned_attempt_cause(&error), Some(cause), "T4");
+            assert_eq!(error.code(), ABANDONED_ATTEMPT_CODE, "T4");
+            for other in [
+                RunState::Running,
+                RunState::Awaiting,
+                RunState::Ended(EndCause::NaturalEnd),
+                RunState::Ended(EndCause::Indeterminate),
+                RunState::Ended(EndCause::Error(Failure::StateConflict)),
+            ] {
+                assert!(
+                    context.admit_terminal_commit(&other).is_ok(),
+                    "T5 {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_run_shares_its_parent_cancellation_cause() {
+        // A delegated child is cancelled through its parent's token, so it stops
+        // for the same reason: a parent abandoned by authority loss never lets
+        // its child commit Cancelled either.
+        let token = CancellationToken::new();
+        let cell = CancellationCauseCell::new();
+        let parent = RuntimeRunContext::new()
+            .with_cancellation(token.clone())
+            .with_cancellation_cause(cell.clone());
+        let child = parent.for_child_run();
+        cell.cancel(&token, CancellationCause::WorkerRevoked);
+        assert!(child.is_cancelled());
+        assert_eq!(child.abandoned_by(), Some(CancellationCause::WorkerRevoked));
+    }
+}

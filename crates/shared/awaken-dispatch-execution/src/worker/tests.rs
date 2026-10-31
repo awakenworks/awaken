@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use super::claim_renewal::RenewalStop;
 use super::{
-    ClaimedSnapshotAuthority, DispatchWorker, PendingInputAdmission,
+    AttemptCancellation, ClaimedSnapshotAuthority, DispatchWorker, PendingInputAdmission,
     cancellation_uses_tool_interruption, classify_pending_input_admission,
     combine_attempt_cancellation, recovered_attempt_disposition, select_physical_attempt_recovery,
     settle_outcome,
@@ -36,11 +37,12 @@ use awaken_agent_contract::credential::{
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialDelivery};
 use awaken_dispatch::MemoryDispatchStore;
+use awaken_dispatch_contract::{DispatchAdministration as _, DispatchExecution as _};
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::cancellation::CancellationCause;
 use awaken_runtime_contract::execution::AttemptRecoveryMode;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
-use tokio_util::sync::CancellationToken;
 
 #[path = "tests/claim_path_stack.rs"]
 mod claim_path_stack;
@@ -112,45 +114,272 @@ async fn attempt_cancellation_combines_claim_and_host_without_a_second_authority
     // Cause/effect graph: C1=claim cancellation is already/currently signalled;
     // C2=an optional host cancellation is already/currently signalled. Effect
     // E1=Runtime's one combined token is cancelled; E2=an absent host preserves
-    // the exact claim token instead of spawning a redundant relay.
+    // the exact claim token instead of spawning a redundant relay; E3=the
+    // combined signal carries the cause its source recorded (the claim's own
+    // cell, or the host's recorded cause; an untagged host stays untagged).
     //
     // | Rule | Claim | Host | Effect |
     // | AC1 | live | absent | E2; later claim cancellation -> E1 |
-    // | AC2 | live | live | either later cancellation -> E1 |
-    // | AC3 | cancelled | any | immediate E1 |
-    // | AC4 | live | cancelled | immediate E1 |
+    // | AC2 | live | live | either later cancellation -> E1 + E3 |
+    // | AC3 | cancelled | any | immediate E1 + E3 |
+    // | AC4 | live | cancelled | immediate E1 + E3 |
     // Constraint: this signal relay owns no lifecycle or persistence state.
-    let claim_only = CancellationToken::new();
+    let claim_only = AttemptCancellation::default();
     let (combined, _relay) = combine_attempt_cancellation(claim_only.clone(), None);
-    assert_eq!(combined, claim_only, "AC1/E2");
-    claim_only.cancel();
-    combined.cancelled().await;
-    assert!(combined.is_cancelled(), "AC1/E1");
+    assert_eq!(combined.token, claim_only.token, "AC1/E2");
+    claim_only.cancel(CancellationCause::ClaimLost);
+    combined.token.cancelled().await;
+    assert!(combined.token.is_cancelled(), "AC1/E1");
+    assert_eq!(
+        combined.cause.recorded(),
+        Some(CancellationCause::ClaimLost),
+        "AC1/E3"
+    );
 
-    for cancel_claim in [true, false] {
-        let claim = CancellationToken::new();
-        let host = CancellationToken::new();
+    for (cancel_claim, host_cause, expected) in [
+        (true, None, Some(CancellationCause::ProofExpired)),
+        (false, None, None),
+        (
+            false,
+            Some(CancellationCause::WorkerRevoked),
+            Some(CancellationCause::WorkerRevoked),
+        ),
+    ] {
+        let claim = AttemptCancellation::default();
+        let host = AttemptCancellation::default();
         let (combined, _relay) = combine_attempt_cancellation(claim.clone(), Some(&host));
         if cancel_claim {
-            claim.cancel();
+            claim.cancel(CancellationCause::ProofExpired);
+        } else if let Some(cause) = host_cause {
+            host.cancel(cause);
         } else {
-            host.cancel();
+            host.token.cancel();
         }
-        combined.cancelled().await;
-        assert!(combined.is_cancelled(), "AC2/E1");
+        combined.token.cancelled().await;
+        assert!(combined.token.is_cancelled(), "AC2/E1");
+        assert_eq!(combined.cause.recorded(), expected, "AC2/E3");
     }
 
-    let cancelled_claim = CancellationToken::new();
-    cancelled_claim.cancel();
+    let cancelled_claim = AttemptCancellation::default();
+    cancelled_claim.cancel(CancellationCause::Requested);
     let (combined, _relay) =
-        combine_attempt_cancellation(cancelled_claim, Some(&CancellationToken::new()));
-    assert!(combined.is_cancelled(), "AC3/E1");
+        combine_attempt_cancellation(cancelled_claim, Some(&AttemptCancellation::default()));
+    assert!(combined.token.is_cancelled(), "AC3/E1");
+    assert_eq!(
+        combined.cause.recorded(),
+        Some(CancellationCause::Requested),
+        "AC3/E3"
+    );
 
-    let cancelled_host = CancellationToken::new();
-    cancelled_host.cancel();
+    let cancelled_host = AttemptCancellation::default();
+    cancelled_host.cancel(CancellationCause::HostDrain);
     let (combined, _relay) =
-        combine_attempt_cancellation(CancellationToken::new(), Some(&cancelled_host));
-    assert!(combined.is_cancelled(), "AC4/E1");
+        combine_attempt_cancellation(AttemptCancellation::default(), Some(&cancelled_host));
+    assert!(combined.token.is_cancelled(), "AC4/E1");
+    assert_eq!(
+        combined.cause.recorded(),
+        Some(CancellationCause::HostDrain),
+        "AC4/E3"
+    );
+}
+
+#[test]
+fn renewal_stop_records_the_cause_that_decides_the_run_effect() {
+    // Rows RC1-RC4 of `RenewalStop`: only a durable cancellation is the Run's
+    // cancellation authority; every other stop abandons the attempt.
+    for (stop, cause, ends_run) in [
+        (
+            RenewalStop::DurableCancellation,
+            CancellationCause::Requested,
+            true,
+        ),
+        (RenewalStop::ClaimLost, CancellationCause::ClaimLost, false),
+        (
+            RenewalStop::ProofExpired,
+            CancellationCause::ProofExpired,
+            false,
+        ),
+        (
+            RenewalStop::OwnerDropped,
+            CancellationCause::HostDrain,
+            false,
+        ),
+    ] {
+        assert_eq!(stop.cause(), cause, "{stop:?}");
+        assert_eq!(stop.cause().ends_run(), ends_run, "{stop:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
+    // Cause/effect table RC: C1 durable cancellation / peer takeover;
+    // C2 exact physical slot installed / not started. RC1 C1=cancel+C2=slot
+    // => Requested; RC2 cancel+no slot => ClaimLost, because the revoked
+    // lease owns no executing effect; RC3/RC4 peer takeover => ClaimLost for
+    // either slot state. All rows use the real Dispatch store and renewal loop.
+    // First-cause absorption is checked again after dropping the renewal guard.
+    // The store authority clock stays independent of the paused Tokio scheduler.
+    use awaken_lease_testkit::ManualClock;
+    for (durable_cancel, physical_started, expected) in [
+        (true, true, CancellationCause::Requested),
+        (true, false, CancellationCause::ClaimLost),
+        (false, true, CancellationCause::ClaimLost),
+        (false, false, CancellationCause::ClaimLost),
+    ] {
+        let clock = Arc::new(ManualClock::new(0));
+        let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+        let run_id = RunId(format!("renewal-cause-{durable_cancel}-{physical_started}"));
+        store
+            .enqueue(crate::RunDispatch::new(RunActivation::new(
+                run_id.clone(),
+                ThreadId(format!("renewal-cause-thread-{durable_cancel}-{physical_started}")),
+                ExecutableAgentSnapshot::builder("renewal-cause-snapshot")
+                    .model(
+                        awaken_runtime_contract::resolved::ModelBinding::parse(
+                            "test", "test", "native",
+                        )
+                        .expect("complete model binding"),
+                    )
+                    .build(),
+                Vec::new(),
+            )))
+            .await
+            .expect("enqueue");
+        let claimed = store
+            .claim("owner-a", 90, &Default::default())
+            .await
+            .expect("claim")
+            .expect("runnable");
+        let claim = RunClaim::from(&claimed.lease);
+        if physical_started {
+            assert_eq!(
+                store
+                    .begin_attempt(&claim, None)
+                    .await
+                    .expect("physical admission"),
+                awaken_dispatch_contract::AttemptAdmission::Applied,
+                "RC1/RC3 install the actual physical slot"
+            );
+        }
+        let renewal = super::renew_claim_while_active(store.clone(), &claim, 90);
+        let attempt = renewal.attempt_cancellation();
+        if durable_cancel {
+            store.cancel(&run_id).await.expect("durable cancellation");
+        } else {
+            clock.set(91);
+            store
+                .claim("owner-b", 90, &Default::default())
+                .await
+                .expect("peer claim")
+                .expect("peer replaces the expired claim");
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            attempt.token.cancelled(),
+        )
+        .await
+        .expect("renewal fires the attempt token");
+        assert_eq!(attempt.cause.recorded(), Some(expected), "{run_id:?}");
+        drop(renewal);
+        assert_eq!(
+            attempt.cause.recorded(),
+            Some(expected),
+            "dropping the guard never rewrites the first cause"
+        );
+    }
+}
+
+/// Executor fixture that stops its attempt for a cause that does not end the
+/// Run, exactly as Native and ACP do at their terminal commit boundary.
+struct AbandoningExecutor(CancellationCause);
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for AbandoningExecutor {
+    async fn execute(
+        &self,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        Err(awaken_runtime_contract::cancellation::abandoned_attempt(
+            self.0,
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::execution::RunAttemptExecutor for AbandoningExecutor {
+    async fn resume(
+        &self,
+        _activation: RunActivation,
+        _command: awaken_runtime_contract::resume::ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        Err(awaken_runtime_contract::cancellation::abandoned_attempt(
+            self.0,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn an_abandoned_attempt_settles_nothing_and_keeps_its_retry_budget() {
+    // Row W1 of `settle_if_terminal_or_raise`. Cause: the executor stopped for
+    // an authority loss (proof expiry, lost claim, Worker revocation, drain).
+    // Effects: E1 the drive returns no processed Run; E2 no Thread commit;
+    // E3 the row stays Leased to the old claim (no settlement, no release, no
+    // spent attempt) so the lease lapses and recovery re-claims it; E4 the
+    // returned attempt acknowledged its physical slot on the way out.
+    use awaken_dispatch_contract::{DispatchReads as _, DispatchState};
+    for cause in [
+        CancellationCause::ProofExpired,
+        CancellationCause::ClaimLost,
+        CancellationCause::WorkerRevoked,
+        CancellationCause::HostDrain,
+    ] {
+        let store = Arc::new(MemoryDispatchStore::new(Arc::new(
+            awaken_lease_testkit::ManualClock::new(0),
+        )));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let worker = DispatchWorker::new(
+            Arc::new(Runtime::new()),
+            store.clone(),
+            commit.clone(),
+            "worker",
+        );
+        worker.install_attempt_executor(Arc::new(AbandoningExecutor(cause)));
+        store
+            .enqueue(crate::RunDispatch::new(RunActivation::new(
+                RunId("abandoned-run".into()),
+                ThreadId("abandoned-thread".into()),
+                ExecutableAgentSnapshot::builder("abandoned-snapshot")
+                    .model(
+                        awaken_runtime_contract::resolved::ModelBinding::parse(
+                            "test", "test", "native",
+                        )
+                        .expect("complete model binding"),
+                    )
+                    .build(),
+                Vec::new(),
+            )))
+            .await
+            .expect("enqueue");
+        let claimed = store
+            .claim("worker", 60_000, &Default::default())
+            .await
+            .expect("claim")
+            .expect("runnable");
+
+        let driven = worker
+            .drive_claimed(claimed, awaken_time::system_clock())
+            .await
+            .expect("W1 abandonment is not a drive failure");
+        assert_eq!(driven, None, "W1/E1 {cause:?}");
+        assert!(commit.committed().latest_run.is_none(), "W1/E2 {cause:?}");
+        let rows = store.list_dispatches().await.expect("rows");
+        assert_eq!(rows.len(), 1, "{cause:?}");
+        assert_eq!(rows[0].state, DispatchState::Leased, "W1/E3 {cause:?}");
+        assert_eq!(rows[0].attempt_count, 0, "W1/E3 {cause:?}");
+        assert!(!rows[0].physical_attempt_active, "W1/E4 {cause:?}");
+    }
 }
 
 #[test]

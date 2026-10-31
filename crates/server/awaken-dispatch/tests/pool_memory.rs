@@ -774,19 +774,46 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
     .expect("valid test Pool binding");
     pool.notify().await;
 
+    // The replacement's recovery claim spends one attempt and its Blocked
+    // deferral refunds it (rule B1 of `blocked_reclaim_attempt_count`), so the
+    // count alone cannot show that admission was reached: wait for the exact
+    // Relinquished release of the blocked Run instead, then check the refund.
     assert!(
         wait_for_async(|| {
             let store = store.clone();
             async move {
-                store.list_dispatches().await.unwrap().iter().any(|row| {
-                    row.run_id == RunId("blocked-old".into())
-                        && row.attempt_count == 1
-                        && row.physical_attempt_active
-                })
+                use awaken_dispatch::{DispatchCursor, DispatchOperation, DispatchOperationalFeed};
+                store
+                    .events_after(DispatchCursor(0), 100, None)
+                    .await
+                    .unwrap()
+                    .events
+                    .iter()
+                    .any(|event| {
+                        matches!(
+                            &event.operation,
+                            DispatchOperation::LeaseLost {
+                                claim,
+                                reason: awaken_dispatch_contract::LeaseLossReason::Relinquished,
+                            } if claim.run_id == RunId("blocked-old".into())
+                        )
+                    })
             }
         })
         .await,
         "BP1/C2 replacement claim did not reach physical admission"
+    );
+    let deferred = store
+        .list_dispatches()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.run_id == RunId("blocked-old".into()))
+        .expect("BP1 blocked row");
+    assert!(deferred.physical_attempt_active, "BP1/E1");
+    assert_eq!(
+        deferred.attempt_count, 0,
+        "BP1 a Blocked recovery re-claim spends no retry budget"
     );
     assert_eq!(pool.in_flight(), 0, "BP1/E3 heartbeat capacity is free");
     store

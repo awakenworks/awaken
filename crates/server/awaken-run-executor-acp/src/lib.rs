@@ -82,6 +82,9 @@ pub struct SessionHomeKey {
     pub adapter: String,
 }
 
+#[cfg(all(test, feature = "execution"))]
+#[path = "tests/cancellation_cause.rs"]
+mod cancellation_cause_tests;
 #[cfg(feature = "execution")]
 mod cleanup;
 #[cfg(feature = "execution")]
