@@ -498,33 +498,65 @@ pub async fn assert_dispatch_conformance_with_clock<S: ConformanceDispatch + Inb
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
-    open_run_single_writer_is_uniform(store, namespace, clock).await;
+    heap_rule(|| open_run_single_writer_is_uniform(store, namespace, clock)).await;
     if capabilities.local_commit_guard {
-        local_claims_skip_remote_only_work(store, namespace, clock).await;
+        heap_rule(|| local_claims_skip_remote_only_work(store, namespace, clock)).await;
     }
-    occupied_recovery_does_not_starve_other_threads(store, namespace, clock).await;
-    exact_claim_recovery_and_fencing(store, namespace, clock).await;
-    settlement_fence_and_pending_input_are_atomic(store, namespace, capabilities, clock).await;
-    retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock).await;
-    failed_attempts_spend_the_budget_and_exhaust_like_a_crash(store, namespace).await;
-    attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock).await;
-    incompatible_credentials_do_not_poison_broad_claims(store, namespace, clock).await;
-    parent_mediated_commands_are_atomic(store, namespace, clock).await;
-    caller_owned_run_identity_is_exact(store, namespace, clock).await;
-    upgrade_window_retry_replays_rows_written_before_typed_requirements(store, namespace, clock)
+    heap_rule(|| occupied_recovery_does_not_starve_other_threads(store, namespace, clock)).await;
+    heap_rule(|| exact_claim_recovery_and_fencing(store, namespace, clock)).await;
+    heap_rule(|| {
+        settlement_fence_and_pending_input_are_atomic(store, namespace, capabilities, clock)
+    })
+    .await;
+    heap_rule(|| retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock)).await;
+    heap_rule(|| failed_attempts_spend_the_budget_and_exhaust_like_a_crash(store, namespace)).await;
+    heap_rule(|| {
+        attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock)
+    })
+    .await;
+    heap_rule(|| incompatible_credentials_do_not_poison_broad_claims(store, namespace, clock))
         .await;
-    session_run_reservation_is_atomic_and_recoverable(store, namespace, capabilities, clock).await;
-    current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
-    sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
-    completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
+    heap_rule(|| parent_mediated_commands_are_atomic(store, namespace, clock)).await;
+    heap_rule(|| caller_owned_run_identity_is_exact(store, namespace, clock)).await;
+    heap_rule(|| {
+        upgrade_window_retry_replays_rows_written_before_typed_requirements(store, namespace, clock)
+    })
+    .await;
+    heap_rule(|| {
+        session_run_reservation_is_atomic_and_recoverable(store, namespace, capabilities, clock)
+    })
+    .await;
+    heap_rule(|| current_claim_guard_is_exact(store, namespace, capabilities, clock)).await;
+    heap_rule(|| sandbox_binding_survives_recovery(store, namespace, capabilities, clock)).await;
+    heap_rule(|| {
+        completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock)
+    })
+    .await;
     if capabilities.completion_events {
-        committed_terminal_recovery_reuses_fenced_settlement(store, namespace, clock).await;
-        deferred_pending_terminal_recovery_obeys_retry_deadline(store, namespace, clock).await;
+        heap_rule(|| committed_terminal_recovery_reuses_fenced_settlement(store, namespace, clock))
+            .await;
+        heap_rule(|| {
+            deferred_pending_terminal_recovery_obeys_retry_deadline(store, namespace, clock)
+        })
+        .await;
     }
     // This rule intentionally leaves 25 distinct unarchived child Threads as its
     // postcondition, so run it after every conformance rule that broadly claims
     // queue work.
-    session_child_admission_is_atomic_and_bounded(store, namespace, clock).await;
+    heap_rule(|| session_child_admission_is_atomic_and_bounded(store, namespace, clock)).await;
+}
+
+/// Run one conformance rule behind its own heap boundary. An unoptimized poll
+/// frame reserves a slot for every rule future the suite awaits inline, and
+/// the suite's sum overflowed a 2 MiB test thread once every rule ran to its
+/// end; the suite now holds one pointer per rule instead.
+fn heap_rule<'a, F>(
+    rule: impl FnOnce() -> F,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>>
+where
+    F: std::future::Future<Output = ()> + 'a,
+{
+    Box::pin(rule())
 }
 
 /// The one store shape the Session continuation journeys drive as a trait
