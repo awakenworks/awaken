@@ -530,7 +530,7 @@ def self_test() -> None:
         safe.write_text('run_evidence = "needs_rerun"\n' + original)
         assert load(root)["obligations"][1]["run_evidence"] == NEEDS_RERUN, "C11 the marker is read"
         marked = {**ledger, "obligations": [dict(rows[0], run_evidence=NEEDS_RERUN), rows[1]]}
-        assert 'run_evidence = "needs_rerun"' in files(marked, root)[str(safe.relative_to(root))], (
+        assert 'run_evidence = "needs_rerun"' in files(marked, root)[safe.relative_to(root).as_posix()], (
             "C11 the marker is stored")
         for stored_path in ("crates/a/src/other.rs", "web/src/x.ts"):
             safe.write_text(original.replace("evidence = []", f'evidence = ["{stored_path}"]', 1))
