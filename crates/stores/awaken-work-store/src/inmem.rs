@@ -8,10 +8,10 @@
 //! PostgreSQL so accepted work survives process loss.
 
 #[cfg(all(test, feature = "loom"))]
-use loom::sync::Mutex;
-use std::collections::{BTreeMap, HashMap};
+use crate::lease_book::loom_lock::LeafLock;
 #[cfg(not(all(test, feature = "loom")))]
-use std::sync::Mutex;
+use awaken_sync::LeafLock;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
@@ -39,7 +39,7 @@ const HEARTBEAT_TTL_SECONDS: u64 = 60;
 /// Test-support single-process reference queue: a `BTreeMap` keyed by monotonic
 /// work id (ascending id == enqueue order).
 pub struct InMemoryWorkQueue {
-    authority: Mutex<InMemoryQueueAuthority>,
+    authority: LeafLock<InMemoryQueueAuthority>,
     seq: AtomicU64,
     /// The one source of every observation timestamp this reference backend
     /// writes — the same seam the durable siblings carry, so a conformance test
@@ -98,7 +98,7 @@ impl InMemoryWorkQueue {
         worker_id: &str,
         fence: LeaseFence,
     ) -> WorkMutationResult {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -159,7 +159,7 @@ impl InMemoryWorkQueue {
         worker_id: &str,
         fence: LeaseFence,
     ) -> WorkMutationResult {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -199,7 +199,7 @@ impl InMemoryWorkQueue {
     #[must_use]
     pub fn new(clock: std::sync::Arc<dyn WallClock>) -> Self {
         Self {
-            authority: Mutex::new(InMemoryQueueAuthority::default()),
+            authority: LeafLock::new(InMemoryQueueAuthority::default()),
             seq: AtomicU64::new(0),
             clock,
         }
@@ -333,7 +333,7 @@ impl InMemoryWorkQueue {
         wid: &str,
         f: impl FnOnce(&mut WorkItem, &LeaseBook) -> R,
     ) -> Option<R> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
         match works.get_mut(wid) {
             Some(w) if w.environment_id == env_id => Some(f(w, book)),
@@ -350,7 +350,7 @@ impl InMemoryWorkQueue {
         reclaim_older_than_ms: Option<u64>,
         session_access: Option<&SessionAccessDigest>,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -411,7 +411,6 @@ impl WorkQueries for InMemoryWorkQueue {
         Ok(self
             .authority
             .lock()
-            .unwrap()
             .works
             .values()
             .filter(|w| w.environment_id == env_id)
@@ -424,7 +423,7 @@ impl WorkQueries for InMemoryWorkQueue {
     }
 
     async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
         let in_env: Vec<&WorkItem> = works
             .values()
@@ -599,7 +598,7 @@ impl SessionAccessAuthenticator for InMemoryWorkQueue {
         presented: &SessionAccessDigest,
         now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
-        let authority = self.authority.lock().unwrap();
+        let authority = self.authority.lock();
         let Some(work_id) = authority
             .session_token_sha256
             .iter()
@@ -708,7 +707,7 @@ impl SessionWorkStore for InMemoryWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         self.enqueue_session_inner(&mut authority.works, env_id, session_id.as_str())
     }
 
@@ -717,7 +716,7 @@ impl SessionWorkStore for InMemoryWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -767,7 +766,7 @@ impl SessionWorkStore for InMemoryWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -794,7 +793,7 @@ impl SessionWorkStore for InMemoryWorkQueue {
 #[async_trait]
 impl SessionWorkerLeaseStore for InMemoryWorkQueue {
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -820,7 +819,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
     }
 
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -861,7 +860,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         if let Some(lease) = authority.current_session_lease(env_id, session_id, now_ms) {
             if lease.owner() != worker_owner {
                 return Ok(Some(lease));
@@ -914,7 +913,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
 #[async_trait]
 impl WorkerLeaseObservation for InMemoryWorkQueue {
     async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
-        let authority = self.authority.lock().unwrap();
+        let authority = self.authority.lock();
         Ok(authority
             .works
             .keys()
@@ -955,7 +954,7 @@ impl EnvironmentWorkLifecycle for InMemoryWorkQueue {
         operation: Operation,
     ) -> Result<RevisionOutcome, awaken_executable_environment_contract::EnvironmentWorkRevisionError>
     {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let outcome = admit_environment_work_revision(
             env_id,
             revision,
@@ -980,17 +979,17 @@ impl EnvironmentWorkLifecycle for InMemoryWorkQueue {
         Ok(outcome)
     }
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         Self::require_healthcheck_locked(&authority, env_id)?;
         Ok(self.insert_healthcheck(&mut authority, env_id))
     }
     async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         Self::require_healthcheck_locked(&authority, env_id)?;
         Ok(self.ensure_healthcheck_locked(&mut authority, env_id))
     }
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         Self::remove_work_locked(&mut authority, env_id, false);
         Ok(())
     }
@@ -1603,7 +1602,7 @@ mod registration_thread_races {
             for task in tasks {
                 task.join().unwrap();
             }
-            let authority = q.authority.lock().unwrap();
+            let authority = q.authority.lock();
             assert!(authority.works.is_empty());
             assert_eq!(
                 authority.environment_revisions.get("thread-race"),

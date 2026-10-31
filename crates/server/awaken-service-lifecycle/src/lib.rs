@@ -14,10 +14,11 @@
 
 use std::future::Future;
 use std::mem;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use awaken_sync::LeafLock;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -291,10 +292,10 @@ struct TaskHandle {
 struct Inner {
     cancellation: CancellationToken,
     healthy: Arc<AtomicBool>,
-    first_failure: Arc<Mutex<Option<TaskFailure>>>,
+    first_failure: Arc<LeafLock<Option<TaskFailure>>>,
     failure_tx: mpsc::UnboundedSender<TaskFailure>,
     failure_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<TaskFailure>>,
-    registry: Mutex<TaskRegistry<TaskHandle, Arc<Result<(), ShutdownError>>>>,
+    registry: LeafLock<TaskRegistry<TaskHandle, Arc<Result<(), ShutdownError>>>>,
     shutdown_changed: watch::Sender<()>,
 }
 
@@ -366,9 +367,7 @@ impl<T, R> TaskRegistry<T, R> {
 impl Drop for Inner {
     fn drop(&mut self) {
         self.cancellation.cancel();
-        if let Ok(registry) = self.registry.get_mut()
-            && let ShutdownAdmission::Lead(tasks) = registry.begin_shutdown()
-        {
+        if let ShutdownAdmission::Lead(tasks) = self.registry.get_mut().begin_shutdown() {
             for task in tasks {
                 task.task_abort.abort();
                 task.watcher.abort();
@@ -398,10 +397,10 @@ impl ServiceLifecycle {
             inner: Arc::new(Inner {
                 cancellation: CancellationToken::new(),
                 healthy: Arc::new(AtomicBool::new(true)),
-                first_failure: Arc::new(Mutex::new(None)),
+                first_failure: Arc::new(LeafLock::new(None)),
                 failure_tx,
                 failure_rx: tokio::sync::Mutex::new(failure_rx),
-                registry: Mutex::new(TaskRegistry::new()),
+                registry: LeafLock::new(TaskRegistry::new()),
                 shutdown_changed,
             }),
         }
@@ -419,11 +418,7 @@ impl ServiceLifecycle {
         // Registration and the shutdown transition share one critical section.
         // This is the linearization point: a task is either spawned and owned by
         // the registry, or rejected before its future is constructed.
-        let mut registry = self
-            .inner
-            .registry
-            .lock()
-            .expect("service lifecycle registry lock poisoned");
+        let mut registry = self.inner.registry.lock();
         let registered = registry.register_with(|| {
             let name = name.into();
             let cancellation = self.inner.cancellation.child_token();
@@ -450,9 +445,7 @@ impl ServiceLifecycle {
                     cause,
                 };
                 healthy.store(false, Ordering::Release);
-                let mut first = first_failure
-                    .lock()
-                    .expect("service lifecycle failure lock poisoned");
+                let mut first = first_failure.lock();
                 if first.is_none() {
                     *first = Some(failure.clone());
                     let _ = failure_tx.send(failure);
@@ -479,13 +472,7 @@ impl ServiceLifecycle {
     /// cancellation wins. The first fault is retained as the diagnostic source
     /// of truth; later task fallout cannot overwrite it.
     pub async fn wait_for_failure(&self) -> Option<TaskFailure> {
-        if let Some(failure) = self
-            .inner
-            .first_failure
-            .lock()
-            .expect("service lifecycle failure lock poisoned")
-            .clone()
-        {
+        if let Some(failure) = self.inner.first_failure.lock().clone() {
             return Some(failure);
         }
         let mut failures = self.inner.failure_rx.lock().await;
@@ -504,11 +491,7 @@ impl ServiceLifecycle {
         // one completion projection instead of dropping or replacing the owner.
         let mut changed = self.inner.shutdown_changed.subscribe();
         let admission = {
-            let mut registry = self
-                .inner
-                .registry
-                .lock()
-                .expect("service lifecycle registry lock poisoned");
+            let mut registry = self.inner.registry.lock();
             self.inner.cancellation.cancel();
             registry.begin_shutdown()
         };
@@ -541,22 +524,13 @@ impl ServiceLifecycle {
                 } else {
                     Err(ShutdownError { timed_out })
                 });
-                inner
-                    .registry
-                    .lock()
-                    .expect("service lifecycle registry lock poisoned")
-                    .finish_shutdown(result);
+                inner.registry.lock().finish_shutdown(result);
                 inner.shutdown_changed.send_replace(());
             });
         }
 
         loop {
-            let completion = self
-                .inner
-                .registry
-                .lock()
-                .expect("service lifecycle registry lock poisoned")
-                .begin_shutdown();
+            let completion = self.inner.registry.lock().begin_shutdown();
             if let ShutdownAdmission::Complete(result) = completion {
                 // Preserve the established public contract: only the caller
                 // that initiated the drain receives its timeout diagnostic.

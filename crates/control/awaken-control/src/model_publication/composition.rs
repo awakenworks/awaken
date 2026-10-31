@@ -116,7 +116,7 @@ impl CatalogModelPublicationResolver {
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             executor_capabilities,
             acp_capabilities,
-            credential_selection_sequences: Arc::new(std::sync::Mutex::new(
+            credential_selection_sequences: Arc::new(awaken_sync::LeafLock::new(
                 std::collections::HashMap::new(),
             )),
             clock,
@@ -146,7 +146,7 @@ impl CatalogModelPublicationResolver {
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             executor_capabilities,
             acp_capabilities,
-            credential_selection_sequences: Arc::new(std::sync::Mutex::new(
+            credential_selection_sequences: Arc::new(awaken_sync::LeafLock::new(
                 std::collections::HashMap::new(),
             )),
             clock,

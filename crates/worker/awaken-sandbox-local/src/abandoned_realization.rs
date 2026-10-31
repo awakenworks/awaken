@@ -37,7 +37,7 @@
 //! beyond the one root it names.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_fs_durability::{DirectoryIdentity, PathEntry};
 use awaken_provisioning_contract as pc;
@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 /// Roots whose realization was claimed and then dropped before it settled.
 #[derive(Default)]
 pub struct AbandonedRealizations {
-    roots: Mutex<Vec<PathBuf>>,
+    roots: awaken_sync::LeafLock<Vec<PathBuf>>,
 }
 
 impl AbandonedRealizations {
@@ -58,31 +58,20 @@ impl AbandonedRealizations {
     pub(crate) fn retain(self: &Arc<Self>, root: PathBuf) -> impl FnOnce() + Send + 'static {
         let ledger = Arc::clone(self);
         move || {
-            ledger
-                .roots
-                .lock()
-                .expect("abandoned realization ledger poisoned")
-                .push(root);
+            ledger.roots.lock().push(root);
         }
     }
 
     /// Every root recorded so far, oldest first.
     #[must_use]
     pub fn roots(&self) -> Vec<PathBuf> {
-        self.roots
-            .lock()
-            .expect("abandoned realization ledger poisoned")
-            .clone()
+        self.roots.lock().clone()
     }
 
     /// Whether `root` is among them.
     #[must_use]
     pub fn contains(&self, root: &Path) -> bool {
-        self.roots
-            .lock()
-            .expect("abandoned realization ledger poisoned")
-            .iter()
-            .any(|recorded| recorded == root)
+        self.roots.lock().iter().any(|recorded| recorded == root)
     }
 }
 

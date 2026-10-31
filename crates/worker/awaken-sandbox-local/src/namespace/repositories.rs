@@ -13,10 +13,7 @@ impl NamespaceSandbox {
     ) -> Result<(), pc::SandboxError> {
         self.require_root_identity()?;
         plan.validate_mount_path()?;
-        intent.validate_owned_path(
-            plan,
-            Some(&self.owned_paths.lock().expect("owned paths lock poisoned")),
-        )?;
+        intent.validate_owned_path(plan, Some(&self.owned_paths.lock()))?;
         let (branch, commit) = intent.checkout_constraints(plan);
         provision_repo_at(
             &self.workspace_root(),

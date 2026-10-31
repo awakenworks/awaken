@@ -23,13 +23,13 @@ mod binding_batch_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(not(all(test, feature = "loom")))]
+use awaken_sync::LeafLock;
 #[cfg(all(test, feature = "loom"))]
 use loom::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(not(all(test, feature = "loom")))]
-use std::sync::Mutex;
 
 use crate::{AcpCli, acp_cli};
 use async_trait::async_trait;
@@ -530,8 +530,8 @@ fn local_binding_batch_publication_is_complete_or_stutters() {
 pub struct AcpLocalCredentialResolver {
     discovery: Arc<dyn AcpDiscovery>,
     clock: Arc<dyn WallClock>,
-    bindings: Mutex<BTreeMap<String, LocalBinding>>,
-    last_host_observations: Mutex<BTreeMap<String, AcpHostObservation>>,
+    bindings: LeafLock<BTreeMap<String, LocalBinding>>,
+    last_host_observations: LeafLock<BTreeMap<String, AcpHostObservation>>,
     capability: Option<CapabilityObservationConfig>,
 }
 
@@ -560,8 +560,8 @@ impl AcpLocalCredentialResolver {
         Ok(Self {
             discovery,
             clock,
-            bindings: Mutex::new(bindings),
-            last_host_observations: Mutex::new(BTreeMap::new()),
+            bindings: LeafLock::new(bindings),
+            last_host_observations: LeafLock::new(BTreeMap::new()),
             capability: None,
         })
     }
@@ -572,11 +572,8 @@ impl AcpLocalCredentialResolver {
     ) -> Result<(), String> {
         let additions =
             Self::from_bindings(self.discovery.clone(), projections, self.clock.clone())?;
-        let additions = additions
-            .bindings
-            .into_inner()
-            .expect("new ACP bindings are not poisoned");
-        let mut bindings = self.bindings.lock().expect("ACP bindings poisoned");
+        let additions = additions.bindings.into_inner();
+        let mut bindings = self.bindings.lock();
         // The immutable borrow and owned replacement make partial publication
         // unrepresentable: rejection drops only the staged value, while success
         // performs one assignment under the same lock used for validation.
@@ -614,7 +611,6 @@ impl AcpLocalCredentialResolver {
             host_discovery::discover_scoped(self.discovery.as_ref(), binding.cli).await;
         self.last_host_observations
             .lock()
-            .expect("ACP host-observation cache poisoned")
             .insert(binding.cli.id.to_string(), observation.clone());
         let (state, reason_code) = classify_host_observation(&observation);
         CredentialObservation {
@@ -640,12 +636,7 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
             let cli = acp_cli(cli_id)
                 .ok_or_else(|| format!("ACP capability route names unknown CLI `{cli_id}`"))?;
             let observed_at_ms = self.clock.now_ms();
-            let cached = self
-                .last_host_observations
-                .lock()
-                .expect("ACP host-observation cache poisoned")
-                .get(cli.id)
-                .cloned();
+            let cached = self.last_host_observations.lock().get(cli.id).cloned();
             let host = match cached {
                 Some(observation) => observation,
                 None => host_discovery::discover_scoped(self.discovery.as_ref(), cli).await,
@@ -736,18 +727,9 @@ impl CredentialObservationSource for AcpLocalCredentialResolver {
         // The following capability phase may reuse this batch's host probes,
         // but must not borrow a probe from a previous refresh after every local
         // binding has been disabled. Credential identities remain independent.
-        self.last_host_observations
-            .lock()
-            .expect("ACP host-observation cache poisoned")
-            .clear();
+        self.last_host_observations.lock().clear();
         let mut host_observations: BTreeMap<&str, CredentialObservation> = BTreeMap::new();
-        let bindings = self
-            .bindings
-            .lock()
-            .expect("ACP bindings poisoned")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let bindings = self.bindings.lock().values().cloned().collect::<Vec<_>>();
         for binding in &bindings {
             let observation = if binding.enabled {
                 match host_observations.get(binding.cli.id) {
@@ -779,7 +761,6 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
         let binding = self
             .bindings
             .lock()
-            .expect("ACP bindings poisoned")
             .get(&credential.id)
             .filter(|binding| binding.credential.revision == credential.revision)
             .cloned()

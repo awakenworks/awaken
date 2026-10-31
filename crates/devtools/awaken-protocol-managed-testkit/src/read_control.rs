@@ -1,7 +1,8 @@
 //! One test-only failure/pause observer for existing Runtime and repository reads.
 
+use awaken_sync::LeafLock;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::Notify;
 
 enum ReadTarget {
@@ -24,17 +25,16 @@ struct ReadState {
 }
 
 #[derive(Clone, Default)]
-pub struct ReadControl(Arc<Mutex<ReadState>>);
+pub struct ReadControl(Arc<LeafLock<ReadState>>);
 
 impl ReadControl {
     pub fn trace(&self) -> Vec<&'static str> {
-        self.0.lock().unwrap().trace.clone()
+        self.0.lock().trace.clone()
     }
 
     pub fn count(&self, port: &str) -> usize {
         self.0
             .lock()
-            .unwrap()
             .trace
             .iter()
             .filter(|value| **value == port)
@@ -43,11 +43,11 @@ impl ReadControl {
 
     /// Arm a new observation only when no previously paused read is in flight.
     pub fn reset(&self) {
-        *self.0.lock().unwrap() = ReadState::default();
+        *self.0.lock() = ReadState::default();
     }
 
     pub fn fail(&self, port: &'static str, enabled: bool) {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.0.lock();
         if enabled {
             state.failed_ports.insert(port);
         } else {
@@ -56,7 +56,7 @@ impl ReadControl {
     }
 
     pub fn fail_at(&self, ordinal: usize) {
-        self.0.lock().unwrap().fail_at = Some(ordinal);
+        self.0.lock().fail_at = Some(ordinal);
     }
 
     pub fn pause_at(&self, ordinal: usize) -> (Arc<Notify>, Arc<Notify>) {
@@ -70,7 +70,7 @@ impl ReadControl {
     fn arm_pause(&self, target: ReadTarget) -> (Arc<Notify>, Arc<Notify>) {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.0.lock();
         assert!(
             state.pause.is_none(),
             "one controlled read may be paused at a time"
@@ -87,7 +87,7 @@ impl ReadControl {
     /// Global ordinals continue to own cross-port failure/pause selection.
     pub async fn on_read(&self, port: &'static str) -> Result<usize, &'static str> {
         let (ordinal, port_index, pause) = {
-            let mut state = self.0.lock().unwrap();
+            let mut state = self.0.lock();
             let ordinal = state.trace.len();
             let port_index = state.trace.iter().filter(|value| **value == port).count();
             state.trace.push(port);
@@ -111,7 +111,7 @@ impl ReadControl {
         // Re-read the failure plan after releasing the pause: the existing
         // event-replay race intentionally makes recovery unavailable while its
         // read is pending. No Mutex guard crosses an await.
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.0.lock();
         let selected = state.fail_at == Some(ordinal);
         if selected {
             state.fail_at = None;

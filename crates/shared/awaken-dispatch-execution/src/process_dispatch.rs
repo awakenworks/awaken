@@ -28,11 +28,12 @@
 //! either service. Its absorbing drain fences a cold or still-constructing
 //! service without waiting for its synchronous resolver factory.
 
-use std::sync::{Arc, RwLock, RwLockReadGuard, TryLockError};
+use std::sync::{Arc, RwLockReadGuard};
 
 use once_cell::sync::OnceCell;
 
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore, DispatchBinding};
+use awaken_sync::LeafRwLock;
 use awaken_time::WallClock;
 
 use crate::pool::PoolAdmission;
@@ -58,7 +59,7 @@ pub struct ProcessDispatch {
     /// Configuration readers publish capabilities before either service may
     /// choose immutable construction ports. Service initialization owns the
     /// writer through OnceCell publication, including failure and unwind.
-    service_configuration: RwLock<()>,
+    service_configuration: LeafRwLock<()>,
     /// The scan state the claimed-Run resolver shares.
     terminal_reconciliation: Arc<TerminalReconciliationState>,
     /// The coordinator-side maintenance loop (rules T1-T4 above).
@@ -141,7 +142,7 @@ impl ProcessDispatch {
             publication,
             admission,
             pool: OnceCell::new(),
-            service_configuration: RwLock::new(()),
+            service_configuration: LeafRwLock::new(()),
             terminal_reconciliation: Arc::default(),
             terminal_reconciler: OnceCell::new(),
             preparation: Arc::new(crate::PreparationPlacement),
@@ -208,11 +209,7 @@ impl ProcessDispatch {
     }
 
     fn read_service_configuration(&self) -> Option<RwLockReadGuard<'_, ()>> {
-        match self.service_configuration.try_read() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
-            Err(TryLockError::WouldBlock) => None,
-        }
+        self.service_configuration.try_read()
     }
 
     fn service_ports_selected(&self) -> bool {
@@ -237,10 +234,7 @@ impl ProcessDispatch {
             return Ok(());
         };
         let binding = binding.expect("a spawn decision requires the bound authority");
-        let _construction = self
-            .service_configuration
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _construction = self.service_configuration.write();
         self.pool
             .get_or_try_init(|| {
                 self.admission.require_startable()?;
@@ -282,10 +276,7 @@ impl ProcessDispatch {
         ) {
             return false;
         }
-        let _construction = self
-            .service_configuration
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _construction = self.service_configuration.write();
         let mut started = false;
         self.terminal_reconciler
             .get_or_try_init(|| {

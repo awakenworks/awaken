@@ -123,7 +123,7 @@ pub struct RemoteToolExecutor<S> {
     catalog_fingerprint: Option<String>,
     operation_scope: Option<String>,
     recovery_capability: ToolRecoveryCapability,
-    pending_request: std::sync::Mutex<Option<HandRequest>>,
+    pending_request: awaken_sync::LeafLock<Option<HandRequest>>,
 }
 
 struct HandChannel<S> {
@@ -144,7 +144,7 @@ where
             catalog_fingerprint: None,
             operation_scope: None,
             recovery_capability: ToolRecoveryCapability::NonRecoverable,
-            pending_request: std::sync::Mutex::new(None),
+            pending_request: awaken_sync::LeafLock::new(None),
         }
     }
 
@@ -231,12 +231,7 @@ where
                 "recovery requires Observe or Cancel".into(),
             ));
         }
-        let Some(mut request) = self
-            .pending_request
-            .lock()
-            .expect("Hand pending request poisoned")
-            .clone()
-        else {
+        let Some(mut request) = self.pending_request.lock().clone() else {
             return Ok(None);
         };
         request.action = action;
@@ -263,12 +258,7 @@ where
         };
 
         let mut channel = self.channel.lock().await;
-        if let Some(pending) = self
-            .pending_request
-            .lock()
-            .expect("Hand pending request poisoned")
-            .as_ref()
-        {
+        if let Some(pending) = self.pending_request.lock().as_ref() {
             // The prior operation may have executed. Its retry remains unknown;
             // a distinct operation has sent no bytes and can use the existing
             // Environment-owned pre-dispatch replacement path. Correlation ids
@@ -285,10 +275,7 @@ where
         // Mark the stream unusable before the first cancellable write. A dropped
         // caller cannot otherwise tell whether a partial/full frame or its reply
         // remains queued. Only the exact correlated reply restores readiness.
-        *self
-            .pending_request
-            .lock()
-            .expect("Hand pending request poisoned") = Some(request.clone());
+        *self.pending_request.lock() = Some(request.clone());
         if channel.framed.send(bytes.into()).await.is_err() {
             return Ok(HandResult::Indeterminate);
         }
@@ -302,10 +289,7 @@ where
                         reply.correlation_id == correlation_id,
                     ) =>
                 {
-                    *self
-                        .pending_request
-                        .lock()
-                        .expect("Hand pending request poisoned") = None;
+                    *self.pending_request.lock() = None;
                     reply.result
                 }
                 Ok(_) => HandResult::Indeterminate,

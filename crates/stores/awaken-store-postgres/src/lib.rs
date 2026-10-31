@@ -24,7 +24,6 @@
 //! durable event, lifecycle and policy reads query committed SQL directly.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -55,6 +54,7 @@ use awaken_agent_contract::thread::read::recovery::{
     decode_resume_ticket_value_for_owner, project_committed_run_records,
 };
 use awaken_store_schema::StoredU64;
+use awaken_sync::InvariantLock;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
@@ -193,7 +193,7 @@ const NS: &str = "runtime";
 /// A Postgres-backed [`Coordinator`] plus asynchronous durable read ports.
 pub struct PostgresCommitCoordinator {
     pool: PgPool,
-    projection: Mutex<Projection>,
+    projection: InvariantLock<Projection>,
     projection_thread: Option<ThreadId>,
 }
 
@@ -294,7 +294,7 @@ impl PostgresCommitCoordinator {
             decode_authority(sequence).map_err(|error| StoreError::Read(error.to_string()))?;
         Ok(Self {
             pool,
-            projection: Mutex::new(Projection {
+            projection: InvariantLock::new(Projection {
                 sequence,
                 ..Projection::default()
             }),
@@ -312,7 +312,7 @@ impl PostgresCommitCoordinator {
             .map_err(|error| StoreError::Hydrate(error.to_string()))?;
         Ok(Self {
             pool: self.pool.clone(),
-            projection: Mutex::new(projection_from_snapshot(snapshot)),
+            projection: InvariantLock::new(projection_from_snapshot(snapshot)),
             projection_thread: Some(thread_id.clone()),
         })
     }
@@ -1373,7 +1373,9 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
     }
 }
 
-fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
+fn lock(
+    projection: &InvariantLock<Projection>,
+) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
     projection
         .lock()
         .map_err(|_| Error::Rejected("commit projection poisoned".to_string()))

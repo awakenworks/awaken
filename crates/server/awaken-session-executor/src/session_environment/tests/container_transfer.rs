@@ -242,7 +242,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 Some(effect.authorization.intent()),
                 "W2 next generation preserves the first Create"
             );
-            *fake.observation.lock().unwrap() = None;
+            *fake.observation.lock() = None;
             assert!(
                 host.realization_executor
                     .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
@@ -264,7 +264,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 Arc::ptr_eq(&retained.environment, &previous),
                 "W1 exact owner retained"
             );
-            *fake.observation.lock().unwrap() =
+            *fake.observation.lock() =
                 Some(Ok(awaken_provisioning_contract::SandboxObservation::Ready));
             host.realization_executor
                 .adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)

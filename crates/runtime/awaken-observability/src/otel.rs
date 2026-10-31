@@ -142,7 +142,8 @@ mod file_exporter {
     use std::ffi::OsString;
     use std::fs::OpenOptions;
     use std::io::Write;
-    use std::sync::Mutex;
+
+    use awaken_sync::LeafLock;
 
     use opentelemetry::trace::SpanId;
     use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
@@ -170,7 +171,7 @@ mod file_exporter {
         path: OsString,
         max_bytes: u64,
         // Serialize concurrent batch writes so JSON lines never interleave.
-        lock: Mutex<()>,
+        lock: LeafLock<()>,
     }
 
     impl JsonFileSpanExporter {
@@ -178,7 +179,7 @@ mod file_exporter {
             Self {
                 path,
                 max_bytes: MAX_FILE_BYTES,
-                lock: Mutex::new(()),
+                lock: LeafLock::new(()),
             }
         }
 
@@ -211,7 +212,7 @@ mod file_exporter {
             &self,
             lines: impl IntoIterator<Item = std::io::Result<Vec<u8>>>,
         ) -> std::io::Result<()> {
-            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = self.lock.lock();
             let mut rollover = self.path.clone();
             rollover.push(".1");
             // An older append-only sink may already exceed the new retention

@@ -146,7 +146,7 @@ pub use thread_resume::{
 
 /// Poison `lock` the way production can: a holder panics while holding it.
 #[cfg(test)]
-pub(crate) fn poison_for_test<T>(lock: &std::sync::Mutex<T>) {
+pub(crate) fn poison_for_test<T>(lock: &awaken_sync::InvariantLock<T>) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _held = lock.lock();
         panic!("poison the lock under test");

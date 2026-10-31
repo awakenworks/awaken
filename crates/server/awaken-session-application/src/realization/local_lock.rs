@@ -26,12 +26,13 @@
 //! lease, decides no phase, and survives no restart.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_session_realization_contract::SessionRealizationPermit;
+use awaken_sync::LeafLock;
 
 #[derive(Default)]
-pub(crate) struct LocalRealizationLocks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+pub(crate) struct LocalRealizationLocks(LeafLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
 
 /// Held for exactly one local realization pass, inside the minted permit.
 /// Dropping the permit drops this, which releases the Session's entry so the
@@ -52,7 +53,7 @@ impl LocalRealizationLocks {
             &awaken_session_types::SessionId::from(session_id),
             move || {
                 let identity = {
-                    let mut registry = locks.0.lock().expect("local realization registry poisoned");
+                    let mut registry = locks.0.lock();
                     registry.entry(session_id.to_string()).or_default().clone()
                 };
                 let locks = Arc::clone(locks);
@@ -80,7 +81,7 @@ impl LocalRealizationLocks {
                 // Only the identity still registered for the Session may enter
                 // a phase: an entry that was already released and replaced is
                 // stale evidence, so the contract kernel waits again.
-                let registry = locks.0.lock().expect("local realization registry poisoned");
+                let registry = locks.0.lock();
                 registry
                     .get(session_id)
                     .is_some_and(|registered| Arc::as_ptr(registered) as usize == *address)
@@ -93,21 +94,14 @@ impl LocalRealizationLocks {
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0
-            .lock()
-            .expect("local realization registry poisoned")
-            .is_empty()
+        self.0.lock().is_empty()
     }
 }
 
 impl Drop for LocalRealizationEntry {
     fn drop(&mut self) {
         drop(self.owner.take());
-        let mut registry = self
-            .locks
-            .0
-            .lock()
-            .expect("local realization registry poisoned");
+        let mut registry = self.locks.0.lock();
         // Two strong references remain while another driver already took this
         // identity out of the registry's `entry`: the registry's own and this
         // guard's. Only the last holder removes.

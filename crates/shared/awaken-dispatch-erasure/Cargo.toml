@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "dispatch-role-erasure"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-types.workspace = true
 thiserror.workspace = true

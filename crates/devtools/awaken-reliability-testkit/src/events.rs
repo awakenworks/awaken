@@ -2,9 +2,11 @@
 //! tested future. No global subscriber or product state is installed.
 use std::collections::BTreeMap;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicU64, Ordering},
 };
+
+use awaken_sync::LeafLock;
 use tracing::{
     Event, Metadata, Subscriber,
     field::{Field, Visit},
@@ -13,7 +15,7 @@ use tracing::{
 
 #[derive(Clone)]
 pub struct CapturedEvents {
-    events: Arc<Mutex<Vec<BTreeMap<String, String>>>>,
+    events: Arc<LeafLock<Vec<BTreeMap<String, String>>>>,
     next_span: Arc<AtomicU64>,
     // Keep a second registered Dispatch alive, but never install it. With only
     // one Dispatch, tracing-core 0.1.36 computes new callsite interest from the
@@ -34,7 +36,7 @@ impl Default for CapturedEvents {
 
 impl CapturedEvents {
     pub fn snapshot(&self) -> Vec<BTreeMap<String, String>> {
-        self.events.lock().expect("captured events").clone()
+        self.events.lock().clone()
     }
 }
 
@@ -62,7 +64,7 @@ impl Subscriber for CapturedEvents {
         fields
             .0
             .insert("target".into(), event.metadata().target().into());
-        self.events.lock().expect("captured events").push(fields.0);
+        self.events.lock().push(fields.0);
     }
     fn enter(&self, _: &Id) {}
     fn exit(&self, _: &Id) {}

@@ -55,6 +55,13 @@ pub enum FuseError {
     Internal(String),
 }
 
+impl From<awaken_sync::LockPoisoned> for FuseError {
+    /// A poisoned inode table is a FUSE-local fault (surfaced as `EIO`).
+    fn from(poisoned: awaken_sync::LockPoisoned) -> Self {
+        Self::Internal(poisoned.to_string())
+    }
+}
+
 impl From<FuseError> for awaken_provisioning_contract::SandboxError {
     /// A full dirty-write budget clears once buffered writes flush; the store's
     /// own classes pass through unchanged.

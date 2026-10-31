@@ -937,21 +937,19 @@ impl ChildTimeline {
         self.runtime
             .committed_by_thread
             .lock()
-            .unwrap()
             .entry(CHILD.into())
             .or_default()
             .push(message);
         self.runtime
             .message_cursors_by_thread
             .lock()
-            .unwrap()
             .entry(CHILD.into())
             .or_default()
             .push(cursor);
     }
 
     fn commit_child_lifecycle(&self, cursor: u64, kind: RunLifecycleEventKind, state: RunState) {
-        self.runtime.lifecycle.lock().unwrap().push(lifecycle(
+        self.runtime.lifecycle.lock().push(lifecycle(
             cursor,
             CHILD,
             &Self::child_run(),
@@ -1068,7 +1066,7 @@ impl Timeline for ChildTimeline {
                 if !matches!(step, ChildStep::AskWithoutMessage) {
                     self.child_ask_message(cursor, &run);
                 }
-                self.runtime.pending_by_thread.lock().unwrap().insert(
+                self.runtime.pending_by_thread.lock().insert(
                     CHILD.into(),
                     Pending {
                         tool_use_id: call.clone(),
@@ -1102,22 +1100,20 @@ impl Timeline for ChildTimeline {
                     self.runtime
                         .await_targets
                         .lock()
-                        .unwrap()
                         .insert(lifecycle_cursor(cursor), target);
                 } else {
                     self.runtime
                         .unaudited_awaits
                         .lock()
-                        .unwrap()
                         .insert(lifecycle_cursor(cursor));
                 }
-                self.runtime.lifecycle.lock().unwrap().push(awaiting);
+                self.runtime.lifecycle.lock().push(awaiting);
             }
             ChildStep::LateToolMessage => self.child_ask_message(cursor, &run),
             ChildStep::Reply => {
                 let call = format!("child-ask-{}", self.asks);
                 self.asks += 1;
-                self.runtime.pending_by_thread.lock().unwrap().remove(CHILD);
+                self.runtime.pending_by_thread.lock().remove(CHILD);
                 self.commit_child_message(
                     cursor,
                     Message::new(
@@ -1136,7 +1132,7 @@ impl Timeline for ChildTimeline {
                 );
             }
             ChildStep::Cancel => {
-                self.runtime.pending_by_thread.lock().unwrap().remove(CHILD);
+                self.runtime.pending_by_thread.lock().remove(CHILD);
                 self.commit_child_lifecycle(
                     cursor,
                     RunLifecycleEventKind::Cancelled,
@@ -1155,14 +1151,13 @@ impl Timeline for ChildTimeline {
                 );
             }
             ChildStep::Archive => {
-                self.runtime.disposition_by_thread.lock().unwrap().insert(
+                self.runtime.disposition_by_thread.lock().insert(
                     (self.session_id.clone(), CHILD.into()),
                     awaken_agent_contract::ThreadDisposition::Archived,
                 );
                 self.runtime
                     .state_cursors_by_thread
                     .lock()
-                    .unwrap()
                     .insert(CHILD.into(), vec![cursor]);
             }
         }
@@ -1712,7 +1707,6 @@ async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
         .runtime
         .coordinated
         .lock()
-        .unwrap()
         .iter_mut()
         .find(|link| link.thread_id.0 == CHILD)
         .unwrap()
@@ -1736,7 +1730,7 @@ async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
         RunState::Awaiting,
     );
     awaiting.await_reason = Some(target.reason());
-    fixture.runtime.lifecycle.lock().unwrap().extend([
+    fixture.runtime.lifecycle.lock().extend([
         lifecycle(
             5,
             CHILD,
@@ -1750,13 +1744,11 @@ async fn current_child_ticket_never_classifies_another_runs_unmatched_call() {
         .runtime
         .await_targets
         .lock()
-        .unwrap()
         .insert(awaiting.cursor, target);
     fixture
         .runtime
         .pending_by_thread
         .lock()
-        .unwrap()
         .insert(CHILD.into(), pending);
     let snapshot =
         awaken_session_execution_contract::ThreadReads::session_thread_recovery_snapshot(

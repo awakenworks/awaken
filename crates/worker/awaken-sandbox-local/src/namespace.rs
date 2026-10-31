@@ -226,6 +226,11 @@ fn workspace_relative(logical: &str) -> &str {
         .unwrap_or_else(|| logical.trim_start_matches('/'))
 }
 
+/// A poisoned mount layout refuses every launch and mount change that reads it.
+fn layout_poisoned(poisoned: awaken_sync::LockPoisoned) -> pc::SandboxError {
+    pc::SandboxError::backend("namespace layout", poisoned)
+}
+
 fn host_projection_path(
     root: &IsolatedRoot,
     host_workspace: &std::path::Path,
@@ -408,7 +413,7 @@ pub struct NamespaceProvider {
     inherit_agent_stderr: bool,
     blobs: std::collections::HashMap<String, Vec<u8>>,
     file_store: Option<Arc<dyn pc::BlobSource>>,
-    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
+    secret_broker: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     /// Optional memory-store realizer. A FUSE-preferring mounter
     /// ([`MemoryStoreMounter::new`]) works on this tier: the store is FUSE-mounted on the
     /// host path that then binds into the bwrap namespace, so the agent reads/writes it
@@ -418,7 +423,7 @@ pub struct NamespaceProvider {
     /// A copy-only mounter ([`MemoryStoreMounter::copy_only`]) is the fallback for a host
     /// without `/dev/fuse`: the store is materialized to files that bind in, harvested on
     /// dispose. The FUSE-preferring mounter degrades to copy automatically off `/dev/fuse`.
-    memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     memory_mounts: crate::MemoryMountRegistry,
     /// Roots named by a creation claim that was dropped before it settled.
     abandoned: Arc<crate::AbandonedRealizations>,
@@ -443,8 +448,8 @@ impl NamespaceProvider {
             inherit_agent_stderr: false,
             blobs: std::collections::HashMap::new(),
             file_store: None,
-            secret_broker: Arc::new(std::sync::RwLock::new(None)),
-            memory_mounter: Arc::new(std::sync::RwLock::new(None)),
+            secret_broker: Arc::new(awaken_sync::LeafRwLock::new(None)),
+            memory_mounter: Arc::new(awaken_sync::LeafRwLock::new(None)),
             memory_mounts: crate::MemoryMountRegistry::default(),
             abandoned: Arc::default(),
         }
@@ -489,10 +494,7 @@ impl NamespaceProvider {
     }
 
     pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        *self
-            .secret_broker
-            .write()
-            .expect("secret broker lock poisoned") = Some(broker);
+        *self.secret_broker.write() = Some(broker);
     }
 
     /// Realize `MemoryStore` mounts via an injected mounter. It uses live FUSE where
@@ -505,10 +507,7 @@ impl NamespaceProvider {
     }
 
     pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        *self
-            .memory_mounter
-            .write()
-            .expect("memory mounter lock poisoned") = Some(mounter);
+        *self.memory_mounter.write() = Some(mounter);
     }
 
     /// Static capability evidence shared by provider admission and owners of an
@@ -574,11 +573,7 @@ impl NamespaceProvider {
                 }
                 continue;
             }
-            let secret_broker = self
-                .secret_broker
-                .read()
-                .expect("secret broker lock poisoned")
-                .clone();
+            let secret_broker = self.secret_broker.read().clone();
             if secret_broker.is_some()
                 && matches!(req.source, pc::MountSource::Secret { .. })
                 && req.access == pc::MountAccess::ReadWrite
@@ -835,7 +830,7 @@ impl NamespaceProvider {
                 control_services: spec.control_services.clone(),
                 control_directory,
                 control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
-                layout: std::sync::RwLock::new(layout),
+                layout: awaken_sync::InvariantRwLock::new(layout),
                 realized,
                 secret_paths,
                 memory_mounts,
@@ -844,7 +839,7 @@ impl NamespaceProvider {
                 memory_mounter: self.memory_mounter.clone(),
                 realization,
                 terminal_removal: tokio::sync::Mutex::new(None),
-                owned_paths: std::sync::Mutex::new(
+                owned_paths: awaken_sync::LeafLock::new(
                     spec.mounts
                         .iter()
                         .map(|mount| mount.mount_path.clone())
@@ -1005,7 +1000,7 @@ impl NamespaceProvider {
             control_services: spec.control_services.clone(),
             control_directory,
             control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
-            layout: std::sync::RwLock::new(layout),
+            layout: awaken_sync::InvariantRwLock::new(layout),
             realized,
             secret_paths,
             memory_mounts,
@@ -1014,7 +1009,7 @@ impl NamespaceProvider {
             memory_mounter: self.memory_mounter.clone(),
             realization,
             terminal_removal: tokio::sync::Mutex::new(None),
-            owned_paths: std::sync::Mutex::new(
+            owned_paths: awaken_sync::LeafLock::new(
                 spec.mounts
                     .iter()
                     .map(|mount| mount.mount_path.clone())
@@ -1165,7 +1160,7 @@ impl NamespaceProvider {
             control_services: spec.control_services.clone(),
             control_directory: None,
             control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
-            layout: std::sync::RwLock::new(layout),
+            layout: awaken_sync::InvariantRwLock::new(layout),
             realized,
             secret_paths,
             memory_mounts,
@@ -1174,7 +1169,7 @@ impl NamespaceProvider {
             memory_mounter: self.memory_mounter.clone(),
             realization: crate::realization_marker::LiveRealization::Current(realization),
             terminal_removal: tokio::sync::Mutex::new(Some(removal)),
-            owned_paths: std::sync::Mutex::new(owned_paths),
+            owned_paths: awaken_sync::LeafLock::new(owned_paths),
             adopted_handle: None,
         }))
     }
@@ -1340,7 +1335,7 @@ impl NamespaceProvider {
             control_services,
             control_directory,
             control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
-            layout: std::sync::RwLock::new(layout),
+            layout: awaken_sync::InvariantRwLock::new(layout),
             realized,
             secret_paths,
             memory_mounts,
@@ -1349,7 +1344,9 @@ impl NamespaceProvider {
             memory_mounter: self.memory_mounter.clone(),
             realization,
             terminal_removal: tokio::sync::Mutex::new(None),
-            owned_paths: std::sync::Mutex::new(handle.owned_paths().unwrap_or_default().to_vec()),
+            owned_paths: awaken_sync::LeafLock::new(
+                handle.owned_paths().unwrap_or_default().to_vec(),
+            ),
             adopted_handle: handle.restoration().map(|_| handle.clone()),
         })
     }
@@ -1368,13 +1365,13 @@ pub struct NamespaceSandbox {
     host_outputs: PathBuf,
     base_env: Vec<pc::EnvVar>,
     inherit_agent_stderr: bool,
-    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
+    secret_broker: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     network: pc::NetworkPolicy,
     control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     control_directory: Option<PathBuf>,
     control_publication: Arc<NamespaceControlPublicationRegistry>,
-    layout: std::sync::RwLock<Vec<RenderMount>>,
+    layout: awaken_sync::InvariantRwLock<Vec<RenderMount>>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized secrets, shredded at dispose before the tree is
     /// reaped (ADR-0023). Unfenced legacy adoption has no frozen projection;
@@ -1390,11 +1387,11 @@ pub struct NamespaceSandbox {
     /// heads remain owned by the handle and store; this only gates guard drain
     /// against physical disposal.
     memory_reconciliation_ack: pc::MemoryReconciliationAck,
-    memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     /// One coherent marker/legacy realization authority.
     realization: crate::realization_marker::LiveRealization,
     terminal_removal: tokio::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
-    owned_paths: std::sync::Mutex<Vec<String>>,
+    owned_paths: awaken_sync::LeafLock<Vec<String>>,
     /// Complete Phase-A future restoration wire retained only for pass-through.
     /// Ordinary P/V2 handles remain derived from the provider marker authority.
     adopted_handle: Option<pc::SandboxHandle>,
@@ -1417,7 +1414,7 @@ impl NamespaceSandbox {
     /// live projection effect starts. Reservations remain monotonic so crash
     /// recovery never loses evidence for a possibly materialized tree.
     pub fn reserve_owned_path(&self, path: &str) {
-        let mut owned = self.owned_paths.lock().expect("owned paths lock poisoned");
+        let mut owned = self.owned_paths.lock();
         if !owned.iter().any(|current| current == path) {
             owned.push(path.to_string());
         }
@@ -1550,7 +1547,7 @@ impl NamespaceSandbox {
     pub fn remove_mount(&self, logical: &str) -> Result<(), pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
         let removed = {
-            let mut layout = self.layout.write().expect("namespace layout lock poisoned");
+            let mut layout = self.layout.write().map_err(layout_poisoned)?;
             let before = layout.len();
             layout.retain(|mount| mount.dest != logical);
             layout.len() != before
@@ -1573,7 +1570,10 @@ impl NamespaceSandbox {
             (&self.outputs_path, &self.host_outputs),
             ("/mnt", &mount_root),
         ];
-        let layout = self.layout.read().expect("namespace layout lock poisoned");
+        // A poisoned layout translates nothing; launch rendering refuses it.
+        let Ok(layout) = self.layout.read() else {
+            return None;
+        };
         mappings.extend(
             layout
                 .iter()
@@ -1610,11 +1610,7 @@ impl NamespaceSandbox {
         &self,
         command: pc::Command,
     ) -> Result<pc::MaterializedCommand, pc::SandboxError> {
-        let broker = self
-            .secret_broker
-            .read()
-            .expect("secret broker lock poisoned")
-            .clone();
+        let broker = self.secret_broker.read().clone();
         pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await
     }
 
@@ -1671,7 +1667,7 @@ impl NamespaceSandbox {
             .iter()
             .map(|arg| self.translate_macos_argument(arg))
             .collect();
-        let layout = self.layout.read().expect("namespace layout lock poisoned");
+        let layout = self.layout.read().map_err(layout_poisoned)?;
         let input = RenderInput {
             host_workspace: &self.host_workspace,
             host_outputs: &self.host_outputs,

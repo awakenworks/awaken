@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use crate::DeliveryLock;
-use std::sync::Mutex;
+use awaken_sync::InvariantLock;
 
 use awaken_agent_contract::agent::message::Message;
 use tokio::sync::broadcast;
@@ -56,7 +56,7 @@ pub enum ThreadEvent {
 /// Shared registry of per-thread broadcast channels.
 #[derive(Default)]
 pub struct ThreadEventHub {
-    channels: Mutex<HashMap<String, broadcast::Sender<ThreadEvent>>>,
+    channels: InvariantLock<HashMap<String, broadcast::Sender<ThreadEvent>>>,
 }
 
 impl ThreadEventHub {

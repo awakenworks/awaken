@@ -14,7 +14,8 @@
 //! awaken-next's `AvailabilityState` (five states trimmed to the three P1 needs).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+
+use awaken_sync::LeafLock;
 
 use crate::CredentialSourceId;
 
@@ -74,7 +75,7 @@ enum Entry {
 ///
 /// [`Available`]: AvailabilityState::Available
 pub struct AvailabilityLedger {
-    entries: Mutex<HashMap<String, Entry>>,
+    entries: LeafLock<HashMap<String, Entry>>,
 }
 
 impl Default for AvailabilityLedger {
@@ -87,12 +88,12 @@ impl AvailabilityLedger {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: LeafLock::new(HashMap::new()),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
-        self.entries.lock().expect("availability ledger poisoned")
+        self.entries.lock()
     }
 
     /// Cool a source until `retry_at_ms`. A later cool-down for the same source

@@ -8,10 +8,10 @@
 
 use std::collections::BTreeMap;
 
-#[cfg(all(test, feature = "loom"))]
-use loom::sync::Mutex;
 #[cfg(not(all(test, feature = "loom")))]
-use std::sync::Mutex;
+use awaken_sync::LeafLock;
+#[cfg(all(test, feature = "loom"))]
+use loom_lock::LeafLock;
 
 use awaken_lease_contract::fence::{Epoch, fence_is_live_at};
 
@@ -28,8 +28,8 @@ pub const POLLER_WINDOW_MS: u64 = 30_000;
 /// Shared process-local bookkeeping. This is not durable lease authority.
 #[derive(Default)]
 pub struct LeaseBook {
-    authority: Mutex<LeaseAuthority>,
-    polls: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
+    authority: LeafLock<LeaseAuthority>,
+    polls: LeafLock<BTreeMap<String, BTreeMap<String, u64>>>,
 }
 
 #[derive(Default)]
@@ -59,7 +59,6 @@ impl LeaseBook {
     pub fn record_poll(&self, env_id: &str, worker_id: &str, now_ms: u64) {
         self.polls
             .lock()
-            .unwrap()
             .entry(env_id.to_string())
             .or_default()
             .insert(worker_id.to_string(), now_ms);
@@ -68,7 +67,6 @@ impl LeaseBook {
     pub fn is_leased(&self, work_id: &str, now_ms: u64) -> bool {
         self.authority
             .lock()
-            .unwrap()
             .leases
             .get(work_id)
             .is_some_and(|lease| fence_is_live_at(lease.expires_at_ms, now_ms))
@@ -77,7 +75,6 @@ impl LeaseBook {
     pub fn is_leased_with_reclaim_age(&self, work_id: &str, now_ms: u64, age_ms: u64) -> bool {
         self.authority
             .lock()
-            .unwrap()
             .leases
             .get(work_id)
             .is_some_and(|lease| {
@@ -100,7 +97,7 @@ impl LeaseBook {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<u64, &'static str> {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let current = LeaseAuthorityTuple {
             owner: authority.owners.get(work_id).cloned(),
             epoch: authority.epochs.get(work_id).copied(),
@@ -141,14 +138,13 @@ impl LeaseBook {
     pub fn is_owned_by(&self, work_id: &str, worker_id: &str) -> bool {
         self.authority
             .lock()
-            .unwrap()
             .owners
             .get(work_id)
             .is_some_and(|owner| owner == worker_id)
     }
 
     pub fn is_owned_at_epoch(&self, work_id: &str, worker_id: &str, expected_epoch: u64) -> bool {
-        let authority = self.authority.lock().unwrap();
+        let authority = self.authority.lock();
         authority
             .owners
             .get(work_id)
@@ -158,7 +154,7 @@ impl LeaseBook {
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn snapshot(&self, work_id: &str) -> LeaseAuthoritySnapshot {
-        let authority = self.authority.lock().unwrap();
+        let authority = self.authority.lock();
         LeaseAuthoritySnapshot {
             owner: authority.owners.get(work_id).cloned(),
             epoch: authority.epochs.get(work_id).map(|epoch| epoch.get()),
@@ -167,7 +163,7 @@ impl LeaseBook {
     }
 
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
-        let authority = self.authority.lock().unwrap();
+        let authority = self.authority.lock();
         let lease = authority.leases.get(work_id).copied()?;
         if !fence_is_live_at(lease.expires_at_ms, now_ms) {
             return None;
@@ -178,7 +174,7 @@ impl LeaseBook {
     }
 
     pub fn lease_for(&self, work_id: &str, now_ms: u64, ttl_ms: u64) {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let current = LeaseAuthorityTuple {
             owner: authority.owners.get(work_id).cloned(),
             epoch: authority.epochs.get(work_id).copied(),
@@ -226,7 +222,7 @@ impl LeaseBook {
     }
 
     pub fn release(&self, work_id: &str) {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         let current = LeaseAuthorityTuple {
             owner: authority.owners.get(work_id).cloned(),
             epoch: authority.epochs.get(work_id).copied(),
@@ -263,7 +259,6 @@ impl LeaseBook {
     pub fn workers_polling(&self, env_id: &str, now_ms: u64) -> i64 {
         self.polls
             .lock()
-            .unwrap()
             .get(env_id)
             .map(|polls| {
                 polls
@@ -277,14 +272,40 @@ impl LeaseBook {
     }
 
     pub fn forget_env(&self, env_id: &str, work_ids: &[String]) {
-        let mut authority = self.authority.lock().unwrap();
+        let mut authority = self.authority.lock();
         for work_id in work_ids {
             authority.leases.remove(work_id);
             authority.owners.remove(work_id);
             authority.epochs.remove(work_id);
         }
         drop(authority);
-        self.polls.lock().unwrap().remove(env_id);
+        self.polls.lock().remove(env_id);
+    }
+}
+
+/// Loom's model checker needs its own mutex. This mirrors
+/// `awaken_sync::LeafLock`'s recovering acquisition, so the models run the
+/// production critical sections unchanged.
+#[cfg(all(test, feature = "loom"))]
+pub(crate) mod loom_lock {
+    pub(crate) struct LeafLock<T>(loom::sync::Mutex<T>);
+
+    impl<T: Default> Default for LeafLock<T> {
+        fn default() -> Self {
+            Self::new(T::default())
+        }
+    }
+
+    impl<T> LeafLock<T> {
+        pub(crate) fn new(value: T) -> Self {
+            Self(loom::sync::Mutex::new(value))
+        }
+
+        pub(crate) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
     }
 }
 
@@ -353,7 +374,6 @@ mod tests {
         let book = LeaseBook::default();
         book.authority
             .lock()
-            .unwrap()
             .epochs
             .insert("work".into(), Epoch::from_persisted(u64::MAX).unwrap());
         assert_eq!(

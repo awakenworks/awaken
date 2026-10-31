@@ -5,8 +5,10 @@
 //! no execution logic of its own. The committed assistant text and the terminal
 //! state are what the expectations are scored against.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use awaken_sync::LeafLock;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -83,7 +85,7 @@ impl LlmExecutor for ScriptLlm {
 /// [`ToolCalled`](crate::Expectation::ToolCalled) expectation can be scored.
 struct EvalEchoTool {
     id: String,
-    invoked: Arc<Mutex<Vec<String>>>,
+    invoked: Arc<LeafLock<Vec<String>>>,
 }
 
 #[async_trait::async_trait]
@@ -92,7 +94,7 @@ impl RawTool for EvalEchoTool {
         &self.id
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        self.invoked.lock().unwrap().push(call.tool_id.clone());
+        self.invoked.lock().push(call.tool_id.clone());
         Ok(ToolOutput::ok(call.call_id, "eval-echo"))
     }
 }
@@ -107,7 +109,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
     }));
     // Register a fixed echo tool for each distinct tool id the script invokes, so
     // a scripted tool call executes on the real engine and is recorded.
-    let invoked = Arc::new(Mutex::new(Vec::new()));
+    let invoked = Arc::new(LeafLock::new(Vec::new()));
     let mut registered: Vec<String> = Vec::new();
     for response in &case.script {
         for tc in &response.tool_calls {
@@ -169,7 +171,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let tools_called = invoked.lock().unwrap().clone();
+    let tools_called = invoked.lock().clone();
     (output, succeeded, tools_called)
 }
 

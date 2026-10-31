@@ -21,6 +21,7 @@ isolates = ["fuser", "libc"]
 # fuser-backed mount (needs `/dev/fuse`); the fs logic + helpers build without it.
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-time.workspace = true
 awaken-resource-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }

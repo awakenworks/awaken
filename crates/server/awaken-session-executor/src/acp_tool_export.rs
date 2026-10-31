@@ -108,7 +108,7 @@ pub(crate) fn client_executed_tools(
 /// ticket; a recovered ACP Step asks again and receives a fresh one-shot grant.
 pub(crate) struct AcpToolExecutionGrants {
     exported: std::collections::HashSet<String>,
-    pending: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    pending: awaken_sync::InvariantLock<Vec<(String, serde_json::Value)>>,
 }
 
 impl AcpToolExecutionGrants {
@@ -130,7 +130,7 @@ impl AcpToolExecutionGrants {
     pub(crate) fn new(ids: impl IntoIterator<Item = String>) -> Self {
         Self {
             exported: ids.into_iter().collect(),
-            pending: std::sync::Mutex::new(Vec::new()),
+            pending: awaken_sync::InvariantLock::new(Vec::new()),
         }
     }
 

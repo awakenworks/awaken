@@ -847,7 +847,7 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
 
     let hand = environment.agent_tools().tool_executor();
     environment.skills().register_skill_dir("skills");
-    provider.shared.lock().unwrap().insert(
+    provider.shared.lock().insert(
         "authored/SKILL.md".into(),
         b"---\ndescription: authored\n---\nbody".to_vec(),
     );
@@ -900,7 +900,6 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__fail_skill_read".into(), Vec::new());
 
     let perception = environment
@@ -979,7 +978,6 @@ async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
     provider
         .shared
         .lock()
-        .unwrap()
         .insert("__fail_skill_read".into(), Vec::new());
     let call = ToolCall {
         call_id: "unknown-refresh".into(),

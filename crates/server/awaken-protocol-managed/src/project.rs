@@ -827,9 +827,9 @@ mod tests {
             state: RunState::Awaiting,
             await_reason: None,
         }];
-        *runtime.committed.lock().unwrap() = Some(prefix.clone());
-        *runtime.pending.lock().unwrap() = Some(pending);
-        *runtime.lifecycle.lock().unwrap() = lifecycle.to_vec();
+        *runtime.committed.lock() = Some(prefix.clone());
+        *runtime.pending.lock() = Some(pending);
+        *runtime.lifecycle.lock() = lifecycle.to_vec();
         let snapshot = runtime
             .session_thread_recovery_snapshot(&"fifo".into(), "fifo")
             .await
@@ -889,11 +889,10 @@ mod tests {
         );
 
         let completed = [prefix, vec![results]].concat();
-        *runtime.committed.lock().unwrap() = Some(completed);
+        *runtime.committed.lock() = Some(completed);
         runtime
             .message_cursors_by_thread
             .lock()
-            .unwrap()
             .insert("fifo".into(), vec![1, 2, 3, 5]);
         let mut resumed = lifecycle.to_vec();
         resumed.push(RunLifecycleEvent {
@@ -903,8 +902,8 @@ mod tests {
             state: RunState::Running,
             ..lifecycle[0].clone()
         });
-        *runtime.lifecycle.lock().unwrap() = resumed.clone();
-        *runtime.pending.lock().unwrap() = None;
+        *runtime.lifecycle.lock() = resumed.clone();
+        *runtime.pending.lock() = None;
         let completed = runtime
             .session_thread_recovery_snapshot(&"fifo".into(), "fifo")
             .await

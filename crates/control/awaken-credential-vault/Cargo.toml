@@ -13,6 +13,7 @@ authority = "credential-vault"
 separation = "sole-in-layer"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 tracing = "0.1"

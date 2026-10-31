@@ -8,8 +8,9 @@
 //! heartbeat. Credential evidence is refreshed first so an ACP capability source
 //! can reuse that exact host observation instead of probing login twice.
 
+use awaken_sync::LeafRwLock;
 use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
@@ -27,7 +28,7 @@ use awaken_worker_contract::{
 
 #[derive(Default)]
 pub(crate) struct WorkerObservationCache {
-    batch: RwLock<ObservationBatch>,
+    batch: LeafRwLock<ObservationBatch>,
     refresh_guard: tokio::sync::Mutex<()>,
 }
 
@@ -98,17 +99,11 @@ impl ObservationBatch {
 
 impl WorkerObservationCache {
     pub(crate) fn snapshot(&self) -> ObservationBatch {
-        self.batch
-            .read()
-            .expect("observation batch cache poisoned")
-            .clone()
+        self.batch.read().clone()
     }
 
     fn generation(&self) -> u64 {
-        self.batch
-            .read()
-            .expect("observation batch cache poisoned")
-            .generation
+        self.batch.read().generation
     }
 
     fn publish(
@@ -118,10 +113,7 @@ impl WorkerObservationCache {
         observed_at_ms: u64,
         ttl: Duration,
     ) -> Result<(), String> {
-        let mut batch = self
-            .batch
-            .write()
-            .expect("observation batch cache poisoned");
+        let mut batch = self.batch.write();
         let coordinate = next_observation_batch_coordinate(
             batch.generation,
             observed_at_ms,
@@ -751,7 +743,7 @@ mod tests {
         // B4 exact last successor commits once. B5 exhaustion rejects repeated
         // attempts without wrapping, clearing evidence or changing either part.
         let cache = WorkerObservationCache::default();
-        cache.batch.write().unwrap().generation = u64::MAX - 1;
+        cache.batch.write().generation = u64::MAX - 1;
         cache
             .publish(BTreeSet::new(), Vec::new(), 0, Duration::ZERO)
             .unwrap();

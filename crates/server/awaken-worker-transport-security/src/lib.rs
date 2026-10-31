@@ -11,11 +11,12 @@ mod worker_bootstrap;
 pub use worker_bootstrap::{WorkerBootstrap, WorkerBootstrapInput};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use awaken_dispatch_contract::RunClaim;
+use awaken_sync::{LeafLock, LeafRwLock};
 use awaken_time::{NotBefore, UtcTime, WallClock, WallClockExt};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState};
 use axum::Json;
@@ -441,9 +442,9 @@ struct EnrolledWorkerCredential {
 /// credential takes effect immediately. A successfully verified request id is
 /// remembered until assertion expiry so an exact captured request cannot replay.
 pub struct SignedWorkerAuthenticator {
-    credentials: RwLock<BTreeMap<(String, String), EnrolledWorkerCredential>>,
-    revoked_credentials: RwLock<HashSet<String>>,
-    seen_requests: Mutex<HashMap<(String, String), u64>>,
+    credentials: LeafRwLock<BTreeMap<(String, String), EnrolledWorkerCredential>>,
+    revoked_credentials: LeafRwLock<HashSet<String>>,
+    seen_requests: LeafLock<HashMap<(String, String), u64>>,
     clock: Arc<dyn WallClock>,
     max_assertion_ttl_ms: u64,
     clock_skew_ms: u64,
@@ -455,9 +456,9 @@ impl SignedWorkerAuthenticator {
     #[must_use]
     pub fn new(credential: WorkerSigningCredential, clock: Arc<dyn WallClock>) -> Self {
         let authenticator = Self {
-            credentials: RwLock::new(BTreeMap::new()),
-            revoked_credentials: RwLock::new(HashSet::new()),
-            seen_requests: Mutex::new(HashMap::new()),
+            credentials: LeafRwLock::new(BTreeMap::new()),
+            revoked_credentials: LeafRwLock::new(HashSet::new()),
+            seen_requests: LeafLock::new(HashMap::new()),
             clock,
             max_assertion_ttl_ms: 60_000,
             clock_skew_ms: 5_000,
@@ -475,16 +476,13 @@ impl SignedWorkerAuthenticator {
 
     /// Add a new key/credential while old credentials remain valid for overlap.
     pub fn enroll(&self, credential: WorkerSigningCredential) {
-        self.credentials
-            .write()
-            .expect("worker credential registry lock")
-            .insert(
-                (credential.key_id.clone(), credential.credential_id.clone()),
-                EnrolledWorkerCredential {
-                    worker_id: credential.worker_id,
-                    secret: credential.secret,
-                },
-            );
+        self.credentials.write().insert(
+            (credential.key_id.clone(), credential.credential_id.clone()),
+            EnrolledWorkerCredential {
+                worker_id: credential.worker_id,
+                secret: credential.secret,
+            },
+        );
     }
 
     /// Revoke one provisioned credential without removing other credentials
@@ -492,7 +490,6 @@ impl SignedWorkerAuthenticator {
     pub fn revoke_credential(&self, credential_id: impl Into<String>) {
         self.revoked_credentials
             .write()
-            .expect("worker credential revocation lock")
             .insert(credential_id.into());
     }
 
@@ -500,7 +497,6 @@ impl SignedWorkerAuthenticator {
     pub fn remove_key(&self, key_id: &str) {
         self.credentials
             .write()
-            .expect("worker credential registry lock")
             .retain(|(candidate, _), _| candidate != key_id);
     }
 
@@ -535,14 +531,12 @@ impl SignedWorkerAuthenticator {
         let credential = self
             .credentials
             .read()
-            .expect("worker credential registry lock")
             .get(&(assertion.key_id.clone(), assertion.credential_id.clone()))
             .cloned()
             .ok_or_else(|| WorkerAuthError::Invalid("unknown worker credential".into()))?;
         if self
             .revoked_credentials
             .read()
-            .expect("worker credential revocation lock")
             .contains(&assertion.credential_id)
         {
             return Err(WorkerAuthError::Invalid(
@@ -588,10 +582,7 @@ impl SignedWorkerAuthenticator {
                 "worker incarnation binding is invalid".into(),
             ));
         }
-        let mut seen = self
-            .seen_requests
-            .lock()
-            .expect("worker request replay lock");
+        let mut seen = self.seen_requests.lock();
         seen.retain(|_, expires_at_ms| expires_at_ms.saturating_add(self.clock_skew_ms) >= now_ms);
         let replay_key = (
             assertion.credential_id.clone(),

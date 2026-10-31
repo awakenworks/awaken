@@ -22,6 +22,7 @@ test-support = []
 loom = []
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend

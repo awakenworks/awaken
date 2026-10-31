@@ -572,7 +572,7 @@ async fn serve_prepared_process(
     }
 
     let Some(prepared_worker) = prepared_worker else {
-        let observed_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let observed_failure = std::sync::Arc::new(awaken_sync::LeafLock::new(None));
         let failure_slot = observed_failure.clone();
         let failure_source = service_lifecycle.clone();
         let server_result = serve_application_surfaces(
@@ -583,7 +583,7 @@ async fn serve_prepared_process(
                 tokio::select! {
                     () = shutdown_signal() => {}
                     failure = failure_source.wait_for_failure() => {
-                        *failure_slot.lock().expect("process failure lock poisoned") = failure;
+                        *failure_slot.lock() = failure;
                     }
                 }
             },
@@ -595,11 +595,7 @@ async fn serve_prepared_process(
             .map_err(|error| error.to_string());
         server_result?;
         drain_result?;
-        if let Some(failure) = observed_failure
-            .lock()
-            .expect("process failure lock poisoned")
-            .take()
-        {
+        if let Some(failure) = observed_failure.lock().take() {
             return Err(format!(
                 "critical process task `{}` stopped: {}",
                 failure.task, failure.cause

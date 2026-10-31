@@ -28,8 +28,8 @@ async fn effects(state: &ManagedState, runtime: &RehydrateFake, session_id: &str
     Effects {
         batches: root.event_batches.len(),
         root: serde_json::to_value(&root).unwrap(),
-        transcript: runtime.committed_by_thread.lock().unwrap().clone(),
-        deliveries: runtime.thread_tool_replies.lock().unwrap().len(),
+        transcript: runtime.committed_by_thread.lock().clone(),
+        deliveries: runtime.thread_tool_replies.lock().len(),
     }
 }
 
@@ -206,7 +206,7 @@ async fn forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive() 
     let after = effects(&state, &runtime, &session_id).await;
     assert_eq!(after.batches, before.batches + 1, "P1 one batch");
     {
-        let replies = runtime.thread_tool_replies.lock().unwrap();
+        let replies = runtime.thread_tool_replies.lock();
         assert_eq!(replies.len(), 1, "P1 one delivery");
         assert_eq!(
             replies[0].target,
@@ -298,7 +298,7 @@ async fn reply_id_of_one_session_is_rejected_by_another_session() {
         .send_events(&session_b, tool_result(&own_id))
         .await
         .expect("F1 positive control: B's own exact id is admitted");
-    let replies = runtime.thread_tool_replies.lock().unwrap();
+    let replies = runtime.thread_tool_replies.lock();
     assert_eq!(replies.len(), 1, "F1 one delivery");
     assert_eq!(
         replies[0].target,
@@ -315,7 +315,7 @@ async fn ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive() 
     // uniqueness rule can refuse it.
     let (runtime, state, session_id, _child_id, _) =
         Box::pin(pending_child_reply_fixture("ambiguous", true, true)).await;
-    *runtime.pending.lock().unwrap() = Some(Pending {
+    *runtime.pending.lock() = Some(Pending {
         tool_use_id: "call-route-ambiguous".into(),
         name: "client_lookup".into(),
         input: serde_json::json!({"owner":"root"}),
@@ -324,7 +324,6 @@ async fn ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive() 
     runtime
         .committed_by_thread
         .lock()
-        .unwrap()
         .get_mut(&session_id)
         .expect("root transcript")
         .push(Message::new(
@@ -339,12 +338,11 @@ async fn ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive() 
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .get_mut(&session_id)
         .expect("root transcript coordinates")
         .push(4);
     let root_run = RunId("run-route-ambiguous-root".into());
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             3,
             &session_id,

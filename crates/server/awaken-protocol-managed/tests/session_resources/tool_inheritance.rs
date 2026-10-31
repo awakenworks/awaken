@@ -31,7 +31,7 @@ async fn requested_and_profiled_creation_persist_the_same_exact_inheritance_and_
             input_schema: json!({"type":"object","properties":{"replacement":{"type":"number"}}}),
         };
         let runtime = Arc::new(RehydrateFake::default());
-        runtime.custom_tools.lock().unwrap().push(CustomTool {
+        runtime.custom_tools.lock().push(CustomTool {
             name: capability_client.name.clone(),
             description: capability_client.description.clone(),
             input_schema: capability_client.input_schema.clone(),
@@ -136,7 +136,7 @@ async fn requested_profile_and_override_cannot_skip_runtime_custom_tool_validati
     // uses its original infallible neutral fold and accepts the exact override;
     // it must not acquire Managed-only validation as part of consolidation.
     let runtime = Arc::new(RehydrateFake::default());
-    runtime.custom_tools.lock().unwrap().push(CustomTool {
+    runtime.custom_tools.lock().push(CustomTool {
         name: "bad.name".into(),
         description: "invalid Runtime name".into(),
         input_schema: json!({"type":"object"}),
@@ -176,10 +176,7 @@ async fn requested_profile_and_override_cannot_skip_runtime_custom_tool_validati
             .is_empty(),
         "E2: no durable root"
     );
-    assert!(
-        runtime.order.lock().unwrap().is_empty(),
-        "E2: no Runtime effect"
-    );
+    assert!(runtime.order.lock().is_empty(), "E2: no Runtime effect");
     let expected = SessionToolConfiguration {
         toolsets: Vec::new(),
         client_tools: vec![ClientToolDescriptor {

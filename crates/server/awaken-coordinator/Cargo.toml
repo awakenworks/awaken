@@ -13,6 +13,7 @@ separation = "process"
 
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 awaken-dispatch-contract.workspace = true
 # The process dispatch and its lifecycle port; the executor that resolves

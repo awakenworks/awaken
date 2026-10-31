@@ -2,23 +2,20 @@
 //! File observation/fault adapter for the existing real HTTP scenario server.
 //! The contract port emits observations; this adapter never selects transitions.
 use awaken_session_realization_contract::realization_observation::{self, RealizationObserver};
-use std::{
-    io::Write,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use awaken_sync::LeafLock;
+use std::{io::Write, path::PathBuf, sync::Arc};
 
 pub fn install_from_environment() {
     if let Some(directory) = std::env::var_os("AWAKEN_REALIZATION_OBSERVATION_DIR") {
         realization_observation::install(Arc::new(FileObserver {
             directory: directory.into(),
-            serial: Mutex::new(()),
+            serial: LeafLock::new(()),
         }));
     }
 }
 struct FileObserver {
     directory: PathBuf,
-    serial: Mutex<()>,
+    serial: LeafLock<()>,
 }
 #[async_trait::async_trait]
 impl RealizationObserver for FileObserver {
@@ -29,7 +26,7 @@ impl RealizationObserver for FileObserver {
         data: serde_json::Value,
     ) {
         let should_pause = {
-            let _guard = self.serial.lock().unwrap();
+            let _guard = self.serial.lock();
             let bytes = match std::fs::read(self.directory.join("armed.json")) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
@@ -94,8 +91,8 @@ fn starts_observation_window(recorded: usize, point: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{FileObserver, RealizationObserver, starts_observation_window};
+    use awaken_sync::LeafLock;
     use serde_json::json;
-    use std::sync::Mutex;
 
     #[test]
     fn an_armed_trace_opens_only_at_a_pass_root_read() {
@@ -143,7 +140,7 @@ mod tests {
         .unwrap();
         let observer = FileObserver {
             directory: directory.path().into(),
-            serial: Mutex::new(()),
+            serial: LeafLock::new(()),
         };
         for point in ["projection", "stage", "complete"] {
             // A captured boundary suspends forever by design; bound it so a

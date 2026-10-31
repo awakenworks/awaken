@@ -25,19 +25,20 @@ use tracing::Instrument;
 pub struct BackgroundRuns {
     tasks: Mutex<JoinSet<()>>,
     activity: Arc<BackgroundActivity>,
-    admissions:
-        std::sync::Mutex<HashMap<(String, String), std::sync::Weak<SharedToolExecutionAdmission>>>,
+    admissions: awaken_sync::InvariantLock<
+        HashMap<(String, String), std::sync::Weak<SharedToolExecutionAdmission>>,
+    >,
 }
 
 #[derive(Default)]
 struct BackgroundActivity {
-    shared: std::sync::Mutex<HashMap<(String, String), usize>>,
+    shared: awaken_sync::InvariantLock<HashMap<(String, String), usize>>,
     changed: tokio::sync::Notify,
 }
 
 #[derive(Default)]
 struct SharedToolExecutionAdmission {
-    state: std::sync::Mutex<(u64, BTreeMap<u64, awaken_tool_contract::ToolConcurrency>)>,
+    state: awaken_sync::InvariantLock<(u64, BTreeMap<u64, awaken_tool_contract::ToolConcurrency>)>,
     changed: tokio::sync::Notify,
 }
 

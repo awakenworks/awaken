@@ -17,6 +17,7 @@ separation = "isolation"
 isolates = ["bollard", "tar"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-environment-contract.workspace = true
 # The backend-erased container ports this provider implements.
 awaken-container-contract.workspace = true

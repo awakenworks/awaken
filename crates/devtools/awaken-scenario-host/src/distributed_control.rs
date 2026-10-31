@@ -6,8 +6,9 @@
 //! Control-to-Coordinator boundaries.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use awaken_sync::LeafLock;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Json, Path, State};
@@ -73,7 +74,7 @@ fn distributed_provider_router(fixture: Arc<ProviderFixture>) -> Router {
 
 #[derive(Default)]
 struct ProviderFixture {
-    calls: Mutex<BTreeMap<String, Vec<FixtureInvocation>>>,
+    calls: LeafLock<BTreeMap<String, Vec<FixtureInvocation>>>,
 }
 
 struct FixtureInvocation {
@@ -107,7 +108,6 @@ impl ProviderFixture {
         });
         self.calls
             .lock()
-            .unwrap()
             .entry(marker.to_owned())
             .or_default()
             .push(FixtureInvocation {
@@ -121,7 +121,7 @@ impl ProviderFixture {
     }
 
     fn observation(&self, marker: &str) -> Option<serde_json::Value> {
-        let calls = self.calls.lock().unwrap();
+        let calls = self.calls.lock();
         let calls = calls.get(marker)?;
         Some(serde_json::json!({
             "marker": marker, "accepted": calls.len(),
@@ -164,7 +164,7 @@ async fn release_invocations(
     if !authorized(&headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let calls = fixture.calls.lock().unwrap();
+    let calls = fixture.calls.lock();
     let Some(calls) = calls.get(&marker) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -355,7 +355,7 @@ mod tests {
         })
         .await;
         let (mut started, mut completed) = {
-            let calls = fixture.calls.lock().unwrap();
+            let calls = fixture.calls.lock();
             let call = &calls[marker][0];
             (call.started.subscribe(), call.completed.subscribe())
         };

@@ -7,8 +7,6 @@ mod expanded_schema;
 
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{
@@ -19,6 +17,8 @@ use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_sync::InvariantLock;
 use sqlx::{PgPool, Row};
 
 const NS: &str = "sandbox_execution_policy";
@@ -82,7 +82,20 @@ struct InMemoryState {
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
-pub struct InMemorySandboxExecutionPolicyStore(Mutex<InMemoryState>);
+pub struct InMemorySandboxExecutionPolicyStore(InvariantLock<InMemoryState>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl InMemorySandboxExecutionPolicyStore {
+    /// One mutex keeps the version map and the current pointer consistent, so
+    /// a poisoned state is refused as a store failure.
+    fn state(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, InMemoryState>, SandboxExecutionPolicyError> {
+        self.0
+            .lock()
+            .map_err(|poisoned| SandboxExecutionPolicyError::StoreFailed(poisoned.to_string()))
+    }
+}
 
 #[async_trait]
 #[cfg(any(test, feature = "test-support"))]
@@ -95,7 +108,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
         if policy.version != SandboxExecutionPolicyVersion::INITIAL {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.state()?;
         if state.current.contains_key(&policy.id.0) {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
@@ -114,7 +127,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
         policy: SandboxExecutionPolicy,
     ) -> Result<(), SandboxExecutionPolicyError> {
         validate(&policy)?;
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.state()?;
         if state.current.get(&policy.id.0).copied() != Some(expected_current.0)
             || policy.version != expected_current.checked_next()?
         {
@@ -133,9 +146,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
         &self,
         reference: &SandboxExecutionPolicyRef,
     ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
-        self.0
-            .lock()
-            .unwrap()
+        self.state()?
             .policies
             .get(&reference.id.0)
             .and_then(|versions| versions.get(&reference.version.0))

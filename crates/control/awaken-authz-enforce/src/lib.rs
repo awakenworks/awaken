@@ -29,7 +29,7 @@ pub use org_admission::{
 };
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, MutexGuard};
 
 use async_trait::async_trait;
 use awaken_iam_contract::{
@@ -41,6 +41,7 @@ use awaken_iam_core::{
     MintApiToken, OsEntropy, PolicySet, RoleId,
 };
 use awaken_iam_preset::named_role_catalog;
+use awaken_sync::InvariantLock;
 use awaken_tenancy::{Authority, ScopeClaim, ScopeId, resolve_scope};
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
@@ -72,7 +73,7 @@ pub struct TokenSpec {
 /// preset role catalog. Cheap to construct; the single-machine seeder mints a
 /// couple of tokens into it at boot.
 pub struct EnforceEngine {
-    state: Mutex<EngineState>,
+    state: InvariantLock<EngineState>,
     /// The process's one wall clock: mint and revocation stamps and the instant
     /// a presented token is judged at.
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
@@ -534,7 +535,7 @@ impl EnforceEngine {
             effect: Effect::Allow,
         });
         Self {
-            state: Mutex::new(EngineState {
+            state: InvariantLock::new(EngineState {
                 directory: ApiTokenDirectory::new(),
                 policy,
             }),
@@ -556,7 +557,7 @@ impl EnforceEngine {
             created_at: Timestamp(rfc3339_at(self.clock.as_ref())),
             expires_at: spec.expires_at.map(Timestamp),
         };
-        let mut guard = self.state.lock().expect("enforce engine poisoned");
+        let mut guard = self.state()?;
         let state = &mut *guard;
         let issued = ApiTokenMinter::new(OsEntropy).mint(
             &mut state.directory,
@@ -569,7 +570,7 @@ impl EnforceEngine {
     /// Authenticate a presented bearer credential → its principal and the
     /// workspace its role binding sits at. `Err` on unknown/expired/revoked.
     pub fn authenticate(&self, presented: &str) -> Result<(PrincipalRef, WorkspaceId), IamError> {
-        let guard = self.state.lock().expect("enforce engine poisoned");
+        let guard = self.state()?;
         let token = guard
             .directory
             .authenticate(presented, &Timestamp(rfc3339_at(self.clock.as_ref())))?;
@@ -578,14 +579,10 @@ impl EnforceEngine {
 
     /// Revoke a token by id in the process-local directory.
     pub fn revoke(&self, token_id: &str) -> Result<(), IamError> {
-        self.state
-            .lock()
-            .expect("enforce engine poisoned")
-            .directory
-            .revoke(
-                &awaken_iam_contract::ApiTokenId(token_id.to_string()),
-                Timestamp(rfc3339_at(self.clock.as_ref())),
-            )
+        self.state()?.directory.revoke(
+            &awaken_iam_contract::ApiTokenId(token_id.to_string()),
+            Timestamp(rfc3339_at(self.clock.as_ref())),
+        )
     }
 
     /// Authorize `principal` performing `action` at `scope`. Fail-closed: an
@@ -599,14 +596,20 @@ impl EnforceEngine {
         scope: ScopeRef,
     ) -> SessionDecision {
         let request = AuthorizationRequest::direct(principal, action.clone(), scope);
-        let decision = self
-            .state
-            .lock()
-            .expect("enforce engine poisoned")
-            .policy
-            .evaluate(&request)
-            .decision;
+        // Fail-closed: a poisoned engine (a panic mid-mint) authorizes nothing.
+        let Ok(state) = self.state.lock() else {
+            return SessionDecision::Deny;
+        };
+        let decision = state.policy.evaluate(&request).decision;
         collapse_session_decision(decision)
+    }
+
+    /// The engine state, refusing a poisoned lock as an unavailable
+    /// authentication store (callers fail closed).
+    fn state(&self) -> Result<MutexGuard<'_, EngineState>, IamError> {
+        self.state
+            .lock()
+            .map_err(|_| IamError::SessionStorageUnavailable)
     }
 }
 

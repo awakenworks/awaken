@@ -127,10 +127,10 @@ pub struct LocalProvider {
     /// Credential-file materialization port. Kept separate from `BlobSource` so
     /// secret references cannot accidentally resolve through the ordinary
     /// resource-content path.
-    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
+    secret_broker: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     /// Optional memory-store realizer (FUSE / copy). Absent → a `MemoryStore` mount
     /// fails loud rather than being faked as an empty file (ADR-0053 item 1).
-    memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounter: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     memory_mounts: crate::MemoryMountRegistry,
     /// Roots named by a creation claim that was dropped before it settled.
     abandoned: Arc<crate::AbandonedRealizations>,
@@ -146,8 +146,8 @@ impl LocalProvider {
             execution_deployment: None,
             blobs: HashMap::new(),
             file_store: None,
-            secret_broker: Arc::new(std::sync::RwLock::new(None)),
-            memory_mounter: Arc::new(std::sync::RwLock::new(None)),
+            secret_broker: Arc::new(awaken_sync::LeafRwLock::new(None)),
+            memory_mounter: Arc::new(awaken_sync::LeafRwLock::new(None)),
             memory_mounts: crate::MemoryMountRegistry::default(),
             abandoned: Arc::default(),
         }
@@ -260,10 +260,7 @@ impl LocalProvider {
     }
 
     pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        *self
-            .secret_broker
-            .write()
-            .expect("secret broker lock poisoned") = Some(broker);
+        *self.secret_broker.write() = Some(broker);
     }
 
     /// Realize `MemoryStore` mounts via an injected mounter (FUSE where available,
@@ -278,10 +275,7 @@ impl LocalProvider {
     /// mutability lets a server assemble the host first and wire worker adapters
     /// before serving, without putting the implementation dependency in the host.
     pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        *self
-            .memory_mounter
-            .write()
-            .expect("memory mounter lock poisoned") = Some(mounter);
+        *self.memory_mounter.write() = Some(mounter);
     }
 
     /// Project the handle-visible fields from the frozen creation spec. This is
@@ -411,10 +405,7 @@ impl LocalProvider {
             })
             .collect::<Result<_, _>>()?;
         Self::project_spec_handle_fields(&mut sandbox, spec)?;
-        *sandbox
-            .owned_paths
-            .lock()
-            .expect("owned paths lock poisoned") = spec
+        *sandbox.owned_paths.lock() = spec
             .mounts
             .iter()
             .map(|mount| mount.mount_path.clone())
@@ -751,10 +742,7 @@ impl LocalProvider {
         } else {
             Self::project_spec_handle_fields(&mut sandbox, spec)?;
         }
-        *sandbox
-            .owned_paths
-            .lock()
-            .expect("owned paths lock poisoned") = owned_paths;
+        *sandbox.owned_paths.lock() = owned_paths;
         sandbox.memory_materializations = materializations;
         sandbox.memory_mounts = memory_mounts;
         Ok(Some(sandbox))
@@ -827,11 +815,7 @@ impl LocalProvider {
                 })
                 .collect::<Result<_, _>>()?;
         }
-        *sandbox
-            .owned_paths
-            .lock()
-            .expect("owned paths lock poisoned") =
-            handle.owned_paths().unwrap_or_default().to_vec();
+        *sandbox.owned_paths.lock() = handle.owned_paths().unwrap_or_default().to_vec();
         if let Some(receipt) = completion.as_ref() {
             let host_paths = spec
                 .map(|spec| {
@@ -913,11 +897,7 @@ impl LocalProvider {
                 )
             });
         }
-        let secret_broker = self
-            .secret_broker
-            .read()
-            .expect("secret broker lock poisoned")
-            .clone();
+        let secret_broker = self.secret_broker.read().clone();
         if secret_broker.is_some()
             && matches!(req.source, pc::MountSource::Secret { .. })
             && req.access == pc::MountAccess::ReadWrite
@@ -1020,7 +1000,7 @@ impl LocalProvider {
             continuation_excluded_paths: Vec::new(),
             realization: crate::realization_marker::LiveRealization::LegacyAdopted,
             terminal_removal: tokio::sync::Mutex::new(None),
-            owned_paths: std::sync::Mutex::new(Vec::new()),
+            owned_paths: awaken_sync::LeafLock::new(Vec::new()),
             adopted_handle,
             #[cfg(target_os = "linux")]
             execution: std::sync::OnceLock::new(),
@@ -1266,7 +1246,7 @@ pub struct LocalSandbox {
     trusted_host_access: bool,
     base_env: Vec<pc::EnvVar>,
     /// Shared broker installation; only opaque refs are retained in `base_env`.
-    secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
+    secret_broker: Arc<awaken_sync::LeafRwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized `Secret` mounts, **shredded** (overwritten) at
     /// [teardown](pc::Sandbox::dispose_for_effect) before the directory is reaped so a
@@ -1292,7 +1272,7 @@ pub struct LocalSandbox {
     /// checkpoint cleanup and physical disposal, until Removed is committed.
     terminal_removal: tokio::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
     /// Complete sandbox-visible trees frozen into the current V2 handle.
-    owned_paths: std::sync::Mutex<Vec<String>>,
+    owned_paths: awaken_sync::LeafLock<Vec<String>>,
     /// Exact restore-bound handle retained only for the unpublished/restored
     /// physical target. Ordinary P/V2 handles remain derived from the marker.
     adopted_handle: Option<pc::SandboxHandle>,
@@ -1324,7 +1304,7 @@ impl LocalSandbox {
     /// live projection effect starts. Reservations are monotonic: retaining a
     /// disjoint historical path is safer than losing evidence across a crash.
     pub fn reserve_owned_path(&self, path: &str) {
-        let mut owned = self.owned_paths.lock().expect("owned paths lock poisoned");
+        let mut owned = self.owned_paths.lock();
         if !owned.iter().any(|current| current == path) {
             owned.push(path.to_string());
         }
@@ -1575,11 +1555,7 @@ impl pc::Sandbox for LocalSandbox {
                     realization_fingerprint: realization.fingerprint().clone(),
                     effect_fence: realization.effect_fence().clone(),
                     physical_incarnation: realization.physical_incarnation().to_owned(),
-                    owned_paths: self
-                        .owned_paths
-                        .lock()
-                        .expect("owned paths lock poisoned")
-                        .clone(),
+                    owned_paths: self.owned_paths.lock().clone(),
                 },
             )
             .with_memory_materializations(self.memory_materializations.clone())

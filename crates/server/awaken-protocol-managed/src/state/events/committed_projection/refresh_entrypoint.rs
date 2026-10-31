@@ -147,15 +147,10 @@ impl ManagedState {
     ) -> Result<ProjectionObservationDecision, StateError> {
         self.ensure_session_record(session_id).await?;
         let (cursor, _) = awaken_agent_contract::page::normalize_history_page_request(cursor, None);
-        let prior_complete = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .is_some_and(|record| {
-                record.committed_projection_ready
-                    && cursor.is_none_or(|cursor| record.event_positions(cursor).is_some())
-            });
+        let prior_complete = self.sessions.lock()?.get(session_id).is_some_and(|record| {
+            record.committed_projection_ready
+                && cursor.is_none_or(|cursor| record.event_positions(cursor).is_some())
+        });
         if !prior_complete {
             return self
                 .refresh_committed_projection(session_id)

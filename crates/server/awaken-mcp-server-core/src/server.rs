@@ -6,8 +6,8 @@
 // @formal reason: MCP server state-machine implementation.
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
@@ -15,6 +15,7 @@ use awaken_mcp_wire::{
     CallToolParams, CallToolResult, ListToolsParams, ListToolsResult, McpToolDefinition,
 };
 use awaken_mcp_wire::{InitializeResult, ServerCapabilities, ServerInfo, ServerToolCapabilities};
+use awaken_sync::LeafLock;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
@@ -145,7 +146,7 @@ pub struct McpServer<H, C> {
     version: String,
     host: H,
     tools_list_changed: bool,
-    active: Mutex<HashMap<String, Arc<CancellationSignal>>>,
+    active: LeafLock<HashMap<String, Arc<CancellationSignal>>>,
     _context: PhantomData<fn(&C)>,
 }
 
@@ -161,7 +162,7 @@ where
             version: version.into(),
             host,
             tools_list_changed: false,
-            active: Mutex::new(HashMap::new()),
+            active: LeafLock::new(HashMap::new()),
             _context: PhantomData,
         }
     }
@@ -228,12 +229,7 @@ where
     pub async fn handle_notification(&self, context: &C, method: &str, params: &Value) {
         if method == "notifications/cancelled"
             && let Some(id) = params.get("requestId")
-            && let Some(signal) = self
-                .active
-                .lock()
-                .expect("MCP cancellation registry")
-                .get(&request_key(id))
-                .cloned()
+            && let Some(signal) = self.active.lock().get(&request_key(id)).cloned()
         {
             signal.cancel();
         }
@@ -314,10 +310,7 @@ where
         };
         let key = request_key(id);
         let signal = Arc::new(CancellationSignal::new());
-        self.active
-            .lock()
-            .expect("MCP cancellation registry")
-            .insert(key.clone(), signal.clone());
+        self.active.lock().insert(key.clone(), signal.clone());
         let outcome = tokio::select! {
             result = self.host.call_tool(context, call, sink) => {
                 result.map_err(map_host_error).and_then(serialize_call_result)
@@ -326,10 +319,7 @@ where
                 Err(ServerRequestError::internal("request cancelled"))
             }
         };
-        self.active
-            .lock()
-            .expect("MCP cancellation registry")
-            .remove(&key);
+        self.active.lock().remove(&key);
         outcome
     }
 }

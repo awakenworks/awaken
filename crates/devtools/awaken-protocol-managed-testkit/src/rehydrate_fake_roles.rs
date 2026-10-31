@@ -54,7 +54,6 @@ impl awaken_session_execution_contract::BudgetAccounting for RehydrateFake {
         Ok(self
             .usage_by_thread
             .lock()
-            .unwrap()
             .get(thread)
             .cloned()
             .unwrap_or_default())
@@ -72,7 +71,6 @@ impl awaken_session_execution_contract::BudgetAccounting for RehydrateFake {
         Ok(self
             .usage_by_thread
             .lock()
-            .unwrap()
             .get(thread_id)
             .cloned()
             .unwrap_or_default())
@@ -176,7 +174,7 @@ impl awaken_session_execution_contract::StreamingRuns for RehydrateFake {
         &self,
         _thread: &str,
     ) -> Result<Option<awaken_session_application_contract::Pending>, RunError> {
-        Ok(self.pending.lock().unwrap().clone())
+        Ok(self.pending.lock().clone())
     }
 }
 
@@ -210,8 +208,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         {
             return Err(RunError::internal("sandbox is owned by another runtime"));
         }
-        self.order.lock().unwrap().push("environment");
-        self.restored_environments.lock().unwrap().push((
+        self.order.lock().push("environment");
+        self.restored_environments.lock().push((
             agent.to_string(),
             thread.to_string(),
             binding.to_string(),
@@ -360,8 +358,8 @@ impl awaken_session_execution_contract::RealizationEffects for RehydrateFake {
         thread: &str,
         transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
-        self.order.lock().unwrap().push("resources");
-        self.restored.lock().unwrap().push((
+        self.order.lock().push("resources");
+        self.restored.lock().push((
             thread.to_string(),
             transition.desired().workspace_id.clone(),
             transition.desired().resources.clone(),
@@ -415,17 +413,11 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
     }
 
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
-        self.order.lock().unwrap().push("history");
-        if let Some(messages) = self
-            .committed_by_thread
-            .lock()
-            .unwrap()
-            .get(thread)
-            .cloned()
-        {
+        self.order.lock().push("history");
+        if let Some(messages) = self.committed_by_thread.lock().get(thread).cloned() {
             return Ok(messages);
         }
-        if let Some(messages) = self.committed.lock().unwrap().clone() {
+        if let Some(messages) = self.committed.lock().clone() {
             return Ok(messages);
         }
         Ok(vec![Message::text(
@@ -449,24 +441,18 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
             })
             .await
             .map_err(scripted_read_failure)?;
-        self.order.lock().unwrap().push(if thread_id == session_id {
+        self.order.lock().push(if thread_id == session_id {
             "root_snapshot"
         } else {
             "child_snapshot"
         });
-        let lifecycle = self.lifecycle.lock().unwrap().clone();
+        let lifecycle = self.lifecycle.lock().clone();
         let has_outcome_projection = self
             .outcome_projections
             .lock()
-            .unwrap()
             .keys()
             .any(|(owner, _)| owner == thread_id);
-        let explicit_run_id = self
-            .run_ids_by_thread
-            .lock()
-            .unwrap()
-            .get(thread_id)
-            .cloned();
+        let explicit_run_id = self.run_ids_by_thread.lock().get(thread_id).cloned();
         let latest_run_id = if thread_id == session_id {
             lifecycle
                 .iter()
@@ -475,8 +461,8 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
                 .map(|event| event.run_id.clone())
                 .or(explicit_run_id.clone())
                 .or_else(|| {
-                    (self.committed.lock().unwrap().is_some()
-                        || self.pending.lock().unwrap().is_some()
+                    (self.committed.lock().is_some()
+                        || self.pending.lock().is_some()
                         || has_outcome_projection)
                         .then(|| {
                             awaken_agent_contract::agent::run::Id(format!(
@@ -487,7 +473,6 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         } else {
             self.coordinated
                 .lock()
-                .unwrap()
                 .iter()
                 .find(|link| link.thread_id.0 == thread_id)
                 .and_then(|link| link.latest_run_id.clone())
@@ -498,27 +483,21 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         let messages = if thread_id == session_id {
             self.committed_by_thread
                 .lock()
-                .unwrap()
                 .get(thread_id)
                 .cloned()
-                .or_else(|| self.committed.lock().unwrap().clone())
+                .or_else(|| self.committed.lock().clone())
                 .unwrap_or_default()
         } else {
             self.committed_by_thread
                 .lock()
-                .unwrap()
                 .get(thread_id)
                 .cloned()
                 .unwrap_or_default()
         };
         let pending = if thread_id == session_id {
-            self.pending.lock().unwrap().clone()
+            self.pending.lock().clone()
         } else {
-            self.pending_by_thread
-                .lock()
-                .unwrap()
-                .get(thread_id)
-                .cloned()
+            self.pending_by_thread.lock().get(thread_id).cloned()
         };
         let resume_tickets: Vec<awaken_agent_contract::thread::read::recovery::RunResumeTicket> = pending
             .map(|pending| {
@@ -552,11 +531,10 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         let mut state = self
             .state_by_thread
             .lock()
-            .unwrap()
             .get(thread_id)
             .cloned()
             .unwrap_or_default();
-        if let Some(usage) = self.usage_by_thread.lock().unwrap().get(thread_id).cloned() {
+        if let Some(usage) = self.usage_by_thread.lock().get(thread_id).cloned() {
             // Production derives accounting from this exact committed state
             // prefix; keep the fake structurally faithful.
             state.push(crate::fixture_usage_command(usage));
@@ -564,13 +542,12 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         if self
             .disposition_by_thread
             .lock()
-            .unwrap()
             .get(&(session_id.to_string(), thread_id.to_string()))
             == Some(&awaken_agent_contract::ThreadDisposition::Archived)
         {
             state.push(awaken_agent_contract::archive_thread_command());
         }
-        for ((owner, outcome_id), projection) in self.outcome_projections.lock().unwrap().iter() {
+        for ((owner, outcome_id), projection) in self.outcome_projections.lock().iter() {
             if owner != thread_id {
                 continue;
             }
@@ -654,7 +631,6 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         let base_store_cursor = if thread_id == session_id {
             self.root_store_cursor_override
                 .lock()
-                .unwrap()
                 .unwrap_or(base_store_cursor)
         } else {
             base_store_cursor
@@ -667,16 +643,10 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         let message_commit_cursors = self
             .message_cursors_by_thread
             .lock()
-            .unwrap()
             .get(thread_id)
             .cloned()
             .unwrap_or_else(|| vec![atomic_fixture_cursor; messages.len()]);
-        let explicit_state_cursors = self
-            .state_cursors_by_thread
-            .lock()
-            .unwrap()
-            .get(thread_id)
-            .cloned();
+        let explicit_state_cursors = self.state_cursors_by_thread.lock().get(thread_id).cloned();
         let (state, state_commit_cursors) = match explicit_state_cursors {
             Some(cursors) => (state, cursors),
             None => crate::fixture_state_log(
@@ -684,7 +654,6 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
                 atomic_fixture_cursor,
                 self.state_log
                     .lock()
-                    .unwrap()
                     .entry(thread_id.to_string())
                     .or_default(),
             ),
@@ -698,7 +667,6 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
             commit_timestamps: self
                 .commit_times_by_thread
                 .lock()
-                .unwrap()
                 .get(thread_id)
                 .cloned()
                 .unwrap_or_default(),
@@ -715,8 +683,8 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
                 thread_id,
                 store_cursor,
                 resume_tickets.first().map(|ticket| ticket.ticket.target()),
-                &self.unaudited_awaits.lock().unwrap(),
-                &mut self.await_targets.lock().unwrap(),
+                &self.unaudited_awaits.lock(),
+                &mut self.await_targets.lock(),
             ),
             resume_tickets,
             thread_version: lifecycle.len() as u64,
@@ -762,7 +730,6 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         Ok(self
             .disposition_by_thread
             .lock()
-            .unwrap()
             .get(&(session_id.to_string(), thread_id.to_string()))
             .copied()
             .unwrap_or_default())
@@ -781,7 +748,6 @@ impl awaken_session_execution_contract::ThreadReads for RehydrateFake {
         Ok(self
             .outcome_projections
             .lock()
-            .unwrap()
             .get(&(thread.to_string(), outcome_id.to_string()))
             .cloned())
     }
@@ -794,10 +760,7 @@ impl awaken_session_execution_contract::TerminalCleanup for RehydrateFake {
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
-        self.ended
-            .lock()
-            .unwrap()
-            .push(effect.command.thread_id.clone());
+        self.ended.lock().push(effect.command.thread_id.clone());
         crate::complete_terminal_cleanup_preparation(&effect, &authorization)
     }
 
@@ -922,11 +885,10 @@ impl awaken_session_execution_contract::CapabilityRuntime for RehydrateFake {
         _thread: &str,
     ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
         Ok(awaken_session_configuration_contract::AgentCapabilities {
-            delegates: self.delegate_ids.lock().unwrap().clone(),
+            delegates: self.delegate_ids.lock().clone(),
             custom_tools: self
                 .custom_tools
                 .lock()
-                .unwrap()
                 .iter()
                 .map(|tool| awaken_session_configuration_contract::CustomTool {
                     name: tool.name.clone(),
@@ -945,11 +907,10 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RehydrateFake 
         &self,
         request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
-        self.order.lock().unwrap().push("mcp");
+        self.order.lock().push("mcp");
         if let Some(restored) = self
             .restored_runtimes
             .lock()
-            .unwrap()
             .iter_mut()
             .find(|restored| restored.0 == request.generation.session_id())
         {

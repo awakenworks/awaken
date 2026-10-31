@@ -68,7 +68,7 @@ pub(crate) type ProgressRoutes = Arc<Mutex<HashMap<i64, mpsc::Sender<McpProgress
 /// The typed sinks a [`route`] call dispatches into.
 pub(crate) struct NotificationSinks {
     pub(crate) application:
-        std::sync::RwLock<Option<crate::notification::NotificationRegistration>>,
+        awaken_sync::LeafRwLock<Option<crate::notification::NotificationRegistration>>,
     pub(crate) progress: ProgressRoutes,
     pub(crate) list_changed: broadcast::Sender<ListChangedKind>,
     pub(crate) resource_updated: broadcast::Sender<String>,
@@ -90,14 +90,14 @@ impl NotificationSinks {
                 "invalid application notification allowlist".into(),
             ));
         }
-        *self.application.write().unwrap() = handler
+        *self.application.write() = handler
             .map(|handler| crate::notification::NotificationRegistration { methods, handler });
         Ok(())
     }
 
     pub(crate) fn new() -> Self {
         Self {
-            application: std::sync::RwLock::new(None),
+            application: awaken_sync::LeafRwLock::new(None),
             progress: Arc::new(Mutex::new(HashMap::new())),
             list_changed: broadcast::channel(64).0,
             resource_updated: broadcast::channel(64).0,
@@ -145,7 +145,7 @@ pub(crate) async fn route(notification: ServerNotification, sinks: &Notification
             }
         }
         None => {
-            let registration = sinks.application.read().unwrap().clone();
+            let registration = sinks.application.read().clone();
             if let Some(registration) = registration
                 && registration.methods.contains(&notification.method)
             {

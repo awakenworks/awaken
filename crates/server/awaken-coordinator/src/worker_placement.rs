@@ -5,7 +5,9 @@
 //! Eligibility remains the pure kernel in `awaken-worker-registry`; this module
 //! owns only the process-wide replaceable ranking policy used by dispatch claims.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
+
+use awaken_sync::LeafRwLock;
 
 use awaken_worker_registry::{
     PlacementContext, PlacementError, PlacementPolicy, RankedWorker, WorkerSnapshot,
@@ -14,7 +16,7 @@ use awaken_worker_registry::{
 /// Atomically replaceable policy slot. A replacement may rank only candidates
 /// already admitted by the Worker contract's compatibility predicate.
 pub struct ReplaceablePlacementPolicy {
-    policy: RwLock<Arc<dyn PlacementPolicy>>,
+    policy: LeafRwLock<Arc<dyn PlacementPolicy>>,
 }
 
 impl PlacementPolicy for ReplaceablePlacementPolicy {
@@ -27,10 +29,7 @@ impl PlacementPolicy for ReplaceablePlacementPolicy {
         context: &PlacementContext,
         eligible: &[WorkerSnapshot],
     ) -> Result<Vec<RankedWorker>, PlacementError> {
-        self.policy
-            .read()
-            .expect("placement policy slot poisoned")
-            .rank(context, eligible)
+        self.policy.read().rank(context, eligible)
     }
 }
 
@@ -50,24 +49,17 @@ impl ReplaceablePlacementPolicy {
     #[must_use]
     pub fn new(policy: Arc<dyn PlacementPolicy>) -> Arc<Self> {
         Arc::new(Self {
-            policy: RwLock::new(policy),
+            policy: LeafRwLock::new(policy),
         })
     }
 
     #[must_use]
     pub fn active_id(&self) -> String {
-        self.policy
-            .read()
-            .expect("placement policy slot poisoned")
-            .id()
-            .to_string()
+        self.policy.read().id().to_string()
     }
 
     pub fn replace(&self, policy: Arc<dyn PlacementPolicy>) -> Arc<dyn PlacementPolicy> {
-        std::mem::replace(
-            &mut *self.policy.write().expect("placement policy slot poisoned"),
-            policy,
-        )
+        std::mem::replace(&mut *self.policy.write(), policy)
     }
 }
 

@@ -7,12 +7,7 @@
 use super::*;
 use awaken_local_process::scoped::{ExecutionDeadline, ScopedCommand, ScopedProcess, ScopedStdio};
 use pc::ProcessHandle as _;
-use std::{
-    io,
-    path::Path,
-    sync::{Mutex, Weak},
-    time::Duration,
-};
+use std::{io, path::Path, sync::Weak, time::Duration};
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -106,7 +101,7 @@ pub(super) struct ScopedExecution {
     launcher: PathBuf,
     helper: PathBuf,
     authority: std::sync::OnceLock<Arc<dyn CurrentExecutionAuthority>>,
-    live: Mutex<LiveExecution>,
+    live: awaken_sync::InvariantLock<LiveExecution>,
 }
 
 pub(super) enum ExecutionBinding {
@@ -254,7 +249,7 @@ impl LocalSandbox {
                 launcher: deployment.launcher.clone(),
                 helper: deployment.helper.clone(),
                 authority: Default::default(),
-                live: Mutex::new(LiveExecution::default()),
+                live: awaken_sync::InvariantLock::new(LiveExecution::default()),
             })))
             .map_err(|_| {
                 pc::SandboxError::conflict(

@@ -2,15 +2,16 @@
 // @formal owner crates/server/awaken-session-mcp/src/mcp.rs
 // @formal reason: In-process MCP protocol emulator declared under cfg(test) or the test-support feature
 // @formal reason: and used only by session-mcp and runtime-host tests.
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use awaken_sync::LeafLock;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-pub type SeenMcpRequests = Arc<Mutex<Vec<(String, String)>>>;
+pub type SeenMcpRequests = Arc<LeafLock<Vec<(String, String)>>>;
 
 /// Pause the real initialize response at a controlled preparation fault cut.
 pub struct InitializeGate {
@@ -120,11 +121,7 @@ async fn mcp(State(state): State<FixtureState>, req: Request) -> Response {
         if !has_session {
             return StatusCode::BAD_REQUEST.into_response();
         }
-        state
-            .seen
-            .lock()
-            .unwrap()
-            .push((req.method().to_string(), bearer));
+        state.seen.lock().push((req.method().to_string(), bearer));
         return match *req.method() {
             axum::http::Method::GET => ([(header::CONTENT_TYPE, "text/event-stream")],
                 "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n").into_response(),
@@ -155,7 +152,7 @@ async fn mcp(State(state): State<FixtureState>, req: Request) -> Response {
     if state.stateful && method != "initialize" && !has_session {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    state.seen.lock().unwrap().push((method.clone(), bearer));
+    state.seen.lock().push((method.clone(), bearer));
     if method == "initialize"
         && let Some(gate) = &state.initialize_gate
     {

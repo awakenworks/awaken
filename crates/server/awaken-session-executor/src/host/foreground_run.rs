@@ -43,7 +43,7 @@ impl From<ForegroundRunPoisoned> for crate::SessionExecutionError {
 /// its signal to the Session it serves; every other holder is the Session's
 /// own context.
 #[derive(Debug, Default)]
-pub(crate) struct ForegroundRunRecord(std::sync::Mutex<ForegroundRun>);
+pub(crate) struct ForegroundRunRecord(awaken_sync::InvariantLock<ForegroundRun>);
 
 impl ForegroundRunRecord {
     fn with<R>(&self, f: impl FnOnce(&mut ForegroundRun) -> R) -> Result<R, ForegroundRunPoisoned> {

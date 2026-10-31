@@ -3,16 +3,17 @@
 // @formal reason: Native teardown is qualified by real descendant regression tests.
 //! A kill-on-close Job Object owns Bash and every descendant from spawn.
 use awaken_process_win32::{OwnedProcessTree, ProcessTreeControl};
+use awaken_sync::LeafLock;
 use std::io;
 use std::process::ExitStatus;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, MutexGuard};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
 type OwnedChild = OwnedProcessTree;
 
 #[derive(Clone)]
 pub(crate) struct ProcessTree {
-    child: Arc<Mutex<Option<OwnedChild>>>,
+    child: Arc<LeafLock<Option<OwnedChild>>>,
     control: ProcessTreeControl,
 }
 
@@ -21,9 +22,7 @@ impl ProcessTree {
         // This mutex holds only an owned native process capability. Taking it
         // or requesting termination cannot invalidate application data; even
         // after a panic, cleanup must retain the capability rather than leak it.
-        self.child
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.child.lock()
     }
 
     pub(crate) fn start_kill(&self) -> io::Result<()> {
@@ -54,7 +53,7 @@ impl Child {
             stdout,
             stderr,
             tree: ProcessTree {
-                child: Arc::new(Mutex::new(Some(child))),
+                child: Arc::new(LeafLock::new(Some(child))),
                 control,
             },
         })

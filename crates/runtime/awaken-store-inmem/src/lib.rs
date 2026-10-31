@@ -17,7 +17,7 @@
 //! [`MemoryCommitCoordinator`] and read back for replay (G1/G13).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -26,7 +26,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
-use awaken_agent_contract::observation::{Observed, UnknownCause};
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -49,6 +49,7 @@ use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
+use awaken_sync::{InvariantLock, LeafLock};
 
 mod replay;
 pub use replay::MemoryCommitReplay;
@@ -134,7 +135,7 @@ impl CommitState {
 /// committed event records under one lock, then bumps the sequence.
 #[derive(Clone)]
 pub struct MemoryCommitCoordinator {
-    state: Arc<Mutex<CommitState>>,
+    state: Arc<InvariantLock<CommitState>>,
     /// Stamps every commit's `committed_at_unix_ms`. Required: the composition
     /// that owns this store chooses the clock, so a test names commit times and
     /// production never falls back to the host clock silently.
@@ -691,7 +692,7 @@ impl RunRecoverySource for MemoryCommitCoordinator {
 /// assert live ordering independently of committed truth.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryStreamSink {
-    observations: Arc<Mutex<Vec<StreamObservation>>>,
+    observations: Arc<LeafLock<Vec<StreamObservation>>>,
 }
 
 impl MemoryStreamSink {
@@ -702,21 +703,14 @@ impl MemoryStreamSink {
     pub fn events(&self) -> Vec<StreamEvent> {
         self.observations
             .lock()
-            .map(|observations| {
-                observations
-                    .iter()
-                    .map(|observation| observation.event.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
+            .iter()
+            .map(|observation| observation.event.clone())
+            .collect()
     }
 
     /// Recorded live deliveries, including optional Runtime coordinates.
     pub fn observations(&self) -> Vec<StreamObservation> {
-        self.observations
-            .lock()
-            .map(|observations| observations.clone())
-            .unwrap_or_default()
+        self.observations.lock().clone()
     }
 }
 
@@ -727,10 +721,7 @@ impl StreamSink for MemoryStreamSink {
     }
 
     async fn send_observation(&self, observation: StreamObservation) -> Result<(), SinkError> {
-        self.observations
-            .lock()
-            .map_err(|_| SinkError::Closed)?
-            .push(observation);
+        self.observations.lock().push(observation);
         Ok(())
     }
 }
@@ -759,7 +750,7 @@ pub fn replay_latest_state(committed: &CommittedThread, run_id: &RunId) -> Optio
 /// as the default for a single long-lived process and as a test double.
 #[derive(Debug, Default)]
 pub struct MemoryStreamCheckpointStore {
-    checkpoints: Mutex<HashMap<String, StreamCheckpoint>>,
+    checkpoints: LeafLock<HashMap<String, StreamCheckpoint>>,
 }
 
 impl MemoryStreamCheckpointStore {
@@ -771,30 +762,21 @@ impl MemoryStreamCheckpointStore {
 #[async_trait]
 impl StreamCheckpointStore for MemoryStreamCheckpointStore {
     async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
-        // A poisoned lock means another thread died mid-mutation: the map may or
-        // may not hold this run's partial, and we cannot tell which.
-        match self.checkpoints.lock() {
-            Ok(values) => match values.get(run_id) {
-                Some(checkpoint) => Observed::Present(checkpoint.clone()),
-                None => Observed::Absent,
-            },
-            Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+        match self.checkpoints.lock().get(run_id) {
+            Some(checkpoint) => Observed::Present(checkpoint.clone()),
+            None => Observed::Absent,
         }
     }
 
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
         self.checkpoints
             .lock()
-            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?
             .insert(checkpoint.run_id.clone(), checkpoint);
         Ok(())
     }
 
     async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError> {
-        self.checkpoints
-            .lock()
-            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?
-            .remove(run_id);
+        self.checkpoints.lock().remove(run_id);
         Ok(())
     }
 }

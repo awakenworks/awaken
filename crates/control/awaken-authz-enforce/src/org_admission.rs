@@ -9,9 +9,10 @@
 //! A protocol contributes only an [`OrgAdmissionEncoding`]: which of its routes
 //! consume which bucket, and how it encodes each outcome on its own wire.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_sync::LeafLock;
 use awaken_tenancy::org_admission::{
     OrgAdmissionDecision, OrgAdmissionRequest, OrgAdmissionUnavailable, OrgOperation,
     OrgRateLimits, OrgRequestAdmission, OrgRequestSource,
@@ -226,7 +227,7 @@ pub struct OrgRateLimiter {
     /// The composing process's wall clock; only the rendered reset instant
     /// reads it.
     clock: Arc<dyn awaken_time::WallClock>,
-    buckets: Mutex<Buckets>,
+    buckets: LeafLock<Buckets>,
 }
 
 impl std::fmt::Debug for OrgRateLimiter {
@@ -258,7 +259,7 @@ impl OrgRateLimiter {
             organization_id: organization_id.into(),
             started_at: Stopwatch::start(),
             clock,
-            buckets: Mutex::new(Buckets {
+            buckets: LeafLock::new(Buckets {
                 create: Bucket::new(limits.create_per_minute),
                 read: Bucket::new(limits.read_per_minute),
             }),
@@ -278,7 +279,7 @@ impl OrgRateLimiter {
         now: Duration,
         wall_now_ms: u64,
     ) -> OrgAdmissionDecision {
-        let mut buckets = self.buckets.lock().unwrap();
+        let mut buckets = self.buckets.lock();
         match operation {
             OrgOperation::Create => buckets.create.take(now, wall_now_ms),
             OrgOperation::Read => buckets.read.take(now, wall_now_ms),

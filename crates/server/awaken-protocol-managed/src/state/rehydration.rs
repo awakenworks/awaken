@@ -89,7 +89,7 @@ impl ManagedState {
         id: &str,
         purpose: SessionRecoveryPurpose,
     ) -> Result<(), StateError> {
-        if self.sessions.lock().unwrap().contains_key(id) {
+        if self.sessions.lock()?.contains_key(id) {
             return Ok(());
         }
         let recovered = self.read_persisted_session_projection(id).await?;
@@ -135,8 +135,7 @@ impl ManagedState {
             Vec::new(),
         );
         self.sessions
-            .lock()
-            .unwrap()
+            .lock()?
             .entry(id.to_string())
             .or_insert(record);
         // The lock publishes owner and content together; no reader can observe
@@ -181,7 +180,7 @@ mod tests {
         // Decision rules: R1=C1+C2+!C3=>E1+E2+E3; the existing durable recovery
         // tests cover R2=C1+C2+C3=>exact root projection.
         let runtime = RehydrateFake::default();
-        *runtime.committed.lock().unwrap() =
+        *runtime.committed.lock() =
             Some(vec![awaken_agent_contract::agent::message::Message::text(
                 awaken_agent_contract::agent::message::Id("orphan-message".into()),
                 awaken_agent_contract::agent::message::Role::User,
@@ -197,8 +196,8 @@ mod tests {
             ),
             "R1/E1"
         );
-        assert!(state.list_sessions().is_empty(), "R1/E2");
-        assert!(order.lock().unwrap().is_empty(), "R1/E3");
+        assert!(state.list_sessions().unwrap().is_empty(), "R1/E2");
+        assert!(order.lock().is_empty(), "R1/E3");
     }
 
     #[tokio::test]
@@ -291,7 +290,10 @@ mod tests {
             .expect("R3 exact receipt")
             .expect("R3/E3 durable Session root");
         assert_eq!(replayed.session_id, id, "R3/E3");
-        assert!(restarted.list_sessions().is_empty(), "R3/E3 no wire cache");
+        assert!(
+            restarted.list_sessions().unwrap().is_empty(),
+            "R3/E3 no wire cache"
+        );
         assert_eq!(
             repo.get(&awaken_session_types::SessionId::from(id))
                 .await
@@ -320,7 +322,10 @@ mod tests {
             SessionExecutionState::ActivationFailed,
             "R4/E3"
         );
-        assert!(restarted.list_sessions().is_empty(), "R4/E3 no wire cache");
+        assert!(
+            restarted.list_sessions().unwrap().is_empty(),
+            "R4/E3 no wire cache"
+        );
     }
 
     #[tokio::test]
@@ -510,9 +515,9 @@ mod tests {
                 "{id}/E3: Coordinator must not mutate Worker Resource state"
             );
         }
-        assert!(restored_environments.lock().unwrap().is_empty(), "R2-R6/E3");
-        assert!(restored_inputs.lock().unwrap().is_empty(), "R2-R6/E3");
-        assert!(restored_runtimes.lock().unwrap().is_empty(), "R2-R6/E1");
+        assert!(restored_environments.lock().is_empty(), "R2-R6/E3");
+        assert!(restored_inputs.lock().is_empty(), "R2-R6/E3");
+        assert!(restored_runtimes.lock().is_empty(), "R2-R6/E1");
     }
 
     #[tokio::test]

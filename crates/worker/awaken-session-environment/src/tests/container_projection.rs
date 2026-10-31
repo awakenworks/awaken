@@ -95,9 +95,9 @@ async fn session_realizer_probes_the_same_container_provider_without_caching_rea
     .into_iter()
     .enumerate()
     {
-        *physical.readiness_error.lock().unwrap() = expected.clone().err();
+        *physical.readiness_error.lock() = expected.clone().err();
         let formats = vec![format!("provider-checkpoint-{index}")];
-        *physical.checkpoint_formats.lock().unwrap() = formats.clone();
+        *physical.checkpoint_formats.lock() = formats.clone();
         assert_eq!(readiness.probe_ready().await, expected, "R{}", index + 3);
         assert_eq!(readiness.checkpoint_formats(), formats, "R{}", index + 3);
         assert_eq!(
@@ -204,11 +204,10 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
     };
     fake.shared
         .lock()
-        .unwrap()
         .insert(mounted.mount_path.clone(), b"customer evidence".to_vec());
     let handle = created.lifecycle().handle();
     drop(created);
-    fake.shared.lock().unwrap().remove(&mounted.mount_path);
+    fake.shared.lock().remove(&mounted.mount_path);
     let adopted = provider
         .adoption()
         .adopt_effective_for_effect(
@@ -223,7 +222,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .reconcile_adopted_mounts(&[mounted.clone(), outside])
         .await
         .expect("R1/R2 adopted Managed Files are reprojected");
-    let files = fake.shared.lock().unwrap();
+    let files = fake.shared.lock();
     assert_eq!(
         files.get(&mounted.mount_path).map(Vec::as_slice),
         Some(b"customer evidence".as_slice()),
@@ -241,8 +240,7 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
     // receipt. No creation/adoption/disposal. Type-path acceptance and rejection
     // are paired compile cases on the owning EnvironmentAdoption role.
     let fake = Arc::new(FakeContainerProvider::default());
-    *fake.observation.lock().unwrap() =
-        Some(Ok(awaken_provisioning_contract::SandboxObservation::Ready));
+    *fake.observation.lock() = Some(Ok(awaken_provisioning_contract::SandboxObservation::Ready));
     let provider = SandboxEnvironmentProvider::container(
         fake.clone(),
         Vec::new(),
@@ -281,11 +279,11 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
             pc::SandboxObservation::Ready
         );
         assert_eq!(
-            fake.observations.lock().unwrap().last(),
+            fake.observations.lock().last(),
             Some(&(container_purpose, fence.clone()))
         );
     }
-    *fake.observation.lock().unwrap() = None;
+    *fake.observation.lock() = None;
     assert!(
         provider
             .adoption()

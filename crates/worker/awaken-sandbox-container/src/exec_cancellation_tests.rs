@@ -197,7 +197,7 @@ fn sandbox(runtime: Arc<ExecRuntime>) -> ContainerSandbox<ExecRuntime> {
         adoption_fingerprint: None,
         realization_fingerprint: None,
         memory_materializations: Vec::new(),
-        owned_paths: Mutex::new(Vec::new()),
+        owned_paths: awaken_sync::LeafLock::new(Vec::new()),
         adopted_handle: None,
         realized: Vec::new(),
         recovered: false,

@@ -385,7 +385,7 @@ async fn explicit_missing_root_or_delegate_publication_never_follows_current() {
         );
         assert!(roots(repo.as_ref()).await.is_empty());
         assert!(repo.pending_lifecycle().await.unwrap().is_empty());
-        assert!(state.list_sessions().is_empty());
+        assert!(state.list_sessions().unwrap().is_empty());
         assert!(
             profiles
                 .reads()

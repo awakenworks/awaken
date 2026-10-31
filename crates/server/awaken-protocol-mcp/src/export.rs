@@ -16,12 +16,13 @@
 //! (a [`DynamicTool`] converts directly for convenience), nothing is exported
 //! by default.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_runtime_contract::plugin::DynamicTool;
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_sync::LeafRwLock;
 use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use tokio::sync::{mpsc, watch};
 
@@ -218,28 +219,28 @@ impl ToolExportSource for StaticExports {
 /// A replaceable export set: `replace` swaps the tools and bumps the version,
 /// which drives `notifications/tools/list_changed` on connected transports.
 pub struct SharedExports {
-    tools: RwLock<Vec<McpExportedTool>>,
+    tools: LeafRwLock<Vec<McpExportedTool>>,
     version: watch::Sender<u64>,
 }
 
 impl SharedExports {
     pub fn new(tools: Vec<McpExportedTool>) -> Self {
         Self {
-            tools: RwLock::new(tools),
+            tools: LeafRwLock::new(tools),
             version: watch::channel(0).0,
         }
     }
 
     /// Swap the export set and bump the version.
     pub fn replace(&self, tools: Vec<McpExportedTool>) {
-        *self.tools.write().expect("export set lock") = tools;
+        *self.tools.write() = tools;
         self.version.send_modify(|v| *v += 1);
     }
 }
 
 impl ToolExportSource for SharedExports {
     fn tools(&self) -> Vec<McpExportedTool> {
-        self.tools.read().expect("export set lock").clone()
+        self.tools.read().clone()
     }
 
     fn version(&self) -> u64 {

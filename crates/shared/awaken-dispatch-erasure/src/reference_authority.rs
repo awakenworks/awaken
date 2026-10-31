@@ -5,6 +5,7 @@
 
 use crate::{LocalCommit, LocalCommitAdapter, RuntimeAuthority, RuntimeAuthorityError};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
+use awaken_sync::LeafLock;
 use std::sync::Arc;
 
 /// Process-local authority used only by unit tests and scenario fixtures.
@@ -15,19 +16,15 @@ use std::sync::Arc;
 pub struct ReferenceAuthority {
     /// One clock for the dispatch store and every Thread's commit store.
     clock: Arc<dyn awaken_time::WallClock>,
-    commits: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
-    checkpoints:
-        std::sync::Mutex<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
+    commits: LeafLock<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
+    checkpoints: LeafLock<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
     dispatch: Arc<crate::AnyCoordinatorDispatch>,
 }
 
 impl ReferenceAuthority {
     /// Seed the existing test authority with a deliberately stale query adapter.
     pub fn with_commit(self, thread: &str, commit: Arc<dyn LocalCommit>) -> Self {
-        self.commits
-            .lock()
-            .unwrap()
-            .insert(thread.to_owned(), commit);
+        self.commits.lock().insert(thread.to_owned(), commit);
         self
     }
 
@@ -41,8 +38,8 @@ impl ReferenceAuthority {
     ) -> Self {
         Self {
             clock,
-            commits: std::sync::Mutex::new(std::collections::HashMap::new()),
-            checkpoints: std::sync::Mutex::new(std::collections::HashMap::new()),
+            commits: LeafLock::new(std::collections::HashMap::new()),
+            checkpoints: LeafLock::new(std::collections::HashMap::new()),
             dispatch,
         }
     }
@@ -54,9 +51,7 @@ impl RuntimeAuthority for ReferenceAuthority {
         &self,
         thread: &str,
     ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
-        let mut commits = self.commits.lock().map_err(|_| {
-            RuntimeAuthorityError::Corrupt("ephemeral commit authority lock poisoned".to_owned())
-        })?;
+        let mut commits = self.commits.lock();
         Ok(commits
             .entry(thread.to_owned())
             .or_insert_with(|| {
@@ -68,14 +63,7 @@ impl RuntimeAuthority for ReferenceAuthority {
     }
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
-        self.commits
-            .lock()
-            .map(|commits| commits.contains_key(thread))
-            .map_err(|_| {
-                RuntimeAuthorityError::Corrupt(
-                    "ephemeral commit authority lock poisoned".to_owned(),
-                )
-            })
+        Ok(self.commits.lock().contains_key(thread))
     }
 
     fn dispatch_store(&self) -> Arc<crate::AnyCoordinatorDispatch> {
@@ -90,11 +78,7 @@ impl RuntimeAuthority for ReferenceAuthority {
         &self,
         thread: &str,
     ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {
-        let mut checkpoints = self.checkpoints.lock().map_err(|_| {
-            RuntimeAuthorityError::Corrupt(
-                "ephemeral checkpoint authority lock poisoned".to_owned(),
-            )
-        })?;
+        let mut checkpoints = self.checkpoints.lock();
         Ok(checkpoints
             .entry(thread.to_owned())
             .or_insert_with(|| {

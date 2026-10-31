@@ -1527,11 +1527,7 @@ async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() 
         "S3 exact terminal"
     );
     assert!(
-        runtime
-            .completed_user_dispatches()
-            .lock()
-            .unwrap()
-            .is_empty(),
+        runtime.completed_user_dispatches().lock().is_empty(),
         "S2 exact completed boundary was drained"
     );
     assert_eq!(

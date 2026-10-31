@@ -18,6 +18,7 @@ isolates = ["sqlx"]
 # ids; ownership and authorization stay in their respective outer planes.
 
 [dependencies]
+awaken-sync.workspace = true
 # Port-only contract: MemoryRepository + Memory/MemoryEntry/MemErr live here; this crate
 # implements them and re-exports the contract types.
 awaken-resource-contract.workspace = true

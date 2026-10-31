@@ -215,11 +215,7 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
     .flat_map(|execution| [false, true].map(|prior| (execution, prior)))
     {
         let runtime = RehydrateFake::default();
-        runtime
-            .delegate_ids
-            .lock()
-            .unwrap()
-            .push("researcher".into());
+        runtime.delegate_ids.lock().push("researcher".into());
         let repository = Arc::new(ephemeral_session_repo().await);
         let warm = {
             let session_fixture_runtime = runtime.clone();
@@ -265,7 +261,7 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
                 latest_run_id: Some(run.clone()),
             },
         );
-        runtime.lifecycle.lock().unwrap().extend([
+        runtime.lifecycle.lock().extend([
             lifecycle(
                 1,
                 child_id,
@@ -301,12 +297,10 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
         runtime
             .state_by_thread
             .lock()
-            .unwrap()
             .insert(child_id.into(), commands);
         runtime
             .state_cursors_by_thread
             .lock()
-            .unwrap()
             .insert(child_id.into(), cursors);
         let cold = {
             let session_fixture_runtime = runtime;

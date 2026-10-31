@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["axum", "sqlx"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 awaken-executable-environment-contract.workspace = true
 awaken-durable-projection.workspace = true

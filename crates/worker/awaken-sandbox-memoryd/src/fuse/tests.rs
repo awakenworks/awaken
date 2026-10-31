@@ -321,7 +321,7 @@ fn fuse_constructs_with_a_seeded_root() {
 #[test]
 fn attr_reports_the_records_timestamps_not_now() {
     let fs = test_fs();
-    let (ino, node) = fs.intern_memory(&memory("/a.md", "hi"));
+    let (ino, node) = fs.intern_memory(&memory("/a.md", "hi")).unwrap();
     let attr = MemoryFuse::attr(ino, &node);
     assert_eq!(
         attr.crtime,
@@ -349,16 +349,20 @@ fn content_lru_cache_evicts_oldest_and_refreshes_on_get() {
 #[test]
 fn open_fd_count_tracks_allocated_handles() {
     let fs = test_fs();
-    let a = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration::new("m1", 1, sha256_hex("one")),
-        buffer: b"one".to_vec(),
-        dirty: false,
-    });
-    let b = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration::new("m2", 1, sha256_hex("two")),
-        buffer: b"two".to_vec(),
-        dirty: false,
-    });
+    let a = fs
+        .allocate_fh(OpenFile {
+            generation: MemoryGeneration::new("m1", 1, sha256_hex("one")),
+            buffer: b"one".to_vec(),
+            dirty: false,
+        })
+        .unwrap();
+    let b = fs
+        .allocate_fh(OpenFile {
+            generation: MemoryGeneration::new("m2", 1, sha256_hex("two")),
+            buffer: b"two".to_vec(),
+            dirty: false,
+        })
+        .unwrap();
     assert_eq!(fs.mount_state.open_fds.load(Ordering::SeqCst), 2);
     fs.remove_fh(a);
     assert_eq!(fs.mount_state.open_fds.load(Ordering::SeqCst), 1);
@@ -370,18 +374,22 @@ fn open_fd_count_tracks_allocated_handles() {
 fn dirty_fd_budget_fails_closed_at_the_limit() {
     let fs = test_fs();
     for index in 0..MAX_DIRTY_OPEN_FILES {
-        let fh = fs.allocate_fh(OpenFile {
-            generation: MemoryGeneration::new(format!("m{index}"), 1, sha256_hex("clean")),
-            buffer: Vec::new(),
-            dirty: false,
-        });
+        let fh = fs
+            .allocate_fh(OpenFile {
+                generation: MemoryGeneration::new(format!("m{index}"), 1, sha256_hex("clean")),
+                buffer: Vec::new(),
+                dirty: false,
+            })
+            .unwrap();
         fs.write_fh_bytes(fh, 0, b"x").expect("dirty fd admitted");
     }
-    let blocked = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration::new("blocked", 1, sha256_hex("blocked")),
-        buffer: Vec::new(),
-        dirty: false,
-    });
+    let blocked = fs
+        .allocate_fh(OpenFile {
+            generation: MemoryGeneration::new("blocked", 1, sha256_hex("blocked")),
+            buffer: Vec::new(),
+            dirty: false,
+        })
+        .unwrap();
     assert!(
         matches!(
             fs.write_fh_bytes(blocked, 0, b"x"),

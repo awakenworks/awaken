@@ -15,7 +15,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::LazyLock;
+
+use awaken_sync::LeafLock;
 
 use crate::clock_hold::ClockHold;
 
@@ -23,7 +25,7 @@ static FILES: LazyLock<Files> = LazyLock::new(Files::default);
 
 #[derive(Default)]
 struct Files {
-    counts: Mutex<HashMap<PathBuf, Counts>>,
+    counts: LeafLock<HashMap<PathBuf, Counts>>,
     changed: tokio::sync::Notify,
 }
 
@@ -41,7 +43,7 @@ enum Count {
 
 impl Files {
     fn add(&self, file: &Path, count: Count) {
-        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut counts = self.counts.lock();
         let entry = counts.entry(file.to_path_buf()).or_default();
         match count {
             Count::Live => entry.live += 1,
@@ -51,7 +53,7 @@ impl Files {
 
     fn remove(&self, file: &Path, count: Count) {
         {
-            let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut counts = self.counts.lock();
             if let Some(entry) = counts.get_mut(file) {
                 match count {
                     Count::Live => entry.live = entry.live.saturating_sub(1),
@@ -68,7 +70,6 @@ impl Files {
     fn closing(&self, file: &Path) -> bool {
         self.counts
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .get(file)
             .is_some_and(|entry| entry.connected > entry.live)
     }

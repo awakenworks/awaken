@@ -11,11 +11,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use awaken_agent_contract::fresh_process_id;
+use awaken_sync::LeafLock;
 use awaken_time::WallClock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
@@ -60,7 +60,7 @@ pub(crate) struct A2aState {
     clock: Arc<dyn WallClock>,
     inner: Arc<RwLock<Inner>>,
     push_sender: Arc<dyn HttpSender>,
-    delivery_queues: Arc<StdMutex<HashMap<String, mpsc::UnboundedSender<Delivery>>>>,
+    delivery_queues: Arc<LeafLock<HashMap<String, mpsc::UnboundedSender<Delivery>>>>,
     persistence_path: Option<PathBuf>,
     persistence_lock: Arc<Mutex<()>>,
     delivery_recovery_started: Arc<AtomicBool>,
@@ -142,7 +142,7 @@ impl A2aState {
             push_sender: Arc::new(GuardedHttpSender::guarded()),
             #[cfg(test)]
             push_sender: Arc::new(GuardedHttpSender::with_timeout(Duration::from_secs(1))),
-            delivery_queues: Arc::new(StdMutex::new(HashMap::new())),
+            delivery_queues: Arc::new(LeafLock::new(HashMap::new())),
             persistence_path,
             persistence_lock: Arc::new(Mutex::new(())),
             delivery_recovery_started: Arc::new(AtomicBool::new(false)),
@@ -383,7 +383,7 @@ impl A2aState {
             delivery.task_id,
             delivery.config.id.as_deref().unwrap_or_default()
         );
-        let mut queues = self.delivery_queues.lock().expect("delivery queue lock");
+        let mut queues = self.delivery_queues.lock();
         let sender = queues.entry(key.clone()).or_insert_with(|| {
             let (sender, mut receiver) = mpsc::unbounded_channel::<Delivery>();
             let state = self.clone();
@@ -417,7 +417,7 @@ impl A2aState {
                         }
                     }
                 }
-                queues.lock().expect("delivery queue lock").remove(&key);
+                queues.lock().remove(&key);
             });
             sender
         });
@@ -538,7 +538,6 @@ impl A2aState {
         if deleted {
             self.delivery_queues
                 .lock()
-                .expect("delivery queue lock")
                 .remove(&format!("{task_id}:{config_id}"));
         }
         Ok(deleted)

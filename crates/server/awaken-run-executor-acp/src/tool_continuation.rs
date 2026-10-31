@@ -30,14 +30,11 @@ impl PermissionResolver for OwnedToolPermissionResolver<'_> {
 }
 
 pub(super) fn client_execution_outcome(
-    pending: &std::sync::Mutex<Option<ToolCall>>,
+    pending: &awaken_sync::InvariantLock<Option<ToolCall>>,
     outcome: std::result::Result<TerminationReason, AcpError>,
-) -> std::result::Result<TerminationReason, AcpError> {
-    match pending
-        .lock()
-        .expect("ACP client execution lock poisoned")
-        .take()
-    {
+) -> std::result::Result<std::result::Result<TerminationReason, AcpError>, awaken_sync::LockPoisoned>
+{
+    Ok(match pending.lock()?.take() {
         Some(call) => Err(AcpError::PermissionAwait {
             correlation_id: format!("client-execution:{}", call.call_id),
             ask: Box::new(PermissionAsk {
@@ -47,22 +44,24 @@ pub(super) fn client_execution_outcome(
             }),
         }),
         None => outcome,
-    }
+    })
 }
 
 pub(super) fn take_runtime_execution(
-    pending: &std::sync::Mutex<Option<ToolCall>>,
+    pending: &awaken_sync::InvariantLock<Option<ToolCall>>,
     continuation: Option<&dyn awaken_runtime_contract::resume::OwnedToolContinuation>,
-) -> Option<ToolCall> {
-    let mut pending = pending.lock().expect("ACP tool execution lock poisoned");
-    if pending.as_ref().is_some_and(|call| {
-        continuation.and_then(|owner| owner.tool_await_reason(&call.tool_id))
-            == Some(ToolAwaitReason::Permission)
-    }) {
-        pending.take()
-    } else {
-        None
-    }
+) -> std::result::Result<Option<ToolCall>, awaken_sync::LockPoisoned> {
+    let mut pending = pending.lock()?;
+    Ok(
+        if pending.as_ref().is_some_and(|call| {
+            continuation.and_then(|owner| owner.tool_await_reason(&call.tool_id))
+                == Some(ToolAwaitReason::Permission)
+        }) {
+            pending.take()
+        } else {
+            None
+        },
+    )
 }
 
 /// Correlate the MCP arrival with a unique staged ACP notification. This is
@@ -281,7 +280,7 @@ pub(super) fn owned_tool_result_context(
 pub(super) async fn wait_for_tool_execution(
     context: &RuntimeRunContext,
     continuation: Option<Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation>>,
-    pending: Arc<std::sync::Mutex<Option<ToolCall>>>,
+    pending: Arc<awaken_sync::InvariantLock<Option<ToolCall>>>,
 ) {
     let owner_cancel = async {
         match &context.cancellation {
@@ -299,8 +298,12 @@ pub(super) async fn wait_for_tool_execution(
         biased;
         () = owner_cancel => {},
         call = request => {
-            if let Some(call) = call {
-                *pending.lock().expect("ACP tool execution lock poisoned") = Some(call);
+            // A poisoned slot drops the call; the Step's outcome then reads
+            // the same poison and ends indeterminate.
+            if let Some(call) = call
+                && let Ok(mut pending) = pending.lock()
+            {
+                *pending = Some(call);
             }
         }
     }

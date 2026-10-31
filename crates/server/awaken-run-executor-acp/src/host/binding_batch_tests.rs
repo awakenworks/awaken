@@ -31,7 +31,7 @@ fn binding(id: &str, revision: u64, enabled: bool) -> AcpLocalCredentialBinding 
 fn snapshot(resolver: &AcpLocalCredentialResolver) -> Snapshot {
     // Read the actual registry under its actual mutex. This helper observes
     // fields only; it does not implement admission, publication or a reducer.
-    let bindings = resolver.bindings.lock().unwrap();
+    let bindings = resolver.bindings.lock();
     let mut result = [None; 3];
     for (id, value) in bindings.iter() {
         let index = match id.as_str() {

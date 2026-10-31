@@ -9,7 +9,8 @@
 //! session setup. Every skill read/write is a closed algebra over just these three
 //! fields — no other host state — so the boundary is a real domain seam, not a bucket.
 
-use std::sync::{Arc, Mutex};
+use awaken_sync::InvariantLock;
+use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillBinding;
 use awaken_ext_skills::SkillSpec;
@@ -39,7 +40,7 @@ pub(crate) struct SkillCatalog {
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
     /// session's setup (`reload_cache`). This is how a network-DB (async) catalog
     /// serves the host's sync read paths.
-    cache: Mutex<std::collections::BTreeMap<String, Vec<SkillVersion>>>,
+    cache: InvariantLock<std::collections::BTreeMap<String, Vec<SkillVersion>>>,
 }
 
 impl SkillCatalog {
@@ -51,7 +52,7 @@ impl SkillCatalog {
             application: None,
             #[cfg(any(test, feature = "test-support"))]
             test_store: None,
-            cache: Mutex::new(std::collections::BTreeMap::new()),
+            cache: InvariantLock::new(std::collections::BTreeMap::new()),
         }
     }
 

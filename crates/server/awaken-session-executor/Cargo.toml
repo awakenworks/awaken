@@ -15,6 +15,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-inference-endpoint.workspace = true
 awaken-session-realization.workspace = true
 # The Coordinator half of Run delivery: the Thread event hub and the

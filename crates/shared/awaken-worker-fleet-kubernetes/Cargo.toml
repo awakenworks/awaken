@@ -28,6 +28,7 @@ separation = "isolation"
 isolates = ["k8s-openapi", "kube"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-container-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-outbound-http = { workspace = true, features = ["kubernetes"] }

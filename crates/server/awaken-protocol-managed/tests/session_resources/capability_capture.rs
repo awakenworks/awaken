@@ -280,7 +280,7 @@ async fn managed_skill_refusal_precedes_bare_capability_capture() {
     let profiles = Arc::new(ObservedBudgetProfiles::new(3));
     let prices = Arc::new(GatedPrices::new(None));
     let runtime = RehydrateFake::default();
-    *runtime.delegate_ids.lock().unwrap() = vec!["budget-child".into()];
+    *runtime.delegate_ids.lock() = vec!["budget-child".into()];
     let mut roles = selected_roles(runtime);
     let awaken_session_execution_contract::SessionPlacementRoles::Colocated(placement) =
         &mut roles.placement
@@ -324,7 +324,7 @@ async fn managed_bare_capability_values_survive_a_later_catalog_change() {
     let profiles = Arc::new(ObservedBudgetProfiles::new(3));
     let prices = Arc::new(GatedPrices::new(None));
     let runtime = RehydrateFake::default();
-    *runtime.delegate_ids.lock().unwrap() = vec![
+    *runtime.delegate_ids.lock() = vec![
         "budget-child".into(),
         "missing".into(),
         "budget-child".into(),

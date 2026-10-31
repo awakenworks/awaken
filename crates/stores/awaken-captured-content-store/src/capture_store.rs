@@ -9,12 +9,13 @@
 //! erasure application can invoke it as one internal adapter.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_data_governance_contract::ContentEraser;
 use awaken_runtime_contract::{CaptureError, CaptureSink, ContentKind, DataSubjectId, Purpose};
+use awaken_sync::LeafLock;
 
 /// One captured-content record, tagged by subject + purpose + record time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub struct CapturedRecord {
 /// In-memory captured-content store. A real backend would persist rows; the
 /// erasure/TTL contract is identical.
 pub struct InMemoryCapturedContentStore {
-    state: Mutex<InMemoryState>,
+    state: LeafLock<InMemoryState>,
     seq: AtomicU64,
     /// The wall clock a sink record is stamped with.
     clock: Arc<dyn awaken_time::WallClock>,
@@ -50,7 +51,7 @@ impl InMemoryCapturedContentStore {
     #[must_use]
     pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
-            state: Mutex::default(),
+            state: LeafLock::default(),
             seq: AtomicU64::new(0),
             clock,
         }
@@ -78,7 +79,7 @@ impl InMemoryCapturedContentStore {
     ) -> Result<String, CaptureError> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("cap_{n:016}");
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if state.erasure_receipts.contains_key(&subject.0) {
             return Err(CaptureError::SubjectErased);
         }
@@ -96,7 +97,7 @@ impl InMemoryCapturedContentStore {
     /// Restrict a subject's records (GDPR Art. 18): freeze them so they survive
     /// erasure + TTL and are hidden from reads. Returns the number restricted.
     pub fn restrict(&self, subject: &DataSubjectId) -> usize {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let mut n = 0;
         for r in &mut state.records {
             if &r.subject == subject && !r.restricted {
@@ -110,7 +111,7 @@ impl InMemoryCapturedContentStore {
     /// Lift the restriction on a subject's records (Art. 18(3): inform the
     /// subject before doing so). Returns the number released.
     pub fn release(&self, subject: &DataSubjectId) -> usize {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let mut n = 0;
         for r in &mut state.records {
             if &r.subject == subject && r.restricted {
@@ -124,7 +125,7 @@ impl InMemoryCapturedContentStore {
     /// Remove records older than `ttl_millis` as of `now` (Art. 5(e) storage
     /// limitation); returns the number swept. Restricted records are exempt.
     pub fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let before = state.records.len();
         state
             .records
@@ -135,7 +136,7 @@ impl InMemoryCapturedContentStore {
     /// Current record count.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.state.lock().unwrap().records.len()
+        self.state.lock().records.len()
     }
 
     /// Whether the store is empty.
@@ -170,7 +171,7 @@ impl ContentEraser for InMemoryCapturedContentStore {
         &self,
         subject: &DataSubjectId,
     ) -> Result<usize, awaken_data_governance_contract::ErasureError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let before = state.records.len();
         // Restricted (Art. 18) records survive erasure — kept for the legal
         // purpose until released. In-memory removal cannot fail.

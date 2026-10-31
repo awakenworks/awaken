@@ -36,6 +36,7 @@ url.workspace = true
 nix = { version = "0.29", features = ["signal"] }
 
 [target.'cfg(windows)'.dependencies]
+awaken-sync.workspace = true
 awaken-process-win32.workspace = true
 
 [dev-dependencies]

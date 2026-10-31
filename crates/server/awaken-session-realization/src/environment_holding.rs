@@ -16,7 +16,7 @@ pub mod realization;
 /// operation that consults them receives them from the executor.
 pub struct EnvironmentHolding {
     /// The selected aggregate publication authority; the lock permits fixture installation only.
-    environment_binding_sink: std::sync::RwLock<
+    environment_binding_sink: awaken_sync::InvariantRwLock<
         Option<
             std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
         >,
@@ -46,7 +46,7 @@ impl EnvironmentHolding {
     ) -> Self {
         providers.runs_local_dispatch_pool = runs_local_dispatch_pool;
         Self {
-            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
+            environment_binding_sink: awaken_sync::InvariantRwLock::new(environment_binding_sink),
             dispatch_execution,
             publication,
             providers,
@@ -54,16 +54,14 @@ impl EnvironmentHolding {
         }
     }
 
-    /// The binding sink of a test fixture.
+    /// The binding sink of a test fixture. A poisoned slot reads as absent,
+    /// as publication refuses it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn environment_binding_sink(
         &self,
     ) -> Option<std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>
     {
-        self.environment_binding_sink
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.environment_binding_sink.read().ok()?.clone()
     }
 
     /// Replace the dispatch execution role of a test fixture.
@@ -75,16 +73,16 @@ impl EnvironmentHolding {
         self.dispatch_execution = dispatch_execution;
     }
 
-    /// Replace the binding sink of a test fixture.
+    /// Replace the binding sink of a test fixture. A poisoned slot is not
+    /// touched again: publication refuses it whatever it holds.
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_environment_binding_sink(
         &self,
         sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) {
-        *self
-            .environment_binding_sink
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+        if let Ok(mut slot) = self.environment_binding_sink.write() {
+            *slot = Some(sink);
+        }
     }
 }
 

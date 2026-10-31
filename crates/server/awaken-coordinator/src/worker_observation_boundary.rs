@@ -71,7 +71,7 @@ pub(crate) struct DomainState {
 #[derive(Clone, Default)]
 pub(crate) struct RetirementExplanations(
     Arc<
-        std::sync::Mutex<
+        awaken_sync::LeafLock<
             std::collections::BTreeMap<
                 String,
                 Vec<awaken_session_application::WorkerRetirementBlocker>,
@@ -87,10 +87,7 @@ impl RetirementExplanations {
         worker: &str,
         blockers: &[awaken_session_application::WorkerRetirementBlocker],
     ) -> bool {
-        let mut last = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = self.0.lock();
         if last
             .get(worker)
             .is_some_and(|previous| previous == blockers)

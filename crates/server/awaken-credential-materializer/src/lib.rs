@@ -37,9 +37,9 @@ pub use platform_egress::{
     PlatformMcpEgressRequest,
 };
 
+use awaken_sync::InvariantLock;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 mod admission;
 #[cfg(all(test, feature = "authority"))]
@@ -79,9 +79,10 @@ pub struct PinnedCredentialMaterializer {
     local_secret_broker: Option<Arc<dyn awaken_provisioning_contract::SecretBroker>>,
     external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     extension_consumers: Arc<BTreeMap<String, RegisteredExtensionConsumer>>,
-    pending_process_secrets: Arc<Mutex<HashMap<String, secret_broker::PendingProcessSecret>>>,
+    pending_process_secrets:
+        Arc<InvariantLock<HashMap<String, secret_broker::PendingProcessSecret>>>,
     pending_credential_artifacts:
-        Arc<Mutex<HashMap<String, secret_broker::PendingCredentialArtifact>>>,
+        Arc<InvariantLock<HashMap<String, secret_broker::PendingCredentialArtifact>>>,
 }
 
 impl PinnedCredentialMaterializer {
@@ -108,8 +109,8 @@ impl PinnedCredentialMaterializer {
             local_secret_broker: Some(local_secret_broker),
             external_material_resolver: None,
             extension_consumers: Arc::new(BTreeMap::new()),
-            pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
-            pending_credential_artifacts: Arc::new(Mutex::new(HashMap::new())),
+            pending_process_secrets: Arc::new(InvariantLock::new(HashMap::new())),
+            pending_credential_artifacts: Arc::new(InvariantLock::new(HashMap::new())),
         }
     }
 
@@ -132,8 +133,8 @@ impl PinnedCredentialMaterializer {
             local_secret_broker: None,
             external_material_resolver: Some(resolver),
             extension_consumers: Arc::new(BTreeMap::new()),
-            pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
-            pending_credential_artifacts: Arc::new(Mutex::new(HashMap::new())),
+            pending_process_secrets: Arc::new(InvariantLock::new(HashMap::new())),
+            pending_credential_artifacts: Arc::new(InvariantLock::new(HashMap::new())),
         }
     }
 

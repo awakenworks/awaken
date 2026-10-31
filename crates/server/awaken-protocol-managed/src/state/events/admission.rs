@@ -169,7 +169,7 @@ impl ManagedState {
                 outcomes: &[],
                 historical_pending: &historical,
             });
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock()?;
             let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
             qualify_pending_reply_candidates(record, candidates, &index)
         };
@@ -516,7 +516,7 @@ impl ManagedState {
                 // (message, resume, interrupt, outcome) with a 409, before touching the
                 // runtime — the contract makes an archived session read-only.
                 let (agent_id, inference_geo) = {
-                    let sessions = self.sessions.lock().unwrap();
+                    let sessions = self.sessions.lock()?;
                     let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
                     if record.session.archived_at.is_some() {
                         return Err(StateError::Archived);

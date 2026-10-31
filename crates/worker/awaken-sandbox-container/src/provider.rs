@@ -109,10 +109,10 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     pub(super) file_store: Option<Arc<dyn pc::BlobSource>>,
     /// Bidirectional broker used only for `MountSource::Secret`; durable writable
     /// mounts are committed through it during aggregate-owned terminal preparation.
-    pub(super) secret_broker: std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>,
+    pub(super) secret_broker: awaken_sync::LeafRwLock<Option<Arc<dyn pc::SecretBroker>>>,
     /// Neutral MemoryStore projection injected by the composition root. Interior
     /// mutability lets an already-shared provider receive the platform adapter.
-    pub(super) memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
+    pub(super) memory_mounter: awaken_sync::LeafRwLock<Option<Arc<dyn pc::MemoryMounter>>>,
     pub(super) resident_hand: Option<ResidentHandConfig>,
     /// The composing process's wall clock: effect fences are judged and
     /// allowlist capabilities issued on it. A provider composed without one
@@ -171,8 +171,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             worker_mcp_relay_substitution: false,
             blobs: Arc::new(std::collections::HashMap::new()),
             file_store: None,
-            secret_broker: std::sync::RwLock::new(None),
-            memory_mounter: std::sync::RwLock::new(None),
+            secret_broker: awaken_sync::LeafRwLock::new(None),
+            memory_mounter: awaken_sync::LeafRwLock::new(None),
             resident_hand: None,
             clock: None,
             startup_evidence: std::sync::OnceLock::new(),
@@ -230,10 +230,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     }
 
     pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        *self
-            .memory_mounter
-            .write()
-            .expect("container memory mounter lock poisoned") = Some(mounter);
+        *self.memory_mounter.write() = Some(mounter);
     }
 
     /// Configure a conventional forward proxy for unrestricted traffic.
@@ -291,10 +288,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     }
 
     pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        *self
-            .secret_broker
-            .write()
-            .expect("container secret broker lock poisoned") = Some(broker);
+        *self.secret_broker.write() = Some(broker);
     }
 
     /// Project the one provider-effective creation/adoption shape without
@@ -470,11 +464,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
         // dir (bound by docker/podman) and recorded as `content` (projected by the k8s
         // ConfigMap path) — kept alive by the sandbox for the container's lifetime.
-        let secret_broker = self
-            .secret_broker
-            .read()
-            .expect("container secret broker lock poisoned")
-            .clone();
+        let secret_broker = self.secret_broker.read().clone();
         let staged = resolve_and_stage(
             spec,
             &mut plan.binds,
@@ -505,11 +495,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 PreparedContainerDisposition::FreshReservation,
             )?;
         }
-        let mounter = self
-            .memory_mounter
-            .read()
-            .expect("container memory mounter lock poisoned")
-            .clone();
+        let mounter = self.memory_mounter.read().clone();
         let mut current_effect_fence = effect_fence.cloned();
         let prepared = loop {
             admit()?;
@@ -845,12 +831,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             adoption_fingerprint: Some(adoption_fingerprint),
             realization_fingerprint: Some(realization_fingerprint),
             memory_materializations,
-            owned_paths: std::sync::Mutex::new(recovery::source_mount_paths(spec)),
+            owned_paths: awaken_sync::LeafLock::new(recovery::source_mount_paths(spec)),
             adopted_handle: None,
             realized,
             recovered: already_active,
             lifecycle: Arc::new(ContainerCleanupState {
-                staging: std::sync::Mutex::new(parts.guard),
+                staging: awaken_sync::InvariantLock::new(parts.guard),
                 secret_writebacks: parts.secret_writebacks,
                 secret_broker,
                 memory: tokio::sync::Mutex::new((!already_active).then_some(parts.memory)),
@@ -931,11 +917,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         } else {
             None
         };
-        let secret_broker = self
-            .secret_broker
-            .read()
-            .expect("container secret broker lock poisoned")
-            .clone();
+        let secret_broker = self.secret_broker.read().clone();
         let lifecycle = ContainerCleanupState::recovered_native(
             spec,
             handle,
@@ -1044,7 +1026,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .memory_materializations()?
                 .unwrap_or_default()
                 .to_vec(),
-            owned_paths: std::sync::Mutex::new(handle.owned_paths().unwrap_or_default().to_vec()),
+            owned_paths: awaken_sync::LeafLock::new(
+                handle.owned_paths().unwrap_or_default().to_vec(),
+            ),
             adopted_handle: None,
             realized: Vec::new(),
             recovered: true,

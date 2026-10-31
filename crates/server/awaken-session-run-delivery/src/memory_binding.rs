@@ -15,7 +15,8 @@
 
 use crate::DeliveryLock;
 use awaken_session_types::RunError;
-use std::sync::{Arc, RwLock};
+use awaken_sync::InvariantRwLock;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_memory::{MemoryExtractionIntent, MemoryStoreHandle};
@@ -37,7 +38,7 @@ pub struct MemoryBinding {
     pub extraction_enabled: bool,
     /// Attached once the physical Session's commit authority is known; an
     /// extraction waits until then. Shared by every holder of this binding.
-    extraction_commit: RwLock<Option<Arc<SessionCommit>>>,
+    extraction_commit: InvariantRwLock<Option<Arc<SessionCommit>>>,
 }
 
 impl MemoryBinding {
@@ -61,7 +62,7 @@ impl MemoryBinding {
             // its `memory` plugin configuration, never by a Store policy copy.
             recall_enabled: true,
             extraction_enabled: writable,
-            extraction_commit: RwLock::new(None),
+            extraction_commit: InvariantRwLock::new(None),
         }
     }
 

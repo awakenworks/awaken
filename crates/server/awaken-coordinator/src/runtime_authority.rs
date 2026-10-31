@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
@@ -32,6 +32,7 @@ use awaken_dispatch_erasure::{
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
+use awaken_sync::{InvariantLock, TryLockFailure};
 use tokio::runtime::{Handle, RuntimeFlavor};
 
 #[derive(Clone, Copy)]
@@ -55,14 +56,14 @@ pub struct DurableRuntimeAuthority {
 }
 
 const MAX_CONCURRENT_LOCAL_COMMIT_INITIALIZATIONS: usize = 8;
-type LocalCommitSlot = Arc<Mutex<Option<Arc<dyn LocalCommit>>>>;
+type LocalCommitSlot = Arc<InvariantLock<Option<Arc<dyn LocalCommit>>>>;
 
 /// Coordinator-owned single-flight slots for local Thread projections.
 /// The registry lock only resolves a Thread to its slot; unrelated Sessions do
 /// not share the expensive durable-open critical section.
 #[derive(Default)]
 struct LocalCommitSlots {
-    slots: Mutex<LocalCommitSlotRegistry>,
+    slots: InvariantLock<LocalCommitSlotRegistry>,
 }
 
 #[derive(Default)]
@@ -103,7 +104,7 @@ impl LocalCommitSlots {
                 registry.by_thread.remove(&candidate);
             }
         }
-        let slot = Arc::new(Mutex::new(None));
+        let slot = Arc::new(InvariantLock::new(None));
         registry.by_thread.insert(thread.clone(), slot.clone());
         registry.cleanup_order.push_back(thread);
         Ok(slot)
@@ -121,8 +122,8 @@ impl LocalCommitSlots {
             // An initializer already owns this Thread. Do not block a Tokio
             // worker here; the bounded ambient-runtime bridge below performs
             // the authoritative wait and then observes the published value.
-            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
-            Err(std::sync::TryLockError::Poisoned(_)) => Err(RuntimeAuthorityError::unavailable(
+            Err(TryLockFailure::WouldBlock) => Ok(None),
+            Err(TryLockFailure::Poisoned(_)) => Err(RuntimeAuthorityError::unavailable(
                 "local commit initialization slot was poisoned",
             )),
         })

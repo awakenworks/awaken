@@ -88,10 +88,7 @@ impl CatalogModelPublicationResolver {
             .pool
             .filter(|pool| matches!(pool.policy, SelectionPolicy::RotateSpread))
             .map_or(0, |pool| {
-                let mut sequences = self
-                    .credential_selection_sequences
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut sequences = self.credential_selection_sequences.lock();
                 let sequence = sequences.entry(pool.id.0.clone()).or_default();
                 let current = *sequence;
                 *sequence = sequence.wrapping_add(1);

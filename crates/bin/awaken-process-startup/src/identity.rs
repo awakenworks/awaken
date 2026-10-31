@@ -165,9 +165,9 @@ struct DesktopCloudLogin {
     oauth: awaken_iam_client::DesktopOAuthClient,
     cache: awaken_iam_client::CredentialCache,
     issuer: String,
-    operation: Arc<std::sync::Mutex<()>>,
+    operation: Arc<awaken_sync::InvariantLock<()>>,
     running: Arc<AtomicBool>,
-    state: Arc<std::sync::Mutex<awaken_admin_config_api::CloudLoginStatusView>>,
+    state: Arc<awaken_sync::InvariantLock<awaken_admin_config_api::CloudLoginStatusView>>,
 }
 
 impl DesktopCloudLogin {
@@ -188,9 +188,9 @@ impl DesktopCloudLogin {
             oauth,
             cache,
             issuer: config.issuer.trim_end_matches('/').to_owned(),
-            operation: Arc::new(std::sync::Mutex::new(())),
+            operation: Arc::new(awaken_sync::InvariantLock::new(())),
             running: Arc::new(AtomicBool::new(false)),
-            state: Arc::new(std::sync::Mutex::new(cloud_login_status(
+            state: Arc::new(awaken_sync::InvariantLock::new(cloud_login_status(
                 awaken_admin_config_api::CloudLoginState::SignInRequired,
             ))),
         })

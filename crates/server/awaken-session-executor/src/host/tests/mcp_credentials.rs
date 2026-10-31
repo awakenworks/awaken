@@ -1163,7 +1163,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .retain_session_publication("mcp-acp-default-relay", Some(&host_acp_snapshot))
         .unwrap();
     let default_relay_managed = default_relay_host.clone();
-    let seen_before = seen.lock().unwrap().len();
+    let seen_before = seen.lock().len();
     let default_generation = generation("mcp-acp-default-relay");
     default_relay_host
         .run_assembly
@@ -1224,7 +1224,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H31"
     );
     {
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert!(seen.len() > seen_before, "H31 route reached upstream");
         assert!(
             seen[seen_before..]

@@ -79,7 +79,7 @@ impl CompletionSink for SettlementWakeup {
 /// | W3 | healthy  | settle / live relay  | waiters woken / sinks fed |
 /// | W4 | poisoned | settle / live relay  | reported; waiters settle by committed read |
 pub struct CompletionRegistry {
-    waiters: std::sync::Mutex<HashMap<String, Vec<ForegroundRegistration>>>,
+    waiters: awaken_sync::InvariantLock<HashMap<String, Vec<ForegroundRegistration>>>,
     next_registration_id: std::sync::atomic::AtomicU64,
     hub: Arc<crate::ThreadEventHub>,
 }

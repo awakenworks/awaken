@@ -580,7 +580,7 @@ mod tests {
         // escapes the Repository boundary. R1(C1,C2)->E1+E2, no success claim.
         use crate::test_support::{FakeContainerProvider, spec};
         use awaken_provisioning_contract::SandboxProvider as _;
-        let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+        let shared = Arc::new(awaken_sync::LeafLock::new(std::collections::HashMap::from([
             ("__fail_repository_import".into(), Vec::new()),
             ("__repository_import_observation".into(), b"fatal: unable to access 'https://user:secret-fixture@example.invalid/': Could not resolve host: example.invalid\n".to_vec()),
         ])));
@@ -613,7 +613,7 @@ mod tests {
         assert!(!error.contains("example.invalid"));
         // R2 success with misleading diagnostic text must remain success:
         // diagnostics cannot override the observed process outcome.
-        shared.lock().unwrap().remove("__fail_repository_import");
+        shared.lock().remove("__fail_repository_import");
         provision(
             container.as_ref(),
             "publisher",
@@ -658,7 +658,6 @@ mod tests {
             provider
                 .shared
                 .lock()
-                .unwrap()
                 .insert("__repository_export_observation".into(), wire);
             let error = tokio::time::timeout(
                 Duration::from_secs(5),

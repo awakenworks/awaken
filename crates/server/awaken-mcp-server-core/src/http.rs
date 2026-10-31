@@ -1,9 +1,8 @@
 // @formal entrypoint mcp.sessionless_stream_lifecycle
 //! Axum-free Streamable HTTP decision kernel.
 
-use std::sync::Mutex;
-
 use async_trait::async_trait;
+use awaken_sync::LeafLock;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use serde_json::Value;
 
@@ -407,26 +406,23 @@ where
 
 #[derive(Default)]
 struct CollectSink {
-    events: Mutex<Vec<Value>>,
+    events: LeafLock<Vec<Value>>,
 }
 
 impl CollectSink {
     fn into_events(self) -> Vec<Value> {
-        self.events.into_inner().expect("MCP SSE event collector")
+        self.events.into_inner()
     }
 }
 
 #[async_trait]
 impl NotifySink for CollectSink {
     async fn notify(&self, method: &str, params: Value) {
-        self.events
-            .lock()
-            .expect("MCP SSE event collector")
-            .push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-            }));
+        self.events.lock().push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        }));
     }
 }
 

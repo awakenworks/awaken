@@ -23,7 +23,9 @@ mod roles;
 mod thread_runs;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use awaken_sync::InvariantLock;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 
@@ -102,9 +104,9 @@ pub struct WorkerPlacedSessions {
     budgets: Arc<SessionBudgets>,
     /// One step projection at a time per Session, so concurrent observers
     /// publish each committed suffix once and in order.
-    step_projections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    step_projections: InvariantLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One Outcome command at a time per Session.
-    outcome_commands: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    outcome_commands: InvariantLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl WorkerPlacedSessions {
@@ -124,8 +126,8 @@ impl WorkerPlacedSessions {
             ports,
             threads,
             budgets,
-            step_projections: Mutex::default(),
-            outcome_commands: Mutex::default(),
+            step_projections: InvariantLock::default(),
+            outcome_commands: InvariantLock::default(),
         }
     }
 

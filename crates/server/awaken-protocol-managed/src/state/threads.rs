@@ -254,7 +254,7 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<Vec<(SessionThread, ThreadTimeEvidence)>, StateError> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let mut threads = vec![(
             Self::primary_thread(record),
@@ -282,7 +282,7 @@ impl ManagedState {
         id: &str,
         thread_id: &str,
     ) -> Result<(SessionThread, ThreadTimeEvidence), StateError> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let internal_thread_id = internal_thread_id(id, thread_id);
         let primary = Self::primary_thread(record);
@@ -350,7 +350,7 @@ impl ManagedState {
         include: impl Fn(&Event) -> bool,
         could_match_without_time: impl Fn(&Event) -> bool,
     ) -> Result<ListEventsResponse, StateError> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock()?;
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         let internal_thread_id = internal_thread_id(id, thread_id);
         if internal_thread_id != id
@@ -524,7 +524,9 @@ impl ManagedState {
         thread_id: &str,
         event: Event,
     ) -> Option<Event> {
-        let sessions = self.sessions.lock().unwrap();
+        // A poisoned cache cannot prove the event's thread owner: the live
+        // stream drops it rather than fabricate visibility.
+        let sessions = self.sessions.lock().ok()?;
         let Some(record) = sessions.get(session_id) else {
             return Self::project_event_for_thread(session_id, thread_id, event, None, false);
         };
@@ -557,7 +559,7 @@ impl ManagedState {
             return self.get_thread(id, thread_id);
         }
         let status = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock()?;
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
             let child = record
                 .child_threads

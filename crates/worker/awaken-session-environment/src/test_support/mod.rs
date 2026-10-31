@@ -24,30 +24,31 @@ use tokio::io::AsyncReadExt;
 #[derive(Default)]
 pub struct FakeContainerProvider {
     /// Readiness is fresh provider state, independent of its realized handles.
-    pub readiness_error: std::sync::Mutex<Option<pc::SandboxError>>,
+    pub readiness_error: awaken_sync::LeafLock<Option<pc::SandboxError>>,
     pub readiness_calls: std::sync::atomic::AtomicUsize,
-    pub checkpoint_formats: std::sync::Mutex<Vec<String>>,
+    pub checkpoint_formats: awaken_sync::LeafLock<Vec<String>>,
     pub observation_calls: std::sync::atomic::AtomicUsize,
     /// One typed observation override; None retains the original unavailable
     /// read. Filesystem test bytes no longer double as provider control state.
-    pub observation: std::sync::Mutex<Option<Result<pc::SandboxObservation, pc::SandboxError>>>,
-    pub observations: std::sync::Mutex<
+    pub observation:
+        awaken_sync::LeafLock<Option<Result<pc::SandboxObservation, pc::SandboxError>>>,
+    pub observations: awaken_sync::LeafLock<
         Vec<(
             awaken_provisioning_contract::SandboxObservationPurpose,
             pc::SandboxEffectFence,
         )>,
     >,
     /// A scripted refusal in the original shared Create entry, before a handle exists.
-    pub create_error: std::sync::Mutex<Option<pc::SandboxError>>,
+    pub create_error: awaken_sync::LeafLock<Option<pc::SandboxError>>,
     pub adopts: std::sync::atomic::AtomicUsize,
     pub creates: std::sync::atomic::AtomicUsize,
     pub disposals: Arc<std::sync::atomic::AtomicUsize>,
-    pub specs: std::sync::Mutex<Vec<pc::SandboxSpec>>,
+    pub specs: awaken_sync::LeafLock<Vec<pc::SandboxSpec>>,
     pub renews: Arc<std::sync::atomic::AtomicUsize>,
     pub hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
     pub resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
     pub fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
-    pub shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    pub shared: Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
 pub struct FakeContainer {
@@ -57,7 +58,7 @@ pub struct FakeContainer {
     pub hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
     pub resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
     pub fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
-    pub shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    pub shared: Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
 pub struct DoneProcess {
@@ -200,12 +201,12 @@ impl awaken_provisioning_contract::SandboxReadiness for FakeContainerProvider {
     }
 
     fn checkpoint_formats(&self) -> Vec<String> {
-        self.checkpoint_formats.lock().unwrap().clone()
+        self.checkpoint_formats.lock().clone()
     }
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
         self.readiness_calls.fetch_add(1, Ordering::SeqCst);
-        match self.readiness_error.lock().unwrap().clone() {
+        match self.readiness_error.lock().clone() {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -290,10 +291,9 @@ impl awaken_provisioning_contract::SandboxProvider for FakeContainerProvider {
         if let pc::SandboxObservationBasis::Effect { effect_fence, .. } = basis {
             self.observations
                 .lock()
-                .unwrap()
                 .push((adoption.observation_purpose, effect_fence.clone()));
         }
-        self.observation.lock().unwrap().clone().unwrap_or_else(|| {
+        self.observation.lock().clone().unwrap_or_else(|| {
             Err(pc::SandboxError::transport(
                 "fixture observation unavailable",
             ))
@@ -380,8 +380,8 @@ impl FakeContainerProvider {
     ) -> Result<Arc<dyn awaken_provisioning_contract::SessionSandbox>, pc::SandboxError> {
         self.creates
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.specs.lock().unwrap().push(spec.clone());
-        if let Some(error) = self.create_error.lock().unwrap().clone() {
+        self.specs.lock().push(spec.clone());
+        if let Some(error) = self.create_error.lock().clone() {
             return Err(error);
         }
         Ok(Arc::new(FakeContainer {
@@ -440,21 +440,15 @@ impl pc::Sandbox for FakeContainer {
         if command.argv.iter().any(|part| part.contains("marker")) {
             self.shared
                 .lock()
-                .unwrap()
                 .insert("marker".into(), b"shared-container-state".to_vec());
         }
         let repository_import = command.argv.iter().any(|part| part == "awaken-repo-clone");
-        let exit_code = if repository_import
-            && self
-                .shared
-                .lock()
-                .unwrap()
-                .contains_key("__fail_repository_import")
-        {
-            23
-        } else {
-            0
-        };
+        let exit_code =
+            if repository_import && self.shared.lock().contains_key("__fail_repository_import") {
+                23
+            } else {
+                0
+            };
         Ok(Box::new(DoneProcess::exited("native-exec", exit_code)))
     }
 
@@ -469,7 +463,6 @@ impl pc::Sandbox for FakeContainer {
         {
             self.shared
                 .lock()
-                .unwrap()
                 .insert(requirement.mount_path.clone(), contents.clone());
             return Ok(pc::RealizedMount {
                 mount_id: requirement.mount_id,
@@ -523,7 +516,7 @@ impl FakeContainer {
     // are no longer a trait obligation or a reachable escape hatch. They stay
     // as this type's own implementation detail, used by its fenced edges.
     pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        if self.shared.lock().unwrap().contains_key("__fail_dispose") {
+        if self.shared.lock().contains_key("__fail_dispose") {
             return Err(pc::SandboxError::backend(
                 "dispose",
                 "injected disposal unavailable",
@@ -620,14 +613,14 @@ impl ToolExecutor for ScriptedHandExecutor {
 }
 
 pub struct ScriptedHandFactory {
-    pub outcomes: std::sync::Mutex<std::collections::VecDeque<ScriptedHandOutcome>>,
+    pub outcomes: awaken_sync::LeafLock<std::collections::VecDeque<ScriptedHandOutcome>>,
     pub binds: std::sync::atomic::AtomicUsize,
 }
 
 impl ScriptedHandFactory {
     pub fn new(outcomes: impl IntoIterator<Item = ScriptedHandOutcome>) -> Arc<Self> {
         Arc::new(Self {
-            outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
+            outcomes: awaken_sync::LeafLock::new(outcomes.into_iter().collect()),
             binds: std::sync::atomic::AtomicUsize::new(0),
         })
     }
@@ -646,7 +639,6 @@ impl HandExecutorFactory for ScriptedHandFactory {
                 outcome: self
                     .outcomes
                     .lock()
-                    .unwrap()
                     .pop_front()
                     .unwrap_or(ScriptedHandOutcome::Success),
             },
@@ -671,7 +663,7 @@ pub fn restart_disposal_authorization(
 #[async_trait]
 impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
     async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
-        let shared = self.shared.lock().unwrap();
+        let shared = self.shared.lock();
         if shared.contains_key("__process_binding_error") {
             return Err(pc::SandboxError::backend("process_binding", "unobservable"));
         }
@@ -705,7 +697,6 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
     fn record_owned_path(&self, path: &str) -> Result<(), pc::SandboxError> {
         self.shared
             .lock()
-            .unwrap()
             .entry(format!("__owned_path:{path}"))
             .or_default();
         Ok(())
@@ -758,7 +749,6 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
             let observation = self
                 .shared
                 .lock()
-                .unwrap()
                 .get("__repository_import_observation")
                 .cloned()
                 .unwrap_or_default();
@@ -771,7 +761,6 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
             let bytes = self
                 .shared
                 .lock()
-                .unwrap()
                 .get("marker")
                 .cloned()
                 .unwrap_or_default();
@@ -784,7 +773,6 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
             let observation = self
                 .shared
                 .lock()
-                .unwrap()
                 .get("__repository_export_observation")
                 .cloned();
             if let Some(observation) = observation {
@@ -805,26 +793,15 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
             });
         }
         let exit_code = if repository_import
-            && self
-                .shared
-                .lock()
-                .unwrap()
-                .contains_key("__fail_repository_import")
+            && self.shared.lock().contains_key("__fail_repository_import")
         {
             23
-        } else if repository_export
-            && self
-                .shared
-                .lock()
-                .unwrap()
-                .contains_key("__fail_repository_export")
-        {
+        } else if repository_export && self.shared.lock().contains_key("__fail_repository_export") {
             19
         } else if repository_export
             && self
                 .shared
                 .lock()
-                .unwrap()
                 .contains_key("__repository_export_observation")
         {
             42
@@ -832,13 +809,9 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
             0
         };
         let unreapable = command.argv.iter().any(|part| part == "--stdio")
-            && self
-                .shared
-                .lock()
-                .unwrap()
-                .contains_key("__unreapable_hand");
+            && self.shared.lock().contains_key("__unreapable_hand");
         let slow_reap = command.argv.iter().any(|part| part == "--stdio")
-            && self.shared.lock().unwrap().contains_key("__slow_reap_hand");
+            && self.shared.lock().contains_key("__slow_reap_hand");
         let process: Box<dyn pc::ProcessHandle> = if unreapable {
             Box::new(UnreapableProcess)
         } else if slow_reap {
@@ -856,12 +829,7 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
         &self,
         _root: &str,
     ) -> Result<Vec<awaken_provisioning_contract::SandboxFile>, pc::SandboxError> {
-        if self
-            .shared
-            .lock()
-            .unwrap()
-            .contains_key("__fail_skill_read")
-        {
+        if self.shared.lock().contains_key("__fail_skill_read") {
             return Err(pc::SandboxError::backend(
                 "read_files",
                 "scripted Skill read outage",
@@ -870,7 +838,6 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
         Ok(self
             .shared
             .lock()
-            .unwrap()
             .iter()
             .map(|(path, bytes)| awaken_provisioning_contract::SandboxFile {
                 path: path.clone(),

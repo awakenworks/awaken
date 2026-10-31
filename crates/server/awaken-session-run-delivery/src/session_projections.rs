@@ -14,8 +14,9 @@
 //! Worker's realization fetches every pinned Resource and Skill bundle from
 //! the content-addressed store and refuses a missing or mismatched one.
 
+use awaken_sync::InvariantLock;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_dispatch_execution::AdmissionError;
 use awaken_dispatch_execution::session_dispatch::{
@@ -109,10 +110,10 @@ impl DispatchProjection {
 pub struct SessionProjections {
     local_workspace: String,
     publications: Option<Arc<dyn PublishedAgentSnapshotSource>>,
-    sessions: Mutex<HashMap<String, Arc<DispatchProjection>>>,
+    sessions: InvariantLock<HashMap<String, Arc<DispatchProjection>>>,
     /// The Workspace of each auxiliary Thread a Session's work runs on (an
     /// Outcome grader's), bound before its first Run.
-    thread_workspaces: Mutex<HashMap<String, String>>,
+    thread_workspaces: InvariantLock<HashMap<String, String>>,
 }
 
 impl SessionProjections {
@@ -126,8 +127,8 @@ impl SessionProjections {
         Self {
             local_workspace: local_workspace.into(),
             publications,
-            sessions: Mutex::default(),
-            thread_workspaces: Mutex::default(),
+            sessions: InvariantLock::default(),
+            thread_workspaces: InvariantLock::default(),
         }
     }
 

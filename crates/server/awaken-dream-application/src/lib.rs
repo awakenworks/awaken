@@ -5,8 +5,8 @@
 use awaken_runtime_contract::agent_bindings::InferenceSpeed;
 use awaken_time::WallClockExt as _;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,6 +18,9 @@ use awaken_session_dream_contract::{
     DreamProcessStore, DreamStatus, DreamStatusEvent, DreamUsage,
 };
 pub use awaken_session_dream_contract::{DreamPolicy, DreamPolicyConfig};
+#[cfg(any(test, feature = "test-support"))]
+use awaken_sync::InvariantLock;
+use awaken_sync::LeafLock;
 use chrono::{DateTime, Utc};
 
 const DEFAULT_PAGE_SIZE: usize = 20;
@@ -333,7 +336,25 @@ struct InMemoryDreamRecords {
 
 #[derive(Default)]
 #[cfg(any(test, feature = "test-support"))]
-pub struct InMemoryDreamProcessStore(Mutex<InMemoryDreamRecords>);
+pub struct InMemoryDreamProcessStore(InvariantLock<InMemoryDreamRecords>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl InMemoryDreamProcessStore {
+    /// The records, refusing a poisoned store as a storage failure: a
+    /// process/policy claim mutates both maps together.
+    fn records(
+        &self,
+    ) -> Result<
+        std::sync::MutexGuard<'_, InMemoryDreamRecords>,
+        awaken_session_dream_contract::DreamProcessStoreError,
+    > {
+        self.0.lock().map_err(|poisoned| {
+            awaken_session_dream_contract::DreamProcessStoreError::Storage(
+                poisoned.to_string().into(),
+            )
+        })
+    }
+}
 
 #[cfg(any(test, feature = "test-support"))]
 #[async_trait]
@@ -342,7 +363,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         &self,
     ) -> Result<Vec<DreamProcessRecord>, awaken_session_dream_contract::DreamProcessStoreError>
     {
-        Ok(self.0.lock().unwrap().processes.values().cloned().collect())
+        Ok(self.records()?.processes.values().cloned().collect())
     }
 
     async fn compare_and_swap_dream_process(
@@ -350,7 +371,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         expected: Option<&DreamProcessRecord>,
         record: DreamProcessRecord,
     ) -> Result<bool, awaken_session_dream_contract::DreamProcessStoreError> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.records()?;
         let current = state.processes.get(&record.process_id);
         if current != expected {
             return Ok(false);
@@ -362,7 +383,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
     async fn dream_policies(
         &self,
     ) -> Result<Vec<DreamPolicyRecord>, awaken_session_dream_contract::DreamProcessStoreError> {
-        Ok(self.0.lock().unwrap().policies.values().cloned().collect())
+        Ok(self.records()?.policies.values().cloned().collect())
     }
 
     async fn compare_and_swap_dream_policy(
@@ -370,7 +391,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         expected: Option<&DreamPolicyRecord>,
         record: DreamPolicyRecord,
     ) -> Result<bool, awaken_session_dream_contract::DreamProcessStoreError> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.records()?;
         let key = (record.workspace_id.clone(), record.memory_store_id.clone());
         let current = state.policies.get(&key);
         if current != expected {
@@ -386,7 +407,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         policy: DreamPolicyRecord,
         process: DreamProcessRecord,
     ) -> Result<bool, awaken_session_dream_contract::DreamProcessStoreError> {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.records()?;
         let key = (policy.workspace_id.clone(), policy.memory_store_id.clone());
         if state.policies.get(&key) != Some(expected_policy)
             || state.processes.contains_key(&process.process_id)
@@ -400,12 +421,12 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
 }
 
 pub struct DreamApplication {
-    cancellations: Mutex<BTreeMap<String, DreamCancellation>>,
+    cancellations: LeafLock<BTreeMap<String, DreamCancellation>>,
     executor: Arc<dyn DreamExecutor>,
     next_id: AtomicU64,
     store: Arc<dyn DreamProcessStore>,
-    session_source: Mutex<Option<Arc<dyn DreamSessionSource>>>,
-    model_readiness: Mutex<Option<Arc<dyn DreamModelReadiness>>>,
+    session_source: LeafLock<Option<Arc<dyn DreamSessionSource>>>,
+    model_readiness: LeafLock<Option<Arc<dyn DreamModelReadiness>>>,
     runtime_budget: Duration,
     /// The composing process's wall clock: every Dream process instant is
     /// stamped on it.
@@ -440,12 +461,12 @@ impl DreamApplication {
             .map(|(id, _)| (id.clone(), DreamCancellation::default()))
             .collect();
         Ok(Self {
-            cancellations: Mutex::new(cancellations),
+            cancellations: LeafLock::new(cancellations),
             executor,
             next_id: AtomicU64::new(next_id),
             store,
-            session_source: Mutex::new(None),
-            model_readiness: Mutex::new(None),
+            session_source: LeafLock::new(None),
+            model_readiness: LeafLock::new(None),
             runtime_budget: DEFAULT_DREAM_RUNTIME_BUDGET,
             clock,
         })
@@ -488,11 +509,11 @@ impl DreamApplication {
     }
 
     pub fn bind_session_source(&self, source: Arc<dyn DreamSessionSource>) {
-        *self.session_source.lock().unwrap() = Some(source);
+        *self.session_source.lock() = Some(source);
     }
 
     pub fn bind_model_readiness(&self, source: Arc<dyn DreamModelReadiness>) {
-        *self.model_readiness.lock().unwrap() = Some(source);
+        *self.model_readiness.lock() = Some(source);
     }
 
     /// Project one Dream, reading the Session's usage when there is a Session
@@ -504,7 +525,7 @@ impl DreamApplication {
     /// still the answer where there is genuinely nothing to read: a Dream with
     /// no Session, or no configured Session source.
     async fn project_process(&self, process: &DreamProcess) -> Result<Dream, DreamApiError> {
-        let source = self.session_source.lock().unwrap().clone();
+        let source = self.session_source.lock().clone();
         let usage = match (
             source,
             process
@@ -631,7 +652,7 @@ impl DreamApplication {
     /// for the process startup's single Managed periodic driver. Every accepted
     /// trigger calls the ordinary `create` path.
     pub async fn tick_policies(self: &Arc<Self>, now: u64) -> Result<Vec<Dream>, DreamApiError> {
-        let source = self.session_source.lock().unwrap().clone();
+        let source = self.session_source.lock().clone();
         let due = self
             .load_policies()
             .await?
@@ -746,7 +767,6 @@ impl DreamApplication {
             let cancellation = DreamCancellation::default();
             self.cancellations
                 .lock()
-                .unwrap()
                 .insert(id.clone(), cancellation.clone());
             let state = self.clone();
             tokio::spawn(async move { state.run_job(id, cancellation).await });
@@ -802,7 +822,7 @@ impl DreamApplication {
         let (source_memory_store_id, session_ids) = validate_create(&params)?;
         let output_behavior = params.output_behavior;
         let model = params.model.into_config();
-        let readiness = self.model_readiness.lock().unwrap().clone();
+        let readiness = self.model_readiness.lock().clone();
         if let Some(readiness) = readiness {
             match readiness.is_ready(workspace_id, &model.id).await {
                 Ok(true) => {}
@@ -881,7 +901,6 @@ impl DreamApplication {
         let cancellation = DreamCancellation::default();
         self.cancellations
             .lock()
-            .unwrap()
             .insert(id.clone(), cancellation.clone());
         let state = self.clone();
         tokio::spawn(async move {
@@ -980,7 +999,7 @@ impl DreamApplication {
             prepared_job.status == DreamStatus::Canceled || cancellation.is_canceled();
         if canceled_after_prepare {
             let _ = self.executor.cancel(&request, Some(&preparation)).await;
-            self.cancellations.lock().unwrap().remove(&id);
+            self.cancellations.lock().remove(&id);
             return;
         }
         let remaining_budget = self
@@ -1055,7 +1074,7 @@ impl DreamApplication {
             }
         };
         if terminal_job.status == DreamStatus::Canceled || cancellation.is_canceled() {
-            self.cancellations.lock().unwrap().remove(&id);
+            self.cancellations.lock().remove(&id);
             return;
         }
         if terminal_job.status == DreamStatus::Completed
@@ -1073,7 +1092,7 @@ impl DreamApplication {
         if !cleanup_completed {
             self.cleanup_job(&id).await;
         }
-        self.cancellations.lock().unwrap().remove(&id);
+        self.cancellations.lock().remove(&id);
     }
 
     async fn cleanup_job(&self, id: &str) {
@@ -1150,7 +1169,7 @@ impl DreamApplication {
             Ok(())
         })
         .await?;
-        self.cancellations.lock().unwrap().remove(id);
+        self.cancellations.lock().remove(id);
         Ok(())
     }
 
@@ -1240,7 +1259,7 @@ impl DreamApplication {
                     Ok(())
                 })
                 .await?;
-            if let Some(cancellation) = self.cancellations.lock().unwrap().get(id) {
+            if let Some(cancellation) = self.cancellations.lock().get(id) {
                 cancellation.cancel();
             }
             canceled
@@ -1736,15 +1755,20 @@ mod tests {
             "no id minted"
         );
         assert!(
-            application.cancellations.lock().unwrap().is_empty(),
+            application.cancellations.lock().is_empty(),
             "no worker started"
         );
-        let records = match store.0.lock() {
-            Err(poison) => poison.into_inner(),
-            Ok(_) => panic!("F original store must remain poisoned"),
-        };
-        assert!(records.processes.is_empty(), "no process persisted");
-        assert!(records.policies.is_empty(), "no policy persisted");
+        assert!(
+            store.0.is_poisoned(),
+            "F original store must remain poisoned"
+        );
+        // A poisoned invariant store refuses every read and write, so no
+        // process or policy can have been persisted behind the tripwire.
+        assert!(
+            store.dream_processes().await.is_err(),
+            "no process persisted"
+        );
+        assert!(store.dream_policies().await.is_err(), "no policy persisted");
     }
 
     #[tokio::test]

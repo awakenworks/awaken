@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["libc", "nix", "rustix", "seccompiler"]
 
 [dependencies]
+awaken-sync.workspace = true
 async-trait.workspace = true
 awaken-provisioning-contract.workspace = true
 serde = { workspace = true, features = ["derive"] }

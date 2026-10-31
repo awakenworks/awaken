@@ -10,7 +10,9 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
+
+use awaken_sync::LeafLock;
 
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
@@ -37,7 +39,7 @@ struct McpCallFenceState {
     in_flight: AtomicUsize,
     cancellation: awaken_runtime_contract::CancellationToken,
     quiesced: Notify,
-    transport: Mutex<Option<Arc<dyn McpToolTransport>>>,
+    transport: LeafLock<Option<Arc<dyn McpToolTransport>>>,
 }
 
 // Only explicit fence handles own admission. Counted permits retain State for
@@ -70,7 +72,7 @@ impl McpCallFence {
                 in_flight: AtomicUsize::new(0),
                 cancellation: awaken_runtime_contract::CancellationToken::new(),
                 quiesced: Notify::new(),
-                transport: Mutex::new(None),
+                transport: LeafLock::new(None),
             }),
         }))
     }
@@ -150,7 +152,7 @@ impl McpCallFenceState {
     fn release_transport(&self) {
         // Never run a transport destructor under the ownership mutex. A cached
         // consumer is only a weak view; it cannot prolong this local channel.
-        let transport = self.transport.lock().unwrap().take();
+        let transport = self.transport.lock().take();
         drop(transport);
     }
 }
@@ -235,7 +237,7 @@ impl RevocableMcpTransport {
     fn transport(&self) -> Result<Arc<dyn McpToolTransport>, McpTransportError> {
         self.fence
             .upgrade()
-            .and_then(|state| state.transport.lock().unwrap().clone())
+            .and_then(|state| state.transport.lock().clone())
             .ok_or_else(|| McpTransportError::NotDispatched("MCP generation is draining".into()))
     }
 
@@ -279,7 +281,7 @@ pub fn revocable_transport(
         supports_task_tools_call: inner.supports_task_tools_call(),
         supports_task_cancel: inner.supports_task_cancel(),
     });
-    *fence.0.state.transport.lock().unwrap() = Some(inner);
+    *fence.0.state.transport.lock() = Some(inner);
     (transport, fence)
 }
 

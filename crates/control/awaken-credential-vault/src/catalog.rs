@@ -738,7 +738,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         workspace_id: &str,
         vault: ManagedVault,
     ) -> Result<(), CredentialError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let existing_owner = state
             .vaults
             .get(&vault.id)
@@ -769,7 +769,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         workspace_id: &str,
         vault: ManagedVault,
     ) -> Result<ManagedVault, CredentialError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         if !managed_vault_workspace_admitted(workspace_id, vault.workspace_id.as_str(), None) {
             return Err(CredentialError::InvalidSource(
                 "Managed Vault workspace does not match its authority".into(),
@@ -800,7 +800,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         expected_revision: u64,
         vault: ManagedVault,
     ) -> Result<(), ManagedVaultMutationError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         admit_managed_vault_replacement(
             workspace_id,
             state.vaults.get(&vault.id),
@@ -817,9 +817,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         id: &str,
     ) -> Result<Option<ManagedVault>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .vaults
             .get(id)
             .filter(|vault| vault.workspace_id == workspace_id)
@@ -828,9 +826,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
 
     async fn list_vaults(&self, workspace_id: &str) -> Result<Vec<ManagedVault>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .vaults
             .values()
             .filter(|vault| vault.workspace_id == workspace_id)
@@ -844,9 +840,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         id: &str,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .vault_credentials
             .get(id)
             .filter(|credential| credential.workspace_id == workspace_id)
@@ -859,9 +853,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         source_id: &CredentialSourceId,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .vault_credentials
             .values()
             .find(|credential| {
@@ -876,9 +868,7 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         vault_id: &str,
     ) -> Result<Vec<ManagedVaultCredential>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .vault_credentials
             .values()
             .filter(|credential| {

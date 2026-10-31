@@ -900,7 +900,7 @@ impl AcpRunExecutor {
             .with_tool_call_limit(activation.snapshot.resolved_spec.max_steps);
             let (mut injections, interrupt_forwarder) =
                 tool_continuation::attempt_interrupt_channel(context);
-            let client_execution = Arc::new(std::sync::Mutex::new(None));
+            let client_execution = Arc::new(awaken_sync::InvariantLock::new(None));
             let cancel = tool_continuation::wait_for_tool_execution(
                 context,
                 self.owned_tool_continuation.clone(),
@@ -956,11 +956,15 @@ impl AcpRunExecutor {
             // Recheck before projecting any returned fact into local Run truth;
             // the replacement owner remains the only attempt allowed to commit.
             verify_attempt_ownership(context.ownership.as_deref()).await?;
+            // A poisoned client-execution slot cannot tell whether the CLI
+            // left a tool call pending, so the Step ends indeterminate.
             let automatic_call = tool_continuation::take_runtime_execution(
                 &client_execution,
                 self.owned_tool_continuation.as_deref(),
-            );
-            let outcome = tool_continuation::client_execution_outcome(&client_execution, outcome);
+            )
+            .map_err(|_| Error::Indeterminate)?;
+            let outcome = tool_continuation::client_execution_outcome(&client_execution, outcome)
+                .map_err(|_| Error::Indeterminate)?;
             // Keep the negotiated session id for the next relaunched Step, and fold
             // this Step's token usage into the Run total.
             acp_session_id = config.session_id.take();

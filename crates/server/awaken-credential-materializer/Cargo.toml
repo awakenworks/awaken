@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["awaken-provider-genai"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-credential-contract.workspace = true

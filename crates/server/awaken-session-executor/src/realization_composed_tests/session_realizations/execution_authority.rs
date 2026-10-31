@@ -293,7 +293,7 @@ mod tests {
                 assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(40));
                 assert!(matches!(
                     f.installed_sessions.test_map().try_lock(),
-                    Err(std::sync::TryLockError::WouldBlock)
+                    Err(awaken_sync::TryLockFailure::WouldBlock)
                 ));
                 Ok(())
             })
@@ -328,7 +328,7 @@ mod tests {
             ));
             assert!(matches!(
                 f.installed_sessions.test_map().try_lock(),
-                Err(std::sync::TryLockError::WouldBlock)
+                Err(awaken_sync::TryLockFailure::WouldBlock)
             ));
             Err(io::Error::other("effect failed"))
         });
@@ -374,7 +374,7 @@ mod tests {
             ));
             assert!(matches!(
                 f.installed_sessions.test_map().try_lock(),
-                Err(std::sync::TryLockError::WouldBlock)
+                Err(awaken_sync::TryLockFailure::WouldBlock)
             ));
             Err(io::Error::other("provider effect failed"))
         });

@@ -13,6 +13,7 @@ authority = "mcp-server-core"
 description = "Runtime-neutral MCP server lifecycle, dispatch, and Streamable HTTP semantics"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-mcp-wire.workspace = true
 async-trait.workspace = true
 serde.workspace = true

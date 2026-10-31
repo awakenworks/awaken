@@ -74,9 +74,8 @@ mod scoped_cases {
         runtime
             .committed_by_thread
             .lock()
-            .unwrap()
             .insert("observed".into(), Vec::new());
-        runtime.run_ids_by_thread.lock().unwrap().insert(
+        runtime.run_ids_by_thread.lock().insert(
             "observed".into(),
             awaken_agent_contract::agent::run::Id("run".into()),
         );

@@ -5,11 +5,10 @@
 // @formal reason: unchanged and creates no second Session store or lifecycle authority. Evidence:
 // @formal reason: session.lifecycle.session_state, ADR-0075, and the adjacent final-scan decision-table
 // @formal reason: tests; this is a product-requirement classification, not a direct formal-proof claim.
-use std::sync::RwLock;
-
 use awaken_session_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
 
 use awaken_session_contract::SessionRepository;
+use awaken_sync::LeafRwLock;
 
 /// Secret-free cutover facts from a final Session scan and global phase count.
 ///
@@ -28,16 +27,13 @@ pub struct SessionEventBatchCutoverValidationSnapshot {
 /// Read-only process-local projection published by the sole Session supervisor.
 #[derive(Default)]
 pub struct SessionEventBatchCutoverValidationSource {
-    latest: RwLock<Option<SessionEventBatchCutoverValidationSnapshot>>,
+    latest: LeafRwLock<Option<SessionEventBatchCutoverValidationSnapshot>>,
 }
 
 impl SessionEventBatchCutoverValidationSource {
     #[must_use]
     pub fn snapshot(&self) -> Option<SessionEventBatchCutoverValidationSnapshot> {
-        *self
-            .latest
-            .read()
-            .expect("Session Event-batch cutover validation lock poisoned")
+        *self.latest.read()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -62,10 +58,7 @@ impl SessionEventBatchCutoverValidationSource {
         event_batch_failures: usize,
         restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
-        let mut latest = self
-            .latest
-            .write()
-            .expect("Session Event-batch cutover validation lock poisoned");
+        let mut latest = self.latest.write();
         let generation = latest.map_or(1, |snapshot| snapshot.generation.saturating_add(1));
         let snapshot = SessionEventBatchCutoverValidationSnapshot {
             generation,

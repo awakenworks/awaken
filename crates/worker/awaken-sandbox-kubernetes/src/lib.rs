@@ -28,9 +28,10 @@
 #![warn(unreachable_pub)]
 
 use awaken_container_contract::RuntimeError;
+use awaken_sync::LeafLock;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use async_trait::async_trait;
@@ -194,7 +195,7 @@ pub struct K8sRuntime {
     create_transport: Option<Arc<dyn K8sCreateTransport>>,
     create_mode_frozen: AtomicBool,
     creation_attempts:
-        Mutex<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
+        LeafLock<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
     /// The composing process's wall clock: Sandbox effect fences are judged on
     /// it. A runtime composed without one judges no fence (fail closed).
     clock: Option<Arc<dyn awaken_time::WallClock>>,
@@ -289,7 +290,7 @@ impl K8sRuntime {
             image_prewarm: None,
             create_transport: None,
             create_mode_frozen: AtomicBool::new(false),
-            creation_attempts: Mutex::new(Default::default()),
+            creation_attempts: LeafLock::new(Default::default()),
             clock: None,
             unschedulable_wait: awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT,
             pod_bounds: awaken_container_contract::K8sPodBounds::default(),
@@ -406,7 +407,7 @@ impl K8sRuntime {
             image_prewarm: None,
             create_transport: None,
             create_mode_frozen: AtomicBool::new(false),
-            creation_attempts: Mutex::new(Default::default()),
+            creation_attempts: LeafLock::new(Default::default()),
             clock: Some(awaken_time::system_clock()),
             unschedulable_wait: awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT,
             pod_bounds: awaken_container_contract::K8sPodBounds::default(),
@@ -420,7 +421,6 @@ impl K8sRuntime {
     ) -> Arc<K8sCreationAttemptGate> {
         self.creation_attempts
             .lock()
-            .expect("Kubernetes creation attempt registry lock poisoned")
             .entry(K8sCreationAttemptKey::new(scope, fence))
             .or_default()
             .clone()
@@ -433,7 +433,6 @@ impl K8sRuntime {
     ) -> Option<Arc<K8sCreationAttemptGate>> {
         self.creation_attempts
             .lock()
-            .expect("Kubernetes creation attempt registry lock poisoned")
             .get(&K8sCreationAttemptKey::new(scope, fence))
             .cloned()
     }

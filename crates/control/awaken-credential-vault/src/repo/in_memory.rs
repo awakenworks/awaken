@@ -12,7 +12,9 @@
 // @formal reason: authority remains the neutral repository contract and external durable adapters.
 //! Canonical in-memory credential repository used by tests and fixtures.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, sync::MutexGuard};
+
+use awaken_sync::InvariantLock;
 
 use super::*;
 
@@ -47,7 +49,7 @@ pub(crate) struct RepoState {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryCredentialRepo {
-    pub(crate) state: Mutex<RepoState>,
+    pub(crate) state: InvariantLock<RepoState>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -55,6 +57,12 @@ impl InMemoryCredentialRepo {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The repository state: one mutex keeps every map consistent inside a
+    /// transaction, so a poisoned state is refused as a storage failure.
+    pub(crate) fn state(&self) -> Result<MutexGuard<'_, RepoState>, CredentialError> {
+        Ok(self.state.lock()?)
     }
 }
 
@@ -82,11 +90,7 @@ impl RepoState {
 #[async_trait::async_trait]
 impl CredentialRepo for InMemoryCredentialRepo {
     async fn put(&self, source: CredentialSource) -> Result<(), CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
-            .rows
-            .insert(source.id.0.clone(), source);
+        self.state()?.rows.insert(source.id.0.clone(), source);
         Ok(())
     }
 
@@ -94,7 +98,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         &self,
         source: CredentialSource,
     ) -> Result<CredentialSource, CredentialError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         Ok(state
             .rows
             .entry(source.id.0.clone())
@@ -103,9 +107,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
     }
 
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
+        self.state()?
             .rows
             .get(&id.0)
             .cloned()
@@ -114,9 +116,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
 
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .rows
             .values()
             .filter(|s| s.workspace_id == workspace_id)
@@ -130,7 +130,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
         intent.validate_for_begin(now_unix_ms)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         if let Some(durable) = state.intents.get(&intent.after.id.0) {
             return if durable.matches_logical_command(&intent) {
                 Ok(false)
@@ -165,7 +165,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
         let ready = intent.with_material_ready()?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let durable = state.intents.get_mut(&intent.after.id.0).ok_or_else(|| {
             CredentialError::MutationConflict(
                 "credential material mutation has no durable pending fact".into(),
@@ -184,7 +184,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let current_after = state.rows.get(&intent.after.id.0);
         let current_before = intent
             .before
@@ -208,9 +208,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
+        self.state()?
             .intents
             .iter()
             .map(|(source_id, intent)| {
@@ -230,7 +228,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         else {
             return Ok(None);
         };
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let Some(durable) = state.intents.get_mut(&intent.after.id.0) else {
             return Ok(None);
         };
@@ -248,7 +246,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let durable = state.intents.get(&intent.after.id.0).ok_or_else(|| {
             CredentialError::MutationConflict("credential abort has no durable pending fact".into())
         })?;
@@ -264,7 +262,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<(), CredentialError> {
         intent.validate()?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let Some(durable) = state.intents.get(&intent.after.id.0) else {
             return Ok(());
         };
@@ -275,9 +273,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
 
     async fn material_refs(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .rows
             .values()
             .flat_map(|source| source.material_refs().cloned())
@@ -285,18 +281,12 @@ impl CredentialRepo for InMemoryCredentialRepo {
     }
 
     async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
-            .pools
-            .insert(pool.id.0.clone(), pool);
+        self.state()?.pools.insert(pool.id.0.clone(), pool);
         Ok(())
     }
 
     async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
+        self.state()?
             .pools
             .get(&id.0)
             .cloned()
@@ -305,9 +295,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
 
     async fn list_pools(&self, workspace_id: &str) -> Result<Vec<CredentialPool>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .pools
             .values()
             .filter(|p| p.workspace_id == workspace_id)
@@ -327,7 +315,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         pending
             .validate_for_begin(now_unix_ms)
             .map_err(invalid_pending_mutation)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         if let Some(durable) = state.managed_mutations.get(&pending.after_source.id.0) {
             return if durable.matches_logical_command(&pending) {
                 Ok(false)
@@ -356,7 +344,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
         let plan = managed_credential_commit_plan(pending)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let durable = state
             .managed_mutations
             .get(&pending.after_source.id.0)
@@ -502,7 +490,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending_mutation)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let durable = state
             .managed_mutations
             .get_mut(&pending.after_source.id.0)
@@ -526,9 +514,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
     async fn pending_managed_mutations(
         &self,
     ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError> {
-        self.state
-            .lock()
-            .expect("credential repo")
+        self.state()?
             .managed_mutations
             .iter()
             .map(|(source_id, pending)| {
@@ -549,7 +535,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             return Ok(None);
         };
         claimed.validate().map_err(invalid_pending_mutation)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let Some(durable) = state.managed_mutations.get_mut(&pending.after_source.id.0) else {
             return Ok(None);
         };
@@ -567,7 +553,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending_mutation)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let durable = state
             .managed_mutations
             .get(&pending.after_source.id.0)
@@ -594,7 +580,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError> {
         pending.validate().map_err(invalid_pending_mutation)?;
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let Some(durable) = state.managed_mutations.get(&pending.after_source.id.0) else {
             return Ok(());
         };
@@ -611,9 +597,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
         let mut events = self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .managed_rollouts
             .values()
             .filter(|stored| !stored.delivered)
@@ -628,9 +612,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         event_id: &str,
     ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
         Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .managed_rollouts
             .get(event_id)
             .map(|stored| stored.event.clone()))
@@ -640,7 +622,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         &self,
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         let Some(stored) = state.managed_rollouts.get_mut(&rollout.id) else {
             return Err(CredentialError::MutationConflict(
                 "Managed credential redelivery has no exact receipt".into(),
@@ -659,7 +641,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         &self,
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
-        let mut state = self.state.lock().expect("credential repo");
+        let mut state = self.state()?;
         if state
             .managed_rollouts
             .get(&rollout.id)
@@ -709,9 +691,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
 
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {
         let mut vaults = self
-            .state
-            .lock()
-            .expect("credential repo")
+            .state()?
             .vaults
             .values()
             .filter(|vault| vault.deletion_requested())

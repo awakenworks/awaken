@@ -8,7 +8,7 @@
 //! adapter; it receives only the resulting immutable candidates.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_acp_contract::AcpPublicationCapability;
 use awaken_agent_config::ModelSelection;
@@ -29,6 +29,7 @@ use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
 };
+use awaken_sync::LeafLock;
 use awaken_tenancy::ScopeId;
 
 mod a2a_remote;
@@ -68,7 +69,7 @@ pub struct CatalogModelPublicationResolver {
     a2a_cards: Arc<dyn A2aCardDiscovery>,
     executor_capabilities: Arc<Vec<ExecutorModelCapability>>,
     acp_capabilities: Arc<Vec<AcpPublicationCapability>>,
-    credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
+    credential_selection_sequences: Arc<LeafLock<HashMap<String, u64>>>,
     /// The process's one wall clock: the instant credential access and Worker
     /// capability observations are judged at.
     clock: Arc<dyn awaken_time::WallClock>,

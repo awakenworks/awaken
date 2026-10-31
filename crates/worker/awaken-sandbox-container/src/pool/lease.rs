@@ -124,9 +124,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use awaken_sync::LeafLock;
 use awaken_time::{Expiry, UtcTime, WallClock};
 
 use awaken_provisioning_contract as pc;
@@ -688,7 +689,7 @@ pub(crate) struct WarmLeaseLedger {
     store: LeaseStore,
     /// Scopes whose record this pool renews: minted and neither checked out,
     /// released after disposal, nor abandoned to expiry.
-    held: Mutex<BTreeSet<String>>,
+    held: LeafLock<BTreeSet<String>>,
     /// One reclamation pass at a time per pool; passes of different pools are
     /// serialized by the claim rename instead.
     reclaiming: tokio::sync::Mutex<()>,
@@ -698,7 +699,7 @@ impl WarmLeaseLedger {
     pub(crate) fn new(store: LeaseStore) -> Self {
         Self {
             store,
-            held: Mutex::new(BTreeSet::new()),
+            held: LeafLock::new(BTreeSet::new()),
             reclaiming: tokio::sync::Mutex::new(()),
         }
     }
@@ -709,7 +710,7 @@ impl WarmLeaseLedger {
     }
 
     fn held(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
-        self.held.lock().expect("warm lease ledger mutex")
+        self.held.lock()
     }
 
     /// L4: the record exists before this returns `Ok`.

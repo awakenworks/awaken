@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["axum", "k8s-openapi", "kube", "reqwest"]
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-time.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-outbound-http.workspace = true

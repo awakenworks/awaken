@@ -91,6 +91,9 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-tool-contract": ("SDK release", ()),
     "awaken-lease-contract": ("SDK release", ()),
     "awaken-time": ("SDK release", ()),
+    # The lock-poisoning law (docs/design/lock-poisoning.md): a small vocabulary
+    # every layer reads, contracts included, so it stays a depth-0 leaf.
+    "awaken-sync": ("SDK release", ()),
     "awaken-runtime-contract": ("SDK release", ()),
     # Existing separately published Web vocabulary owns the pure policy kernel;
     # merging it into Runtime would reverse the extension ownership boundary.

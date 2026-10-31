@@ -20,7 +20,7 @@ struct AppliedMemoryReconciliation {
 /// closure that retires its live Copy guards without invoking their teardown.
 #[derive(Debug, Default)]
 pub struct MemoryReconciliationAck {
-    applied: std::sync::Mutex<Option<AppliedMemoryReconciliation>>,
+    applied: awaken_sync::InvariantLock<Option<AppliedMemoryReconciliation>>,
 }
 
 impl MemoryReconciliationAck {

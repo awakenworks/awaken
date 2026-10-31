@@ -22,6 +22,7 @@ separation = "publish"
 # wiring and nothing about any domain capability.
 
 [dependencies]
+awaken-sync.workspace = true
 serde_json = { workspace = true }
 axum = { workspace = true }
 futures = "0.3"

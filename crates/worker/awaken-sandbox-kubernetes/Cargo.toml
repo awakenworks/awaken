@@ -21,6 +21,7 @@ separation = "isolation"
 isolates = ["k8s-openapi", "kube"]
 
 [dependencies]
+awaken-sync.workspace = true
 # The provider whose `ContainerRuntime` port this engine implements, and the
 # shared engine vocabulary (labels, fence/restoration codecs, recovery). Like
 # every real engine it reaches Session Pods over the `connection` transport,

@@ -46,7 +46,7 @@ fn operation(commit: ThreadCommit) -> CommitOperation {
 
 fn at_sequence(sequence: u64) -> MemoryCommitCoordinator {
     MemoryCommitCoordinator {
-        state: Arc::new(Mutex::new(CommitState {
+        state: Arc::new(InvariantLock::new(CommitState {
             sequence,
             ..CommitState::default()
         })),
@@ -316,10 +316,11 @@ async fn poisoned_reference_state_refuses_inspection_and_apply_without_recovery(
             .is_err(),
         "P3 replay apply"
     );
-    let unavailable = store.state.lock().unwrap_err();
-    assert_eq!(
-        format!("{:?}", *unavailable.into_inner()),
-        before,
+    // The invariant lock never hands out a poisoned guard; its Debug view
+    // still shows the guarded state, which must be the untouched prefix.
+    assert!(store.state.lock().is_err(), "P2 refused");
+    assert!(
+        format!("{:?}", store.state).contains(&format!("data: {before}, poisoned: true")),
         "P2+P3 complete prefix stutter"
     );
 }

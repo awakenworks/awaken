@@ -14,6 +14,7 @@ description = "Volatile Session, Work, Environment and sandbox-policy store fixt
 separation = "test-support"
 
 [dependencies]
+awaken-sync.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }

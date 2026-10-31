@@ -15,7 +15,7 @@ pub(super) const INTERRUPT: u8 = 4;
 /// successful send requests delivery only; it never certifies process exit.
 pub(super) async fn send_signal(
     control: &UnixStream,
-    writer: &std::sync::Mutex<()>,
+    writer: &awaken_sync::InvariantLock<()>,
     byte: u8,
 ) -> io::Result<()> {
     loop {
