@@ -701,3 +701,64 @@ fn terminal_cleanup_laws_decide_retirement_through_the_environment_transition() 
         );
     }
 }
+
+#[test]
+fn admission_facts_read_the_rebuild_source_evidence_only() {
+    // Cause/effect table of `SessionEnvironmentFacts::project_admission`.
+    // Causes: C1 the intent carries no evidence / open / closed; C2 access
+    // absent / present. Effects: S1 `source_closed` is exactly the evidence's
+    // closure and `source_access` exactly its access presence (no evidence:
+    // both false, the historical pending row); S2 every other fact equals the
+    // ordinary projection under the intent's asserted lease; S3 the ordinary
+    // projection asserts no source fact.
+    use crate::state::{RebuildSourceAccess, RebuildSourceEvidence};
+    let mut session = root(None);
+    session.environment = resident(Some(NOW - 1), true);
+    session.realization = Some(lease(NOW + 1));
+    let intent = crate::state::SessionEnvironmentEffectIntent::new(
+        "facts",
+        crate::state::SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: None,
+        },
+        Some(lease(NOW + 1)),
+    )
+    .from_binding("binding");
+    let ordinary = facts(&session, NOW, intent.realization());
+    assert!(
+        !ordinary.source_closed && !ordinary.source_access,
+        "S3 ordinary projection"
+    );
+    let mut cases = vec![(None, false, false)];
+    for closed in [false, true] {
+        for access in [
+            None,
+            Some(RebuildSourceAccess::RetainedVolume),
+            Some(RebuildSourceAccess::Repository),
+        ] {
+            cases.push((
+                Some(RebuildSourceEvidence::new(closed, access)),
+                closed,
+                access.is_some(),
+            ));
+        }
+    }
+    for (evidence, closed, access) in cases {
+        let carried = match evidence {
+            Some(evidence) => intent.clone().with_rebuild_source(evidence),
+            None => intent.clone(),
+        };
+        let projected =
+            crate::state::SessionEnvironmentFacts::project_admission(&session, NOW, &carried);
+        assert_eq!(projected.source_closed, closed, "S1 closed {evidence:?}");
+        assert_eq!(projected.source_access, access, "S1 access {evidence:?}");
+        assert_eq!(
+            crate::state::SessionEnvironmentFacts {
+                source_closed: false,
+                source_access: false,
+                ..projected
+            },
+            ordinary,
+            "S2 {evidence:?}"
+        );
+    }
+}

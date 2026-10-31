@@ -351,6 +351,7 @@ fn an_environment_refusal_reads_its_own_recovery_classification() {
         Rejection::MaterializationPending,
         Rejection::UnsupportedContinuationTopology,
         Rejection::MemoryEvidenceUnproven,
+        Rejection::RebuildSourceUnavailable,
     ];
     let mut refusals: Vec<EnvironmentRefusal> = vec![
         Receipt::Mismatch.into(),

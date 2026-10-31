@@ -48,6 +48,7 @@ pub struct LocalRetirementTransition {
 /// Session lifecycle lock. Every authority remains in its existing typed value;
 /// this transient view neither mirrors the installed Session nor survives the call.
 struct UnavailableEnvironmentRecovery<'a> {
+    peers: crate::peers::Peers<'a>,
     thread: &'a str,
     binding: &'a str,
     source_generation_id: Option<&'a str>,
@@ -55,8 +56,29 @@ struct UnavailableEnvironmentRecovery<'a> {
     revoked_durable: Option<&'a RetiringSessionEnvironment>,
     policy: SessionEnvironmentUnavailablePolicy,
     provider: &'a crate::session_environment::SandboxProviderRoles,
+    spec: &'a awaken_provisioning_contract::SandboxSpec,
     handle: &'a awaken_provisioning_contract::SandboxHandle,
     observation: &'a awaken_provisioning_contract::SandboxObservation,
+}
+
+/// Whether the Session's frozen Resources include a Repository input a
+/// Rebuild can check out again: the exact desired transition when one is
+/// staged, else the staged Repository activations.
+fn session_has_repository_input(
+    sessions: &crate::session_realizations::SessionRealizations,
+    thread: &str,
+) -> Result<bool, RealizationError> {
+    Ok(sessions
+        .read_realization(thread, |r| match r.staging().transition.as_ref() {
+            Some(transition) => transition.desired().resources.inputs().iter().any(|input| {
+                matches!(
+                    input.source,
+                    session_resource::ResolvedInputSource::Repository { .. }
+                )
+            }),
+            None => !r.staging().resources.repositories.is_empty(),
+        })?
+        .unwrap_or(false))
 }
 
 impl crate::environment_holding::EnvironmentHolding {
@@ -304,6 +326,7 @@ impl crate::environment_holding::EnvironmentHolding {
         resident: Option<&Arc<crate::session_environment::SessionEnvironment>>,
     ) -> Result<SessionEnvironmentAdoptionDisposition, RealizationError> {
         let UnavailableEnvironmentRecovery {
+            peers,
             thread,
             binding,
             source_generation_id,
@@ -311,6 +334,7 @@ impl crate::environment_holding::EnvironmentHolding {
             revoked_durable,
             policy,
             provider,
+            spec,
             handle,
             observation,
         } = recovery;
@@ -323,6 +347,44 @@ impl crate::environment_holding::EnvironmentHolding {
             .adoption()
             .validate_closed_observation(handle, observation)
             .map_err(RealizationError::from)?;
+        // Ask the same Root before consuming the captured old owner, with the
+        // evidence it decides a Rebuild on (rebuild_source tables RS/RA): an
+        // open source stays pending and keeps the old owner; a closed source
+        // with nothing to rebuild from is refused for good. Unowned direct
+        // Threads keep the original recovery policy.
+        let rebuild_evidence = match policy {
+            SessionEnvironmentUnavailablePolicy::Rebuild => {
+                let evidence = crate::rebuild_source::RebuildSourceObservation {
+                    observation,
+                    domain: crate::rebuild_source::RebuildSourceDomain::of(provider),
+                    // Holding the source's owner means it ran in this live
+                    // incarnation, whose own supervision observed its end; a
+                    // cold source's incarnation end is not recorded here.
+                    incarnation_end: if resident.is_some() || revoked_durable.is_some() {
+                        crate::rebuild_source::BoundIncarnationEnd::Supervised
+                    } else {
+                        crate::rebuild_source::BoundIncarnationEnd::Unrecorded
+                    },
+                    filesystem_continuity: spec.filesystem_continuity,
+                    has_repository: session_has_repository_input(&self.sessions, thread)?,
+                }
+                .evidence();
+                let intent = peers
+                    .authority
+                    .new_environment_effect_intent(
+                        thread,
+                        awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
+                            source_generation_id: source_generation_id.map(str::to_owned),
+                        },
+                        Some(binding),
+                    )?
+                    .with_rebuild_source(evidence);
+                self.authorize_environment_effect_before_io(peers, thread, &intent)
+                    .await?;
+                Some(evidence)
+            }
+            SessionEnvironmentUnavailablePolicy::Reject => None,
+        };
         // Cause/effect decision table: C1 exact provider evidence is closed;
         // C2 policy is Reject/Rebuild; C3 the current owner is the captured
         // Revocation, Resident, pending adoption, Vacant, or protected/stale.
@@ -367,11 +429,18 @@ impl crate::environment_holding::EnvironmentHolding {
                         "lost the exact sandbox recovery fence for Session {thread}"
                     )));
                 }
+                let evidence = rebuild_evidence.ok_or_else(|| {
+                    RealizationError::invariant(
+                        "a consumed closed source has no admitted Rebuild evidence",
+                    )
+                })?;
                 self.sessions.update_realization(thread, |r| {
-                    r.environment_mut().rebuild_source = Some((
-                        binding.to_string(),
-                        source_generation_id.map(str::to_string),
-                    ));
+                    r.environment_mut().rebuild_source =
+                        Some(crate::realization_state::PendingRebuildSource {
+                            binding: binding.to_string(),
+                            source_generation_id: source_generation_id.map(str::to_string),
+                            evidence,
+                        });
                 })?;
                 Ok(SessionEnvironmentAdoptionDisposition::RebuildRequired)
             }
@@ -1034,20 +1103,9 @@ impl crate::environment_holding::EnvironmentHolding {
                         "retained Session Environment Candidate is no longer Ready",
                     ));
                 }
-                // Ask the same Root before consuming the captured old owner.
-                // A pending Managed Rebuild must retain that exact owner;
-                // unowned direct Threads keep the original recovery policy.
-                if unavailable_policy == SessionEnvironmentUnavailablePolicy::Rebuild {
-                    exec.authorize_environment_effect_before_io(peers,
-                        thread,
-                        &peers.authority.new_environment_effect_intent(thread, awaken_session_contract::SessionEnvironmentEffectKind::Rebuild {
-                            source_generation_id: source_generation_id.map(str::to_owned),
-                        },
-                        Some(encoded))?,
-                    ).await?;
-                }
                 exec.record_unavailable_session_environment_under_lifecycle(lifecycle,
                     UnavailableEnvironmentRecovery {
+                        peers,
                         thread,
                         binding: encoded,
                         source_generation_id,
@@ -1055,6 +1113,7 @@ impl crate::environment_holding::EnvironmentHolding {
                         revoked_durable: revoked_owner.as_ref(),
                         policy: unavailable_policy,
                         provider,
+                        spec: &spec,
                         handle: &handle,
                         observation: &observation,
                     },

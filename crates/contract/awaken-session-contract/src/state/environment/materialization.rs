@@ -1,9 +1,11 @@
 // @formal surface requirement=session.lifecycle.session_state
 // @formal reason: Static owner: immutable materialization facts in the existing Session root.
-// @formal reason: Dynamic path: the controlled Environment command admits the first Create before I/O,
-// @formal reason: and receipt/replacement validation preserves its exact original value. Provider request
-// @formal reason: closure remains provider-owned; this adds no ledger, service or physical takeover grant.
-//! First materialization provenance owned by the existing Session aggregate.
+// @formal reason: Dynamic path: the controlled Environment command admits the first Create or a Rebuild
+// @formal reason: before I/O, and receipt/replacement validation preserves its exact admitted value. Provider
+// @formal reason: request closure remains provider-owned; this adds no ledger, service or physical takeover.
+//! Materialization provenance owned by the existing Session aggregate: the
+//! effect that realized the current source substrate (`origin`) and the one
+//! admitted Create or Rebuild still in flight (`pending`).
 
 use super::{
     SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceiptError,
@@ -24,9 +26,11 @@ pub struct SessionEnvironmentMaterialization {
 }
 
 impl SessionEnvironmentMaterialization {
-    /// Project the original Create identity for cold terminal observation.
-    /// Expiry is historical; current cleanup authorization is supplied separately.
-    pub fn original_create_fence(
+    /// Project the fence of the effect that materialized the Session's
+    /// substrate (the in-flight Create or Rebuild, else the one that realized
+    /// the current source) for cold observation. Expiry is historical; current
+    /// cleanup authorization is supplied separately.
+    pub fn materializing_effect_fence(
         materialization: Option<&Self>,
         session_id: &str,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, SessionEnvironmentReceiptError>
@@ -36,7 +40,10 @@ impl SessionEnvironmentMaterialization {
             .ok_or(SessionEnvironmentReceiptError::MaterializationUnknown)?;
         intent.verify()?;
         if intent.session_id().as_str() != session_id
-            || !matches!(intent.kind(), SessionEnvironmentEffectKind::Create)
+            || !matches!(
+                intent.kind(),
+                SessionEnvironmentEffectKind::Create | SessionEnvironmentEffectKind::Rebuild { .. }
+            )
         {
             return Err(SessionEnvironmentReceiptError::Mismatch);
         }
@@ -123,17 +130,26 @@ impl SessionEnvironmentMaterialization {
 
     /// Adopt/reservation may use only a completed known origin. An explicit
     /// fresh-empty fact or unfinished Create/Rebuild cannot be replaced by a
-    /// late ordinary receipt. Legacy outer None keeps its original pure law.
+    /// late ordinary receipt. A Rebuild replaces a completed known origin, and
+    /// the only unfinished effect it may meet is itself. Legacy outer None
+    /// keeps its original pure law.
     pub(crate) fn validate_existing_origin_effect(
         &self,
         intent: &SessionEnvironmentEffectIntent,
     ) -> Result<(), SessionEnvironmentReceiptError> {
-        if matches!(
-            intent.kind(),
+        let pending_other = self
+            .pending
+            .as_deref()
+            .is_some_and(|pending| pending.effect_id() != intent.effect_id());
+        let refused = match intent.kind() {
             SessionEnvironmentEffectKind::Adopt
-                | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
-        ) && (self.origin.is_none() || self.pending.is_some())
-        {
+            | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => {
+                self.origin.is_none() || self.pending.is_some()
+            }
+            SessionEnvironmentEffectKind::Rebuild { .. } => self.origin.is_none() || pending_other,
+            SessionEnvironmentEffectKind::Create => false,
+        };
+        if refused {
             return Err(SessionEnvironmentReceiptError::Rejected(
                 SessionEnvironmentRejection::MaterializationPending,
             ));
@@ -153,10 +169,19 @@ impl SessionEnvironmentMaterialization {
                     ));
                 }
             }
+            // Only the admitted Rebuild may land: its pending value, or the
+            // origin it became (the exact replay). The receipt carries the
+            // operation identity, not the admission evidence.
             SessionEnvironmentEffectKind::Rebuild { .. } => {
-                return Err(SessionEnvironmentReceiptError::Rejected(
-                    SessionEnvironmentRejection::MaterializationPending,
-                ));
+                if self
+                    .pending()
+                    .or_else(|| self.origin())
+                    .is_none_or(|admitted| admitted.effect_id() != intent.effect_id())
+                {
+                    return Err(SessionEnvironmentReceiptError::Rejected(
+                        SessionEnvironmentRejection::InvalidTransition,
+                    ));
+                }
             }
             SessionEnvironmentEffectKind::Adopt
             | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => {}
@@ -164,10 +189,17 @@ impl SessionEnvironmentMaterialization {
         Ok(())
     }
 
+    /// The landed Create or Rebuild becomes the origin of the current source.
     pub(crate) fn record_receipt(&mut self, intent: &SessionEnvironmentEffectIntent) {
-        if matches!(intent.kind(), SessionEnvironmentEffectKind::Create)
-            && self.pending() == Some(intent)
-        {
+        let lands = match intent.kind() {
+            SessionEnvironmentEffectKind::Create => self.pending() == Some(intent),
+            SessionEnvironmentEffectKind::Rebuild { .. } => self
+                .pending()
+                .is_some_and(|pending| pending.effect_id() == intent.effect_id()),
+            SessionEnvironmentEffectKind::Adopt
+            | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => false,
+        };
+        if lands {
             self.origin = self.pending.take();
         }
     }
@@ -210,15 +242,44 @@ impl SessionEnvironmentMaterialization {
                 }
             }
             (Some(before), Some(after)) => {
-                let move_first = before.origin().is_none()
-                    && before.pending().is_some_and(|intent| {
-                        matches!(intent.kind(), SessionEnvironmentEffectKind::Create)
-                    })
-                    && after.pending().is_none()
+                // A landed first Create, or a landed Rebuild over a known
+                // origin, becomes the origin of the Resident source it bound.
+                let lands = before.pending().is_some_and(|intent| match intent.kind() {
+                    SessionEnvironmentEffectKind::Create => before.origin().is_none(),
+                    SessionEnvironmentEffectKind::Rebuild { .. } => before.origin().is_some(),
+                    SessionEnvironmentEffectKind::Adopt
+                    | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => false,
+                }) && after.pending().is_none()
                     && after.origin() == before.pending()
                     && matches!(&replacement.environment, super::SessionEnvironmentState::Resident { effect_id: Some(id), .. }
                         if Some(id.as_str()) == before.pending().map(SessionEnvironmentEffectIntent::effect_id));
-                if move_first { Ok(()) } else { Err(invalid()) }
+                // A Rebuild is admitted write-ahead over a known origin of an
+                // active Resident Session, under the current lease generation.
+                let admits_rebuild = before.pending().is_none()
+                    && before.origin().is_some()
+                    && after.origin() == before.origin()
+                    && after.pending().is_some_and(|intent| {
+                        matches!(intent.kind(), SessionEnvironmentEffectKind::Rebuild { .. })
+                            && session
+                                .realization
+                                .as_ref()
+                                .zip(intent.realization())
+                                .is_some_and(|(current, admitted)| {
+                                    crate::state::realization_lease_generation_authorizes(
+                                        current, admitted,
+                                    )
+                                })
+                    })
+                    && !session.is_terminal()
+                    && matches!(
+                        session.environment,
+                        super::SessionEnvironmentState::Resident { .. }
+                    );
+                if lands || admits_rebuild {
+                    Ok(())
+                } else {
+                    Err(invalid())
+                }
             }
         }
     }
@@ -234,8 +295,9 @@ mod tests {
 
     #[test]
     fn original_create_query_preserves_history_and_refuses_unknown_or_drift() {
-        // C1 origin/pending holds original Create; C2 original lease present;
-        // C3 exact Session; C4 kind Create; C5 outer missing/present-empty.
+        // C1 origin/pending holds the materializing effect; C2 its lease
+        // present; C3 exact Session; C4 kind Create or Rebuild (not Adopt);
+        // C5 outer missing/present-empty.
         // Q1=C1+C2+C3+C4 -> original fence including expired historical expiry;
         // Q2=!C2 or !C3 or !C4 -> reject/pending without a guessed lease;
         // Q3=C5 -> pending. Querying history does not grant live execution.
@@ -248,14 +310,17 @@ mod tests {
         for pending in [false, true] {
             for has_lease in [false, true] {
                 for same_session in [false, true] {
-                    for create in [false, true] {
+                    for kind in [
+                        SessionEnvironmentEffectKind::Adopt,
+                        SessionEnvironmentEffectKind::Create,
+                        SessionEnvironmentEffectKind::Rebuild {
+                            source_generation_id: None,
+                        },
+                    ] {
+                        let create = !matches!(kind, SessionEnvironmentEffectKind::Adopt);
                         let intent = SessionEnvironmentEffectIntent::new(
                             if same_session { "s1" } else { "other" },
-                            if create {
-                                SessionEnvironmentEffectKind::Create
-                            } else {
-                                SessionEnvironmentEffectKind::Adopt
-                            },
+                            kind,
                             has_lease.then(|| lease.clone()),
                         );
                         let mut fact = SessionEnvironmentMaterialization::fresh();
@@ -264,7 +329,7 @@ mod tests {
                         } else {
                             fact.origin = Some(Box::new(intent.clone()));
                         }
-                        let result = SessionEnvironmentMaterialization::original_create_fence(
+                        let result = SessionEnvironmentMaterialization::materializing_effect_fence(
                             Some(&fact),
                             "s1",
                         );
@@ -282,7 +347,7 @@ mod tests {
         }
         for fact in [None, Some(SessionEnvironmentMaterialization::fresh())] {
             assert_eq!(
-                SessionEnvironmentMaterialization::original_create_fence(fact.as_ref(), "s1")
+                SessionEnvironmentMaterialization::materializing_effect_fence(fact.as_ref(), "s1")
                     .unwrap_err(),
                 SessionEnvironmentReceiptError::MaterializationUnknown,
                 "Q3"

@@ -408,15 +408,24 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
             .expect("installed Sessions"),
         "R1 closed owner consumed"
     );
+    let retained = host
+        .run_assembly
+        .installed_sessions
+        .realizations()
+        .read_realization(thread, |r| r.environment().rebuild_source.clone())
+        .expect("installed Sessions")
+        .flatten()
+        .expect("R1 exact aggregate rebuild predecessor retained");
     assert_eq!(
-        host.run_assembly
-            .installed_sessions
-            .realizations()
-            .read_realization(thread, |r| r.environment().rebuild_source.clone())
-            .expect("installed Sessions")
-            .flatten(),
-        Some((binding, Some(source_generation))),
+        (retained.binding, retained.source_generation_id),
+        (binding, Some(source_generation)),
         "R1 exact aggregate rebuild predecessor retained"
+    );
+    // The revoked owner was this incarnation's, so its own supervision
+    // closes the Worker-process source (rebuild_source table RS2).
+    assert!(
+        retained.evidence.source_closed(),
+        "R1 the admitted Rebuild carried closed-source evidence"
     );
 }
 

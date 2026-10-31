@@ -75,9 +75,40 @@ Proved by Kani over the complete closed domain and swept by the T8 test:
 2. Every step change is one declared edge. Resident is entered only from
    Unmaterialized by materialization (or the legacy claim binding) or from
    Restoring by its receipt.
-3. No instruction is issued under a stale lease. Create, source-release
-   preparation and disposal, and retirement need the `Fenced` standing. So do
-   the observations that advance source release or terminal disposal.
+3. No instruction is issued under a stale lease. Create, Rebuild,
+   source-release preparation and disposal, and retirement need the `Fenced`
+   standing. So do the observations that advance source release or terminal
+   disposal.
+4. A Rebuild is instructed only for an active, Resident, fenced Session whose
+   old source is closed and whose work survives to rebuild from; the
+   permanent refusal is issued only for a closed source without access.
+
+## Rebuild admission
+
+A long-lived Managed Session whose sandbox died recovers by a Rebuild: a new
+substrate replaces the Resident binding. The aggregate decides it over two
+facts the realization supplies on the Rebuild intent
+(`RebuildSourceEvidence`, admission data outside the effect identity; rows
+written before it decode as no evidence):
+
+| Facts (Resident, fenced, active) | Decision |
+|---|---|
+| `source_closed` and `source_access` | `Materialize(Rebuild)`, written ahead as the pending effect |
+| not `source_closed` | `MaterializationPending` (retry), unchanged |
+| `source_closed`, no `source_access` | `RebuildSourceUnavailable`: permanent, `RunError` code `session_environment_rebuild_source_unavailable` (Conflict, HTTP 409, a permanent conflict the Worker fails once, never 503); Managed `session.error` `unknown_error`, retry status terminal |
+
+A replay of a recorded Rebuild stays. `session-realization`
+(`rebuild_source`, tables RS/RA) derives the facts: closed means the provider
+observed the exact handle Terminal or Unavailable and, for a source in a
+Worker's process and filesystem, that incarnation's end is known (this
+process supervised it, an exact exit, or `Superseded`); access is a retained
+volume (a Worker-filesystem source the provider reports Terminal under
+retained continuity) or a Repository input. The realization itself knows
+only its own supervision today: a cold Worker-filesystem source stays pending
+until the incarnation's exact exit or `Superseded` receipt reaches the
+derivation. The landed Rebuild receipt
+becomes the materialization `origin`; `materializing_effect_fence` returns the
+in-flight or landed Create or Rebuild.
 
 ## Inventory of Environment decisions outside the aggregate (main `fdd3553173`, updated after the session-application and realization migrations)
 
@@ -117,7 +148,7 @@ their remaining state constructions are in tests.
 | 3 | Aggregate wrappers `record_quiescence`, `record_checkpoint`, `complete_suspend`, `complete_restore` and `discard_expired_checkpoint` do not check terminality; the saga and source-release laws do | continuation observations on a terminal Session are refused; **implemented** |
 | 4 | The legacy claim merge ignores terminality | refused unless the Session is active; a realization directive's projection stands Active (only `BeginRealization`'s admission issues one), so the refusal is unreachable there |
 | 5 | Renew admits a terminal Session in every step; Begin refuses it | kept: two commands |
-| 6 | Rebuild admission is always pending, yet a Rebuild receipt still applies | kept as two rows (admission versus receipt); the admission row now refuses a recorded Rebuild too, as production always did |
+| 6 | Rebuild admission was always pending, yet a Rebuild receipt still applied | superseded 2026-11-01: admission decides on the realization's source evidence (see Rebuild admission); a recorded Rebuild replays; a receipt lands only for the admitted pending Rebuild |
 | 7 | Quiesce, checkpoint and restore effects are not checked against the root lease (only the operation's captured fence reaches the provider) | stale standing refused; unfenced legacy kept; **implemented** through `project_continuation` |
 | 8 | The driver retries `NotReady` in Prepare but fails in Dispose | out of scope here (driver policy) |
 
@@ -243,10 +274,17 @@ invocations already depend on that owner. No wire or durable schema changes.
 
 ## Verification
 
-- `awaken-session-contract` `state::environment::transition::tests` T1–T11,
+- `awaken-session-contract` `state::environment::transition::tests` T1–T13,
   `environment::legacy_binding::tests` L1–L4, and
   `session_repo::environment_facts_tests` (topology, Memory, continuation lease,
-  the aggregate wrappers W1–W10, cleanup laws W11–W12).
+  the aggregate wrappers W1–W10, cleanup laws W11–W12, admission facts S1–S3);
+  `session_repo::controlled_aggregate_tests::rebuild_admission_reads_realization_source_evidence_and_lands_write_ahead`
+  (A1–A8); `effect_intent::tests::rebuild_source_evidence_is_admission_data_not_identity`
+  (historical rows, H1–H3).
+- `awaken-session-realization` `rebuild_source::tests` (RS1–RS4, RA1–RA3).
+- `awaken-session-application`
+  `tests::authority::first_materialization::rebuild_admission_maps_each_source_decision_to_one_run_error`
+  (M1–M3); `awaken-protocol-managed` classifier row R15.
 - `awaken-session-realization` `terminal_effects::tests` HT0 (exhaustive mode
   table) and HT1.
 - `awaken-session-application` `tests::recovery_sweep` H2 (continuation hint).
@@ -254,7 +292,8 @@ invocations already depend on that owner. No wire or durable schema changes.
   `environment_rejections_project_onto_one_control_failure` (R1–R4).
 - `awaken-session-application` `tests::continuation` (existing saga tables and
   O1–O3 for the adopted fail-closed rows).
-- Kani `environment::transition::proofs`. Obligations are under
+- Kani `environment::transition::proofs`, including
+  `rebuild_requires_a_closed_source_with_access`. Obligations are under
   `formal/obligations/session_environment/`.
 
 - `awaken-session-contract` `state::environment::effect_intent::tests`

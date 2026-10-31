@@ -2,13 +2,15 @@
 //!
 //! Table T1 fixes every step × event cell under the ready facts (an active,
 //! fenced, idle Session whose suspend is due, whose evidence, generation and
-//! checkpoint are all valid, whose topology supports continuation and whose
-//! Memory evidence admits a suspend). Tables T2–T7 and T9 vary one qualifier at
-//! a time and cover every fail-closed row. Table T8 sweeps the complete finite
-//! domain against the three safety laws that the Kani harnesses prove.
+//! checkpoint are all valid, whose topology supports continuation, whose
+//! Memory evidence admits a suspend, and whose Rebuild source is closed and
+//! accessible). Tables T2–T7, T9 and T13 vary one qualifier at a time and
+//! cover every fail-closed row. Table T8 sweeps the complete finite domain
+//! against the four safety laws that the Kani harnesses prove.
 
 use super::laws::{
-    EVENT_COUNT, STEPS, effects_require_current_lease, event, steps_follow_declared_edges,
+    EVENT_COUNT, STEPS, effects_require_current_lease, event,
+    rebuild_requires_closed_accessible_source, steps_follow_declared_edges,
     terminal_never_reenters,
 };
 use super::*;
@@ -42,6 +44,8 @@ fn ready(step: S) -> SessionEnvironmentFacts {
         checkpoint_live: true,
         continuation_topology_supported: true,
         suspend_memory_admitted: true,
+        source_closed: true,
+        source_access: true,
     }
 }
 
@@ -155,7 +159,7 @@ fn t1_every_step_and_event_under_ready_facts() {
             admit(K::Rebuild, false),
             [
                 No(X::RequiresResident),
-                No(X::MaterializationPending),
+                DoHere(I::Materialize(K::Rebuild)),
                 CONT,
                 CONT,
                 CONT,
@@ -193,7 +197,7 @@ fn t1_every_step_and_event_under_ready_facts() {
             admit(K::Rebuild, true),
             [
                 No(X::RequiresResident),
-                No(X::MaterializationPending),
+                Stay,
                 CONT,
                 CONT,
                 CONT,
@@ -420,6 +424,12 @@ fn t2_terminal_session_retires_and_joins_only() {
             check_row("T2 begin", facts, E::BeginRealization, terminal);
             check_row("T2 renew", facts, E::RenewRealization, Stay);
             check_row("T2 admit", facts, admit(K::Adopt, false), terminal);
+            check_row(
+                "T2 admit rebuild",
+                facts,
+                admit(K::Rebuild, false),
+                terminal,
+            );
             check_row("T2 advance", facts, E::AdvanceContinuation, terminal);
             check_row("T2 require", facts, E::RequireResident, terminal);
             check_row("T2 retire", facts, E::RetireForCleanup, DoHere(I::Retire));
@@ -508,6 +518,12 @@ fn t3_lease_standing_fences_every_effect() {
             "L admit create",
             with(U, lease),
             admit(K::Create, false),
+            lease_lost,
+        );
+        check_row(
+            "L admit rebuild",
+            with(R, lease),
+            admit(K::Rebuild, false),
             lease_lost,
         );
         check_row(
@@ -739,9 +755,11 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
     for step in STEPS {
         for terminality in terminalities {
             for lease in leases {
-                for bits in 0_u16..1024 {
+                for bits in 0_u16..4096 {
                     let facts = SessionEnvironmentFacts {
                         root_present: bits & 512 != 0,
+                        source_closed: bits & 1024 != 0,
+                        source_access: bits & 2048 != 0,
                         step,
                         terminality,
                         lease,
@@ -770,13 +788,17 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
                             effects_require_current_lease(facts, event, outcome),
                             "L3 {facts:?} {event:?}"
                         );
+                        assert!(
+                            rebuild_requires_closed_accessible_source(facts, event, outcome),
+                            "L4 {facts:?} {event:?}"
+                        );
                         cases += 1;
                     }
                 }
             }
         }
     }
-    assert_eq!(cases, 8 * 3 * 3 * 1024 * EVENT_COUNT);
+    assert_eq!(cases, 8 * 3 * 3 * 4096 * EVENT_COUNT);
 }
 
 #[test]
@@ -903,7 +925,8 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
     // T11 justifies `SessionEnvironmentFacts::project_terminal_cleanup`, which
     // projects without a clock. Causes: every step, terminality and lease
     // standing (the facts the two rows read) × every value of the remaining
-    // facts (time, execution, activity, evidence, placement and Memory).
+    // facts (time, execution, activity, evidence, placement, Memory and the
+    // Rebuild source).
     // Effect: `RetireForCleanup`, `CleanedUp` and `LegacyCleanupNormalized`
     // decide the same outcome for every value of the remaining facts, so no
     // clock reading can change a terminal cleanup decision.
@@ -933,7 +956,7 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
                     lease,
                     ..ready(step)
                 };
-                for bits in 0_u16..(1 << 9) {
+                for bits in 0_u16..(1 << 11) {
                     let bit = |index: u16| bits & (1 << index) != 0;
                     let varied = SessionEnvironmentFacts {
                         execution_idle: bit(0),
@@ -945,6 +968,8 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
                         checkpoint_live: bit(6),
                         continuation_topology_supported: bit(7),
                         suspend_memory_admitted: bit(8),
+                        source_closed: bit(9),
+                        source_access: bit(10),
                         ..base
                     };
                     for event in events {
@@ -1025,5 +1050,110 @@ fn absent_root_facts_never_admit_another_session_event() {
             Err(SessionEnvironmentRejection::RequiresResident),
             "U4 {event:?}"
         );
+    }
+}
+
+#[test]
+fn t13_rebuild_admission_reads_source_closure_and_access() {
+    // Cause/effect table of `AdmitMaterialization { Rebuild }`. Causes: C1
+    // terminality, C2 lease standing, C3 step, C4 source closed, C5 source
+    // access, C6 the Resident binding already records this Rebuild.
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+    // | RB1 | Active | Fenced | Resident | yes | yes | no | Materialize(Rebuild), stay Resident |
+    // | RB2 | Active | Fenced | Resident | no | any | no | MaterializationPending (retry) |
+    // | RB3 | Active | Fenced | Resident | yes | no | no | RebuildSourceUnavailable (permanent) |
+    // | RB4 | Active | Fenced / Unfenced | Resident | any | any | yes | Stay (replay) |
+    // | RB5 | Active | not Stale | Unmaterialized / continuation | any | any | any | RequiresResident / ContinuationInProgress |
+    // | RB6 | Active | Unfenced / Stale | Resident | any | any | no | LeaseNotCurrent |
+    // | RB7 | not Active | any | any | any | any | any | Terminal |
+    // RB8: no other event reads C4/C5.
+    use crate::state::SessionEnvironmentReceiptRecoveryAction as Action;
+    let terminalities = [
+        SessionTerminality::Active,
+        SessionTerminality::CleanupJoining,
+        SessionTerminality::Terminal,
+    ];
+    let leases = [
+        RealizationLeaseStanding::Fenced,
+        RealizationLeaseStanding::Unfenced,
+        RealizationLeaseStanding::Stale,
+    ];
+    for step in STEPS {
+        for terminality in terminalities {
+            for lease in leases {
+                for (source_closed, source_access) in
+                    [(false, false), (false, true), (true, false), (true, true)]
+                {
+                    for already_applied in [false, true] {
+                        let facts = SessionEnvironmentFacts {
+                            terminality,
+                            lease,
+                            source_closed,
+                            source_access,
+                            ..ready(step)
+                        };
+                        let active = terminality == SessionTerminality::Active;
+                        let cell = if !active {
+                            ("RB7", No(X::Terminal))
+                        } else if lease == RealizationLeaseStanding::Stale {
+                            ("RB6", No(X::LeaseNotCurrent))
+                        } else if step == U {
+                            ("RB5", No(X::RequiresResident))
+                        } else if step != R {
+                            ("RB5", CONT)
+                        } else if already_applied {
+                            ("RB4", Stay)
+                        } else if lease != RealizationLeaseStanding::Fenced {
+                            ("RB6", No(X::LeaseNotCurrent))
+                        } else if !source_closed {
+                            ("RB2", No(X::MaterializationPending))
+                        } else if !source_access {
+                            ("RB3", No(X::RebuildSourceUnavailable))
+                        } else {
+                            ("RB1", DoHere(I::Materialize(K::Rebuild)))
+                        };
+                        check_row(cell.0, facts, admit(K::Rebuild, already_applied), cell.1);
+                    }
+                }
+            }
+        }
+    }
+    // RB2 retries, RB3 is final for the same evidence.
+    assert_eq!(
+        X::MaterializationPending.recovery_action(),
+        Action::Retry,
+        "RB2"
+    );
+    assert_eq!(
+        X::RebuildSourceUnavailable.recovery_action(),
+        Action::Reject,
+        "RB3"
+    );
+    // RB8: every other event decides the same outcome for every source fact.
+    for step in STEPS {
+        for index in 0..EVENT_COUNT {
+            let event = event(index);
+            if matches!(
+                event,
+                E::AdmitMaterialization {
+                    kind: K::Rebuild,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            for (source_closed, source_access) in [(false, false), (false, true), (true, false)] {
+                let varied = SessionEnvironmentFacts {
+                    source_closed,
+                    source_access,
+                    ..ready(step)
+                };
+                assert_eq!(
+                    transition_environment(varied, event),
+                    transition_environment(ready(step), event),
+                    "RB8 {step:?} {event:?}"
+                );
+            }
+        }
     }
 }

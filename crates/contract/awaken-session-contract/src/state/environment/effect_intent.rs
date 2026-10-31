@@ -127,6 +127,11 @@ pub struct SessionEnvironmentEffectIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     environment_fingerprint: Option<String>,
     realization: Option<crate::state::SessionRealizationLease>,
+    /// A Rebuild's source evidence: an admission precondition the aggregate
+    /// reads, never an identity coordinate. Rows written before it existed
+    /// decode as `None`, which the aggregate reads as an open source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rebuild_source: Option<super::RebuildSourceEvidence>,
 }
 
 impl SessionEnvironmentEffectIntent {
@@ -143,9 +148,18 @@ impl SessionEnvironmentEffectIntent {
             source_binding: None,
             environment_fingerprint: None,
             realization,
+            rebuild_source: None,
         };
         intent.refresh_effect_id();
         intent
+    }
+
+    /// Attach the realization's evidence about the source a Rebuild replaces.
+    /// The effect identity is unchanged: the evidence decides admission only.
+    #[must_use]
+    pub fn with_rebuild_source(mut self, evidence: super::RebuildSourceEvidence) -> Self {
+        self.rebuild_source = Some(evidence);
+        self
     }
 
     #[must_use]
@@ -192,6 +206,12 @@ impl SessionEnvironmentEffectIntent {
         self.realization.as_ref()
     }
 
+    /// The realization's evidence about the source a Rebuild replaces.
+    #[must_use]
+    pub fn rebuild_source(&self) -> Option<&super::RebuildSourceEvidence> {
+        self.rebuild_source.as_ref()
+    }
+
     /// Compile the complete frozen input coordinates in one identity refresh.
     /// This constructs a request; only the aggregate can admit it before I/O.
     #[must_use]
@@ -221,6 +241,7 @@ impl SessionEnvironmentEffectIntent {
             source_binding,
             environment_fingerprint,
             realization,
+            rebuild_source: None,
         };
         intent.verify()?;
         Ok(intent)
@@ -253,6 +274,7 @@ impl SessionEnvironmentEffectIntent {
         expected
             .environment_fingerprint
             .clone_from(&self.environment_fingerprint);
+        expected.rebuild_source = self.rebuild_source;
         expected.refresh_effect_id();
         if self == &expected {
             Ok(())

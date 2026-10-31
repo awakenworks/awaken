@@ -348,7 +348,7 @@ impl crate::terminal_effects::TerminalEffects {
             }
             let expected_effect_fence = assignment
                 .projection
-                .original_create_fence(thread)
+                .materializing_effect_fence(thread)
                 .map_err(RealizationError::Run)?;
             let provider = environments.projected_session_environment_provider(thread, None)?;
             let spec = environments.session_environment_adoption_spec(
