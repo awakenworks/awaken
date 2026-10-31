@@ -72,6 +72,7 @@
     "deployment_stop_uses_existing_exact_delete_then_observes_original_exits": "restartable_stop_settles_by_container_instance_and_never_harms_a_newer_one",
     "one_pod_uid_cannot_authenticate_another_process_incarnation": "one_pod_authenticates_only_its_container_instance_incarnations",
     "a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code": "a_rate_limited_acp_failure_ends_error_with_the_rate_limited_code",
-    "connection_drop_at_prompt_is_rate_limited_but_at_init_is_permanent": "connection_drop_at_prompt_is_an_unknown_outcome_but_at_init_is_permanent"
+    "connection_drop_at_prompt_is_rate_limited_but_at_init_is_permanent": "connection_drop_at_prompt_is_an_unknown_outcome_but_at_init_is_permanent",
+    "server_shut_down_at_prompt_is_rate_limited": "server_shut_down_at_prompt_is_a_dropped_connection"
   }
 }

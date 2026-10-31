@@ -620,12 +620,10 @@ mod tests {
     }
 
     #[test]
-    fn server_shut_down_at_prompt_is_rate_limited() {
+    fn server_shut_down_at_prompt_is_a_dropped_connection() {
         assert_eq!(
             classify_error(Stage::Prompt, &err("the server shut down")).class,
-            AcpFailureClass::RateLimited {
-                retry_after_secs: None
-            }
+            AcpFailureClass::ConnectionDropped
         );
     }
 

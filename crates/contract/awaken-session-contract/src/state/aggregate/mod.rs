@@ -25,7 +25,7 @@ mod updates;
 /// }
 /// ```
 ///
-/// ```compile_fail,E0596
+/// ```compile_fail,E0594
 /// use awaken_session_contract::SessionAggregate;
 /// fn cannot_change_nested(root: &mut SessionAggregate) {
 ///     root.resources.active = Default::default();

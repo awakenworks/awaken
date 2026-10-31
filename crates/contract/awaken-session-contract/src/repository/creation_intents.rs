@@ -50,7 +50,13 @@ impl PreparedParticipantIntent {
         phase: PreparedParticipantIntentPhase,
         lease_expires_at_unix_ms: u64,
     ) -> Self {
-        Self { session_id, owner_scope, repository_ids, phase, lease_expires_at_unix_ms }
+        Self {
+            session_id,
+            owner_scope,
+            repository_ids,
+            phase,
+            lease_expires_at_unix_ms,
+        }
     }
 
     pub fn session_id(&self) -> &SessionId {
