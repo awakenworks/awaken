@@ -186,7 +186,9 @@ impl PreparedParticipantIntents for PostgresManagedSessionRepository {
             .await
             .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
-        Ok(PreparedParticipantIntentClaim::Claimed(intent.begin_abort()))
+        Ok(PreparedParticipantIntentClaim::Claimed(
+            intent.begin_abort(),
+        ))
     }
 
     async fn complete_creation_abort(
