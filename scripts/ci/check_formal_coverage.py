@@ -126,6 +126,8 @@ for obligation in obligations:
         fail(f"{obligation_id} is formalizable but marked external")
     if not obligation["formalizable"] and status != "external":
         fail(f"{obligation_id} is external but counted in formal coverage")
+    if "run_evidence" in obligation and status != "kernel_proved":
+        fail(f"{obligation_id} marks run_evidence on a {status} row; only a kernel_proved claim awaits a run")
     claim_scope = obligation.get("claim_scope")
     proof_grade = obligation.get("proof_grade")
     bounds = obligation.get("bounds")
@@ -270,6 +272,7 @@ trace_refined = [
 executable_only = [
     item for item in formalizable if item["status"] == "executable_only"
 ]
+awaiting_rerun = [item for item in obligations if "run_evidence" in item]
 summary = {
     "formalizable": len(formalizable),
     "checked_formal_evidence": len(linked),
@@ -279,6 +282,7 @@ summary = {
     "kernel_proved": len(kernel_proved),
     "trace_refined": len(trace_refined),
     "executable_only": len(executable_only),
+    "kernel_proved_awaiting_rerun": len(awaiting_rerun),
     "external": len(obligations) - len(formalizable),
     "proof_grades": {
         grade: sum(item["proof_grade"] == grade for item in obligations)
@@ -307,7 +311,8 @@ else:
         f"(required {minimum:.1%}); "
         f"dimensions: model-checked={len(model_checked)}, "
         f"model-proved={len(model_proved)}, kernel-proved={len(kernel_proved)}, "
-        f"trace-refined={len(trace_refined)}, executable-only={len(executable_only)}"
+        f"trace-refined={len(trace_refined)}, executable-only={len(executable_only)}, "
+        f"kernel-proved awaiting a rerun={len(awaiting_rerun)}"
     )
 if ratio < minimum:
     fail("coverage is below the required threshold")
