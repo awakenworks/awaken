@@ -509,7 +509,7 @@ class ProfileTests(unittest.TestCase):
                     self.assertEqual(calls, [], "P4 no batch starts without a plan")
                 else:
                     self.assertEqual(calls, [
-                        f"CALL 600 cargo kani -p {line.split()[0]} --output-format terse --verbose -j 1 "
+                        f"CALL 600 cargo kani -p {line.split()[0]} --output-format terse --verbose -Z unstable-options --output-into-files -j 1 "
                         + " ".join(line.split()[1:]) for line in planned
                     ], "P4 every planned batch reaches Cargo verbatim")
 

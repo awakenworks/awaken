@@ -192,6 +192,7 @@ python3 scripts/ci/check_formal_coverage.py --require-complete \
 python3 scripts/ci/formal_budget.py --self-test
 python3 scripts/ci/formal_ledger.py --self-test
 python3 scripts/ci/formal_plan.py --self-test
+python3 scripts/ci/formal_vacuity.py --self-test
 python3 scripts/ci/test_formal_profile.py
 python3 scripts/ci/test_formal_run_evidence.py
 python3 scripts/ci/test_bootstrap_kani.py
@@ -459,7 +460,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     local kani_transcript
     kani_transcript="$(mktemp "$formal_artifact_dir/kani-${package}.XXXXXX.log")"
     if run_with_deadline "$kani_batch_timeout_seconds" \
-        cargo kani -p "$package" --output-format terse --verbose -j "$kani_jobs" "$@" \
+        cargo kani -p "$package" --output-format terse --verbose \
+        -Z unstable-options --output-into-files -j "$kani_jobs" "$@" \
         2>&1 | tee "$kani_transcript"; then
       rm -f "$kani_transcript"
       return 0
@@ -504,6 +506,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
   # `/// @kani` tag states, and selects each by its exact qualified name. The
   # assignment keeps a planning failure fatal before any batch runs. Only a
   # narrowed pr run may legitimately plan nothing.
+  # `--output-into-files` (run_kani) writes each harness's regular-format
+  # result here, beside the terse transcript; the vacuity check below reads
+  # them. A result left by an earlier run must not be judged as this run's.
+  rm -rf result_output_dir
   kani_plan="$(python3 scripts/ci/formal_plan.py kani "${formal_selection[@]}")"
   if [ -z "$kani_plan" ] && [ -z "$formal_affected" ]; then
     echo "the derived Kani plan is empty: no #[kani::proof] harness was found" >&2
@@ -515,6 +521,22 @@ if command -v cargo-kani >/dev/null 2>&1; then
     read -r -a kani_argv <<< "$kani_batch"
     run_kani "${kani_argv[@]}"
   done
+  # A passing proof can still be vacuous: Kani counts an assertion no input
+  # reaches as a pass, and an unsatisfied `kani::cover!` does not change the
+  # verdict. formal_vacuity.py refuses both. When every batch ran (missing=0)
+  # the results must exist; a run whose batches were all skipped has none.
+  if [ -d result_output_dir ] || [ "$missing" -eq 0 ]; then
+    kani_vacuity=0
+    python3 scripts/ci/formal_vacuity.py check result_output_dir \
+      --keep "$formal_artifact_dir/kani-vacuity" || kani_vacuity=$?
+    rm -rf result_output_dir
+    if [ "$kani_vacuity" -ne 0 ]; then
+      formal_failure_kind="execution-failed"
+      formal_failure_stage="kani-vacuity"
+      formal_failure_subject="kani"
+      exit "$kani_vacuity"
+    fi
+  fi
 else
   echo "skipped Kani: run scripts/ci/bootstrap_kani.sh"
   missing=1
