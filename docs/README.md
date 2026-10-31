@@ -87,6 +87,11 @@ or pre-implementation state machine for the roles they own; navigation, status,
 coverage, and wiki documents must link to the canonical ADR, owner doc, or code
 type rather than duplicate schemas, state machines, or role catalogs.
 
+The complete ADR list, with each record's current standing, is the `adr/` part
+of the machine-checked [Role Catalog Coverage](STATUS.md#role-catalog-coverage)
+table; numbers are not reused, so the absent 0096 was never assigned. The
+foundational records are:
+
 - [adr/0001-documentation-model-and-vocabulary-alignment.md](adr/0001-documentation-model-and-vocabulary-alignment.md)
   — documentation model, guardrail-enforcer rule, one internally consistent
   vocabulary, and the link-only/meta-process treatment of the wiki/coverage layers.

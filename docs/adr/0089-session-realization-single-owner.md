@@ -26,7 +26,8 @@
   `select_provider*` kernels).
 - Affects: `awaken-runtime-host`, `awaken-session-realization-driver`,
   `awaken-session-application`, `awaken-session-realization-contract`,
-  `awaken-session-state-contract`, `awaken-provisioning-contract`; awaken-cloud only
+  `awaken-session-state-contract` (merged into `awaken-session-contract` on
+  2026-10-30, see ADR-0090), `awaken-provisioning-contract`; awaken-cloud only
   through later renames.
 
 ## Context

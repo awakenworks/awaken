@@ -13,7 +13,8 @@
   and terminal cleanup remain with the aggregate);
   [ADR-0089](0089-session-realization-single-owner.md) (realization decisions in the
   aggregate, effects in one executor).
-- Affects: `awaken-session-state-contract`, `awaken-session-application`,
+- Affects: `awaken-session-state-contract` (merged into `awaken-session-contract`
+  on 2026-10-30, see the amendment below), `awaken-session-application`,
   `awaken-protocol-managed`, `awaken-runtime-host`, `awaken-session-store`; wire shapes
   are unchanged.
 

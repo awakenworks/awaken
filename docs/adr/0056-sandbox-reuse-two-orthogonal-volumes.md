@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Note 2026-10-31: `SessionEnvironmentProvider` below is now `SandboxProviderRoles`,
+  role handles over the one `SandboxProvider` (ADR-0088 amendment 2026-10-31).
 - Amended by: ADR-0063 (memory mount truth is the Workspace `MemoryRepository`, not a harvested copy)
 - Amended by: ADR-0073 (Hand placement: durable Worker claim plus the Session Environment; no `HandRegistry`)
 - Amended by: ADR-0074 (Session Environment suspension and checkpointed continuation)

@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-08-11
+- Note 2026-10-31: `SessionEnvironmentProvider` below is now `SandboxProviderRoles`,
+  role handles over the one `SandboxProvider` (ADR-0088 amendment 2026-10-31).
 - Amended: 2026-08-30 — source release is split into durable preparation and
   physical disposal so response loss cannot turn provider absence into
   aggregate proof.
