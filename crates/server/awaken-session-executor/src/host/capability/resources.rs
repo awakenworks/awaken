@@ -120,7 +120,7 @@ impl ResourcePorts {
     pub(in crate::host) fn new(
         selection: ResourceSelection,
         memory: Arc<crate::memory::MemoryRuntime>,
-        sessions: std::sync::Weak<crate::InstalledSessions>,
+        sessions: &Arc<crate::InstalledSessions>,
         bindings: awaken_session_run_delivery::MemoryBindingCompiler,
         local_workspace: String,
         direct_config: Option<serde_json::Value>,

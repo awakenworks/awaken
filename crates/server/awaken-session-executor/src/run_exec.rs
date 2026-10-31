@@ -80,12 +80,16 @@ pub(crate) struct ArtifactHarvestAttemptExecutor {
 }
 
 impl ArtifactHarvestAttemptExecutor {
-    /// The physical cleanup owner outlives attempts; the resident cache only borrows it.
+    /// The physical cleanup owner outlives attempts; the resident cache only borrows it,
+    /// so it keeps only a weak edge to it.
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        harvester: std::sync::Weak<crate::artifact_harvest::ArtifactHarvester>,
+        harvester: &Arc<crate::artifact_harvest::ArtifactHarvester>,
     ) -> Self {
-        Self { inner, harvester }
+        Self {
+            inner,
+            harvester: Arc::downgrade(harvester),
+        }
     }
 
     async fn finish<T>(
@@ -1054,7 +1058,7 @@ pub(crate) mod tests {
         let inner = Arc::new(RecordingExecutor::new("harvested"));
         let executor = ArtifactHarvestAttemptExecutor::new(
             inner.clone(),
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         );
         executor
             .execute(activation("awaken"), RuntimeRunContext::new())
@@ -1099,7 +1103,7 @@ pub(crate) mod tests {
         std::fs::write(output_dir.join("partial.txt"), b"partial").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(FailingExecutor),
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1135,7 +1139,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1176,7 +1180,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         )
         .resume(resumed.clone(), resume(&resumed), RuntimeRunContext::new())
         .await
@@ -1216,7 +1220,7 @@ pub(crate) mod tests {
                 replacement,
                 "in-flight replacement failed",
             )),
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1253,7 +1257,7 @@ pub(crate) mod tests {
                 thread,
                 replacement,
             )),
-            Arc::downgrade(host.realization_executor.effects().artifacts()),
+            host.realization_executor.effects().artifacts(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
@@ -1337,7 +1341,7 @@ pub(crate) mod tests {
         std::fs::write(failed_output.join("blocked.txt"), b"blocked").unwrap();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(RecordingExecutor::new("must-not-escape")),
-            Arc::downgrade(failed_host.realization_executor.effects().artifacts()),
+            failed_host.realization_executor.effects().artifacts(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await

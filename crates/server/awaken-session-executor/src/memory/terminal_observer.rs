@@ -52,15 +52,17 @@ pub(crate) struct MemoryTerminalObservers {
     direct_config: Option<serde_json::Value>,
 }
 impl MemoryTerminalObservers {
+    /// Borrows the resident Sessions: a retained settlement role must not keep
+    /// them alive, so it keeps only a weak edge to them.
     pub(crate) fn new(
-        sessions: Weak<crate::installed_session::InstalledSessions>,
+        sessions: &Arc<crate::installed_session::InstalledSessions>,
         bindings: awaken_session_run_delivery::MemoryBindingCompiler,
         runtime: Arc<super::MemoryRuntime>,
         local_workspace: String,
         direct_config: Option<serde_json::Value>,
     ) -> Self {
         Self {
-            sessions,
+            sessions: Arc::downgrade(sessions),
             bindings,
             runtime,
             local_workspace,

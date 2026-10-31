@@ -89,12 +89,14 @@ impl crate::RunCapabilities {
 }
 
 impl CoordinationEndpoint {
+    /// The Session's current claim, read from the installed Sessions the
+    /// endpoint upgraded (`None` once they are released, which fails closed).
     fn current_claim(
-        installed_sessions: &Weak<crate::installed_session::InstalledSessions>,
+        installed_sessions: Option<Arc<crate::installed_session::InstalledSessions>>,
         session_id: &str,
         source_run_id: &str,
     ) -> Result<(Arc<crate::installed_session::InstalledSessions>, RunClaim), ToolError> {
-        let installed_sessions = installed_sessions.upgrade().ok_or_else(|| {
+        let installed_sessions = installed_sessions.ok_or_else(|| {
             ToolError::DefinitiveFailure("Session coordination owner is unavailable".into())
         })?;
         let claim = installed_sessions
@@ -136,8 +138,11 @@ impl CoordinationEndpoint {
                 installed_sessions,
             } => {
                 // Retain the original owner until this control future finishes.
-                let (_owner, claim) =
-                    Self::current_claim(installed_sessions, session_id.as_str(), source_run_id)?;
+                let (_owner, claim) = Self::current_claim(
+                    installed_sessions.upgrade(),
+                    session_id.as_str(),
+                    source_run_id,
+                )?;
                 control
                     .list_session_agents(&claim, session_id.as_str())
                     .await
@@ -220,7 +225,7 @@ impl CoordinationEndpoint {
             } => {
                 // Retain the original owner until this control future finishes.
                 let (_owner, claim) = Self::current_claim(
-                    installed_sessions,
+                    installed_sessions.upgrade(),
                     command.session_id.as_str(),
                     source_run_id,
                 )?;

@@ -169,7 +169,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
     let resources = Arc::new(capability::ResourcePorts::new(
         resources,
         memory,
-        Arc::downgrade(&installed_sessions),
+        &installed_sessions,
         realization_executor.staging().memory_binding_compiler(),
         local_workspace.clone(),
         tools

@@ -27,16 +27,17 @@ pub(crate) struct SessionContextAttemptExecutor {
 }
 
 impl SessionContextAttemptExecutor {
-    /// Borrows the canonical owner; a cached executor must not own its installed Session table.
+    /// Borrows the canonical owner; a cached executor must not own its installed Session table,
+    /// so it keeps only a weak edge to it.
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        installed_sessions: Weak<crate::installed_session::InstalledSessions>,
+        installed_sessions: &Arc<crate::installed_session::InstalledSessions>,
         session_id: impl Into<String>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
             inner,
-            installed_sessions,
+            installed_sessions: Arc::downgrade(installed_sessions),
             session_id: session_id.into(),
             clock,
         }
@@ -420,7 +421,7 @@ mod acp_context_tests {
         let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&installed_sessions),
+            &installed_sessions,
             "session-1",
             clock.clone(),
         );
@@ -532,7 +533,7 @@ mod acp_context_tests {
         let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&installed_sessions),
+            &installed_sessions,
             "session-1",
             awaken_time::system_clock(),
         );
@@ -568,7 +569,7 @@ mod acp_context_tests {
             Arc::new(crate::installed_session::InstalledSessions::default());
         let empty = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&empty_installed_sessions),
+            &empty_installed_sessions,
             "session-1",
             awaken_time::system_clock(),
         );
@@ -606,7 +607,7 @@ mod acp_context_tests {
         let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&installed_sessions),
+            &installed_sessions,
             "session-1",
             awaken_time::system_clock(),
         );
@@ -666,7 +667,7 @@ mod acp_context_tests {
         });
         let executor = Arc::new(SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&installed_sessions),
+            &installed_sessions,
             "session-1",
             awaken_time::system_clock(),
         ));
@@ -729,7 +730,7 @@ mod acp_context_tests {
         let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&installed_sessions),
+            &installed_sessions,
             "session-1",
             awaken_time::system_clock(),
         );
@@ -823,7 +824,7 @@ mod acp_context_tests {
             Arc::new(crate::installed_session::InstalledSessions::default());
         let absent = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            Arc::downgrade(&absent_installed_sessions),
+            &absent_installed_sessions,
             "session-1",
             awaken_time::system_clock(),
         );
