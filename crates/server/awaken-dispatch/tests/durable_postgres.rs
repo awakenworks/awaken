@@ -1868,6 +1868,21 @@ async fn dead_letter_ttl_gc_on_postgres() {
 }
 
 #[tokio::test]
+async fn blocked_reclaims_spend_no_budget_within_the_window_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_blocked_reclaim").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    harness::blocked_reclaim::assert_blocked_reclaims_spend_no_budget_within_the_window(
+        &store,
+        &harness::postgres_clock(&pool),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn relinquish_claim_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_relinquish").await else {
         return;

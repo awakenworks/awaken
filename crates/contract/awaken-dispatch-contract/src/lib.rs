@@ -74,10 +74,11 @@ pub use dispatch::{
     SessionReservationAuthority, SessionRunAdmissionReads, SessionRunReservations,
 };
 pub use dispatch_transition::{
-    CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
-    PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt, RelinquishTransition,
-    attempt_epoch_is_open, begin_physical_attempt, can_close_physical_attempt,
-    finish_physical_attempt, handoff_physical_attempt, retry_exhaustion_eligible,
+    BLOCKED_RECLAIM_LIMIT, CancelTransition, DispatchTransition, DispatchTransitionError,
+    GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt,
+    RelinquishTransition, attempt_epoch_is_open, begin_physical_attempt,
+    blocked_reclaim_attempt_count, can_close_physical_attempt, finish_physical_attempt,
+    handoff_physical_attempt, retry_exhaustion_eligible,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

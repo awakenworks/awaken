@@ -66,6 +66,7 @@ async fn release_claim_transaction(
         claim.epoch,
         persisted_owner.as_deref() == Some(&claim.owner),
         slot,
+        active_attempt_epoch,
         attempt_count,
         attempt,
     ) {

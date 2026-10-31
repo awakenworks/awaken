@@ -370,6 +370,49 @@ pub fn retry_exhaustion_eligible(
         && crate::deadline_has_passed(lease_until_ms, now_ms)
 }
 
+/// How many recovery re-claims after a predecessor's own claim may be blocked
+/// by its still-occupied physical slot without spending retry budget.
+///
+/// Successive blocked re-claims are separated by the Pool's exact-claim
+/// backoff (exponential, capped at 30 s), so this is also a wall-clock bound
+/// of roughly ten minutes for one predecessor's closure to progress.
+pub const BLOCKED_RECLAIM_LIMIT: u64 = 20;
+
+/// The retry budget written when an exact claim is released while another
+/// claim's physical slot is still occupied.
+///
+/// A recovery re-claim spends one attempt when it is claimed. If it then only
+/// finds the predecessor still closing (Blocked admission, deferred as
+/// `Unspent`), it did no work: the re-claim's attempt is refunded. The refund
+/// is bounded by claims, not by closure evidence, so a predecessor that never
+/// closes still ends: past [`BLOCKED_RECLAIM_LIMIT`] re-claims since its own
+/// epoch every blocked re-claim spends again, the budget exhausts, and retry
+/// exhaustion ends the Run `Indeterminate`. `reclaims_since_predecessor` is
+/// the releasing claim's epoch minus the slot owner's epoch, `None` when the
+/// slot owner is absent or not older.
+///
+/// | Row | Release | Re-claims since the predecessor | Written count |
+/// |---|---|---|---|
+/// | B1 | `Unspent` | `1..=LIMIT` | `count - 1` (saturating) |
+/// | B2 | `Unspent` | `> LIMIT` | `count` |
+/// | B3 | `Unspent` | `None` or `0` | `count` |
+/// | B4 | `Failed` | any | `count` (the re-claim already spent it) |
+#[must_use]
+pub const fn blocked_reclaim_attempt_count(
+    attempt: ReleasedAttempt,
+    reclaims_since_predecessor: Option<u64>,
+    attempt_count: u64,
+) -> u64 {
+    match (attempt, reclaims_since_predecessor) {
+        (ReleasedAttempt::Unspent, Some(reclaims))
+            if reclaims != 0 && reclaims <= BLOCKED_RECLAIM_LIMIT =>
+        {
+            attempt_count.saturating_sub(1)
+        }
+        _ => attempt_count,
+    }
+}
+
 impl DispatchTransition {
     /// Persisted zero is the legacy never-claimed sentinel, not a grant.
     /// Every minted successor uses the lease kernel's non-wrapping epoch law.
@@ -529,9 +572,14 @@ impl DispatchTransition {
     /// Release an exact current mutation claim under the aggregate's physical
     /// attempt evidence. Owner equality is supplied by the adapter because
     /// owner representation is deliberately not in this storage-neutral
-    /// kernel. `attempt_count` comes from the same locked aggregate snapshot.
+    /// kernel. `attempt_count` and `predecessor_epoch` (the epoch of the
+    /// claim occupying the physical slot, if any) come from the same locked
+    /// aggregate snapshot.
     ///
-    /// An [`Unspent`](ReleasedAttempt::Unspent) release returns it unchanged.
+    /// An [`Unspent`](ReleasedAttempt::Unspent) release returns it unchanged,
+    /// except a release blocked behind a predecessor's slot, which refunds its
+    /// recovery re-claim within [`BLOCKED_RECLAIM_LIMIT`]
+    /// ([`blocked_reclaim_attempt_count`]).
     /// A [`Failed`](ReleasedAttempt::Failed) release from an empty slot spends
     /// one attempt: below `max_attempts` the row returns to Pending, and the
     /// attempt that reaches it keeps the row Leased for the adapter to expire,
@@ -543,6 +591,7 @@ impl DispatchTransition {
         claim_epoch: u64,
         owner_matches: bool,
         slot: PhysicalAttemptSlot,
+        predecessor_epoch: Option<u64>,
         attempt_count: u64,
         attempt: ReleasedAttempt,
     ) -> RelinquishTransition {
@@ -582,7 +631,16 @@ impl DispatchTransition {
             PhysicalAttemptSlot::ExactClaim => RelinquishTransition::Fenced,
             PhysicalAttemptSlot::OtherClaim => RelinquishTransition::Recovering {
                 state: self,
-                attempt_count,
+                attempt_count: blocked_reclaim_attempt_count(
+                    attempt,
+                    match predecessor_epoch {
+                        Some(predecessor) if claim_epoch > predecessor => {
+                            Some(claim_epoch - predecessor)
+                        }
+                        _ => None,
+                    },
+                    attempt_count,
+                ),
             },
             PhysicalAttemptSlot::Corrupt => RelinquishTransition::Corrupt,
         }
@@ -837,6 +895,7 @@ mod tests {
                 8,
                 false,
                 PhysicalAttemptSlot::Empty,
+                None,
                 13,
                 ReleasedAttempt::Unspent
             ),
@@ -847,6 +906,7 @@ mod tests {
                 7,
                 true,
                 PhysicalAttemptSlot::Empty,
+                None,
                 13,
                 ReleasedAttempt::Unspent
             ),
@@ -880,6 +940,7 @@ mod tests {
                     8,
                     true,
                     PhysicalAttemptSlot::Empty,
+                    None,
                     attempt_count,
                     ReleasedAttempt::Unspent
                 ),
@@ -897,6 +958,7 @@ mod tests {
                     8,
                     true,
                     PhysicalAttemptSlot::OtherClaim,
+                    None,
                     attempt_count,
                     ReleasedAttempt::Unspent
                 ),
@@ -912,6 +974,7 @@ mod tests {
                 8,
                 true,
                 PhysicalAttemptSlot::ExactClaim,
+                None,
                 7,
                 ReleasedAttempt::Unspent
             ),
@@ -923,11 +986,101 @@ mod tests {
                 8,
                 true,
                 PhysicalAttemptSlot::Corrupt,
+                None,
                 7,
                 ReleasedAttempt::Unspent
             ),
             RelinquishTransition::Corrupt,
             "R4/E4"
+        );
+    }
+
+    #[test]
+    fn a_blocked_recovery_reclaim_refunds_its_attempt_within_a_bounded_window() {
+        // Rows B1-B4 of `blocked_reclaim_attempt_count`, exhaustively over the
+        // window edges, plus the relinquish integration: an exact recovery
+        // claim deferred behind another claim's occupied slot stays Leased
+        // (Recovering) and writes the refunded count. Past the window it
+        // spends again, so a predecessor that never closes still exhausts.
+        let failed = ReleasedAttempt::Failed { max_attempts: 5 };
+        for (row, attempt, reclaims, count, expected) in [
+            ("B1 first re-claim", ReleasedAttempt::Unspent, Some(1), 1, 0),
+            (
+                "B1 last free re-claim",
+                ReleasedAttempt::Unspent,
+                Some(BLOCKED_RECLAIM_LIMIT),
+                4,
+                3,
+            ),
+            ("B1 saturates", ReleasedAttempt::Unspent, Some(1), 0, 0),
+            (
+                "B2 past the window",
+                ReleasedAttempt::Unspent,
+                Some(BLOCKED_RECLAIM_LIMIT + 1),
+                4,
+                4,
+            ),
+            (
+                "B2 far past",
+                ReleasedAttempt::Unspent,
+                Some(u64::MAX),
+                4,
+                4,
+            ),
+            ("B3 no predecessor", ReleasedAttempt::Unspent, None, 4, 4),
+            ("B3 not older", ReleasedAttempt::Unspent, Some(0), 4, 4),
+            ("B4 failed", failed, Some(1), 4, 4),
+        ] {
+            assert_eq!(
+                blocked_reclaim_attempt_count(attempt, reclaims, count),
+                expected,
+                "{row}"
+            );
+        }
+
+        let current = leased(30);
+        for (row, predecessor_epoch, count, expected) in [
+            ("B1", Some(29), 2, 1),
+            ("B2", Some(30 - BLOCKED_RECLAIM_LIMIT - 1), 2, 2),
+            ("B3", None, 2, 2),
+            ("B3 equal epoch", Some(30), 2, 2),
+            ("B3 newer predecessor", Some(31), 2, 2),
+        ] {
+            assert_eq!(
+                current.relinquish(
+                    30,
+                    true,
+                    PhysicalAttemptSlot::OtherClaim,
+                    predecessor_epoch,
+                    count,
+                    ReleasedAttempt::Unspent
+                ),
+                RelinquishTransition::Recovering {
+                    state: current,
+                    attempt_count: expected,
+                },
+                "{row} relinquish"
+            );
+        }
+        // An empty slot is no blocked re-claim: the ordinary rollback keeps
+        // the count even when a stale predecessor epoch is supplied.
+        assert_eq!(
+            current.relinquish(
+                30,
+                true,
+                PhysicalAttemptSlot::Empty,
+                Some(29),
+                2,
+                ReleasedAttempt::Unspent
+            ),
+            RelinquishTransition::Pending {
+                state: DispatchTransition {
+                    state: crate::DispatchState::Pending,
+                    ..current
+                },
+                attempt_count: 2,
+            },
+            "empty slot"
         );
     }
 
@@ -999,14 +1152,21 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                current.relinquish(8, true, PhysicalAttemptSlot::Empty, count, failed),
+                current.relinquish(8, true, PhysicalAttemptSlot::Empty, None, count, failed),
                 expected,
                 "{rule} count {count}"
             );
         }
         for count in [0, 4, u64::MAX] {
             assert_eq!(
-                current.relinquish(8, true, PhysicalAttemptSlot::OtherClaim, count, failed),
+                current.relinquish(
+                    8,
+                    true,
+                    PhysicalAttemptSlot::OtherClaim,
+                    None,
+                    count,
+                    failed
+                ),
                 RelinquishTransition::Recovering {
                     state: current,
                     attempt_count: count,
@@ -1015,22 +1175,22 @@ mod tests {
             );
         }
         assert_eq!(
-            current.relinquish(8, true, PhysicalAttemptSlot::ExactClaim, 0, failed),
+            current.relinquish(8, true, PhysicalAttemptSlot::ExactClaim, None, 0, failed),
             RelinquishTransition::Fenced,
             "F5"
         );
         assert_eq!(
-            current.relinquish(8, true, PhysicalAttemptSlot::Corrupt, 0, failed),
+            current.relinquish(8, true, PhysicalAttemptSlot::Corrupt, None, 0, failed),
             RelinquishTransition::Corrupt,
             "F6"
         );
         assert_eq!(
-            current.relinquish(7, true, PhysicalAttemptSlot::Empty, 0, failed),
+            current.relinquish(7, true, PhysicalAttemptSlot::Empty, None, 0, failed),
             RelinquishTransition::Fenced,
             "F7 stale epoch"
         );
         assert_eq!(
-            current.relinquish(8, false, PhysicalAttemptSlot::Empty, 0, failed),
+            current.relinquish(8, false, PhysicalAttemptSlot::Empty, None, 0, failed),
             RelinquishTransition::Fenced,
             "F7 stale owner"
         );
@@ -1644,6 +1804,7 @@ mod proofs {
                     candidate_epoch,
                     kani::any(),
                     slot,
+                    None,
                     kani::any(),
                     arbitrary_released_attempt()
                 ),
@@ -1668,6 +1829,7 @@ mod proofs {
             claim_epoch,
             owner_matches,
             slot,
+            None,
             attempt_count,
             ReleasedAttempt::Unspent,
         );
@@ -1720,6 +1882,7 @@ mod proofs {
             claim_epoch,
             owner_matches,
             slot,
+            None,
             attempt_count,
             ReleasedAttempt::Failed { max_attempts },
         );
@@ -1853,6 +2016,7 @@ mod proofs {
                             state.lease_epoch,
                             true,
                             PhysicalAttemptSlot::Empty,
+                            None,
                             kani::any(),
                             arbitrary_released_attempt(),
                         ),

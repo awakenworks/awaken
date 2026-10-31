@@ -789,6 +789,7 @@ fn release_claim(
                     .as_ref()
                     .is_some_and(|lease| lease.owner() == claim.owner),
                 slot,
+                row.active_attempt.as_ref().map(|active| active.epoch),
                 row.attempt_count,
                 attempt,
             )
