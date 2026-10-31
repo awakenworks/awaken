@@ -361,7 +361,7 @@ pub(super) async fn drive_resumed(
     )
     .await?;
     seed_state.splice(0..0, delegation_state);
-    let mut seed_audit = if decision_precommitted {
+    let seed_audit = if decision_precommitted {
         Vec::new()
     } else if let (Some(decision), Some(call)) = (permission_decision, pending_call.as_ref()) {
         vec![permission_confirmation(call, decision)]
@@ -373,8 +373,10 @@ pub(super) async fn drive_resumed(
     for command in &seed_state {
         store.apply(command);
     }
-    let mut new_messages = Vec::new();
-    if let Some(mut batch) = waiting_batch.take() {
+    // One ledger carries the whole resumed attempt into its continuation: the
+    // durable watermarks and the already-announced Running transition must not
+    // restart when the resumed result's journal commit precedes publication.
+    let ledger = if let Some(mut batch) = waiting_batch.take() {
         let call_id = waiting_call_id.as_deref().expect("validated waiting call");
         let output = resumed_output
             .ok_or_else(|| Error::Execution("tool wait resumed without a tool output".into()))?;
@@ -403,7 +405,10 @@ pub(super) async fn drive_resumed(
             returned_child,
             false,
             approved || ticket.reason() == AwaitReason::Delegation,
-            dispatch::BatchPersistence::Always,
+            // The continuation recovers this batch and publishes it next, so a
+            // complete batch is persisted once by that publication, exactly as a
+            // fresh dispatch does; the raw result is already journalled above.
+            dispatch::BatchPersistence::WhenIncomplete,
             &mut batch,
             &mut ledger,
             &mut store,
@@ -429,20 +434,24 @@ pub(super) async fn drive_resumed(
             }
             return Err(error);
         }
-        transcript = ledger.transcript.clone();
-        let tail = ledger.into_step_result(RunDisposition::running(run_id.clone()));
-        seed_state = tail.staged_state;
-        seed_audit = tail.audit;
-        resume_commit = tail.resume;
-        new_messages = tail.new_messages;
+        if batch.is_complete() {
+            // Not yet persisted: stage the completed batch so the continuation's
+            // recovery sees this call Completed and publishes it, instead of
+            // reprocessing the journalled raw return.
+            let command = ActiveToolBatch::write(&Some(batch));
+            store.apply(&command);
+            ledger.staged_state.push(command);
+        }
+        ledger
     } else {
         transcript.extend(resumed.iter().cloned());
-        new_messages.extend(fresh_context);
+        let mut new_messages = fresh_context;
         new_messages.extend(resumed);
-    }
-    if continuation == ResumeContinuation::ToolBatch {
         let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
-        ledger.attach_resume(resume_commit);
+        ledger.attach_resume(resume_commit.take());
+        ledger
+    };
+    if continuation == ResumeContinuation::ToolBatch {
         return drive_tool_batch(
             runtime,
             resolved,
@@ -464,14 +473,10 @@ pub(super) async fn drive_resumed(
         thread_id,
         context,
         ticket.delegation_origin.as_ref(),
-        transcript,
-        new_messages,
+        ledger,
         run_input,
         resume_step_base,
         store,
-        seed_state,
-        seed_audit,
-        resume_commit,
         resume_checkpoint,
     )
     .await?;

@@ -1582,29 +1582,43 @@ fn stage_batch_publication(
     let publication = batch
         .publication()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    ledger
-        .staged_state
-        .extend(publication.result_state().cloned().map(|mut command| {
-            // These cells are Runtime bookkeeping, not tool-owned state. A resumed
-            // call retains its original snapshot in result_state, but subsequent
-            // requests, deliveries and consumption may already have advanced it.
-            // Publish the current execution projection at this one adapter; copying
-            // the old snapshot would resurrect a relationship or erase later usage.
-            if [
-                (RunDelegations::SCOPE, RunDelegations::KEY),
-                (PendingChildRunResults::SCOPE, PendingChildRunResults::KEY),
-                (ThreadUsageKey::SCOPE, ThreadUsageKey::KEY),
-            ]
-            .contains(&(command.scope, command.key.0.as_str()))
-            {
-                command.action = store
-                    .get(command.scope, &command.key)
-                    .cloned()
-                    .map(StateAction::Set)
-                    .unwrap_or(StateAction::Remove);
+    let mut published = Vec::new();
+    for command in publication.result_state() {
+        let mut command = command.clone();
+        // These cells are Runtime bookkeeping, not tool-owned state. A resumed
+        // call retains its original snapshot in result_state, but subsequent
+        // requests, deliveries and consumption may already have advanced it.
+        // Publish the current execution projection at this one adapter; copying
+        // the old snapshot would resurrect a relationship or erase later usage.
+        if [
+            (RunDelegations::SCOPE, RunDelegations::KEY),
+            (PendingChildRunResults::SCOPE, PendingChildRunResults::KEY),
+            (ThreadUsageKey::SCOPE, ThreadUsageKey::KEY),
+        ]
+        .contains(&(command.scope, command.key.0.as_str()))
+        {
+            command.action = store
+                .get(command.scope, &command.key)
+                .cloned()
+                .map(StateAction::Set)
+                .unwrap_or(StateAction::Remove);
+            // The projection is written at most once, and not at all when this
+            // attempt already staged that exact value: the recorder stages the
+            // same bookkeeping beside the call, so republishing it would write a
+            // second identical delivery consumption or usage merge.
+            let latest = ledger
+                .staged_state
+                .iter()
+                .chain(&published)
+                .rev()
+                .find(|staged| staged.scope == command.scope && staged.key == command.key);
+            if latest.is_some_and(|staged| staged.action == command.action) {
+                continue;
             }
-            command
-        }));
+        }
+        published.push(command);
+    }
+    ledger.staged_state.extend(published);
     for message in publication.messages() {
         ledger.push_message(message.clone());
     }

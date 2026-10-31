@@ -222,14 +222,10 @@ pub(crate) async fn run_agent_loop(
         &thread_id,
         &context,
         delegation_origin.as_ref(),
-        transcript,
-        fresh_input,
+        StepLedger::new(transcript, fresh_input, seed_state, Vec::new()),
         run_input,
         step_base,
         store,
-        seed_state,
-        Vec::new(),
-        None,
         resume_checkpoint,
     )
     .await?;
@@ -580,14 +576,10 @@ pub(super) async fn drive(
     thread_id: &ThreadId,
     context: &RuntimeRunContext,
     delegation_origin: Option<&DelegationOrigin>,
-    transcript: Vec<Message>,
-    new_messages: Vec<Message>,
+    mut ledger: StepLedger,
     run_input: std::sync::Arc<[Message]>,
     step_base: usize,
     mut store: Store,
-    seed_state: Vec<StateCommand>,
-    seed_audit: Vec<EventDraft>,
-    seed_resume: Option<ResumeCommit>,
     mut resume_checkpoint: Option<StreamCheckpoint>,
 ) -> Result<RunStepResult> {
     // The per-run model executor (ADR-0004) wins over the runtime's bound default:
@@ -602,11 +594,10 @@ pub(super) async fn drive(
         .or_else(|| runtime.llm().cloned())
         .ok_or(crate::ConfigurationError::MissingModelProvider)?;
 
-    // The attempt's durable-progress accumulator; it owns the step-commit
-    // watermark invariant, so only the tail beyond a watermark is ever returned
-    // or re-committed.
-    let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
-    ledger.attach_resume(seed_resume);
+    // `ledger` is the attempt's durable-progress accumulator; it owns the
+    // step-commit watermark invariant, so only the tail beyond a watermark is
+    // ever returned or re-committed. A resumed attempt hands over the ledger it
+    // already committed through instead of restarting its watermarks.
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself an end (`MaxSteps`).
     let mut disposition: Option<RunDisposition> = None;
