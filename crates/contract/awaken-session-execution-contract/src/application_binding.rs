@@ -66,9 +66,11 @@ impl SessionApplications {
     }
 }
 
+/// The two local roles a lifetime owns. They are held only to keep the roles
+/// alive and are never read: callers reach them through the binding's `Weak`s.
 struct LocalApplications {
-    coordination: Arc<dyn SessionAgentCoordination>,
-    background_runs: Arc<dyn SessionRunBackgroundApplication>,
+    _coordination: Arc<dyn SessionAgentCoordination>,
+    _background_runs: Arc<dyn SessionRunBackgroundApplication>,
 }
 
 /// Ownership of the bound roles, retained by the execution lifecycle outside
@@ -150,8 +152,8 @@ impl SessionApplicationBinding {
                 coordination,
                 background_runs,
             } => Some(Arc::new(LocalApplications {
-                coordination: coordination.clone(),
-                background_runs: background_runs.clone(),
+                _coordination: coordination.clone(),
+                _background_runs: background_runs.clone(),
             })),
             SessionApplications::Standalone | SessionApplications::ClaimedWorker => None,
         };
@@ -213,8 +215,8 @@ impl SessionApplicationBinding {
                     "local coordination and background Run submission",
                 );
                 Some(Arc::new(LocalApplications {
-                    coordination: coordination.upgrade().ok_or(unavailable)?,
-                    background_runs: background_runs.upgrade().ok_or(unavailable)?,
+                    _coordination: coordination.upgrade().ok_or(unavailable)?,
+                    _background_runs: background_runs.upgrade().ok_or(unavailable)?,
                 }))
             }
             BoundApplications::Standalone | BoundApplications::ClaimedWorker => None,
