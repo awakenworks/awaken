@@ -319,7 +319,10 @@ grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'worker_kubernetes_identity_directory' "$RENDERED"
 grep -q 'restartPolicy: Never' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'awaken.dev/worker-process-evidence' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# The Coordinator adds the Worker process-evidence finalizer at registration;
+# neither a fixture Pod nor the fleet template may carry it from creation.
+! grep -q 'finalizers: \[awaken.dev/worker-process-evidence\]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+! grep -q 'awaken.dev/worker-process-evidence' "$RENDERED"
 grep -Fq 'wait --for=delete "pod/$NATIVE_CRASH_OLD"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'prepare-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
@@ -364,8 +367,19 @@ grep -Fq 'awaken.dev/create-result-guard' <<<"$STAGE8"
 grep -Fq 'create-independent-session' <<<"$STAGE8"
 grep -Fq 'read-durable' <<<"$STAGE8"
 ! grep -Fq -- '--force' <<<"$STAGE8"
-grep -Fq 'worker-0 reused its immutable Pod UID' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'worker-1 reused its immutable Pod UID' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'worker-0 was replaced instead of restarted in place' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'worker-1 was replaced instead of restarted in place' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# The Worker ID is the Pod and an incarnation is one container instance
+# (ADR-0078 amendment 2026-10-31): stage 6b hard-kills worker-0's container in
+# place through the canonical CRI helper, then joins the same Pod UID, the new
+# container's registration, the old incarnation's exact lastState exit and
+# continued public work. The Worker fleet stays a restartable StatefulSet.
+STAGE6B="$(sed -n '/log "6b\/11/,/log "7\/11/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+grep -Fq 'hard_crash_native_worker worker-0 "$CRASHED_WORKER_UID" in-place' <<<"$STAGE6B"
+grep -Fq "incarnation_id = '\${RESTARTED_INCARNATION}'" <<<"$STAGE6B"
+grep -Fq "process_exit_json LIKE '%exit_code%137%'" <<<"$STAGE6B"
+grep -Fq 'verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-WORKER-CRASH' <<<"$STAGE6B"
+! grep -Fq 'delete pod' <<<"$STAGE6B"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # Promotion decision table: P1 the old synchronous writer dies and its standby
 # is promoted -> clear the inherited dead-peer requirement before publication;

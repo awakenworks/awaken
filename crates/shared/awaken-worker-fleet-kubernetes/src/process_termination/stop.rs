@@ -3,14 +3,15 @@
 //! Retained stop observes exits; closed-idle retirement grants no exit or replay.
 
 use super::{
-    PodProcessBinding, PodProcessObserver, PodProcessTermination,
+    ContainerFate, PodProcessBinding, PodProcessObserver, PodProcessTermination,
     WORKER_PROCESS_EVIDENCE_FINALIZER, api_not_found, backend, bind, binding_retention_is_present,
-    coordinate, matching_statuses, observe, retention_finalizer,
+    container_incarnation, coordinate, matching_statuses, observe, restartable_fates,
+    retention_finalizer, runs_newer_container,
 };
 use crate::pod_metadata::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{DeleteParams, Preconditions};
+use kube::api::{DeleteParams, ListParams, Preconditions};
 
 /// A trusted recovery application may request termination of a whole Worker
 /// process domain. This is not a per-Run cancellation port: other Runs can share
@@ -47,40 +48,27 @@ impl PodProcessStopper {
         self.release_closed_idle_pod_evidence(name, uid).await
     }
 
-    /// Request replacement of the current registered Worker Pod before its
-    /// process exits. A Kubernetes controller would otherwise restart the
-    /// container under the same UID, whose immutable Create ledger cannot be
-    /// rebound to a second process. This is deletion *intent* only: the
-    /// independent Coordinator still owns exit observation and evidence release.
-    pub async fn request_registered_pod_replacement(
+    /// Retire one closed-idle Worker incarnation. If its restartable Pod already
+    /// runs a newer container instance, that newer incarnation owns the Pod
+    /// and its retention: nothing is deleted or released here. Otherwise this
+    /// is the Pod-level closed-idle retirement above.
+    pub async fn retire_closed_idle_incarnation(
         &self,
-        name: &str,
-        uid: &str,
+        binding: &PodProcessBinding,
     ) -> Result<(), RuntimeError> {
-        if uid.is_empty() {
-            return Err(backend("Worker Pod replacement requires its exact UID"));
+        if binding.namespace != self.observer.namespace {
+            return Err(backend("Pod process binding belongs to another namespace"));
         }
-        // Re-read after a lost DELETE response or resourceVersion conflict.
-        // A different UID is never targeted, and no API response is an exit ACK.
-        for _ in 0..4 {
-            let pod = self.observer.pods.get(name).await.map_err(backend)?;
-            if pod.metadata.uid.as_deref() != Some(uid) {
-                return Err(backend("Worker Pod was replaced before its stop request"));
-            }
-            if pod.metadata.deletion_timestamp.is_some() {
-                return Ok(());
-            }
-            let binding = bind(&self.observer.namespace, name, uid, &pod)?;
-            if !binding.worker_evidence_was_retained() {
-                return Err(backend("Worker Pod has no retained process evidence"));
-            }
-            if self.request_stop(&binding).await.is_ok() {
-                return Ok(());
-            }
+        let pod = match self.observer.pods.get(&binding.name).await {
+            Ok(pod) => pod,
+            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+        };
+        if runs_newer_container(binding, &pod) {
+            return Ok(());
         }
-        Err(backend(
-            "Worker Pod replacement intent could not be retained",
-        ))
+        self.retire_closed_idle_pod(&binding.name, &binding.uid)
+            .await
     }
 
     /// A graceful Quiesced Worker may still be returning its deregistration
@@ -117,17 +105,56 @@ impl PodProcessStopper {
         name: &str,
         uid: &str,
     ) -> Result<(), RuntimeError> {
-        self.release_pod_evidence(name, uid, true).await
+        self.release_pod_evidence(name, uid, ReleaseAdmission::DeletionIntent)
+            .await
     }
 
-    // One finalizer CAS for both existing release authorities: a durable exact
-    // process exit may release immediately; an unbound/closed-idle coordinate
-    // alone must wait for API-owned deletion intent. Neither issues DELETE.
+    /// This namespace's ended Pods that still carry the Worker process-evidence
+    /// finalizer, in name order. Ended means a terminal phase, or deletion
+    /// intent with every container terminated (an Always Pod being deleted).
+    /// Listing grants nothing; the caller decides which may release.
+    pub async fn ended_retained_worker_pods(
+        &self,
+    ) -> Result<Vec<EndedRetainedWorkerPod>, RuntimeError> {
+        let pods = self
+            .observer
+            .pods
+            .list(&ListParams::default())
+            .await
+            .map_err(backend)?;
+        let mut ended: Vec<_> = pods
+            .items
+            .iter()
+            .filter_map(ended_retained_worker_pod)
+            .collect();
+        ended.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(ended)
+    }
+
+    /// Release the Worker finalizer of an ended Pod whose process never reached
+    /// the Registry. The caller must first prove that: no Registry record and an
+    /// absent or sealed unbound Create ledger. Here the fresh read must still be
+    /// the same UID, still ended (an absorbing phase: no process can start or
+    /// bind again) and still retained; the CAS is fenced by resourceVersion.
+    /// No DELETE is issued and no exit receipt is produced.
+    pub async fn release_ended_unregistered_pod_evidence(
+        &self,
+        name: &str,
+        uid: &str,
+    ) -> Result<(), RuntimeError> {
+        self.release_pod_evidence(name, uid, ReleaseAdmission::Ended)
+            .await
+    }
+
+    // One finalizer CAS for every release authority: a durable exact process
+    // exit may release immediately; an unbound/closed-idle coordinate alone
+    // must wait for API-owned deletion intent; a never-registered domain needs
+    // its Pod ended. None issues DELETE.
     async fn release_pod_evidence(
         &self,
         name: &str,
         uid: &str,
-        require_deletion_intent: bool,
+        admission: ReleaseAdmission<'_>,
     ) -> Result<(), RuntimeError> {
         if uid.is_empty() {
             return Err(backend("idle evidence release requires an exact UID"));
@@ -139,9 +166,14 @@ impl PodProcessStopper {
             false,
             &|| Ok(()),
             &|pod| {
+                let admitted = match admission {
+                    ReleaseAdmission::ExactExit(binding) => !runs_newer_container(binding, pod),
+                    ReleaseAdmission::DeletionIntent => pod.metadata.deletion_timestamp.is_some(),
+                    ReleaseAdmission::Ended => pod_has_ended(pod),
+                };
                 if pod.metadata.uid.as_deref() != Some(uid)
                     || retention_finalizer(pod) != Some(WORKER_PROCESS_EVIDENCE_FINALIZER)
-                    || (require_deletion_intent && pod.metadata.deletion_timestamp.is_none())
+                    || !admitted
                 {
                     Ok(ExactFinalizerAdmission::Complete)
                 } else {
@@ -178,6 +210,9 @@ impl PodProcessStopper {
             Err(error) if api_not_found(&error) => return Ok(PodProcessTermination::Unknown),
             Err(error) => return Err(backend(error)),
         };
+        if binding.restartable {
+            return self.request_restartable_stop(binding, &pod).await;
+        }
         if matching_statuses(binding, &pod).is_none() {
             return Ok(PodProcessTermination::Unknown);
         }
@@ -193,6 +228,38 @@ impl PodProcessStopper {
         // read must establish both closure and the same exact process exits.
         self.request_exact_delete(&binding.name, &binding.uid, &pod)
             .await?;
+        Ok(PodProcessTermination::Unknown)
+    }
+
+    /// Container-instance stop for a restartable binding:
+    /// | bound containers         | effect                                   |
+    /// | every one exactly exited | local exit receipt; the Pod is untouched |
+    /// | one still running        | one exact UID/RV Pod DELETE, Unknown     |
+    /// | none running, one lost   | Unknown (indeterminate), no mutation     |
+    /// A foreign Pod (UID, node, policy, names) is Unknown; lost retention is
+    /// an error. A Pod that already runs a newer incarnation is never deleted:
+    /// the bound instance is then exited or lost, not running.
+    async fn request_restartable_stop(
+        &self,
+        binding: &PodProcessBinding,
+        pod: &Pod,
+    ) -> Result<PodProcessTermination, RuntimeError> {
+        let Some(fates) = restartable_fates(binding, pod) else {
+            return Ok(PodProcessTermination::Unknown);
+        };
+        if !binding_retention_is_present(binding, pod) {
+            return Err(backend("Worker process evidence retention was lost"));
+        }
+        if fates
+            .iter()
+            .all(|fate| matches!(fate, ContainerFate::Exited(_)))
+        {
+            return Ok(observe(binding, pod));
+        }
+        if pod.metadata.deletion_timestamp.is_none() && fates.contains(&ContainerFate::Running) {
+            self.request_exact_delete(&binding.name, &binding.uid, pod)
+                .await?;
+        }
         Ok(PodProcessTermination::Unknown)
     }
 
@@ -247,9 +314,73 @@ impl PodProcessStopper {
         if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
             return Ok(());
         }
-        self.release_pod_evidence(&binding.name, &binding.uid, false)
-            .await
+        self.release_pod_evidence(
+            &binding.name,
+            &binding.uid,
+            ReleaseAdmission::ExactExit(binding),
+        )
+        .await
     }
+}
+
+/// What, besides the exact UID and the Worker finalizer, admits a release.
+#[derive(Clone, Copy)]
+enum ReleaseAdmission<'a> {
+    /// The Registry durably holds this binding's exact exit. A restartable Pod
+    /// that already runs a newer container instance keeps its retention for
+    /// that newer incarnation; the release is then a no-op.
+    ExactExit(&'a PodProcessBinding),
+    /// A closed-idle coordinate: the API must already have deletion intent.
+    DeletionIntent,
+    /// A never-registered domain: the Pod phase must be terminal.
+    Ended,
+}
+
+fn pod_has_ended(pod: &Pod) -> bool {
+    let Some(status) = pod.status.as_ref() else {
+        return false;
+    };
+    matches!(status.phase.as_deref(), Some("Succeeded" | "Failed"))
+        || (pod.metadata.deletion_timestamp.is_some()
+            && status.container_statuses.as_ref().is_some_and(|statuses| {
+                !statuses.is_empty()
+                    && statuses.iter().all(|status| {
+                        status
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.terminated.is_some())
+                    })
+            }))
+}
+
+/// An ended Pod still retaining Worker evidence: its exact coordinate and the
+/// incarnation of its last container instance set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EndedRetainedWorkerPod {
+    pub name: String,
+    pub uid: String,
+    pub incarnation: String,
+}
+
+fn ended_retained_worker_pod(pod: &Pod) -> Option<EndedRetainedWorkerPod> {
+    let retained = pod.metadata.finalizers.as_ref().is_some_and(|values| {
+        values
+            .iter()
+            .any(|v| v == WORKER_PROCESS_EVIDENCE_FINALIZER)
+    });
+    if !retained || !pod_has_ended(pod) {
+        return None;
+    }
+    let statuses = pod.status.as_ref()?.container_statuses.as_ref()?;
+    let ids = statuses
+        .iter()
+        .map(|status| Some((status.name.as_str(), status.container_id.as_deref()?)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(EndedRetainedWorkerPod {
+        name: coordinate(pod.metadata.name.as_deref())?,
+        uid: coordinate(pod.metadata.uid.as_deref())?,
+        incarnation: container_incarnation(ids.into_iter()),
+    })
 }
 
 #[cfg(test)]

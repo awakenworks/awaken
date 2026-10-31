@@ -8,7 +8,10 @@ use std::sync::{Arc, OnceLock};
 #[derive(Default)]
 pub(crate) struct ExecutionAuthoritySlot(OnceLock<Arc<dyn CredentialExecutionAuthority>>);
 impl ExecutionAuthoritySlot {
-    pub fn install(&self, authority: Arc<dyn CredentialExecutionAuthority>) -> Result<(), String> {
+    pub(crate) fn install(
+        &self,
+        authority: Arc<dyn CredentialExecutionAuthority>,
+    ) -> Result<(), String> {
         self.0
             .set(authority)
             .map_err(|_| "credential execution authority already installed".to_string())

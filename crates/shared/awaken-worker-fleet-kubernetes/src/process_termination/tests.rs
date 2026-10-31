@@ -353,88 +353,231 @@ fn binding_must_precede_execution_and_cannot_be_reconstructed_from_terminal_stat
     );
 }
 
+/// The same retained Always Pod after its bound container `from` ended with
+/// `code`/`reason` and kubelet started container `to` in place.
+pub(super) fn restarted(pod: &Value, from: &str, to: &str, code: i32, reason: &str) -> Value {
+    let mut pod = pod.clone();
+    let status = &mut pod["status"]["containerStatuses"][0];
+    let restarts = status["restartCount"].as_i64().unwrap_or(0) + 1;
+    let started = status["state"]["running"]["startedAt"].clone();
+    status["lastState"] = json!({"terminated":{
+        "containerID": from, "exitCode": code, "reason": reason,
+        "startedAt": started, "finishedAt": "2026-09-08T00:00:30Z"
+    }});
+    status["containerID"] = json!(to);
+    status["restartCount"] = json!(restarts);
+    status["state"] = json!({"running":{"startedAt": format!("2026-09-08T00:0{restarts}:00Z")}});
+    pod["metadata"]["resourceVersion"] = json!(format!("r{restarts}"));
+    pod
+}
+
+pub(super) fn retained_always() -> Value {
+    let mut pod = running();
+    pod["spec"]["restartPolicy"] = json!("Always");
+    pod["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
+    pod
+}
+
+/// A binding persisted while Always-policy Worker Pods were Pod-UID
+/// incarnations. Its fields are exactly those of a current restartable binding.
+pub(super) fn historical_restartable(binding: &PodProcessBinding) -> PodProcessBinding {
+    let mut encoded = serde_json::to_value(binding).unwrap();
+    encoded["restartable"] = json!(true);
+    serde_json::from_value(encoded).unwrap()
+}
+
 #[test]
-fn deployment_process_exit_requires_frozen_policy_retention_and_deletion() {
-    // Causes: C1 exact private original container set/UID/node/start; C2 Always
-    // policy frozen before effects; C3 retained binding and live finalizer;
-    // C4 accepted deletion intent; C5 every exact runtime exit; C6 zero restarts.
-    // E1(C1..C6) local exit observed; E2(!C3 before admission) bind rejected;
-    // E3(!C1|!C3|!C4|!C5|!C6 after admission) Unknown, no retirement.
-    // Rules D1 all => observed; D2 natural exit => Unknown; D3 deletion/live =>
-    // Unknown; D4 change one necessary cause => Unknown (MC/DC). D5 a legacy
-    // Never binding cannot acquire Always semantics by later Pod observation.
-    let mut live = running();
-    live["spec"]["restartPolicy"] = json!("Always");
-    assert!(
-        bind("ns", "worker", "uid-a", &decode(live.clone())).is_err(),
-        "D2 admission"
-    );
-    live["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
+fn container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation() {
+    // A Worker incarnation is one container instance of one Pod UID. Causes:
+    // container state of the bound instance A; evidence retained (R) or not.
+    // | Row | Pod status (same UID, same container name)  | R | effect                          |
+    // | C1  | running A                                    | y | alive: rebinding gives the same binding, Unknown |
+    // | C2  | running B, lastState terminated A (137)      | y | exact exit of A from lastState; B binds as a new incarnation |
+    // | C3  | terminated A in state (back-off, not restarted) | y | exact exit of A                  |
+    // | C4  | running C, lastState terminated B (twice)    | y | lost: Unknown (indeterminate); C binds |
+    // | C5  | running B, no lastState                      | y | lost: Unknown                    |
+    // | C6  | lastState names A but UID/name/node differ   | y | Unknown (Pod fence)              |
+    // | C7  | lastState names A with a synthetic reason    | y | lost: Unknown                    |
+    // | R2a | Always Pod without retained evidence         | n | no binding: cannot become an incarnation |
+    // | R2b | retention removed after binding              | n | Unknown                          |
+    // restartCount is not part of identity: only the container ID and start.
+    let live = retained_always();
     let binding = bind("ns", "worker", "uid-a", &decode(live.clone())).unwrap();
-    let serialized = serde_json::to_value(&binding).unwrap();
-    assert_eq!(serialized["restartable"], true);
+    assert!(binding.restartable);
     assert_eq!(
-        serde_json::from_value::<PodProcessBinding>(serialized).unwrap(),
-        binding
+        binding.incarnation(),
+        "a",
+        "single container: its runtime hex"
     );
-    let mut exited = terminal();
-    exited["spec"]["restartPolicy"] = json!("Always");
-    exited["metadata"]["finalizers"] = live["metadata"]["finalizers"].clone();
     assert_eq!(
-        observe(&binding, &decode(exited.clone())),
+        bind("ns", "worker", "uid-a", &decode(live.clone())).unwrap(),
+        binding,
+        "C1 alive"
+    );
+    assert_eq!(
+        observe(&binding, &decode(live.clone())),
         PodProcessTermination::Unknown,
-        "D2 natural exit"
+        "C1"
     );
-    exited["metadata"]["deletionTimestamp"] = json!("2026-09-08T00:00:02Z");
+
+    let once = restarted(&live, "containerd://a", "containerd://b", 137, "Error");
+    let PodProcessTermination::Observed(receipt) = observe(&binding, &decode(once.clone())) else {
+        panic!("C2 exact lastState exit");
+    };
+    assert_eq!(receipt.exits().len(), 1);
+    assert_eq!(receipt.exits()[0].exit_code(), 137, "C2 exact code");
+    assert_eq!(receipt.exits()[0].reason(), "Error", "C2 exact reason");
+    assert!(
+        receipt.evidence_ref().contains("\"exit_code\":137"),
+        "C2 durable"
+    );
+    let PodProcessTermination::Observed(again) = observe(&binding, &decode(once.clone())) else {
+        panic!("C2 replay");
+    };
+    assert_eq!(
+        again.evidence_ref(),
+        receipt.evidence_ref(),
+        "C2 stable evidence"
+    );
+    let successor = bind("ns", "worker", "uid-a", &decode(once.clone())).unwrap();
+    assert_eq!(successor.incarnation(), "b", "C2 new incarnation binds");
+    assert_ne!(successor, binding);
+
+    let mut backoff = live.clone();
+    backoff["status"]["containerStatuses"][0]["state"] = json!({"terminated":{
+        "containerID":"containerd://a", "exitCode": 1, "reason":"Error",
+        "startedAt":"2026-09-08T00:00:00Z", "finishedAt":"2026-09-08T00:00:01Z"
+    }});
     assert!(
         matches!(
-            observe(&binding, &decode(exited.clone())),
+            observe(&binding, &decode(backoff)),
             PodProcessTermination::Observed(_)
         ),
-        "D1"
+        "C3"
     );
-    let mut deleting_live = live.clone();
-    deleting_live["metadata"]["deletionTimestamp"] =
-        exited["metadata"]["deletionTimestamp"].clone();
+
+    let twice = restarted(&once, "containerd://b", "containerd://c", 137, "Error");
     assert_eq!(
-        observe(&binding, &decode(deleting_live)),
+        observe(&binding, &decode(twice.clone())),
         PodProcessTermination::Unknown,
-        "D3"
+        "C4"
+    );
+    assert_eq!(
+        bind("ns", "worker", "uid-a", &decode(twice))
+            .unwrap()
+            .incarnation(),
+        "c",
+        "C4 current instance binds"
+    );
+    let mut no_last = once.clone();
+    no_last["status"]["containerStatuses"][0]["lastState"] = json!({});
+    assert_eq!(
+        observe(&binding, &decode(no_last)),
+        PodProcessTermination::Unknown,
+        "C5"
     );
     for (pointer, value) in [
-        ("/metadata/uid", json!("replacement")),
-        ("/metadata/finalizers", json!([])),
-        ("/metadata/resourceVersion", Value::Null),
+        ("/metadata/uid", json!("uid-b")),
+        ("/spec/nodeName", json!("node-b")),
         ("/spec/restartPolicy", json!("Never")),
-        ("/status/containerStatuses/0/restartCount", json!(1)),
+        ("/status/containerStatuses/0/name", json!("other")),
         (
-            "/status/containerStatuses/0/containerID",
-            json!("containerd://replacement"),
-        ),
-        (
-            "/status/containerStatuses/0/state/terminated/reason",
+            "/status/containerStatuses/0/lastState/terminated/reason",
             json!("ContainerStatusUnknown"),
         ),
+        (
+            "/status/containerStatuses/0/lastState/terminated/startedAt",
+            json!("2026-09-07T00:00:00Z"),
+        ),
     ] {
-        let mut changed = exited.clone();
+        let mut changed = once.clone();
         *changed.pointer_mut(pointer).unwrap() = value;
         assert_eq!(
             observe(&binding, &decode(changed)),
             PodProcessTermination::Unknown,
-            "D4 {pointer}"
+            "C6/C7 {pointer}"
         );
     }
-    let legacy = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
+    let mut unretained = live.clone();
+    unretained["metadata"]["finalizers"] = json!([]);
     assert!(
-        serde_json::to_value(&legacy)
-            .unwrap()
-            .get("restartable")
-            .is_none()
+        bind("ns", "worker", "uid-a", &decode(unretained)).is_err(),
+        "R2a"
     );
+    let mut released = once.clone();
+    released["metadata"]["finalizers"] = json!([]);
     assert_eq!(
-        observe(&legacy, &decode(exited)),
+        observe(&binding, &decode(released)),
         PodProcessTermination::Unknown,
-        "D5"
+        "R2b"
+    );
+}
+
+#[test]
+fn historical_bindings_settle_by_their_recorded_policy() {
+    // Migration rule. M1 a Pod-level restartable binding persisted before
+    // container identity has exactly today's restartable fields, so it decodes
+    // unchanged and settles by container ID: exact from `state`/`lastState`,
+    // lost otherwise. M2 a historical Never binding keeps its original rule:
+    // every exact exit plus a terminal phase; a container ID alone in
+    // `lastState` of a Never Pod cannot exist. M3 a historical Pod-UID
+    // incarnation still owns its binding (`belongs_to_incarnation`).
+    let never = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
+    let mut retained_never = running();
+    retained_never["metadata"]["finalizers"] = json!([WORKER_PROCESS_EVIDENCE_FINALIZER]);
+    let historical =
+        historical_restartable(&bind("ns", "worker", "uid-a", &decode(retained_never)).unwrap());
+    let current = bind("ns", "worker", "uid-a", &decode(retained_always())).unwrap();
+    assert_eq!(historical, current, "M1 identical persisted fields");
+    assert_eq!(
+        serde_json::from_value::<PodProcessBinding>(serde_json::to_value(&historical).unwrap())
+            .unwrap(),
+        historical,
+        "M1 decodes"
+    );
+    let once = restarted(
+        &retained_always(),
+        "containerd://a",
+        "containerd://b",
+        137,
+        "Error",
+    );
+    assert!(
+        matches!(
+            observe(&historical, &decode(once)),
+            PodProcessTermination::Observed(_)
+        ),
+        "M1 historical restartable settles from lastState"
+    );
+    assert!(
+        matches!(
+            observe(&never, &decode(terminal())),
+            PodProcessTermination::Observed(_)
+        ),
+        "M2 Never exit with terminal phase"
+    );
+    let mut never_live_phase = terminal();
+    never_live_phase["status"]["phase"] = json!("Running");
+    assert_eq!(
+        observe(&never, &decode(never_live_phase)),
+        PodProcessTermination::Unknown,
+        "M2 Never still needs the terminal phase"
+    );
+    assert!(
+        never.belongs_to_incarnation("uid-a", "uid-a"),
+        "M3 Pod-UID incarnation"
+    );
+    assert!(
+        never.belongs_to_incarnation("uid-a", "a"),
+        "M3 container incarnation"
+    );
+    assert!(
+        !never.belongs_to_incarnation("uid-a", "b"),
+        "M3 another instance"
+    );
+    assert!(
+        !never.belongs_to_incarnation("uid-b", "a"),
+        "M3 another Pod"
     );
 }
 

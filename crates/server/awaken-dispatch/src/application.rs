@@ -37,6 +37,16 @@ pub trait WorkerExecutionBindingSource: Send + Sync {
             "Worker bootstrap sealing is unavailable",
         ))
     }
+    /// The incarnation this provider observes for a registering process, when
+    /// it identifies processes itself (Kubernetes: the running container
+    /// instance of the authenticated Pod). Registration then uses it instead
+    /// of the process-proposed value. `None` keeps the proposed incarnation.
+    async fn registration_incarnation(
+        &self,
+        _registration: &crate::WorkerRegistration,
+    ) -> Result<Option<String>, ApplicationError> {
+        Ok(None)
+    }
     /// Prepare provider-owned physical evidence before the Registry's first
     /// insert. The caller atomically freezes a Create ledger UID when present;
     /// the process binding must already be durable before any registration
@@ -303,6 +313,17 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     ) -> Result<(), ApplicationError> {
         Ok(())
     }
+    /// Release retention of this provider's ended process domains that never
+    /// reached the Registry. A domain with any Registry record stays with the
+    /// exact-exit path above; one whose provider ledger already froze a process
+    /// binding is kept, because its Registry insert may still be in flight.
+    /// No exit receipt is produced. Providers without retention own nothing.
+    async fn release_unregistered_ended_worker_evidence(
+        &self,
+        _directory: &dyn crate::WorkerDirectory,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
     async fn stop_closed_worker(
         &self,
         execution: &ClosedWorkerExecution,
@@ -367,6 +388,15 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
             now_ms,
         )
         .await
+    }
+
+    async fn release_unregistered_worker_evidence(
+        &self,
+        directory: &dyn crate::WorkerDirectory,
+    ) -> Result<(), ApplicationError> {
+        self.source
+            .release_unregistered_ended_worker_evidence(directory)
+            .await
     }
 }
 

@@ -171,12 +171,15 @@ pub enum RequestJoin {
 
 /// Registry-frozen witness plus the exact retained Worker Pod identity. The
 /// provider verifies both before every ticket CAS; a stable ConfigMap name is
-/// never accepted in place of the original UID.
+/// never accepted in place of the original UID. One ledger belongs to one
+/// Worker incarnation (one container instance of the Pod); a historical
+/// incarnation equal to the Pod UID keeps its original Pod-scoped ledger.
 #[derive(Clone, Copy)]
 pub struct K8sLedgerBinding<'a> {
     pub worker_namespace: &'a str,
     pub worker_name: &'a str,
     pub worker_uid: &'a str,
+    pub worker_incarnation: &'a str,
     pub ledger_name: &'a str,
     pub ledger_uid: &'a str,
     pub configuration_fingerprint: &'a str,

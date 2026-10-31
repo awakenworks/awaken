@@ -15,7 +15,8 @@
     "readonly_container_roles_refuse_all_effects_before_backend_access": "Worker retirement retention became Worker-reported data: the Coordinator observes no Sandbox, so the read-only container observation roles it tested are deleted; the retiring Worker observes through its execution provider (live/source_retention.rs F1, host::tests::terminal_memory) and the Coordinator decision is tested by source_retention::tests::a_reported_fact_counts_only_for_the_exact_subject_digest",
     "readonly_observation_cannot_replace_explicit_execution": "Worker retirement retention became Worker-reported data: the Coordinator observes no Sandbox, so the read-only container observation roles it tested are deleted; the retiring Worker observes through its execution provider (live/source_retention.rs F1, host::tests::terminal_memory) and the Coordinator decision is tested by source_retention::tests::a_reported_fact_counts_only_for_the_exact_subject_digest",
     "a_poisoned_capture_is_refused_so_extraction_reads_its_committed_transcript": "The transient Memory capture map and its lock are removed. The committed auxiliary Run is the sole proposal authority; memory_proposals tests cover exact input/output, corruption refusal and no partial mutations, while the existing tool records proposals without a content effect.",
-    "stale_same_owner_claimer_is_refused_after_reclaim": "T09-C02 legacy-principal oracle recalibration: identical requests authenticated by one credential carry no process incarnation or lease epoch. Replaced by owner_only_reclaim_preserves_the_credential_principal_boundary and same_credential_session_reclaim_fences_the_exact_generation. E17 retains the original failing source and execution; the stronger same-credential process distinction remains explicitly unaccepted."
+    "stale_same_owner_claimer_is_refused_after_reclaim": "T09-C02 legacy-principal oracle recalibration: identical requests authenticated by one credential carry no process incarnation or lease epoch. Replaced by owner_only_reclaim_preserves_the_credential_principal_boundary and same_credential_session_reclaim_fences_the_exact_generation. E17 retains the original failing source and execution; the stronger same-credential process distinction remains explicitly unaccepted.",
+    "registered_worker_replacement_retains_only_exact_delete_intent": "A Worker incarnation is one container instance of its Pod (ADR-0078 amendment 2026-10-31): an in-place restart is a new incarnation of the same Pod-scoped Worker ID and the old one settles from lastState, so a draining Worker no longer requests deletion of its own Pod. PodProcessStopper::request_registered_pod_replacement and its only caller are deleted; exact UID/RV DELETE, response loss and CAS rows remain covered by the request_stop matrices, including restartable_stop_settles_by_container_instance_and_never_harms_a_newer_one."
   },
   "renamed": {
     "fixed_roles_are_distinct_sorted_and_phase_matches_the_former_table": "fixed_roles_keep_wire_identity_and_canonical_phase_compatibility",
@@ -64,6 +65,11 @@
     "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots": "suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_installed_sessions",
     "observation_runtime_does_not_read_package_write_credentials": "podman_builder_validates_package_write_credentials",
     "registered_worker_observation_does_not_install_execution": "only_a_local_placement_installs_the_colocated_execution",
-    "dead_local_coordination_falls_through_to_the_remote_authority": "expired_local_coordination_refuses_without_selecting_remote_authority"
+    "dead_local_coordination_falls_through_to_the_remote_authority": "expired_local_coordination_refuses_without_selecting_remote_authority",
+    "deployment_binding_freezes_restart_policy_through_the_same_transport_owner": "deployment_binding_freezes_the_container_instance_through_the_same_transport_owner",
+    "deployment_process_exit_requires_frozen_policy_retention_and_deletion": "container_instance_identity_decides_alive_exact_exit_lost_and_new_incarnation",
+    "deployment_restart_policy_requires_actual_closed_exit_evidence": "in_place_restart_settles_the_old_container_from_last_state_against_a_real_kubelet",
+    "deployment_stop_uses_existing_exact_delete_then_observes_original_exits": "restartable_stop_settles_by_container_instance_and_never_harms_a_newer_one",
+    "one_pod_uid_cannot_authenticate_another_process_incarnation": "one_pod_authenticates_only_its_container_instance_incarnations"
   }
 }

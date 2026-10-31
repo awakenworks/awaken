@@ -1253,6 +1253,34 @@ fn verify_worker_id(
     Ok(())
 }
 
+/// A restarted process re-registers under the same Worker ID. Expire the
+/// previous incarnation once its lease has lapsed and record its exact exit
+/// when the provider still holds it (e.g. Kubernetes `lastState`); otherwise it
+/// stays Unknown and its occupied attempts keep their existing recovery. A
+/// live lease is left alone: the Registry then refuses the new incarnation.
+async fn settle_previous_incarnation(
+    service: &WorkerDispatchService,
+    previous: &WorkerIdentity,
+) -> Result<(), ApplicationError> {
+    let Some(source) = &service.execution_stops else {
+        return Ok(());
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        awaken_dispatch::reconcile_closed_idle_worker_evidence(
+            service.dispatch.as_ref(),
+            directory(service)?.as_ref(),
+            source.as_ref(),
+            previous,
+            service.clock.now_ms(),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        ApplicationError::unavailable("previous Worker incarnation settlement timed out")
+    })?
+}
+
 /// Closure and final physical admission share the Registry exclusion. A closed
 /// exact incarnation cannot acquire another slot after this authoritative read.
 async fn release_closed_idle_worker_evidence(

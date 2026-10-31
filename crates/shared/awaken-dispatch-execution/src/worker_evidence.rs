@@ -74,6 +74,15 @@ pub trait WorkerEvidenceRelease: Send + Sync {
         identity: &WorkerIdentity,
         now_ms: u64,
     ) -> Result<(), ApplicationError>;
+
+    /// Release provider retention of ended process domains that never reached
+    /// this Registry, e.g. a Worker Pod that died during registration. Such a
+    /// domain has no Registry record for the per-record scan to visit. Carries
+    /// no exit receipt and writes no Registry record.
+    async fn release_unregistered_worker_evidence(
+        &self,
+        directory: &dyn WorkerDirectory,
+    ) -> Result<(), ApplicationError>;
 }
 
 /// Trusted Coordinator-selected terminal maintenance role. The original idle

@@ -23,10 +23,10 @@ async fn bootstrap_retirement_requires_original_empty_ledger_before_any_pod_muta
     ] {
         let (transport, facts, client) = fixture_with_client();
         let ledger =
-            K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster")
+            K8sWorkerCreateLedger::new(client.clone(), "create-control", "workers", "test-cluster")
                 .unwrap();
         let (name, uid) = ledger
-            .initialize("workers", "worker-a", "uid-a")
+            .initialize("workers", "worker-a", "uid-a", "uid-a")
             .await
             .unwrap();
         let anchor = WorkerCreateLedger::new(
@@ -41,19 +41,22 @@ async fn bootstrap_retirement_requires_original_empty_ledger_before_any_pod_muta
             worker_namespace: "workers",
             worker_name: "worker-a",
             worker_uid: "uid-a",
+            worker_incarnation: "uid-a",
             ledger_name: &name,
             ledger_uid: &uid,
             configuration_fingerprint: ledger.configuration_fingerprint(),
         };
         let source = transport.binding_source().unwrap();
         if cause == "bound" {
-            source
-                .prepare_registration_physical_evidence(&WorkerRegistration {
-                    worker_id: "k8s:workers:worker-a:uid-a".into(),
-                    incarnation_id: "uid-a".into(),
-                    manifest: manifest(),
-                    create_ledger: None,
-                })
+            // A historical (Pod-UID incarnation) ledger that froze its process.
+            let process =
+                awaken_worker_fleet_kubernetes::PodProcessObserver::new(client.clone(), "workers")
+                    .unwrap()
+                    .bind_pod_process("worker-a", "uid-a")
+                    .await
+                    .unwrap();
+            ledger
+                .retain_process_binding(binding, &process)
                 .await
                 .unwrap();
         } else if cause == "ticket" {
@@ -175,7 +178,7 @@ async fn bootstrap_retirement_failure_keeps_deny_fence_and_retries_same_uid() {
     let ledger =
         K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster").unwrap();
     let (name, uid) = ledger
-        .initialize("workers", "worker-a", "uid-a")
+        .initialize("workers", "worker-a", "uid-a", "uid-a")
         .await
         .unwrap();
     let anchor = WorkerCreateLedger::new(
@@ -221,4 +224,137 @@ async fn bootstrap_retirement_failure_keeps_deny_fence_and_retries_same_uid() {
     );
     assert!(facts.deletes.lock().unwrap().is_empty());
     assert_eq!(facts.updates.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn ended_unregistered_worker_pods_release_retention_only_when_provably_unregistered() {
+    // Finalizer decision table. The Worker process-evidence finalizer is never
+    // in a Pod template; registration adds it once the Pod can bind. Causes:
+    // R registration {registered: a Registry record exists, never: none};
+    // P phase {Running, Failed, Succeeded}; L Create ledger {absent, unbound,
+    // bound: a process binding was frozen before a Registry insert}.
+    // | R          | P                 | L              | finalizer                       |
+    // | registered | any               | any            | present (exact-exit path owns)  |
+    // | never      | Running           | any            | present (live Worker may finish registering) |
+    // | never      | Failed/Succeeded  | absent/unbound | removed (unbound ledger sealed first) |
+    // | never      | Failed/Succeeded  | bound          | present, error (insert may be pending) |
+    // Every removal is one UID/resourceVersion-fenced finalizer PUT that keeps
+    // sibling finalizers; no row DELETEs a Pod or writes a Registry record.
+    use awaken_dispatch::WorkerDirectory;
+    use awaken_worker_contract::WorkerCurrentSource as _;
+    for registered in [false, true] {
+        for phase in ["Running", "Failed", "Succeeded"] {
+            for ledger_state in ["absent", "unbound", "bound"] {
+                let row = format!("registered={registered} {phase} ledger={ledger_state}");
+                let (transport, facts, client) = fixture_with_client();
+                let ledger =
+                    K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster")
+                        .unwrap();
+                facts.pod.lock().unwrap().1["metadata"]["finalizers"] =
+                    json!(["awaken.dev/worker-process-evidence", "other.example/keep"]);
+                // The Pod's container instance names its incarnation and ledger.
+                let incarnation = transport
+                    .binding_source()
+                    .unwrap()
+                    .registration_incarnation(&WorkerRegistration {
+                        worker_id: "k8s:workers:worker-a:uid-a".into(),
+                        incarnation_id: "process-proposed".into(),
+                        manifest: manifest(),
+                        create_ledger: None,
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap();
+                match ledger_state {
+                    "unbound" => {
+                        ledger
+                            .initialize("workers", "worker-a", "uid-a", &incarnation)
+                            .await
+                            .unwrap();
+                    }
+                    "bound" => {
+                        transport
+                            .binding_source()
+                            .unwrap()
+                            .prepare_registration_physical_evidence(&WorkerRegistration {
+                                worker_id: "k8s:workers:worker-a:uid-a".into(),
+                                incarnation_id: incarnation.clone(),
+                                manifest: manifest(),
+                                create_ledger: None,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    _ => {}
+                }
+                let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
+                if registered {
+                    directory
+                        .register(
+                            WorkerRegistration {
+                                worker_id: "k8s:workers:worker-a:uid-a".into(),
+                                incarnation_id: incarnation.clone(),
+                                manifest: manifest(),
+                                create_ledger: None,
+                            },
+                            100,
+                            1_000,
+                        )
+                        .await
+                        .unwrap();
+                }
+                {
+                    let mut pod = facts.pod.lock().unwrap();
+                    pod.1["status"]["phase"] = json!(phase);
+                    if phase != "Running" {
+                        pod.1["status"]["containerStatuses"][0]["state"] = json!({"terminated":{
+                            "containerID":"containerd://exact", "exitCode":1, "reason":"Error",
+                            "startedAt":"2026-09-09T00:00:00Z", "finishedAt":"2026-09-09T00:00:01Z"
+                        }});
+                    }
+                }
+                let updates_before = facts.updates.lock().unwrap().len();
+                let result = transport
+                    .stop_source()
+                    .unwrap()
+                    .release_unregistered_ended_worker_evidence(&directory)
+                    .await;
+                let ended = phase != "Running";
+                let removed = !registered && ended && ledger_state != "bound";
+                let refused = !registered && ended && ledger_state == "bound";
+                assert_eq!(result.is_err(), refused, "{row}");
+                let finalizers = facts.pod.lock().unwrap().1["metadata"]["finalizers"].clone();
+                assert_eq!(
+                    finalizers,
+                    if removed {
+                        json!(["other.example/keep"])
+                    } else {
+                        json!(["awaken.dev/worker-process-evidence", "other.example/keep"])
+                    },
+                    "{row}"
+                );
+                assert_eq!(
+                    facts.updates.lock().unwrap().len() - updates_before,
+                    usize::from(removed),
+                    "{row}: one exact finalizer CAS"
+                );
+                assert!(facts.deletes.lock().unwrap().is_empty(), "{row}: no DELETE");
+                if removed && ledger_state == "unbound" {
+                    let stored = facts.ledger.lock().unwrap().clone().unwrap();
+                    let state: Value =
+                        serde_json::from_str(stored["data"]["ledger"].as_str().unwrap()).unwrap();
+                    assert_eq!(state["worker_sealed"], true, "{row}: deny fence first");
+                }
+                assert_eq!(
+                    directory
+                        .current("k8s:workers:worker-a:uid-a")
+                        .await
+                        .unwrap()
+                        .is_some(),
+                    registered,
+                    "{row}: no Registry write"
+                );
+            }
+        }
+    }
 }
