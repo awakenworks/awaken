@@ -829,6 +829,7 @@ pub(crate) mod tests {
             environment.set_resident("sandbox-binding");
         }
         super::FrozenSessionProjection {
+            bound_source_end: None,
             workspace_id: "workspace".into(),
             revision: crate::SessionRevision(2),
             baseline,

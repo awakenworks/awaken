@@ -55,6 +55,7 @@ pub(crate) fn projection(
         },
     );
     FrozenSessionProjection {
+        bound_source_end: None,
         workspace_id: "workspace".into(),
         revision: SessionRevision(revision),
         baseline,

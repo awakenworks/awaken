@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use awaken_coordinator_client::WorkerControlClient;
-use awaken_lease_contract::authority::AuthorityLeaseTiming;
+use awaken_lease_contract::authority::{
+    AuthorityEnd, AuthorityLeaseTiming, AuthorityProofStarted, RenewalDecision, RenewalReply,
+};
 use awaken_session_executor::WorkerRoles;
 use awaken_worker_contract::{
     RegistryMutation, WorkerHeartbeat, WorkerIdentity, WorkerSourceRetention,
@@ -539,6 +541,107 @@ where
     revoke().await
 }
 
+/// The first applied registry renewal of a registered incarnation.
+pub(crate) struct InitialRegistryProof {
+    /// Request start of the applied heartbeat: the first proof's anchor.
+    pub(crate) started: AuthorityProofStarted,
+    pub(crate) lease_ttl_ms: u64,
+    /// The sequence the regular heartbeat continues from.
+    pub(crate) next_sequence: u64,
+}
+
+/// Prove the first registry authority inside the registration receipt's own
+/// proof window. Registration already leased this incarnation, so the shared
+/// renewal law applies: each attempt may run for the remaining registration
+/// proof, an unanswered attempt is retried while that proof remains, and only
+/// an exhausted proof or an explicit refusal ends startup. Every attempt
+/// carries a fresh sequence, so a retry after a lost reply is never stale.
+///
+/// | Rule | Reply | Registration proof left | Effect |
+/// | I1 | Applied (also slow, after the nominal request bound) | > 0 | proof installed |
+/// | I2 | transport error or no reply | > 0 | retry, not exit |
+/// | I3 | no reply or Applied | 0 | exit: registration proof expired |
+/// | I4 | refused mutation | any | exit: heartbeat rejected |
+pub(crate) async fn prove_initial_registry_authority<Clock, Send, Reply>(
+    registration_started: AuthorityProofStarted,
+    registration_timing: AuthorityLeaseTiming,
+    mut clock: Clock,
+    mut send: Send,
+) -> Result<InitialRegistryProof, String>
+where
+    Clock: FnMut() -> std::io::Result<AuthorityProofStarted>,
+    Send: FnMut(u64) -> Reply,
+    Reply: std::future::Future<Output = Result<(RegistryMutation, Option<u64>), String>>,
+{
+    let mut remaining_at = move || {
+        clock()
+            .map(|now| {
+                (
+                    now,
+                    registration_timing
+                        .remaining_proof_at(registration_started, now)
+                        .unwrap_or_default(),
+                )
+            })
+            .map_err(|error| error.to_string())
+    };
+    let mut sequence = 1_u64;
+    loop {
+        let (attempt, remaining) = remaining_at()?;
+        let Some(budget) = registration_timing.renewal_request_budget(remaining) else {
+            return Err(
+                "initial worker heartbeat timed out: the registration proof expired before an attempt"
+                    .to_owned(),
+            );
+        };
+        let reply = tokio::time::timeout(budget, send(sequence)).await;
+        let attempted = sequence;
+        sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| "worker heartbeat sequence exhausted".to_owned())?;
+        let (observed, detail, applied_ttl) = match reply {
+            Ok(Ok((RegistryMutation::Applied, ttl))) => (RenewalReply::Applied, String::new(), ttl),
+            Ok(Ok((mutation, _))) => (RenewalReply::Refused, format!("{mutation:?}"), None),
+            Ok(Err(error)) => (RenewalReply::Unanswered, error, None),
+            Err(_) => (
+                RenewalReply::Unanswered,
+                "no reply within the registration proof".to_owned(),
+                None,
+            ),
+        };
+        let (_, remaining) = remaining_at()?;
+        match registration_timing.decide_renewal(remaining, observed) {
+            RenewalDecision::Apply => {
+                let lease_ttl_ms = applied_ttl.filter(|ttl| *ttl > 0).ok_or_else(|| {
+                    "applied initial worker heartbeat omitted a positive lease TTL".to_owned()
+                })?;
+                return Ok(InitialRegistryProof {
+                    started: attempt,
+                    lease_ttl_ms,
+                    next_sequence: sequence,
+                });
+            }
+            RenewalDecision::RetryAfter(delay) => {
+                tracing::warn!(
+                    sequence = attempted,
+                    proof_remaining_ms = remaining.as_millis(),
+                    error = %detail,
+                    "initial worker heartbeat unanswered; retrying within the registration proof"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            RenewalDecision::Stop(AuthorityEnd::AuthorityLost) => {
+                return Err(format!("initial worker heartbeat rejected: {detail}"));
+            }
+            RenewalDecision::Stop(AuthorityEnd::ProofExpired) => {
+                return Err(format!(
+                    "initial worker heartbeat timed out: the registration proof expired ({detail})"
+                ));
+            }
+        }
+    }
+}
+
 async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u64) {
     let Ok((receipt, remaining)) = lifecycle.authority.snapshot() else {
         return;
@@ -566,15 +669,35 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
         };
         let timing = receipt.timing;
         let ready = lifecycle.roles.dispatch().can_resume_work().await;
-        let heartbeat_timeout = timing
-            .request_timeout()
-            .min(lifecycle.authority.remaining());
+        // The request may run for the whole remaining proof: a reply inside it
+        // still renews this incarnation. Past the nominal request bound it is
+        // slow, not lost, so claim admission pauses while it is awaited.
+        let Some(heartbeat_budget) = timing.renewal_request_budget(lifecycle.authority.remaining())
+        else {
+            awaken_observability::record_worker_authority_loss("proof_expired");
+            tracing::error!(
+                sequence,
+                consecutive_failures,
+                "worker registry authority proof expired; draining locally"
+            );
+            break;
+        };
         let heartbeat = lifecycle.heartbeat(sequence, ready);
-        let mutation = tokio::time::timeout(
-            heartbeat_timeout,
-            lifecycle.control.heartbeat(&lifecycle.identity, heartbeat),
-        )
-        .await;
+        let request = lifecycle.control.heartbeat(&lifecycle.identity, heartbeat);
+        tokio::pin!(request);
+        let nominal = timing.request_timeout().min(heartbeat_budget);
+        let mutation = match tokio::time::timeout(nominal, &mut request).await {
+            Err(_) if nominal < heartbeat_budget => {
+                suspend_authority_admission(lifecycle, &mut admission_suspended).await;
+                tracing::warn!(
+                    sequence,
+                    proof_remaining_ms = lifecycle.authority.remaining().as_millis(),
+                    "worker heartbeat reply is slow; claim admission paused while it can still apply"
+                );
+                tokio::time::timeout(heartbeat_budget - nominal, &mut request).await
+            }
+            reply => reply,
+        };
         sequence = match sequence.checked_add(1) {
             Some(next) => next,
             None => {
@@ -712,25 +835,32 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
     }
 }
 
-// An unavailable response is not evidence of authority loss. Reuse the same
-// temporary admission gate for Registry transport errors and timeouts. Neither
-// a retry nor a successful probe advances the last durable Registry proof.
+// A slow or unavailable response is not evidence of authority loss. Reuse the
+// same temporary admission gate for slow replies, Registry transport errors and
+// unanswered requests. Neither a retry nor a successful probe advances the last
+// durable Registry proof.
+async fn suspend_authority_admission(lifecycle: &WorkerSupervisor, admission_suspended: &mut bool) {
+    if !*admission_suspended {
+        lifecycle.roles.dispatch().suspend_admission().await;
+        *admission_suspended = true;
+    }
+}
+
 async fn pause_authority_admission_for_retry(
     lifecycle: &WorkerSupervisor,
     admission_suspended: &mut bool,
     timing: AuthorityLeaseTiming,
 ) -> Option<Instant> {
-    if !*admission_suspended {
-        lifecycle.roles.dispatch().suspend_admission().await;
-        *admission_suspended = true;
-    }
+    suspend_authority_admission(lifecycle, admission_suspended).await;
     let now = mono::now();
-    let remaining = lifecycle.authority.remaining();
-    if remaining.is_zero() {
-        awaken_observability::record_worker_authority_loss("proof_expired");
-        None
-    } else {
-        Some(now + timing.retry_delay().min(remaining))
+    match timing.decide_renewal(lifecycle.authority.remaining(), RenewalReply::Unanswered) {
+        RenewalDecision::RetryAfter(delay) => Some(now + delay),
+        RenewalDecision::Apply | RenewalDecision::Stop(_) => {
+            // Proof exhausted: stop and abandon local work. This is authority
+            // loss, never a durable cancellation of the claimed Runs.
+            awaken_observability::record_worker_authority_loss("proof_expired");
+            None
+        }
     }
 }
 
@@ -1176,6 +1306,125 @@ mod tests {
         complete_worker_capacity_before, complete_worker_revocation_before,
         supervise_session_realization_reconciliation, supervise_worker_authority,
     };
+
+    type ScriptedReply = (
+        u64,
+        Result<(awaken_worker_contract::RegistryMutation, Option<u64>), String>,
+    );
+
+    /// Drive the initial heartbeat against scripted replies under paused time.
+    /// The registration request started at `base`; the authority clock is the
+    /// paused scheduler clock, so elapsed time is exact.
+    async fn initial_heartbeat_with(
+        registration_age_ms: u64,
+        script: Vec<ScriptedReply>,
+    ) -> (
+        Result<super::InitialRegistryProof, String>,
+        Vec<u64>,
+        std::time::Duration,
+    ) {
+        use awaken_lease_contract::authority::{AuthorityLeaseTiming, AuthorityProofStarted};
+        use std::time::Duration;
+        let base = awaken_time::mono::now();
+        let registered = AuthorityProofStarted::from_clock_sample(base, Duration::ZERO);
+        tokio::time::advance(Duration::from_millis(registration_age_ms)).await;
+        let script = Arc::new(std::sync::Mutex::new(
+            script
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
+        let sequences = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let result = super::prove_initial_registry_authority(
+            registered,
+            // TTL 3s: proof window 2s, nominal request bound 500ms, retry 100ms.
+            AuthorityLeaseTiming::from_ttl_ms(3_000),
+            move || {
+                let now = awaken_time::mono::now();
+                Ok(AuthorityProofStarted::from_clock_sample(now, now - base))
+            },
+            |sequence| {
+                sequences.lock().unwrap().push(sequence);
+                let (delay_ms, reply) = script
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or((u64::MAX, Err("unscripted".to_owned())));
+                async move {
+                    if delay_ms == u64::MAX {
+                        std::future::pending::<()>().await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    reply
+                }
+            },
+        )
+        .await;
+        let elapsed = awaken_time::mono::now() - base;
+        let sequences = sequences.lock().unwrap().clone();
+        (result, sequences, elapsed)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_heartbeat_retries_inside_the_registration_proof() {
+        // Rows of `prove_initial_registry_authority` (TTL 3s, proof 2s, nominal
+        // request bound 500ms, retry delay 100ms):
+        // | Rule | registration age | replies | effect |
+        // | I1 | 0 | Applied after 1.2s (slow) | proof anchored at 0, next seq 2 |
+        // | I2 | 0 | 503, then Applied after 700ms | retry at 100ms; anchored at 100ms |
+        // | I2b | 0 | no reply | one attempt bounded by the 2s proof, then exit |
+        // | I3 | 2s | - | exit before any attempt: proof expired |
+        // | I3b | 1.99s | Applied after 10ms (at the deadline) | exit: proof expired |
+        // | I4 | 0 | StaleIncarnation | exit: rejected, no retry |
+        use awaken_worker_contract::RegistryMutation::{Applied, StaleIncarnation};
+        use std::time::Duration;
+
+        let (result, sequences, _) =
+            initial_heartbeat_with(0, vec![(1_200, Ok((Applied, Some(3_000))))]).await;
+        let proof = result.expect("I1 slow reply inside the proof applies");
+        assert_eq!(proof.started.elapsed_clock(), Duration::ZERO, "I1 anchor");
+        assert_eq!((proof.lease_ttl_ms, proof.next_sequence), (3_000, 2), "I1");
+        assert_eq!(sequences, vec![1], "I1 no retry");
+
+        let (result, sequences, _) = initial_heartbeat_with(
+            0,
+            vec![
+                (0, Err("503 unavailable".to_owned())),
+                (700, Ok((Applied, Some(3_000)))),
+            ],
+        )
+        .await;
+        let proof = result.expect("I2 retry, not exit");
+        assert_eq!(
+            proof.started.elapsed_clock(),
+            Duration::from_millis(100),
+            "I2 anchor is the applied attempt's start"
+        );
+        assert_eq!(proof.next_sequence, 3, "I2");
+        assert_eq!(sequences, vec![1, 2], "I2 fresh sequence per attempt");
+
+        let (result, sequences, elapsed) = initial_heartbeat_with(0, Vec::new()).await;
+        let error = result.err().expect("I2b exhausted proof exits");
+        assert!(error.contains("registration proof expired"), "I2b: {error}");
+        assert_eq!(sequences, vec![1], "I2b one attempt for the whole proof");
+        assert_eq!(elapsed, Duration::from_secs(2), "I2b bounded by the proof");
+
+        let (result, sequences, _) =
+            initial_heartbeat_with(2_000, vec![(0, Ok((Applied, Some(3_000))))]).await;
+        assert!(result.is_err(), "I3");
+        assert!(sequences.is_empty(), "I3 no attempt without proof");
+
+        let (result, sequences, _) =
+            initial_heartbeat_with(1_990, vec![(10, Ok((Applied, Some(3_000))))]).await;
+        let error = result.err().expect("I3b reply at the deadline is too late");
+        assert!(error.contains("registration proof expired"), "I3b: {error}");
+        assert_eq!(sequences, vec![1], "I3b");
+
+        let (result, sequences, _) =
+            initial_heartbeat_with(0, vec![(0, Ok((StaleIncarnation, None)))]).await;
+        let error = result.err().expect("I4 refusal exits");
+        assert!(error.contains("rejected: StaleIncarnation"), "I4: {error}");
+        assert_eq!(sequences, vec![1], "I4 no retry after refusal");
+    }
 
     #[test]
     fn a_reported_fact_is_retained_only_for_a_positive_observation() {

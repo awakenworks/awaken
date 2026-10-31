@@ -172,6 +172,38 @@ impl SessionExecutionAdmission {
     }
 }
 
+impl SessionExecutionAdmission {
+    /// The frozen projection a realization directive carries, with the Worker
+    /// Registry's recorded end of the incarnation holding the Resident source
+    /// (`BoundSourceEnd::read`). Only the canonical Registry reader installed
+    /// here may supply it; without one the end stays unrecorded.
+    pub(crate) async fn projection_for_worker(
+        &self,
+        queries: &crate::SessionQueries,
+        owner_scope: String,
+        session: &awaken_session_contract::PersistedSession,
+        activate_pending_resources: bool,
+    ) -> Result<
+        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        let mut projection = queries
+            .frozen_runtime_projection(owner_scope, session, true, activate_pending_resources)
+            .await
+            .map_err(crate::realization::unavailable)?;
+        if let Some(workers) = self.workers.get() {
+            projection.bound_source_end =
+                awaken_session_realization_contract::BoundSourceEnd::read(
+                    session,
+                    workers.as_ref(),
+                )
+                .await
+                .map_err(crate::realization::unavailable)?;
+        }
+        Ok(projection)
+    }
+}
+
 fn require_same<T: ?Sized>(
     slot: &OnceLock<Arc<T>>,
     expected: &Arc<T>,

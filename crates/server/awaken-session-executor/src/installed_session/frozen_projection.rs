@@ -368,6 +368,7 @@ impl InstalledSessions {
                         next.baseline = Some(baseline);
                     }
                     next.request_context = projection.request_context.clone();
+                    next.bound_source_end = projection.bound_source_end.clone();
                 });
                 // The complete frozen projection is the cold Worker's first
                 // observation of Session admission. Publish the existing execution

@@ -631,17 +631,16 @@ impl SessionRealizations {
         owner_scope: String,
         session: &PersistedSession,
         action: SessionRealizationAction,
-        activate_pending_resources: bool,
+        activate_pending: bool,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         // Context is a lightweight rebuildable projection and must refresh even
         // when an existing realization lease needs no Environment/Resource
         // Stage. Otherwise a durable System command accepted between Runs would
         // remain invisible on a warm local or remote Worker.
         let projection = self
-            .queries
-            .frozen_runtime_projection(owner_scope, session, true, activate_pending_resources)
-            .await
-            .map_err(|error| unavailable(error.to_string()))?;
+            .execution_admission
+            .projection_for_worker(&self.queries, owner_scope, session, activate_pending)
+            .await?;
         Ok(SessionRealizationDirective {
             projection,
             authority:

@@ -1306,6 +1306,7 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
             ),
             "frozen-revision",
             awaken_session_realization_contract::FrozenSessionProjection {
+                bound_source_end: None,
                 workspace_id: host.run_assembly.local_workspace().to_string(),
                 revision: awaken_session_types::SessionRevision(1),
                 environment: Default::default(),

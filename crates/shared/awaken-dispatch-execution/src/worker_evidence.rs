@@ -83,6 +83,17 @@ pub trait WorkerEvidenceRelease: Send + Sync {
         &self,
         directory: &dyn WorkerDirectory,
     ) -> Result<(), ApplicationError>;
+
+    /// Record the provider-observed process end of every closed incarnation
+    /// that still occupies a physical slot, before the provider loses it. It
+    /// observes only: no stop, no evidence release, no slot change; the
+    /// Registry receipt it writes is the one blocked-successor closure reuses.
+    async fn record_occupied_worker_ends(
+        &self,
+        dispatch: &dyn PhysicalAttemptReads,
+        directory: &dyn WorkerDirectory,
+        now_ms: u64,
+    ) -> Result<(), ApplicationError>;
 }
 
 /// Trusted Coordinator-selected terminal maintenance role. The original idle

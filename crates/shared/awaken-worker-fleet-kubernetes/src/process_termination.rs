@@ -6,8 +6,11 @@
 //! `restartPolicy: Always` Pod may restart that container in place; the new
 //! container is a new incarnation of the same Pod-scoped Worker ID, and the old
 //! one is settled from the exact terminated state that names its container ID
-//! (`state` or `lastState`). When neither names it, its evidence is lost and
-//! observation stays Unknown; no exit is ever inferred.
+//! (`state` or `lastState`). When neither names it but the same Pod UID already
+//! started a newer instance of the same container name, the old instance is
+//! Superseded: kubelet runs one instance per container name, so it stopped,
+//! with no exit code. Otherwise its evidence is lost and observation stays
+//! Unknown; no exit code is ever inferred.
 //!
 //! This evidence covers local processes only. It does not discharge a Dispatch
 //! attempt, prove external requests stopped, or grant replay authority. In
@@ -22,7 +25,7 @@ use awaken_container_contract::RuntimeError;
 use k8s_openapi::api::core::v1::PodSpec;
 
 mod stop;
-pub use stop::{EndedRetainedWorkerPod, PodProcessStopper};
+pub use stop::{EndedRetainedWorkerPod, PodProcessStopper, ProcessEvidence};
 
 /// Installed by the trusted Worker deployment before execution admission, and
 /// retained until the exact attempt evidence has been durably consumed. This is
@@ -157,6 +160,11 @@ pub enum PodProcessTermination {
     /// Exact non-restarting container terminated. This variant is an observation,
     /// not a whole-attempt acknowledgement or proof about remote participants.
     Observed(Box<ObservedPodProcessExit>),
+    /// A restartable binding's processes stopped without an exact exit for
+    /// every one: the same Pod UID started a newer instance of each bound
+    /// container name whose exit was lost. Proves the bound processes are not
+    /// running; carries no exit code and nothing about external effects.
+    Superseded(Box<SupersededPodProcess>),
 }
 
 /// Subject-bound evidence minted only by authenticated observation. Private
@@ -207,6 +215,48 @@ impl ObservedPodProcessExit {
         format!(
             "k8s-container-exit:v1:{}",
             serde_json::to_string(&self.exits).expect("container exits serialize")
+        )
+    }
+}
+
+/// One bound container instance a newer instance of the same name replaced in
+/// the same Pod UID. Only the bound coordinates are evidence: the successor may
+/// restart again, and the receipt must stay the same across observations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SupersededContainer {
+    name: String,
+    container_id: String,
+    started_at: Time,
+}
+
+/// Subject-bound end of a restartable binding minted only by authenticated
+/// observation: every bound container either exited exactly or was superseded,
+/// and at least one was superseded. No Deserialize implementation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupersededPodProcess {
+    binding: PodProcessBinding,
+    resource_version: String,
+    exits: Vec<ObservedContainerExit>,
+    superseded: Vec<SupersededContainer>,
+}
+
+impl SupersededPodProcess {
+    pub fn binding(&self) -> &PodProcessBinding {
+        &self.binding
+    }
+
+    pub fn resource_version(&self) -> &str {
+        &self.resource_version
+    }
+
+    /// Durable evidence for the Registry receipt. It names only the bound
+    /// instances (exact exits and superseded coordinates), so a repeated
+    /// observation yields the same reference even after further restarts.
+    pub fn evidence_ref(&self) -> String {
+        format!(
+            "k8s-container-superseded:v1:{}",
+            serde_json::to_string(&(&self.exits, &self.superseded))
+                .expect("container ends serialize")
         )
     }
 }
@@ -609,16 +659,72 @@ fn matching_statuses<'a>(
     Some(statuses)
 }
 
-/// One bound container's fate in a restartable Pod, by exact container ID.
+/// One bound container's fate in a restartable Pod, by exact container ID,
+/// within the same Pod UID and container name (the Pod fence is checked first):
+///
+/// | Observation of the bound instance                        | Fate         |
+/// |----------------------------------------------------------|--------------|
+/// | `state` or `lastState` names it with an exact exit       | `Exited`     |
+/// | it is the running instance                               | `Running`    |
+/// | a newer instance of the name (other ID, later startedAt) | `Superseded` |
+/// | otherwise (synthetic status only, no later start)        | `Lost`       |
+///
+/// The Pod being gone or carrying another UID is not a fate: nothing about the
+/// bound instance can be observed and the whole binding stays Unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ContainerFate {
     /// The bound container instance is still the running one.
     Running,
     /// `state` or `lastState` names the bound container with an exact exit.
     Exited(ObservedContainerExit),
-    /// Neither names it (restarted again, or only a synthetic status): the
-    /// exit evidence is lost and must never be inferred.
+    /// Its exit is no longer reported, but kubelet already started a newer
+    /// instance of the same name in the same Pod UID. Kubelet runs one
+    /// instance per name, so the bound one stopped; no exit code is known.
+    Superseded(SupersededContainer),
+    /// Neither: the exit evidence is lost and must never be inferred.
     Lost,
+}
+
+/// The container instances a status reports for one name: the current one
+/// (running or terminated) and the last terminated one, each with its start.
+fn reported_instances(status: &ContainerStatus) -> impl Iterator<Item = (&str, &Time)> {
+    let state = status.state.as_ref();
+    let current_start = state.and_then(|state| {
+        state
+            .running
+            .as_ref()
+            .and_then(|running| running.started_at.as_ref())
+            .or_else(|| {
+                state
+                    .terminated
+                    .as_ref()
+                    .and_then(|terminated| terminated.started_at.as_ref())
+            })
+    });
+    let current = status.container_id.as_deref().zip(current_start);
+    let terminated = [
+        state.and_then(|state| state.terminated.as_ref()),
+        status
+            .last_state
+            .as_ref()
+            .and_then(|state| state.terminated.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|terminated| {
+        terminated
+            .container_id
+            .as_deref()
+            .zip(terminated.started_at.as_ref())
+    });
+    current.into_iter().chain(terminated)
+}
+
+/// A newer instance of the bound container's name has started: another
+/// container ID whose start is strictly later than the bound instance's.
+fn newer_instance_started(expected: &ContainerProcessBinding, status: &ContainerStatus) -> bool {
+    reported_instances(status)
+        .any(|(id, started)| id != expected.container_id && started > &expected.started_at)
 }
 
 /// Node-loss controllers may synthesize Failed/ContainerStatusUnknown. Require
@@ -692,6 +798,13 @@ fn restartable_fates(binding: &PodProcessBinding, pod: &Pod) -> Option<Vec<Conta
         fates.push(match (exited, running) {
             (Some(exit), _) => ContainerFate::Exited(exit),
             (None, true) => ContainerFate::Running,
+            (None, false) if newer_instance_started(expected, status) => {
+                ContainerFate::Superseded(SupersededContainer {
+                    name: expected.name.clone(),
+                    container_id: expected.container_id.clone(),
+                    started_at: expected.started_at.clone(),
+                })
+            }
             (None, false) => ContainerFate::Lost,
         });
     }
@@ -720,24 +833,55 @@ fn runs_newer_container(binding: &PodProcessBinding, pod: &Pod) -> bool {
             })
 }
 
-fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
-    let proof = (|| {
-        if binding.restartable {
-            // Container identity: an exact exit of every bound container
-            // instance closes this incarnation; the Pod may live on with a
-            // newer incarnation, so no deletion intent or terminal phase.
-            if !binding.retained || !binding_retention_is_present(binding, pod) {
-                return None;
-            }
-            let exits = restartable_fates(binding, pod)?
-                .into_iter()
-                .map(|fate| match fate {
-                    ContainerFate::Exited(exit) => Some(exit),
-                    ContainerFate::Running | ContainerFate::Lost => None,
-                })
-                .collect::<Option<Vec<_>>>()?;
-            return Some((coordinate(pod.metadata.resource_version.as_deref())?, exits));
+/// The end of a restartable binding from its per-container fates:
+///
+/// | Fates of the bound containers                       | Observation  |
+/// |-----------------------------------------------------|--------------|
+/// | every one `Exited`                                  | `Observed`   |
+/// | no `Running` or `Lost`, at least one `Superseded`   | `Superseded` |
+/// | any `Running` or `Lost`                             | `Unknown`    |
+///
+/// The Pod may live on with a newer incarnation, so neither row requires
+/// deletion intent or a terminal phase.
+fn observe_restartable(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
+    let ended = (|| {
+        if !binding.retained || !binding_retention_is_present(binding, pod) {
+            return None;
         }
+        let fates = restartable_fates(binding, pod)?;
+        let resource_version = coordinate(pod.metadata.resource_version.as_deref())?;
+        let mut exits = Vec::with_capacity(fates.len());
+        let mut superseded = Vec::new();
+        for fate in fates {
+            match fate {
+                ContainerFate::Exited(exit) => exits.push(exit),
+                ContainerFate::Superseded(container) => superseded.push(container),
+                ContainerFate::Running | ContainerFate::Lost => return None,
+            }
+        }
+        Some(if superseded.is_empty() {
+            PodProcessTermination::Observed(Box::new(ObservedPodProcessExit {
+                binding: binding.clone(),
+                resource_version,
+                exits,
+            }))
+        } else {
+            PodProcessTermination::Superseded(Box::new(SupersededPodProcess {
+                binding: binding.clone(),
+                resource_version,
+                exits,
+                superseded,
+            }))
+        })
+    })();
+    ended.unwrap_or(PodProcessTermination::Unknown)
+}
+
+fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
+    if binding.restartable {
+        return observe_restartable(binding, pod);
+    }
+    let proof = (|| {
         let statuses = matching_statuses(binding, pod)?;
         if !matches!(
             pod.status.as_ref()?.phase.as_deref(),

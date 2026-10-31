@@ -549,6 +549,27 @@ impl SessionRealizations {
     }
 
     /// Read only the realization layer of one installed Session.
+    /// The recorded end of the Worker incarnation a process-bound source ran
+    /// in, as the Coordinator projected it, for exactly this handle (its
+    /// frozen effect fence must name that incarnation). `None` is unrecorded:
+    /// no projection, another handle, or an absent Session.
+    pub fn recorded_source_end(
+        &self,
+        session: &str,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<Option<awaken_session_realization_contract::RecordedProcessEnd>, RealizationError>
+    {
+        Ok(self
+            .modify_session(session, |installed| {
+                installed
+                    .inputs
+                    .bound_source_end
+                    .as_ref()
+                    .and_then(|end| end.end_for(handle))
+            })?
+            .flatten())
+    }
+
     pub fn read_realization<R>(
         &self,
         session: &str,

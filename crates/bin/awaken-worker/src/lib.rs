@@ -1428,12 +1428,16 @@ impl WorkerNode {
         let admin_surface = start_admin_surface(self.admin_listen).await;
         let mut shutdown = std::pin::pin!(shutdown);
         let mut backoff = startup_retry::StartupBackoff::new(&incarnation_id);
-        let registration_receipt = loop {
+        let (registration_receipt, registration_started) = loop {
+            // Anchor before I/O: the registration lease proves no more time
+            // than remained when its request started. That proof is the
+            // initial heartbeat's retry budget.
+            let registration_started = lifecycle::authority_proof_started()?;
             let error = match bootstrap_control
                 .register_classified(incarnation_id.clone(), self.manifest.clone())
                 .await
             {
-                Ok(registration) => break registration,
+                Ok(registration) => break (registration, registration_started),
                 Err(error) => error,
             };
             // Exhaustion exits non-zero: the Never-restart Pod ends and the
@@ -1490,7 +1494,7 @@ impl WorkerNode {
         {
             return Err(std::io::Error::other("registered Worker admission is already closed").into());
         }
-        let (roles, lifecycle, heartbeat_timing, environment_proof_started) = {
+        let (roles, lifecycle, heartbeat_timing, environment_proof_started, next_heartbeat_sequence) = {
         let startup = std::panic::AssertUnwindSafe(async {
         let registered_context =
             RegisteredWorkerContext::new(registration.clone(), upstream.clone());
@@ -1694,40 +1698,35 @@ impl WorkerNode {
         let environment_proof_started = awaken_time::mono::now();
         lifecycle.prove_environment_before_ready(startup_timing.request_timeout()).await?;
         // A lease receipt proves no more time than remained when the request
-        // started. Anchoring locally before I/O prevents response latency from
-        // extending the Coordinator-owned expiry in the Worker process.
-        let initial_heartbeat_started = lifecycle::authority_proof_started()?;
-        let initial_heartbeat = lifecycle.heartbeat(
-            1,
-            awaken_worker_contract::process_ready_after_startup(
-                awaken_worker_contract::DynamicEvidenceProbeState::Pending,
-            ),
-        );
-        let initial = tokio::time::timeout(
-            startup_timing.request_timeout(),
-            control.heartbeat(&lifecycle.identity, initial_heartbeat),
+        // started. Each attempt anchors locally before I/O so response latency
+        // cannot extend the Coordinator-owned expiry in the Worker process; an
+        // unanswered attempt is retried while the registration proof remains.
+        let (supervisor, control_client) = (&*lifecycle, &control);
+        let initial = lifecycle::prove_initial_registry_authority(
+            registration_started,
+            startup_timing,
+            lifecycle::authority_proof_started,
+            move |sequence| {
+                let heartbeat = supervisor.heartbeat(
+                    sequence,
+                    awaken_worker_contract::process_ready_after_startup(
+                        awaken_worker_contract::DynamicEvidenceProbeState::Pending,
+                    ),
+                );
+                async move {
+                    control_client
+                        .heartbeat(&supervisor.identity, heartbeat)
+                        .await
+                        .map(|receipt| (receipt.mutation, receipt.lease_ttl_ms))
+                }
+            },
         )
         .await
-        .map_err(|_| "initial worker heartbeat timed out".to_owned())
-        .and_then(std::convert::identity);
-        let initial = match initial {
-            Ok(initial) => initial,
-            Err(error) => {
-                return Err(std::io::Error::other(error).into());
-            }
-        };
-        if initial.mutation != RegistryMutation::Applied {
-            return Err(std::io::Error::other(format!(
-                "initial worker heartbeat rejected: {:?}",
-                initial.mutation
-            ))
-            .into());
-        }
+        .map_err(std::io::Error::other)?;
+        let initial_heartbeat_started = initial.started;
         let heartbeat_timing =
             awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
-                initial
-                    .lease_ttl_ms
-                    .expect("WorkerControlClient validates applied heartbeat TTL"),
+                initial.lease_ttl_ms,
             );
         awaken_worker_contract::validate_observation_timing(
             self.credential_probe_interval,
@@ -1748,7 +1747,7 @@ impl WorkerNode {
         lifecycle
             .authority
             .apply(initial_heartbeat_started, heartbeat_timing)?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((lifecycle.roles.clone(), lifecycle, heartbeat_timing, environment_proof_started))
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((lifecycle.roles.clone(), lifecycle, heartbeat_timing, environment_proof_started, initial.next_sequence))
         }).catch_unwind();
         tokio::pin!(startup);
         tokio::select! {
@@ -1778,7 +1777,7 @@ impl WorkerNode {
             spawn_session_preparation_reconciliation(lifecycle.clone(), heartbeat_timing);
         let mut heartbeat = spawn_heartbeat(
             lifecycle.clone(),
-            2,
+            next_heartbeat_sequence,
             heartbeat_timing,
             environment_proof_started,
         );

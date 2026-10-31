@@ -197,6 +197,20 @@ impl PodProcessStopper {
         &self,
         binding: &PodProcessBinding,
     ) -> Result<PodProcessTermination, RuntimeError> {
+        self.request_stop_observing_loss(binding)
+            .await
+            .map(|(termination, _)| termination)
+    }
+
+    /// [`Self::request_stop`], also saying whether the bound Pod's evidence is
+    /// lost for good: the Pod is gone, or another UID holds its name. The
+    /// observation is then Unknown and can never become an exit or a
+    /// supersession; the caller owns the operator quarantine signal.
+    pub async fn request_stop_observing_loss(
+        &self,
+        binding: &PodProcessBinding,
+    ) -> Result<(PodProcessTermination, ProcessEvidence), RuntimeError> {
+        let lost = (PodProcessTermination::Unknown, ProcessEvidence::Lost);
         if binding.namespace != self.observer.namespace {
             return Err(backend("Pod process binding belongs to another namespace"));
         }
@@ -207,20 +221,27 @@ impl PodProcessStopper {
         }
         let pod = match self.observer.pods.get(&binding.name).await {
             Ok(pod) => pod,
-            Err(error) if api_not_found(&error) => return Ok(PodProcessTermination::Unknown),
+            Err(error) if api_not_found(&error) => return Ok(lost),
             Err(error) => return Err(backend(error)),
         };
+        if pod.metadata.uid.as_deref() != Some(binding.uid.as_str()) {
+            return Ok(lost);
+        }
+        let retained = |termination| (termination, ProcessEvidence::Retained);
         if binding.restartable {
-            return self.request_restartable_stop(binding, &pod).await;
+            return self
+                .request_restartable_stop(binding, &pod)
+                .await
+                .map(retained);
         }
         if matching_statuses(binding, &pod).is_none() {
-            return Ok(PodProcessTermination::Unknown);
+            return Ok(retained(PodProcessTermination::Unknown));
         }
         if !binding_retention_is_present(binding, &pod) {
             return Err(backend("Worker process evidence retention was lost"));
         }
         if pod.metadata.deletion_timestamp.is_some() {
-            return Ok(observe(binding, &pod));
+            return Ok(retained(observe(binding, &pod)));
         }
         // Even an already-exited Pod needs the API-owned, irreversible deletion
         // intent. Never-restart policy and point-in-time exit alone do not close
@@ -228,17 +249,19 @@ impl PodProcessStopper {
         // read must establish both closure and the same exact process exits.
         self.request_exact_delete(&binding.name, &binding.uid, &pod)
             .await?;
-        Ok(PodProcessTermination::Unknown)
+        Ok(retained(PodProcessTermination::Unknown))
     }
 
     /// Container-instance stop for a restartable binding:
-    /// | bound containers         | effect                                   |
-    /// | every one exactly exited | local exit receipt; the Pod is untouched |
-    /// | one still running        | one exact UID/RV Pod DELETE, Unknown     |
-    /// | none running, one lost   | Unknown (indeterminate), no mutation     |
-    /// A foreign Pod (UID, node, policy, names) is Unknown; lost retention is
-    /// an error. A Pod that already runs a newer incarnation is never deleted:
-    /// the bound instance is then exited or lost, not running.
+    /// | bound containers                   | effect                                   |
+    /// | every one exactly exited           | local exit receipt; the Pod is untouched |
+    /// | one still running                  | one exact UID/RV Pod DELETE, Unknown     |
+    /// | none running or lost, some superseded | Superseded receipt; Pod untouched     |
+    /// | none running, one lost             | Unknown (indeterminate), no mutation     |
+    /// A foreign Pod (node, policy, names) is Unknown; a missing Pod or another
+    /// UID is Unknown with lost evidence (see `request_stop_observing_loss`);
+    /// lost retention is an error. A Pod that already runs a newer incarnation is never deleted:
+    /// the bound instance is then exited, superseded or lost, not running.
     async fn request_restartable_stop(
         &self,
         binding: &PodProcessBinding,
@@ -250,17 +273,14 @@ impl PodProcessStopper {
         if !binding_retention_is_present(binding, pod) {
             return Err(backend("Worker process evidence retention was lost"));
         }
-        if fates
-            .iter()
-            .all(|fate| matches!(fate, ContainerFate::Exited(_)))
-        {
-            return Ok(observe(binding, pod));
+        if fates.contains(&ContainerFate::Running) {
+            if pod.metadata.deletion_timestamp.is_none() {
+                self.request_exact_delete(&binding.name, &binding.uid, pod)
+                    .await?;
+            }
+            return Ok(PodProcessTermination::Unknown);
         }
-        if pod.metadata.deletion_timestamp.is_none() && fates.contains(&ContainerFate::Running) {
-            self.request_exact_delete(&binding.name, &binding.uid, pod)
-                .await?;
-        }
-        Ok(PodProcessTermination::Unknown)
+        Ok(observe(binding, pod))
     }
 
     // Retained stop and proven closed-idle retirement use one exact deletion
@@ -321,6 +341,17 @@ impl PodProcessStopper {
         )
         .await
     }
+}
+
+/// Whether a bound Pod can still report the bound processes' end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessEvidence {
+    /// The exact Pod UID is still readable; Unknown may later resolve.
+    Retained,
+    /// The Pod is gone or another UID holds its name: no exit or supersession
+    /// can ever be observed. The bound attempts stay quarantined with
+    /// Indeterminate effects until an operator resolves them.
+    Lost,
 }
 
 /// What, besides the exact UID and the Worker finalizer, admits a release.
