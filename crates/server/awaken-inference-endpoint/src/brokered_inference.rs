@@ -661,6 +661,13 @@ pub struct BrokeredCandidateExecutor {
     ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
 }
 
+/// How one leased inference returns its response: whole, or streamed into
+/// the caller's delta sink. The two `LlmExecutor` entry points each name one.
+enum ResponseDelivery<'a> {
+    Whole,
+    Streamed(&'a dyn DeltaSink),
+}
+
 impl BrokeredCandidateExecutor {
     pub fn new(
         client: Arc<dyn BrokeredInferenceClient>,
@@ -778,7 +785,7 @@ impl BrokeredCandidateExecutor {
     async fn execute(
         &self,
         mut request: ChatRequest,
-        sink: Option<&dyn DeltaSink>,
+        delivery: ResponseDelivery<'_>,
     ) -> Result<ChatResponse, LlmError> {
         // Validate the wire-only copy before acquiring a grant. Authorization
         // still names the original publication binding, and a projection error
@@ -795,9 +802,9 @@ impl BrokeredCandidateExecutor {
         })?;
         request.model_binding = upstream_binding;
         let result = match self.executor(&lease) {
-            Ok(executor) => match sink {
-                Some(sink) => executor.infer_streaming(request, sink).await,
-                None => executor.infer(request).await,
+            Ok(executor) => match delivery {
+                ResponseDelivery::Streamed(sink) => executor.infer_streaming(request, sink).await,
+                ResponseDelivery::Whole => executor.infer(request).await,
             },
             // No executor could be built for the lease: never entered.
             Err(error) => Err(error.with_execution_evidence(
@@ -827,7 +834,7 @@ impl LlmExecutor for BrokeredCandidateExecutor {
     }
 
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        self.execute(request, None).await
+        self.execute(request, ResponseDelivery::Whole).await
     }
 
     async fn infer_streaming(
@@ -835,7 +842,8 @@ impl LlmExecutor for BrokeredCandidateExecutor {
         request: ChatRequest,
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse, LlmError> {
-        self.execute(request, Some(sink)).await
+        self.execute(request, ResponseDelivery::Streamed(sink))
+            .await
     }
 }
 
