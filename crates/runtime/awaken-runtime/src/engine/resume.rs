@@ -114,8 +114,52 @@ fn approved_tool_commit(
 /// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
 /// (`resume_run`) and a delegate step folded back into the parent
 /// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
+///
+/// The resumed attempt is heap-owned like the fresh loop (see `PhaseFuture`):
+/// approval and delegation callers hold a pointer, not the attempt's state.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn drive_resumed(
+pub(super) fn drive_resumed<'a>(
+    runtime: &'a Runtime,
+    resolved: &'a ResolvedRun,
+    env: &'a ResolvedExecutionEnv,
+    run_id: &'a RunId,
+    thread_id: &'a ThreadId,
+    ticket: &'a ResumeTicket,
+    result: ResumeResult,
+    resume_commit: Option<ResumeCommit>,
+    fresh_context: Vec<Message>,
+    run_input: std::sync::Arc<[Message]>,
+    reader: &'a dyn CommittedThreadView,
+    context: &'a RuntimeRunContext,
+    continuation: ResumeContinuation,
+    resume_checkpoint: Option<StreamCheckpoint>,
+    returned_child: Option<ChildRunResult>,
+    waiting_batch: Option<ToolBatch>,
+    store: Store,
+) -> PhaseFuture<'a, Result<RunState>> {
+    Box::pin(drive_resumed_attempt(
+        runtime,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        ticket,
+        result,
+        resume_commit,
+        fresh_context,
+        run_input,
+        reader,
+        context,
+        continuation,
+        resume_checkpoint,
+        returned_child,
+        waiting_batch,
+        store,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_resumed_attempt(
     runtime: &Runtime,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
@@ -500,7 +544,7 @@ pub(super) async fn drive_tool_batch(
 ) -> Result<RunState> {
     let mut discovery =
         ToolDiscoveryStateKey::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
-    if let Some(disposition) = dispatch::recover_pending_tool_batch(
+    if let Some(disposition) = recover_tool_phase(
         runtime,
         context,
         delegation_origin,

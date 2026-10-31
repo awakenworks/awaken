@@ -315,7 +315,47 @@ impl LiveEnv {
 /// partial is terminal here — mid-stream recovery is the StreamCheckpoint/resume
 /// path, not a switch to a different model (which would double-generate).
 #[allow(clippy::too_many_arguments)]
-async fn infer_step(
+fn infer_step<'a>(
+    llm: &'a std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+    runtime: &'a Runtime,
+    resolved: &'a ResolvedRun,
+    env: &'a ResolvedExecutionEnv,
+    run_id: &'a RunId,
+    thread_id: &'a ThreadId,
+    source_step: usize,
+    ledger: &'a mut StepLedger,
+    store: &'a mut Store,
+    prelude: &'a [Message],
+    discovery: &'a ToolDiscoveryState,
+    checkpoint_ref: Option<&'a CheckpointCtx<'a>>,
+    step_resume: Option<StreamCheckpoint>,
+    context: &'a RuntimeRunContext,
+    context_window: Option<usize>,
+    final_step: bool,
+) -> PhaseFuture<'a, std::result::Result<InferStepOutcome, awaken_runtime_contract::llm::Error>> {
+    // A step phase of the heap-owned loop (see `PhaseFuture`).
+    Box::pin(infer_step_attempts(
+        llm,
+        runtime,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        source_step,
+        ledger,
+        store,
+        prelude,
+        discovery,
+        checkpoint_ref,
+        step_resume,
+        context,
+        context_window,
+        final_step,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn infer_step_attempts(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     runtime: &Runtime,
     resolved: &ResolvedRun,
@@ -556,19 +596,53 @@ enum InferStepOutcome {
 // `gen_ai.provider.name` is the neutral `awaken` (G22). Awaken run/thread ids ride
 // alongside as `awaken.*` extensions.
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-    name = "invoke_agent",
-    skip_all,
-    fields(
+pub(super) fn drive<'a>(
+    runtime: &'a Runtime,
+    resolved: &'a ResolvedRun,
+    env: &'a ResolvedExecutionEnv,
+    run_id: &'a RunId,
+    thread_id: &'a ThreadId,
+    context: &'a RuntimeRunContext,
+    delegation_origin: Option<&'a DelegationOrigin>,
+    ledger: StepLedger,
+    run_input: std::sync::Arc<[Message]>,
+    step_base: usize,
+    store: Store,
+    resume_checkpoint: Option<StreamCheckpoint>,
+) -> PhaseFuture<'a, Result<RunStepResult>> {
+    use tracing::Instrument as _;
+    // The span is attached to the heap-owned loop itself, so no instrument
+    // wrapper frame embeds the loop's state between its caller and its body.
+    let span = tracing::info_span!(
+        "invoke_agent",
         otel.kind = "internal",
         gen_ai.operation.name = "invoke_agent",
         gen_ai.provider.name = "awaken",
         gen_ai.conversation.id = %thread_id.0,
         awaken.run.id = %run_id.0,
         awaken.thread.id = %thread_id.0,
+    );
+    Box::pin(
+        drive_steps(
+            runtime,
+            resolved,
+            env,
+            run_id,
+            thread_id,
+            context,
+            delegation_origin,
+            ledger,
+            run_input,
+            step_base,
+            store,
+            resume_checkpoint,
+        )
+        .instrument(span),
     )
-)]
-pub(super) async fn drive(
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_steps(
     runtime: &Runtime,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
@@ -643,7 +717,7 @@ pub(super) async fn drive(
     let mut discovery =
         ToolDiscoveryStateKey::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
 
-    if let Some(reached) = dispatch::recover_pending_tool_batch(
+    if let Some(reached) = recover_tool_phase(
         runtime,
         context,
         delegation_origin,
@@ -993,7 +1067,7 @@ pub(super) async fn drive(
         // Otherwise run each requested tool and feed the results back. A call that
         // awaits or fails the run returns its disposition here, ending the step
         // loop; every call answered with a result returns `None` and the loop goes on.
-        let tool_execution = dispatch::run_tool_calls(
+        let tool_execution = run_tool_phase(
             runtime,
             context,
             delegation_origin,
@@ -1054,6 +1128,66 @@ pub(super) async fn drive(
             .push(ActiveToolBatch::write(&Some(batch)));
     }
     Ok(ledger.into_step_result(disposition))
+}
+
+/// The loop's batch-recovery phase, heap-owned (see `PhaseFuture`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn recover_tool_phase<'a>(
+    runtime: &'a Runtime,
+    context: &'a RuntimeRunContext,
+    delegation_origin: Option<&'a DelegationOrigin>,
+    resolved: &'a ResolvedRun,
+    env: &'a ResolvedExecutionEnv,
+    run_id: &'a RunId,
+    thread_id: &'a ThreadId,
+    ledger: &'a mut StepLedger,
+    store: &'a mut Store,
+    discovery: &'a mut ToolDiscoveryState,
+) -> PhaseFuture<'a, Result<Option<RunDisposition>>> {
+    Box::pin(dispatch::recover_pending_tool_batch(
+        runtime,
+        context,
+        delegation_origin,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        ledger,
+        store,
+        discovery,
+    ))
+}
+
+/// The loop's tool-execution phase, heap-owned (see `PhaseFuture`).
+#[allow(clippy::too_many_arguments)]
+fn run_tool_phase<'a>(
+    runtime: &'a Runtime,
+    context: &'a RuntimeRunContext,
+    delegation_origin: Option<&'a DelegationOrigin>,
+    resolved: &'a ResolvedRun,
+    env: &'a ResolvedExecutionEnv,
+    run_id: &'a RunId,
+    thread_id: &'a ThreadId,
+    step: usize,
+    calls: Vec<ToolCall>,
+    ledger: &'a mut StepLedger,
+    store: &'a mut Store,
+    discovery: &'a mut ToolDiscoveryState,
+) -> PhaseFuture<'a, Result<Option<RunDisposition>>> {
+    Box::pin(dispatch::run_tool_calls(
+        runtime,
+        context,
+        delegation_origin,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        step,
+        calls,
+        ledger,
+        store,
+        discovery,
+    ))
 }
 
 /// Stage step state before the request-only inference context is assembled.
