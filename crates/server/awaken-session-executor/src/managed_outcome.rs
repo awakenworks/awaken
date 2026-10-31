@@ -21,12 +21,16 @@ pub(crate) async fn define(
     max_iterations: u32,
     admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
 ) -> Result<OutcomeDrive, RunError> {
+    let dispatch = host
+        .session_runs
+        .coordinator_dispatch()
+        .map_err(to_run_error)?;
     host.define_outcome(
         thread,
         description,
         rubric,
         max_iterations,
-        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission),
+        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission, dispatch.as_ref()),
     )
     .await
     .map(progress)
@@ -51,9 +55,13 @@ pub(crate) async fn resume(
     thread: &str,
     admission: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
 ) -> Result<Option<OutcomeDrive>, RunError> {
+    let dispatch = host
+        .session_runs
+        .coordinator_dispatch()
+        .map_err(to_run_error)?;
     host.continue_outcome(
         thread,
-        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission),
+        &awaken_session_run_delivery::OutcomeRunExecutor::new(admission, dispatch.as_ref()),
     )
     .await
     .map_err(to_run_error)

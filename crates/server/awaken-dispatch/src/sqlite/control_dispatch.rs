@@ -135,8 +135,8 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
-             FROM {p}_dispatch_completion \
+            "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id, \
+             cancel_requested FROM {p}_dispatch_completion \
              WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
         ))
         .bind(after_sequence)

@@ -480,6 +480,7 @@ impl ConformanceCapabilities {
 /// | Cancellation before activation | no unreceipted execution | Session reservation SR7 |
 /// | Worker crash at lease expiry | newer claim; stale owner fenced | exact claim recovery |
 /// | Settlement response lost | one retained completion; retry fenced | completion replay |
+/// | Cancel request then settle | completion keeps the cancel fact | completion K1–K3 |
 /// | Command replay after Done | no new runnable row | caller identity / reservation SR6 |
 /// | Terminal repair crash | repair epoch advances; one completion | terminal recovery T7/T8 |
 /// | Missing physical cleanup ACK | occupied slot retained | occupied recovery |
@@ -510,6 +511,7 @@ pub async fn assert_dispatch_conformance_with_clock<S: ConformanceDispatch + Inb
     .await;
     heap_rule(|| retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock)).await;
     heap_rule(|| failed_attempts_spend_the_budget_and_exhaust_like_a_crash(store, namespace)).await;
+    heap_rule(|| completion_retains_the_settled_cancel_request(store, namespace)).await;
     heap_rule(|| {
         attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock)
     })
@@ -590,6 +592,8 @@ include!("conformance/reliability.rs");
 include!("conformance/upgrade_window.rs");
 
 include!("conformance/failed_attempt_budget.rs");
+
+include!("conformance/completion_cancellation.rs");
 
 use awaken_dispatch_contract::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,

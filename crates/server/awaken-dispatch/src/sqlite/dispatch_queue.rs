@@ -951,6 +951,32 @@ impl awaken_dispatch_contract::DispatchClaimOwnership for SqliteDispatchStore {
     }
 }
 
+/// Write the permanent completion tombstone inside the settling transaction:
+/// the accepted request identity plus the row's durable cancel request.
+async fn insert_completion(
+    tx: &mut sqlx::SqliteConnection,
+    run_id: &str,
+    request_fingerprint: String,
+    request: &RunDispatch,
+    cancellation_requested: bool,
+) -> Result<(), DispatchError> {
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_dispatch_completion \
+         (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(run_id) DO NOTHING"
+    ))
+    .bind(run_id)
+    .bind(request_fingerprint)
+    .bind(&request.thread_id().0)
+    .bind(request.session_thread_id.as_ref().map(|thread| &thread.0))
+    .bind(i64::from(cancellation_requested))
+    .execute(tx)
+    .await
+    .map(|_| ())
+    .map_err(store_error)
+}
+
 #[async_trait]
 impl awaken_dispatch_contract::DispatchSettlement for SqliteDispatchStore {
     async fn settle(
@@ -1065,19 +1091,8 @@ impl awaken_dispatch_contract::DispatchSettlement for SqliteDispatchStore {
             return Ok(SettleOutcome::Fenced);
         }
         if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_dispatch_completion \
-                 (run_id, request_fingerprint, thread_id, session_thread_id) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(run_id) DO NOTHING"
-            ))
-            .bind(&run_id)
-            .bind(request_fingerprint)
-            .bind(&request.thread_id().0)
-            .bind(request.session_thread_id.as_ref().map(|thread| &thread.0))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
+            let cancelled = cancellation_requested != 0;
+            insert_completion(&mut tx, &run_id, request_fingerprint, &request, cancelled).await?;
         }
         // The fence held; now reconcile the run's pending input.
         match plan {
