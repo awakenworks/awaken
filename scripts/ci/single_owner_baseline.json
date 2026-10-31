@@ -23,7 +23,6 @@
   "environment-rewrite": {
     "awaken-store-conformance": 5
   },
-  "terminal-cleanup-orchestration": {},
   "growth_reasons": {
     "environment-rewrite": {
       "awaken-store-conformance": "store conformance fixtures write arbitrary persisted Environment rows (bound, Restoring, worker-owned) to exercise the store contract; test-support crate outside every production closure"

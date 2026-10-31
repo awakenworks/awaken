@@ -1,4 +1,0 @@
-{
-  "$comment": "Managed wire types that cite no SDK counterpart yet. A ratchet: remove entries as docs are annotated; never add.",
-  "unannotated": []
-}

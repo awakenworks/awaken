@@ -91,9 +91,8 @@ selected-input declarations belong to the existing Coordinator execution-port
 module, so startup unit tests and the CLI use one type identity. The CLI owns the
 original SDK, Environment, ACP, Memory and model/credential assembly. Shared
 startup names none of those concrete execution implementations. Rule D4 checks
-the normal dependency closure of the binary's package against an empty
-`scripts/ci/coordinator_binary_closure_baseline.json`; any Worker-side reach is
-refused. Passing this graph check is distinct from final distributed acceptance.
+the normal dependency closure of the binary's package and refuses any
+Worker-side reach. Passing this graph check is distinct from final distributed acceptance.
 
 The constructor consumes the original selected ports once, returns the Session
 roles, Dispatch and artifact fence, and captures its SDK only in a one-shot

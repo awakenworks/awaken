@@ -190,10 +190,6 @@ Use each owning script:
   Default/`--check` is read-only. `--write-baseline` also refuses new unexempted
   waits, even with `--reason`; convert them to a durable wait or document the
   existing timing exemption first. Short source/allow reasons are hard errors.
-- Managed wire naming: `python3 scripts/ci/check_managed_wire_naming.py --tighten`
-  removes annotated or deleted debt. Default/`--check` is read-only; write modes,
-  including reasoned writes, refuse new unannotated types and inline hard errors.
-  Retained decisions keep their metadata. A first write permits zero debt only.
 - test inventory: `python3 scripts/ci/check_test_inventory.py --tighten` adds
   names or raises minimum occurrence counts while retaining held requirements.
   `--write-baseline` records the current multiset after the ledger check.

@@ -57,6 +57,9 @@ without ``cfg(test)``/``cfg(kani)`` are removed, so ``cfg(any(test, feature =
 "x"))`` code — which ships when the feature is on — is scanned, and a braceless
 ``#[cfg(test)] use ...;`` removes that one item and nothing after it.
 
+R3, R4 and R5 reached zero and are hard rules (``HARD_RULES``): every
+occurrence fails and the baseline holds no record for them (plan v5 S2).
+
 Every baseline entry carries an **owner and an expiry date**.  A ratchet with no
 end date is how a temporary allowance becomes permanent: the number stops
 falling, nobody owns it, and the gate quietly certifies the debt instead of
@@ -325,6 +328,8 @@ RULES: tuple[tuple[str, str], ...] = (
     ("defaulted_system_clock", "system clock chosen below the composition root"),
     ("shadow_clock_helper", "shadow `fn now*()` clock helper"),
 )
+# Rules at zero: plain denies with no baseline record.
+HARD_RULES = frozenset({"clock_trait_declaration", "defaulted_system_clock", "shadow_clock_helper"})
 
 # Every ratchet baseline in this repository must carry an owner and an expiry.
 # `check_degrading_defaults.py` holds its own, in the same shape, and is checked
@@ -915,7 +920,8 @@ def selftest() -> None:
     # every rule this gate enforces.
     live = load_baseline(BASELINE_PATH)
     assert not expired_entries(live, today), "the shipped baseline"
-    assert set(live) == {key for key, _ in RULES}, "every rule has a dated baseline"
+    assert set(live) == {key for key, _ in RULES} - HARD_RULES, \
+        "every ratcheted rule has a dated baseline and no hard rule has one"
 
     print("check_fabricated_facts selftest: R1..R5 and the expiry table hold")
 
@@ -950,6 +956,11 @@ def main() -> int:
             "from the workspace; R2..R5 name it as the only place the real clock is read"
         )
     for key, label in RULES:
+        if key in HARD_RULES:
+            if key in baseline:
+                problems.append(f"{key}: a hard rule holds no baseline record; remove it")
+            problems += ratchet_errors(label, findings[key], {})
+            continue
         if key not in baseline:
             problems.append(f"{key}: no baseline record; every rule carries an owner and an expiry")
         allowed = {path: int(n) for path, n in baseline.get(key, {}).get("files", {}).items()}
@@ -964,7 +975,7 @@ def main() -> int:
         f"{label}: {sum(baseline.get(key, {}).get('files', {}).values())} held across "
         f"{len(baseline.get(key, {}).get('files', {}))} file(s) until "
         f"{baseline.get(key, {}).get('expires')}"
-        for key, label in RULES
+        for key, label in RULES if key not in HARD_RULES
     )
     print(f"OK - no invented observation times or split clock authority beyond the recorded baseline ({summary}).")
     return 0

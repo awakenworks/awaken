@@ -1,4 +1,0 @@
-{
-  "$comment": "Reviewed transitions of scripts/ci/_dispatch_boundary_fitness.py rule D4: each Worker-side crate the awaken-coordinator binary's package still links, with its D10 review record. Shrink with --tighten; a new entry needs --write-baseline --reason '<JSON review record>'.",
-  "transitions": {}
-}

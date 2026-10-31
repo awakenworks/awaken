@@ -36,7 +36,7 @@ below `single_owner_baseline.json`:
   recovery sweep). A transport route or a forwarding implementation calls one
   step; a scheduler calls one driver entry. ADR-0089 D1: terminal cleanup
   orchestration (absence handling, retirement, revocation, the recovery sweep)
-  exists once, in the driver.
+  exists once, in the driver. A hard rule: it holds no baseline record.
 * `realization-code`: production lines (non-blank, comments excluded) in modules
   named for realization -- a module path segment in `REALIZATION_MODULES`, or one
   whose words include one of `REALIZATION_WORDS` -- per crate, outside the
@@ -97,7 +97,7 @@ RULES = (
          "transition_environment, or through the aggregate's SessionEnvironmentOperations (ADR-0089 D1)"),
     Rule("terminal-cleanup-orchestration", "orchestrate terminal cleanup only in awaken-session-realization-driver "
          "(reconcile_terminal_cleanup / recover_terminal_cleanup_assignments); elsewhere call one driver entry or "
-         "serve one Control step (ADR-0089 D1)"),
+         "serve one Control step (ADR-0089 D1)", hard=True),
     Rule("realization-code", "put realization behaviour in awaken-session-realization, its contract or a sandbox "
          "provider (ADR-0089 D6), not in a module named for realization elsewhere", slack=LINE_SLACK),
 )
