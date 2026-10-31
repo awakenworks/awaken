@@ -62,7 +62,7 @@ pub use dispatch::{
     DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths, DispatchError,
     DispatchLease, DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver,
     DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingRecord, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
+    PendingRecord, PreparedRunRecovery, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
     SessionRunAdmissionObservation, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions, can_admit_claim_credentials,
     claim_credential_operation, classify_commit_epoch_admission,
