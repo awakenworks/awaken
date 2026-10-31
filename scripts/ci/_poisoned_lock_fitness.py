@@ -86,6 +86,10 @@ def poisoned_lock_violations(
         production = _crate_boundary_workspace.production_rust(source)
         syntax = _crate_boundary_workspace.rust_syntax(production)
         for match in LOCK_PANIC.finditer(syntax):
+            # The blanked projection turns `read("path")` into `read(      )`;
+            # a call with an argument is not a lock acquisition.
+            if '"' in production[match.start():match.end()]:
+                continue
             line = syntax.count("\n", 0, match.start()) + 1
             errors.append(
                 f"{relative}:{line}: a poisoned lock denies with a typed refusal "
@@ -114,6 +118,7 @@ def selftest() -> None:
     | P7 | `.expect("..")` whose message does not name poison             | accept (not a lock read) |
     | P8 | tokio `.lock().await`                                          | accept (cannot poison) |
     | P9 | authority moved to a nested crate / unrelated authority        | still scanned / excluded |
+    | P10 | `store.read("path").unwrap()`, a call with a string argument   | accept (not a lock read) |
     """
     roots = _source_roots(_crate_boundary_workspace.REPO_ROOT)
     executor_root = next(root for root in roots if "session-executor/" in root)
@@ -146,6 +151,9 @@ def selftest() -> None:
     assert poisoned_lock_violations(
         {executor: "fn f() { let _ = v.first().expect(\"non-empty by construction\"); }\n"}
     ) == [], "P7"
+    assert poisoned_lock_violations(
+        {executor: "fn f() { let _ = store.read(\"path\").unwrap(); w.write(r\"x\").expect(\"io\"); }\n"}
+    ) == [], "P10"
 
     # P9: moved/nested crates with the same authority retain the rule; an
     # unrelated authority does not enter it. Cargo owns the manifest and the
