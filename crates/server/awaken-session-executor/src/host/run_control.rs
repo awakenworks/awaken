@@ -154,7 +154,7 @@ impl LiveAttemptControl {
 /// reselect another attempt when its operation is delivered after an await.
 pub(crate) struct SelectedAttemptInterruption {
     foreground: super::ForegroundRun,
-    registered_cancellation: Option<awaken_runtime_contract::CancellationToken>,
+    registered_cancellation: Option<awaken_runtime_contract::cancellation::AttemptCancellation>,
 }
 
 impl SelectedAttemptInterruption {
@@ -165,9 +165,26 @@ impl SelectedAttemptInterruption {
 
     /// Signal only the captured original registration and direct/ACP tokens.
     /// A signal is not confirmation that a process or external effect stopped.
+    /// The signal carries no cause, so the attempt may end its Run `Cancelled`.
     pub(crate) fn interrupt(&self) {
-        if let Some(token) = &self.registered_cancellation {
-            token.cancel();
+        self.signal(None);
+    }
+
+    /// Stop the selected attempt for `cause`, which never ends its Run: the
+    /// registration records the cause before its token fires, so the attempt
+    /// abandons without a terminal commit and Dispatch recovery re-claims it.
+    pub(crate) fn revoke(&self, cause: awaken_runtime_contract::cancellation::CancellationCause) {
+        self.signal(Some(cause));
+    }
+
+    fn signal(&self, cause: Option<awaken_runtime_contract::cancellation::CancellationCause>) {
+        // The registration goes first: a foreground token relayed into the
+        // same attempt must find the cause already recorded.
+        if let Some(cancellation) = &self.registered_cancellation {
+            match cause {
+                Some(cause) => cancellation.cancel(cause),
+                None => cancellation.token.cancel(),
+            }
         }
         if let Some(token) = &self.foreground.cancellation {
             token.cancel();
@@ -327,6 +344,46 @@ mod tests {
     #[test]
     fn absent_registered_interruption_cannot_cancel_a_later_registration() {
         selected_interruption_preserves_registration_successor(false, false);
+    }
+
+    #[test]
+    fn revoking_a_selected_attempt_records_a_cause_that_never_ends_the_run() {
+        // | Row | Signal | Registration cause | Run effect |
+        // | V1 | interrupt | none | may end Cancelled |
+        // | V2 | revoke(WorkerRevoked) | WorkerRevoked | abandons, no terminal |
+        use awaken_runtime_contract::CancellationToken;
+        use awaken_runtime_contract::cancellation::CancellationCause;
+        use awaken_runtime_contract::execution::LiveInput;
+
+        for revoke in [false, true] {
+            let runtime = Arc::new(Runtime::new());
+            let run = RunId(format!("revoked-attempt-{revoke}"));
+            let thread = ThreadId("revoked-attempt-thread".into());
+            let scope = runtime.begin_active_attempt(
+                &run,
+                &thread,
+                RuntimeRunContext::new().with_cancellation(CancellationToken::new()),
+                LiveInput::None,
+            );
+            let selected = LiveAttemptControl::new(runtime.clone()).select_interruption(
+                super::super::ForegroundRun {
+                    run: None,
+                    cancellation: None,
+                },
+                Some(run.clone()),
+            );
+            if revoke {
+                selected.revoke(CancellationCause::WorkerRevoked);
+            } else {
+                selected.interrupt();
+            }
+            assert!(scope.context().is_cancelled());
+            assert_eq!(
+                scope.context().abandoned_by(),
+                revoke.then_some(CancellationCause::WorkerRevoked),
+                "V1/V2"
+            );
+        }
     }
 
     fn selected_interruption_preserves_registration_successor(

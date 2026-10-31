@@ -355,7 +355,10 @@ impl SessionCtx {
             .clone()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
-            .with_cancellation(token);
+            .with_cancellation(token)
+            // Each attempt records its own cause; the template's cell is
+            // never shared between attempts.
+            .with_cancellation_cause(Default::default());
         Ok(match &self.stream_checkpoint {
             Some(checkpoint) => context.with_stream_checkpoint(checkpoint.clone()),
             None => context,

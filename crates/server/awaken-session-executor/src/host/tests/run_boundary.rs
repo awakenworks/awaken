@@ -247,6 +247,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     // D5 direct hint whose Runtime registration is absent -> the foreground
     // signal is cancelled and the request succeeds (the former live delivery
     // failed NotActive here and was ignored; nothing is delivered now).
+    // D6 the selected registration records WorkerRevoked before it fires.
     // A later registration of the same Run after selection is the
     // dispatch-execution selection test; it is never signalled.
     // Coordinator user interruption keeps its existing durable-intent tests.
@@ -302,7 +303,19 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         physical.mark_uncertain();
         worker.session_runs.interrupt("worker-stop").await.unwrap();
         assert!(cancelled.is_cancelled(), "D1/D2 target attempt");
+        // D6 a Worker-local stop is the Worker's authority loss, never the
+        // Run's cancellation: the attempt abandons instead of ending Cancelled.
+        assert_eq!(
+            scope.context().abandoned_by(),
+            Some(awaken_runtime_contract::cancellation::CancellationCause::WorkerRevoked),
+            "D6 Worker-local stop abandons"
+        );
         assert!(!unrelated.is_cancelled(), "D3 foreign Run");
+        assert_eq!(
+            other_scope.context().cancellation_cause.recorded(),
+            None,
+            "D3 foreign Run cause"
+        );
         assert!(
             !physical.can_acknowledge_return(),
             "D3 no fabricated return"

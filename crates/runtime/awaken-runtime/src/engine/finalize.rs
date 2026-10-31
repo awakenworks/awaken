@@ -109,6 +109,13 @@ pub(super) async fn finish_with_reader(
     };
     debug_assert_eq!(disposition.run_id(), &run_id);
     let run_state = disposition.state();
+    // Every engine path that ends a Run `Cancelled` reaches this boundary. An
+    // attempt stopped by authority loss (proof expiry, lost claim, Worker
+    // revocation, host drain) did not cancel its Run: it writes no terminal
+    // fact, seals nothing and notifies nobody, and Dispatch recovery re-claims
+    // the Run from its fenced checkpoint (decision table in
+    // `awaken_runtime_contract::cancellation`).
+    context.admit_terminal_commit(&run_state)?;
     let mut cancellations = Vec::new();
 
     // Parent termination, unfinished batch sealing, unconsumed-result discard,

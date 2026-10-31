@@ -100,7 +100,9 @@ pub(crate) async fn run_agent_loop(
     };
 
     // Cancellation observed before any model call: commit a terminal Cancelled
-    // outcome instead of starting work.
+    // outcome instead of starting work. The terminal boundary admits that commit
+    // only when the cancellation ends the Run; an authority-loss cause abandons
+    // the attempt there with no commit (`RuntimeRunContext::admit_terminal_commit`).
     if context.is_cancelled() {
         let step =
             RunStepResult::ended_with_messages(run_id.clone(), EndCause::Cancelled, fresh_input);

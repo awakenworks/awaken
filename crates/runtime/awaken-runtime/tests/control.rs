@@ -227,6 +227,123 @@ async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
     );
 }
 
+/// Decision table for the cause of an attempt's cancellation (Native):
+///
+/// | Row | cause recorded before the token fired | Effect |
+/// |---|---|---|
+/// | N1 | none (direct caller) | commit `Cancelled` (`pre_cancelled_run_commits_a_terminal_cancelled_outcome`) |
+/// | N2 | `Requested` (durable cancellation) | commit `Cancelled` |
+/// | N3 | `ProofExpired`, `ClaimLost`, `WorkerRevoked`, `HostDrain` | abandoned error, no commit at all |
+/// | N4 | N3, then a fresh attempt of the same Run | the Run runs to its real end |
+///
+/// N3 replaces the former behaviour that committed `Cancelled` for any fired
+/// token: an attempt that lost its authority did not cancel its Run, so the
+/// Run must stay recoverable by Dispatch instead of ending terminal.
+#[tokio::test]
+async fn cancellation_cause_decides_whether_the_attempt_commits_cancelled() {
+    use awaken_runtime_contract::cancellation::{
+        CancellationCause, CancellationCauseCell, abandoned_attempt_cause,
+    };
+    for cause in [
+        CancellationCause::Requested,
+        CancellationCause::ProofExpired,
+        CancellationCause::ClaimLost,
+        CancellationCause::WorkerRevoked,
+        CancellationCause::HostDrain,
+    ] {
+        let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let token = CancellationToken::new();
+        let cell = CancellationCauseCell::new();
+        cell.cancel(&token, cause);
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_cancellation(token)
+            .with_cancellation_cause(cell);
+
+        let outcome = runtime.execute(activation(), context).await;
+        if cause == CancellationCause::Requested {
+            assert_eq!(
+                outcome.expect("N2 runs"),
+                RunState::Ended(EndCause::Cancelled),
+                "N2"
+            );
+            assert_eq!(
+                commit.committed().latest_run.unwrap().state,
+                RunState::Ended(EndCause::Cancelled),
+                "N2"
+            );
+            continue;
+        }
+        let error = outcome.expect_err("N3 an authority loss never ends the Run");
+        assert_eq!(abandoned_attempt_cause(&error), Some(cause), "N3 {cause:?}");
+        assert!(
+            commit.committed().latest_run.is_none(),
+            "N3 {cause:?} writes no terminal fact"
+        );
+        // N4 the Run stayed recoverable: the next attempt (what Dispatch
+        // recovery drives after re-claiming it) runs it to its real end.
+        let recovered = runtime
+            .execute(
+                activation(),
+                RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_reader(commit.clone())
+                    .with_cancellation(CancellationToken::new()),
+            )
+            .await
+            .expect("N4 the recovered attempt runs");
+        assert_eq!(recovered, RunState::Ended(EndCause::NaturalEnd), "N4");
+    }
+}
+
+/// N3 while inference is in flight: the late model output is discarded and
+/// the step boundary that would have ended the Run `Cancelled` writes nothing.
+#[tokio::test]
+async fn authority_loss_during_inference_abandons_without_a_terminal_commit() {
+    use awaken_runtime_contract::cancellation::{
+        CancellationCause, CancellationCauseCell, abandoned_attempt_cause,
+    };
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(GatedLlm {
+        started: started.clone(),
+        release: release.clone(),
+    })));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let token = CancellationToken::new();
+    let cell = CancellationCauseCell::new();
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_cancellation(token.clone())
+        .with_cancellation_cause(cell.clone());
+    let handle = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move { runtime.execute(activation(), context).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+        .await
+        .expect("inference entered");
+    cell.cancel(&token, CancellationCause::ProofExpired);
+    release.notify_one();
+
+    let error = handle
+        .await
+        .expect("join")
+        .expect_err("N3 in-flight authority loss abandons");
+    assert_eq!(
+        abandoned_attempt_cause(&error),
+        Some(CancellationCause::ProofExpired)
+    );
+    assert!(
+        commit
+            .committed()
+            .latest_run
+            .is_none_or(|run| run.state == RunState::Running),
+        "N3 no terminal fact"
+    );
+}
+
 #[tokio::test]
 async fn claimed_cancellation_commits_unpublished_activation_input_with_terminal_state() {
     // Cause/effect graph: C1 admission has accepted one exact User message; C2
