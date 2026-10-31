@@ -912,7 +912,9 @@ mod tests {
         let control = awaken_environment_application::EnvironmentApplication::new(
             definitions,
             registrar,
-            None,
+            std::sync::Arc::new(
+                awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+            ),
         );
         let authored = control
             .create(CreateEnvironmentCommand {
@@ -1141,7 +1143,9 @@ mod tests {
                     )),
                     work.clone(),
                 )),
-                None,
+                std::sync::Arc::new(
+                    awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+                ),
             );
             for _ in 0..2 {
                 let result = if recover_all {

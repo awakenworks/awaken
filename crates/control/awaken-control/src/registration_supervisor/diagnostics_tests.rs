@@ -194,7 +194,7 @@ async fn degraded_pass() -> (RegistrationHealthSnapshot, Vec<Event>) {
     let environments = Arc::new(EnvironmentApplication::new(
         envs,
         Arc::new(LeakingRegistrar),
-        None,
+        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default()),
     ));
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let supervisor = StaticRegistrationSupervisor::start_with_config(

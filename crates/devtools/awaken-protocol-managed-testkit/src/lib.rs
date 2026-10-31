@@ -103,7 +103,7 @@ pub fn environment_fixture(clock: Arc<dyn awaken_time::WallClock>) -> Environmen
     let application = Arc::new(EnvironmentApplication::new(
         Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock)),
         registrar,
-        Some(sandbox_policies.clone()),
+        sandbox_policies.clone(),
     ));
     EnvironmentFixture {
         application,

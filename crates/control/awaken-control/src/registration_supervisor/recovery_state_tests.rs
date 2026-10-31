@@ -176,7 +176,7 @@ async fn harness(agent_failures: usize, fail_custom_once: bool) -> Harness {
     let environments = Arc::new(EnvironmentApplication::new(
         registry.clone(),
         registrar.clone(),
-        None,
+        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default()),
     ));
     let agents = Arc::new(RecordingAgents::failing(agent_failures));
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();

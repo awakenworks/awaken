@@ -25,7 +25,7 @@ pub struct EnvironmentRegistrationDelivery {
     queries: Arc<dyn EnvironmentDefinitionQueries>,
     outbox: Arc<dyn EnvironmentRegistrationOutbox>,
     registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
-    sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
+    sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
 }
 
 impl EnvironmentRegistrationDelivery {
@@ -34,7 +34,7 @@ impl EnvironmentRegistrationDelivery {
     pub fn new<T>(
         definitions: Arc<T>,
         registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
-        sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
+        sandbox_policies: Arc<dyn SandboxExecutionPolicyStore>,
     ) -> Self
     where
         T: EnvironmentDefinitionQueries + EnvironmentRegistrationOutbox + 'static,
@@ -47,24 +47,12 @@ impl EnvironmentRegistrationDelivery {
         }
     }
 
-    pub(crate) fn with_sandbox_policies(
-        &self,
-        policies: Arc<dyn SandboxExecutionPolicyStore>,
-    ) -> Self {
-        Self {
-            queries: self.queries.clone(),
-            outbox: self.outbox.clone(),
-            registrar: self.registrar.clone(),
-            sandbox_policies: Some(policies),
-        }
-    }
-
     async fn registration(
         &self,
         item: EnvItem,
     ) -> Result<ExecutableEnvironmentRegistration, EnvironmentApplicationError> {
         let sandbox_policy = validate_environment_policy(
-            self.sandbox_policies.as_deref(),
+            self.sandbox_policies.as_ref(),
             &item.config,
             item.sandbox_policy.as_ref(),
         )
