@@ -39,10 +39,6 @@ impl ManagedState {
             let facts = awaken_managed_session_events::root_terminal_facts(
                 &record.session.id,
                 terminal,
-                evidence
-                    .outcomes
-                    .iter()
-                    .any(|projection| projection.owns_failure_run(&terminal.run_id)),
                 evidence.root.as_ref(),
                 historical_pending,
                 index,

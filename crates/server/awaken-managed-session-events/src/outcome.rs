@@ -82,13 +82,6 @@ impl CommittedOutcome {
         )
     }
 
-    /// Whether this Outcome's recorded failure came from `run_id`, so the
-    /// Outcome error owns that Run's failure instead of the lifecycle error.
-    #[must_use]
-    pub fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
-        outcome_owns_failure_run(&self.terminal, run_id)
-    }
-
     /// The borrowed view the order index positions this Outcome's facts by.
     #[must_use]
     pub fn as_anchored(&self) -> AnchoredOutcome<'_> {
@@ -166,20 +159,6 @@ impl CommittedOutcome {
             )],
         }
     }
-}
-
-/// Whether an Outcome's recorded failure came from `run_id`, so the Outcome
-/// error owns that Run's failure instead of the lifecycle error.
-#[must_use]
-fn outcome_owns_failure_run(
-    terminal: &CommittedOutcomeProjection,
-    run_id: &awaken_agent_contract::agent::run::Id,
-) -> bool {
-    matches!(
-        terminal,
-        CommittedOutcomeProjection::Errored(failure)
-            if failure.source_run_id.as_ref() == Some(run_id)
-    )
 }
 
 /// A Completed report must belong to its retained Session provenance and list

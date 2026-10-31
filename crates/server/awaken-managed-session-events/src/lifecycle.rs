@@ -98,33 +98,33 @@ pub fn root_terminal_idle_key(session_id: &str, terminal: &RunLifecycleEvent) ->
 /// Every root Run boundary publishes its Thread idle (and fault) once, from
 /// its own committed lifecycle and audit. The idle names the answerable call
 /// of the boundary's own accepted pause, never a live ticket.
+///
+/// The fault depends only on the Run's own committed prefix. A later Outcome
+/// terminal never retracts it: the Run terminal commits before the Outcome
+/// terminal, so a read between the two has already published the fault, and
+/// committed public history only grows. The Outcome appends its own verdict.
 pub fn root_terminal_facts(
     session_id: &str,
     terminal: &RunLifecycleEvent,
-    outcome_owns_failure: bool,
     root: Option<&RunRecoverySnapshot>,
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     index: &crate::OrderIndex<'_>,
 ) -> Result<RootTerminalFacts, ProjectionError> {
-    let error = if outcome_owns_failure {
-        None
-    } else {
-        run_fault(terminal, root)?.map(|fault| {
-            DerivedSessionEvent::new(
-                EventIdentity::new(
-                    session_id,
-                    ManagedEventType::RootLifecycleError,
-                    FactProvenance::Lifecycle {
-                        cursor: terminal.cursor.0,
-                    },
-                ),
-                SessionEventKind::RunError {
-                    fault,
-                    advisor: false,
+    let error = run_fault(terminal, root)?.map(|fault| {
+        DerivedSessionEvent::new(
+            EventIdentity::new(
+                session_id,
+                ManagedEventType::RootLifecycleError,
+                FactProvenance::Lifecycle {
+                    cursor: terminal.cursor.0,
                 },
-            )
-        })
-    };
+            ),
+            SessionEventKind::RunError {
+                fault,
+                advisor: false,
+            },
+        )
+    });
     let stop = terminal_stop(
         terminal,
         historical_pending.get(&terminal.cursor),
