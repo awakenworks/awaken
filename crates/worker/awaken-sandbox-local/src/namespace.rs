@@ -834,7 +834,7 @@ impl NamespaceProvider {
                 realized,
                 secret_paths,
                 memory_mounts,
-                memory_materializations: std::sync::Mutex::new(memory_materializations),
+                memory_materializations: awaken_sync::LeafLock::new(memory_materializations),
                 memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
                 memory_mounter: self.memory_mounter.clone(),
                 realization,
@@ -1004,7 +1004,7 @@ impl NamespaceProvider {
             realized,
             secret_paths,
             memory_mounts,
-            memory_materializations: std::sync::Mutex::new(memory_materializations),
+            memory_materializations: awaken_sync::LeafLock::new(memory_materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
             realization,
@@ -1164,7 +1164,7 @@ impl NamespaceProvider {
             realized,
             secret_paths,
             memory_mounts,
-            memory_materializations: std::sync::Mutex::new(materializations),
+            memory_materializations: awaken_sync::LeafLock::new(materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
             realization: crate::realization_marker::LiveRealization::Current(realization),
@@ -1339,7 +1339,7 @@ impl NamespaceProvider {
             realized,
             secret_paths,
             memory_mounts,
-            memory_materializations: std::sync::Mutex::new(materializations),
+            memory_materializations: awaken_sync::LeafLock::new(materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
             realization,
@@ -1381,8 +1381,10 @@ pub struct NamespaceSandbox {
     /// tree is reaped. Exact spec-aware adoption reacquires Ready FUSE guards;
     /// unfenced adoption rejects FUSE because it cannot reconstruct one.
     memory_mounts: crate::MemoryMountOwner,
-    /// Canonical durable heads for copy-backed Memory mounts.
-    memory_materializations: std::sync::Mutex<Vec<pc::MemoryMaterializationEvidence>>,
+    /// Canonical durable heads for copy-backed Memory mounts. A leaf: every
+    /// critical section reads the list or appends one independent entry, so a
+    /// panicking holder cannot leave it half-written.
+    memory_materializations: awaken_sync::LeafLock<Vec<pc::MemoryMaterializationEvidence>>,
     /// One process-local exact-evidence/effect acknowledgement. Durable Memory
     /// heads remain owned by the handle and store; this only gates guard drain
     /// against physical disposal.
@@ -1461,13 +1463,7 @@ impl NamespaceSandbox {
     }
 
     pub fn list_files(&self, subdir: &str) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
-        let has_copy_materializations = !self
-            .memory_materializations
-            .lock()
-            .map_err(|_| {
-                pc::SandboxError::backend("list_files", "Memory materializations lock poisoned")
-            })?
-            .is_empty();
+        let has_copy_materializations = !self.memory_materializations.lock().is_empty();
         let Some(identity) = self.root_identity_for_access()? else {
             if has_copy_materializations {
                 return Err(pc::SandboxError::gone(

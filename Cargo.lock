@@ -2884,6 +2884,7 @@ dependencies = [
  "async-trait",
  "awaken-lease-contract",
  "awaken-sandbox-control",
+ "awaken-sync",
  "serde",
  "serde_json",
  "tokio",

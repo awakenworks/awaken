@@ -38,12 +38,7 @@ impl pc::Sandbox for NamespaceSandbox {
                     owned_paths: self.owned_paths.lock().clone(),
                 },
             )
-            .with_memory_materializations(
-                self.memory_materializations
-                    .lock()
-                    .expect("Memory materializations lock poisoned")
-                    .clone(),
-            )
+            .with_memory_materializations(self.memory_materializations.lock().clone())
             .expect("Namespace sandbox cached canonical Memory materialization evidence"),
             // Preserve decode-only V1 compatibility without inventing current
             // provider realization or Repository ownership evidence.
@@ -103,7 +98,6 @@ impl pc::Sandbox for NamespaceSandbox {
         let recovered_copy_exists = self
             .memory_materializations
             .lock()
-            .expect("Memory materializations lock poisoned")
             .iter()
             .any(|evidence| evidence.mount_path == req.mount_path);
         if live_memory_exists
@@ -129,10 +123,7 @@ impl pc::Sandbox for NamespaceSandbox {
             // Publish the guard and its evidence under the same lock order used
             // by reconciliation acknowledgement, so no snapshot can drain an
             // unrepresented Copy participant.
-            let mut memory_materializations =
-                self.memory_materializations.lock().map_err(|_| {
-                    pc::SandboxError::backend("attach", "Memory materializations lock poisoned")
-                })?;
+            let mut memory_materializations = self.memory_materializations.lock();
             let mut layout = self.layout.write().map_err(layout_poisoned)?;
             layout.retain(|mount| mount.dest != req.mount_path);
             layout.push(rendered);
