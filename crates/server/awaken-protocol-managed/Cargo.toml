@@ -159,7 +159,7 @@ awaken-ext-builtin-tools.workspace = true
 # Store fixtures behind their ports; also re-exported for integration tests.
 awaken-protocol-managed-testkit.workspace = true
 tempfile = "3"
-awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
+awaken-reliability-testkit = { workspace = true, features = ["tracing", "postgres"] }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-data-subject-store = { workspace = true, features = ["test-support"] }
 awaken-executable-environment-catalog.workspace = true

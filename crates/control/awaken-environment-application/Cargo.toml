@@ -33,7 +33,7 @@ async-trait.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 axum.workspace = true
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 tempfile = "3"
 awaken-executable-environment-catalog.workspace = true

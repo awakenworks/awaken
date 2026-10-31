@@ -164,7 +164,7 @@ mod tests {
         // each verifier fail rather than opening an untagged fallback. Distinct
         // test schema and observer connection are outside the process budget.
         // Missing fixture is an explicit prerequisite, never a passing skip.
-        let base = std::env::var("AWAKEN_TEST_DATABASE_URL")
+        let base = awaken_reliability_testkit::postgres_fixture_url()
             .expect("explicit live process-pool run requires AWAKEN_TEST_DATABASE_URL");
         use sqlx::ConnectOptions;
         let schema = format!("process_pool_{}", std::process::id());

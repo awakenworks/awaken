@@ -25,7 +25,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-lease-testkit.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

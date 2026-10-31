@@ -811,7 +811,7 @@ async fn postgres_repository_conforms_when_available() {
 #[tokio::test]
 #[ignore = "requires Postgres provisioned by scripts/ci/pg_tests.sh"]
 async fn provisioned_postgres_application_access_durability_release_gate() {
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL")
+    let url = awaken_reliability_testkit::postgres_fixture_url()
         .expect("release gate requires AWAKEN_TEST_DATABASE_URL");
     run_postgres_repository_conformance(&url).await;
 }

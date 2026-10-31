@@ -216,13 +216,8 @@ async fn postgres_retained_history_migrates_both_published_streams() {
     // The same M1-M5 matrix executes actual PostgreSQL DDL after both published
     // streams. Missing URL is an explicit local skip; configured failure is red.
     // The strict PG gate supplies the URL and runs this library test explicitly.
-    let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => {
-            eprintln!("AWAKEN_TEST_DATABASE_URL not set; skipping PostgreSQL migration matrix");
-            return;
-        }
-        Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
     };
     let admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)

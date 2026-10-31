@@ -28,7 +28,7 @@ awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] 
 awaken-sqlite-pool.workspace = true
 
 [dev-dependencies]
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
 # The live Postgres conformance test (feature `postgres`) isolates each suite in

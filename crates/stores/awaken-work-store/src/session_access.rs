@@ -883,7 +883,7 @@ mod epoch_tests {
     #[tokio::test]
     async fn postgres_session_claim_fences_epoch_exhaustion() {
         use sqlx::Executor;
-        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
         let admin = PgPool::connect(&url)

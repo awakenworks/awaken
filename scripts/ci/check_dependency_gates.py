@@ -72,9 +72,9 @@ EXCLUDED_PARTS = frozenset({"node_modules", "target", "__pycache__", ".git"})
 # Key: crate directory name. Value: why its tests do not require a database.
 PG_GATE_EXEMPTIONS: dict[str, str] = {
     "awaken-reliability-testkit": (
-        "Owns only the pure three-state AWAKEN_TEST_DATABASE_URL admission helper. "
-        "Its five database-owning consumers remain individually listed in pg_tests.sh; "
-        "the testkit has no schema, driver, connection, or Postgres test to run."
+        "Owns the shared AWAKEN_TEST_DATABASE_URL admission, which gives every admission "
+        "a fresh schema; its live fixture tests run through pg_tests.sh backend_parity, "
+        "and its database-owning consumers remain individually listed in pg_tests.sh."
     ),
 }
 

@@ -103,6 +103,8 @@ backend_parity() {
   pg_required_test -p awaken-reliability-testkit --features postgres --lib fixture::tests \
     --require-case=fixture::tests::postgres_fixture_pool_connects_when_configured \
     --require-case=fixture::tests::postgres_fixture_pool_admission_respects_configuration \
+    --require-case=fixture::tests::admitted_fixtures_cannot_see_each_others_rows \
+    --require-case=fixture::tests::admitted_fixture_isolation_respects_configuration \
     -- --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support --test repo_conformance \
     --require-case=in_memory_repo_conforms --require-case=sqlite::sqlite_repo_conforms \
