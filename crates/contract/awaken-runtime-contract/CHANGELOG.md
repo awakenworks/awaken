@@ -9,4 +9,5 @@ Notable changes to `awaken-runtime-contract`. Versions follow the [SDK versionin
 - The forwarding-only `credential` module and the first-party Agent/Tool forwarding paths are removed; import those items from `awaken-agent-contract` and `awaken-tool-contract`.
 - `diagnostic::Error` gains the variant `Admission`.
 - `resilience::RetryPolicy::decide` takes the `ModelReentry` projection instead of `ModelExecutionEvidence`.
+- `live_inbox::LiveInbox::version` returns `Option<u64>`, and `EditError` and `WaitOutcome` gain `Unavailable`: a poisoned inbox admits nothing, reads as closed and empty, and reports itself unavailable instead of panicking.
 - Its public API names types of `awaken-agent-contract` 2.0 and `awaken-tool-contract` 2.0; a caller upgrades them together, because a 1.x type is a different type.

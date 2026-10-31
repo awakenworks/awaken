@@ -126,12 +126,12 @@ the deployment application (`Unavailable`), session tokens
 
 ### Open locks
 
-These four still read a `std` lock in production; V1 cannot enable the lint
-until each is decided:
+These still read a `std` lock in production; V1 cannot enable the lint until
+each is decided. `LiveInbox` is decided in [SDK versioning](sdk-versioning.md):
 
 | Lock | Why it is open |
 |---|---|
-| `awaken-runtime-contract` `LiveInbox` state | invariant (`offer` moves the id, entries and version together), but all 13 public SDK methods return plain values; treating a poisoned inbox as closed needs `version()` to become `Option<u64>` (SDK API change, public-api rebless) |
+| `awaken-runtime-contract` `LiveInbox` state | decided: `InvariantLock`; a poisoned inbox admits nothing and reads as closed and empty, `version()` returns `Option<u64>`, edits and waits report `Unavailable` (SDK break inside the pending `2.0.0`) |
 | `awaken-control` `ManagementAuthz.state` | the type `Arc<std::sync::Mutex<LocalIamState>>` is fixed by `awaken_iam_host::IamGate::from_local_state`; changing it is an awaken-iam API change |
 | `awaken-sandbox-control-transport` `SandboxControlPublicationSlot.state` | invariant for reserve/update, yet `close()` deliberately recovers poison so disposal stays absorbing (test PS5); it needs an explicit "dispose despite poison" route on `InvariantLock` or a split of the slot |
 | `awaken-sandbox-local` `NamespaceSandbox.memory_materializations` | invariant with existing refusals, but `Sandbox::handle()` cannot fail and dropping the materialization evidence from the handle is not a safe answer |

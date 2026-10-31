@@ -395,6 +395,7 @@ pub mod awaken_runtime_contract::live_inbox
 pub enum awaken_runtime_contract::live_inbox::EditError
 pub awaken_runtime_contract::live_inbox::EditError::Closed
 pub awaken_runtime_contract::live_inbox::EditError::StaleOrder
+pub awaken_runtime_contract::live_inbox::EditError::Unavailable
 pub awaken_runtime_contract::live_inbox::EditError::UnknownMessage
 pub enum awaken_runtime_contract::live_inbox::MessageOrigin
 pub awaken_runtime_contract::live_inbox::MessageOrigin::External
@@ -405,6 +406,7 @@ pub awaken_runtime_contract::live_inbox::Offer::Closed
 pub enum awaken_runtime_contract::live_inbox::WaitOutcome
 pub awaken_runtime_contract::live_inbox::WaitOutcome::Cancelled
 pub awaken_runtime_contract::live_inbox::WaitOutcome::Changed(u64)
+pub awaken_runtime_contract::live_inbox::WaitOutcome::Unavailable
 pub struct awaken_runtime_contract::live_inbox::LiveInbox
 impl awaken_runtime_contract::live_inbox::LiveInbox
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::close(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
@@ -417,7 +419,7 @@ pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer_as(&self, awaken_ru
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::remove(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> core::result::Result<awaken_agent_contract::agent::message::Message, awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::reorder(&self, &[awaken_runtime_contract::live_inbox::LiveInboxMessageId]) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::replace(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId, awaken_agent_contract::agent::message::Message) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
-pub fn awaken_runtime_contract::live_inbox::LiveInbox::version(&self) -> u64
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::version(&self) -> core::option::Option<u64>
 pub async fn awaken_runtime_contract::live_inbox::LiveInbox::wait_for_change(&self, u64, &tokio_util::sync::cancellation_token::CancellationToken) -> awaken_runtime_contract::live_inbox::WaitOutcome
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::wake(&self)
 pub struct awaken_runtime_contract::live_inbox::LiveInboxMessage
@@ -1990,7 +1992,7 @@ pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer_as(&self, awaken_ru
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::remove(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> core::result::Result<awaken_agent_contract::agent::message::Message, awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::reorder(&self, &[awaken_runtime_contract::live_inbox::LiveInboxMessageId]) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::replace(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId, awaken_agent_contract::agent::message::Message) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
-pub fn awaken_runtime_contract::live_inbox::LiveInbox::version(&self) -> u64
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::version(&self) -> core::option::Option<u64>
 pub async fn awaken_runtime_contract::live_inbox::LiveInbox::wait_for_change(&self, u64, &tokio_util::sync::cancellation_token::CancellationToken) -> awaken_runtime_contract::live_inbox::WaitOutcome
 pub fn awaken_runtime_contract::live_inbox::LiveInbox::wake(&self)
 pub struct awaken_runtime_contract::LiveInboxMessage
