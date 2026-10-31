@@ -401,16 +401,34 @@ roleRef:
   kind: Role
   name: awaken-runtime-read-dispose
 ---
-apiVersion: apps/v1
-kind: StatefulSet
+apiVersion: batch/v1
+kind: Job
 metadata: { name: worker, labels: { app: worker } }
 spec:
-  serviceName: worker
-  replicas: 2
-  selector: { matchLabels: { app: worker } }
+  # One Pod is one Worker process (ADR-0078 amendment 2026-10-31). A crashed,
+  # OOM-killed or liveness-killed container ends its Never-restart Pod; the
+  # retained exact exit settles that incarnation, and this controller creates a
+  # fresh Pod UID for the same index. A restartable StatefulSet/Deployment Pod
+  # would restart in place under one UID, which the Coordinator never binds.
+  completionMode: Indexed
+  completions: 2
+  parallelism: 2
+  backoffLimit: 100
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onExitCodes:
+          containerName: worker
+          operator: NotIn
+          values: [0]
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+            status: "True"
   template:
     metadata: { labels: { app: worker } }
     spec:
+      restartPolicy: Never
       serviceAccountName: worker-runtime
       # The Worker may spend 15s draining and then up to 20s obtaining exact
       # cancellation/return evidence. Keep Kubernetes from hard-killing the

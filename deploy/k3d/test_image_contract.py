@@ -154,8 +154,14 @@ def main() -> None:
     # than disabling kubectl validation or narrowing the retry contract. This
     # shape gate complements the live controller replacement witness; it does
     # not claim that a new Pod or a timer proves old execution has settled.
-    def worker_replacement_contract(resources_text: str) -> bool:
-        worker = resources_text.split(product_marker, 1)[1].split("\n---", 1)[0]
+    # PR6 (ADR-0078 amendment 2026-10-31): one Pod is one Worker process, so
+    # every registered Worker fleet (product Job and the distributed Indexed
+    # Job) uses this same Never-restart shape; a StatefulSet/Deployment Worker
+    # or restartPolicy Always would restart in place under one UID => reject.
+    def worker_replacement_contract(resources_text: str, marker: str = product_marker) -> bool:
+        if marker not in resources_text:
+            return False
+        worker = resources_text.split(marker, 1)[1].split("\n---", 1)[0]
         return (
             "restartPolicy: Never" in worker
             and "podFailurePolicy:" in worker
@@ -169,7 +175,18 @@ def main() -> None:
     assert not worker_replacement_contract(product_resources.replace("operator: NotIn", "operator: In"))
     for status in ('', '            status: "False"', '            status: "Unknown"'):
         assert not worker_replacement_contract(product_resources.replace('            status: "True"', status))
-    distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
+    distributed_marker = "kind: Job\nmetadata: { name: worker, labels: { app: worker } }"
+    assert worker_replacement_contract(resources, distributed_marker), "PR6 distributed Worker fleet"
+    assert "completionMode: Indexed" in resources.split(distributed_marker, 1)[1].split("\n---", 1)[0]
+    assert not worker_replacement_contract(
+        resources.replace("restartPolicy: Never\n      serviceAccountName: worker-runtime",
+                          "restartPolicy: Always\n      serviceAccountName: worker-runtime"),
+        distributed_marker,
+    ), "PR6 restartable Worker Pod"
+    assert not worker_replacement_contract(
+        resources.replace(distributed_marker, distributed_marker.replace("kind: Job", "kind: StatefulSet")),
+        distributed_marker,
+    ), "PR6 restartable Worker controller"
     assert worker_retirement_contract(product_resources, product_marker)
     assert worker_retirement_contract(resources, distributed_marker)
     assert not worker_retirement_contract(

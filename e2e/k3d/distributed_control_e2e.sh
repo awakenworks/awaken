@@ -69,11 +69,22 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 
 wait_roles() {
   local resource
-  for resource in deploy/control deploy/coordinator deploy/provider deploy/awaken-api statefulset/worker; do
+  for resource in deploy/control deploy/coordinator deploy/provider deploy/awaken-api; do
     # Callers use an OR-list, which disables Bash errexit inside this function.
     # Every role must succeed; a later Ready Worker cannot erase an API timeout.
     kubectl -n "$NS" rollout status "$resource" --timeout=240s || return "$?"
   done
+  # The Worker fleet is an Indexed Job of one-process Pods (restartPolicy
+  # Never): it has no rollout; each of its two indexes needs one Ready Pod.
+  kubectl -n "$NS" wait --for=jsonpath='{.status.ready}'=2 job/worker --timeout=240s || return "$?"
+}
+
+# The Worker fleet's live Pods as "name uid" lines. Ended predecessors remain
+# listed (phase Failed/Succeeded) until the Coordinator settles their retained
+# exit evidence, so only Running Pods are current Workers.
+fleet_worker_pods() {
+  kubectl -n "$NS" get pod -l job-name=worker --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.uid}{"\n"}{end}'
 }
 
 batch_cleanup_wait_until() {
@@ -621,15 +632,15 @@ kubectl uncordon "${CORDONED_NODES[@]}" >/dev/null
 ok "one endpoint completed Credential/File/Memory/Skill/Agent/Deployment/Session/Provider flow"
 
 log "5/11 prove Worker process isolation and material realization"
-WORKER_SPEC=$(kubectl -n "$NS" get statefulset worker -o json)
+WORKER_SPEC=$(kubectl -n "$NS" get job worker -o json)
 if printf '%s' "$WORKER_SPEC" | grep -Eq 'postgres://|DATABASE_URL|seal-key|control-auth|coordinator-auth'; then
   err "Worker workload received authority database or seal configuration"
   exit 1
 fi
-for pod in worker-0 worker-1; do
+while read -r pod _; do
   kubectl -n "$NS" exec "$pod" -- /bin/sh -ec \
     '! grep -q ":1538 " /proc/net/tcp /proc/net/tcp6 2>/dev/null'
-done
+done <<<"$(fleet_worker_pods)"
 # Materialization-location cause/effect table: C1 a Managed File path is
 # normalized below the one live-input root; C2 a Memory mount preserves the
 # Managed absolute `/mnt` path; C3 a multipart filesystem Skill owns the opaque
@@ -659,16 +670,20 @@ log "6/11 remove the entire Coordinator tier, then recover the same publication"
 # C1 Coordinator unavailable -> public publication fails retryably and Workers
 # revoke their local claim admission; C2 Coordinator restored -> durable
 # publication remains available, but drained Worker incarnations terminate;
-# C3 the drained Worker requests exact Pod deletion before exit; StatefulSet
-# replacement gets a new UID, then a fresh incarnation can become Ready.
-WORKER_CONTAINERS_BEFORE=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
-WORKER_0_UID_BEFORE=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')
-WORKER_1_UID_BEFORE=$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')
+# C3 the drained Worker exits non-zero, which ends its Never-restart Pod; the
+# Job controller creates a fresh Pod UID, then a new incarnation becomes Ready.
+WORKERS_BEFORE=$(fleet_worker_pods)
+[ "$(grep -c . <<<"$WORKERS_BEFORE")" = 2 ] || { err "expected two live fleet Workers: $WORKERS_BEFORE"; exit 1; }
 kubectl -n "$NS" scale deploy/coordinator --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod -l app=coordinator --timeout=120s
 node "$DRIVER" unavailable-publication "$API_URL"
 for _ in $(seq 1 90); do
-  DRAINED=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' | grep -c '^false$' || true)
+  DRAINED=0
+  while read -r pod _; do
+    # An ended or already settled original Pod is drained as well.
+    [ "$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || true)" = true ] \
+      || DRAINED=$((DRAINED + 1))
+  done <<<"$WORKERS_BEFORE"
   [ "$DRAINED" = "2" ] && break
   sleep 1
 done
@@ -690,24 +705,61 @@ done
 kubectl -n "$NS" scale deploy/coordinator --replicas=2 >/dev/null
 kubectl -n "$NS" rollout status deploy/coordinator --timeout=240s
 node "$DRIVER" retry-publication "$API_URL"
-kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
-WORKER_CONTAINERS_AFTER=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
-[ "$WORKER_CONTAINERS_BEFORE" != "$WORKER_CONTAINERS_AFTER" ] || { err "drained Worker containers were reused"; exit 1; }
-# Worker Pod replacement decision table: W1 authority lost + exact local
-# drain + retained UID deletion intent => Kubernetes may replace the Pod;
-# W2 same UID container restart => the immutable Create ledger cannot bind a
-# second process and must remain unready. E1 both ordinals acquire new UIDs
-# with zero container restarts; E2 either unchanged UID fails this gate. The
-# provider still owns the old exit receipt independently of DELETE acceptance.
-[ "$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')" != "$WORKER_0_UID_BEFORE" ] \
-  || { err "worker-0 reused its immutable Pod UID"; exit 1; }
-[ "$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')" != "$WORKER_1_UID_BEFORE" ] \
-  || { err "worker-1 reused its immutable Pod UID"; exit 1; }
-for pod in worker-0 worker-1; do
+wait_roles || { diagnostics; exit 1; }
+WORKERS_AFTER=$(fleet_worker_pods)
+# Worker Pod replacement decision table: W1 authority lost + exact local drain
+# + process exit => the Never-restart Pod ends and the Job creates a fresh UID;
+# W2 a restart inside one UID cannot occur (restartPolicy Never) and could not
+# bind a second process to the immutable Create ledger. E1 both live Workers
+# have new UIDs and zero container restarts; E2 any original UID still Running
+# fails this gate. The Coordinator owns the old exit receipt independently.
+while read -r pod uid; do
+  ! grep -q " ${uid}\$" <<<"$WORKERS_AFTER" || { err "a fleet Worker reused its immutable Pod UID"; exit 1; }
+done <<<"$WORKERS_BEFORE"
+[ "$(grep -c . <<<"$WORKERS_AFTER")" = 2 ] || { err "Worker fleet did not replace both ended Pods: $WORKERS_AFTER"; exit 1; }
+while read -r pod _; do
   [ "$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}')" = 0 ] \
     || { err "$pod restarted inside its immutable Pod UID"; exit 1; }
+done <<<"$WORKERS_AFTER"
+ok "Coordinator outage failed closed; ended Worker Pods were replaced by fresh UIDs"
+
+log "6b/11 hard-kill one fleet Worker container; its Pod ends, settles and is replaced"
+# Cause/effect decision table (ADR-0078 amendment 2026-10-31, one Pod = one
+# process). C1 the CRI hard-kills the only container of a registered, retained
+# fleet Worker Pod; C2 the Pod is restartPolicy Never; C3 the Coordinator's
+# maintenance observes the expired incarnation. Effects: E1 the same Pod UID
+# ends Failed with the exact killed container (exit 137, restartCount 0), no
+# in-place restart; E2 the Job creates a replacement Pod UID that registers a
+# live Registry incarnation; E3 the old incarnation records its exact process
+# exit and its retained evidence is released, so the old Pod is deleted;
+# E4 public work continues through the replacement fleet. Rules K1 C1+C2 =>
+# E1+E2; K2 E1+C3 => E3; K3 E2 => E4. A restartable Pod would instead keep
+# the UID with restartCount 1 and never bind again (the defect this replaces).
+read -r CRASHED_WORKER CRASHED_WORKER_UID <<<"$(fleet_worker_pods | head -1)"
+[ -n "$CRASHED_WORKER" ] && [ -n "$CRASHED_WORKER_UID" ] || { err "no live fleet Worker to crash"; exit 1; }
+hard_crash_native_worker "$CRASHED_WORKER" "$CRASHED_WORKER_UID"
+[ "$(kubectl -n "$NS" get pod "$CRASHED_WORKER" -o jsonpath='{.status.containerStatuses[0].restartCount}')" = 0 ] \
+  || { err "the crashed Worker restarted inside its immutable Pod UID"; exit 1; }
+wait_roles || { diagnostics; exit 1; }
+REPLACEMENT_WORKER=$(fleet_worker_pods | grep -v " ${CRASHED_WORKER_UID}\$" | grep -vxF -f <(grep . <<<"$WORKERS_AFTER") || true)
+[ "$(grep -c . <<<"$REPLACEMENT_WORKER")" = 1 ] || { err "Job did not create exactly one replacement: $REPLACEMENT_WORKER"; exit 1; }
+read -r REPLACEMENT_WORKER REPLACEMENT_WORKER_UID <<<"$REPLACEMENT_WORKER"
+for _ in $(seq 1 120); do
+  REPLACEMENT_LEASES=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT count(*) FROM worker_registry_worker WHERE worker_id = 'k8s:${NS}:${REPLACEMENT_WORKER}:${REPLACEMENT_WORKER_UID}'
+       AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)")
+  [ "$REPLACEMENT_LEASES" = "1" ] && break
+  sleep 1
 done
-ok "Coordinator outage failed closed; exact Pod deletion created fresh Worker UIDs"
+[ "$REPLACEMENT_LEASES" = "1" ] || { err "replacement Worker Pod never registered a live incarnation"; exit 1; }
+kubectl -n "$NS" wait --for=delete "pod/$CRASHED_WORKER" --timeout=300s \
+  || { err "crashed Worker evidence was never settled and released"; diagnostics; exit 1; }
+CRASHED_EXIT=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM worker_registry_worker WHERE worker_id = 'k8s:${NS}:${CRASHED_WORKER}:${CRASHED_WORKER_UID}'
+     AND process_exit_json IS NOT NULL")
+[ "$CRASHED_EXIT" = "1" ] || { err "crashed Worker incarnation has no exact process exit: $CRASHED_EXIT"; exit 1; }
+node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-WORKER-CRASH
+ok "killed Worker container ended its Pod, settled its exact exit, and a fresh Pod UID took over the work"
 
 log "7/11 inject single-Pod faults and concurrent durable traffic"
 # Cause/effect decision table:
@@ -1047,8 +1099,13 @@ AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE"
   AWAKEN_K8S_CONTROL_IMAGE="$SANDBOX_IMAGE" \
   cargo test --locked -p awaken-process-startup --features container-k8s --lib \
   "$TRANSPORT_TEST" -- --exact --nocapture
-kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
-kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s
+# Suspending the fleet Job deletes its live Pods; each drains, exits and is
+# settled through the same retained evidence before the API removes it.
+FLEET_BEFORE_NATIVE=$(fleet_worker_pods)
+kubectl -n "$NS" patch job/worker --type=merge -p '{"spec":{"suspend":true}}' >/dev/null
+while read -r pod _; do
+  kubectl -n "$NS" wait --for=delete "pod/$pod" --timeout=180s
+done <<<"$FLEET_BEFORE_NATIVE"
 
 COORDINATOR_CONFIG=$(kubectl -n "$NS" get secret adr71-role-config \
   -o jsonpath='{.data.coordinator\.toml}' | base64 -d)
