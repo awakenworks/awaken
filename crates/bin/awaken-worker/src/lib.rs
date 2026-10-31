@@ -49,6 +49,7 @@ mod lifecycle;
 mod manifest;
 #[cfg(test)]
 mod relay_hand;
+mod startup_retry;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
@@ -1430,30 +1431,39 @@ impl WorkerNode {
         // closes the listener on every early return or unwind.
         let admin_surface = start_admin_surface(self.admin_listen).await;
         let mut shutdown = std::pin::pin!(shutdown);
-        let mut registration_wait_attempts = 0_u64;
+        let mut backoff = startup_retry::StartupBackoff::new(&incarnation_id);
         let registration_receipt = loop {
-            let attempt = bootstrap_control
+            let error = match bootstrap_control
                 .register_classified(incarnation_id.clone(), self.manifest.clone())
-                .await;
-            match attempt {
+                .await
+            {
                 Ok(registration) => break registration,
-                Err(
-                    error @ (awaken_coordinator_client::WorkerRegistrationError::SlotOccupied(_)
-                    | awaken_coordinator_client::WorkerRegistrationError::Unavailable(_)),
-                ) => {
-                    if registration_wait_attempts.is_multiple_of(10) {
-                        eprintln!("worker registration waiting for Coordinator: {error}");
-                    }
-                    registration_wait_attempts = registration_wait_attempts.saturating_add(1);
-                    tokio::select! {
-                        () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
-                        shutdown = &mut shutdown => {
-                            shutdown?;
-                            return Ok(());
-                        }
-                    }
+                Err(error) => error,
+            };
+            if startup_retry::classify_registration(&error)
+                == startup_retry::StartupFailureClass::Permanent
+            {
+                return Err(std::io::Error::other(error.to_string()).into());
+            }
+            // Exhaustion exits non-zero: the Never-restart Pod ends and the
+            // fleet controller replaces it with a fresh UID.
+            let Some(delay) = backoff.next_delay() else {
+                return Err(std::io::Error::other(format!(
+                    "worker registration still unavailable after {} retries: {error}",
+                    backoff.retries()
+                ))
+                .into());
+            };
+            eprintln!(
+                "worker registration waiting for Coordinator (retry {} in {delay:?}): {error}",
+                backoff.retries()
+            );
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {}
+                shutdown = &mut shutdown => {
+                    shutdown?;
+                    return Ok(());
                 }
-                Err(error) => return Err(std::io::Error::other(error.to_string()).into()),
             }
         };
         let startup_timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(
