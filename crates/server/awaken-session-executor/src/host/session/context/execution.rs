@@ -226,7 +226,7 @@ pub(super) async fn prepare(
         .capabilities
         .exec
         .acp
-        .as_ref()
+        .installed()
         .zip(env.clone())
         .map(|(acp, env)| {
             let continuation = acp_tool_grants.clone().map(|exports| {

@@ -83,7 +83,7 @@ async fn paged_assistant_identity_and_cursors_survive_cache_loss_and_peers() {
         .await
         .unwrap();
     let run = RunId("run-paged-response-identity".into());
-    runtime.committed_by_thread.lock().unwrap().insert(
+    runtime.committed_by_thread.lock().insert(
         session.id.clone(),
         vec![
             Message::new(
@@ -106,7 +106,7 @@ async fn paged_assistant_identity_and_cursors_survive_cache_loss_and_peers() {
             ),
         ],
     );
-    runtime.lifecycle.lock().unwrap().extend([
+    runtime.lifecycle.lock().extend([
         lifecycle(
             1,
             &session.id,

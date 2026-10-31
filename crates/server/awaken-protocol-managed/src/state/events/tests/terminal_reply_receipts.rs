@@ -23,9 +23,9 @@ async fn drives(state: &ManagedState, runtime: &RehydrateFake, session_id: &str)
         .expect("root is readable");
     Drives {
         root: serde_json::to_value(&root).unwrap(),
-        transcript: runtime.committed_by_thread.lock().unwrap().clone(),
-        tool_replies: runtime.thread_tool_replies.lock().unwrap().len(),
-        delegated_runs: runtime.delegated.lock().unwrap().len(),
+        transcript: runtime.committed_by_thread.lock().clone(),
+        tool_replies: runtime.thread_tool_replies.lock().len(),
+        delegated_runs: runtime.delegated.lock().len(),
     }
 }
 
@@ -87,7 +87,8 @@ async fn ended_run_refuses_new_replies_and_replays_only_the_exact_receipt() {
                 Some(("original".into(), fingerprint)),
             )
             .await
-            .expect("setup: retain the accepted receipt");
+            .expect("setup: retain the accepted receipt")
+            .expect("setup: an input batch is admitted, not a root no-op");
         let expected = SendEventsResponse {
             data: accepted_inbound_receipts(&session_id, &retained)
                 .into_iter()
@@ -99,14 +100,14 @@ async fn ended_run_refuses_new_replies_and_replays_only_the_exact_receipt() {
         } else {
             RunLifecycleEventKind::Completed
         };
-        runtime.lifecycle.lock().unwrap().push(lifecycle(
+        runtime.lifecycle.lock().push(lifecycle(
             3,
             &child_id,
             &RunId("run-route-terminal-receipt".into()),
             kind,
             RunState::Ended(cause.clone()),
         ));
-        runtime.pending_by_thread.lock().unwrap().remove(&child_id);
+        runtime.pending_by_thread.lock().remove(&child_id);
         let before = drives(&state, &runtime, &session_id).await;
 
         let refused = state

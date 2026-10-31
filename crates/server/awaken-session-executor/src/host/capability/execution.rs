@@ -69,3 +69,16 @@ pub(crate) enum AcpBackend {
         >,
     ),
 }
+
+impl AcpBackend {
+    /// The installed executor factory, the only role that executes `acp:*`
+    /// sessions or realizes their credentials (P3).
+    pub(crate) fn installed(
+        &self,
+    ) -> Option<&Arc<dyn awaken_session_environment_contract::AcpSessionExecutorFactory>> {
+        match self {
+            Self::Installed(factory) => Some(factory),
+            Self::Absent | Self::Projection(_) => None,
+        }
+    }
+}

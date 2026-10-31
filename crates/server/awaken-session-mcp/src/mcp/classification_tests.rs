@@ -131,10 +131,7 @@ async fn a_real_auth_challenge_is_a_permanent_authentication_failure() {
     let run = run_error(error);
     assert_eq!(run.kind, RunErrorKind::Internal, "not retryable at the Run");
     assert_eq!(run.code, "mcp_authentication_failed");
-    assert!(
-        seen.lock().unwrap().is_empty(),
-        "no MCP method was admitted"
-    );
+    assert!(seen.lock().is_empty(), "no MCP method was admitted");
 }
 
 #[test]

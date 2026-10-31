@@ -353,14 +353,6 @@ fn binding_must_precede_execution_and_cannot_be_reconstructed_from_terminal_stat
     );
 }
 
-/// A binding persisted while Always-policy Worker Pods were still admitted.
-/// `bind` can no longer mint one; only its stored wire form remains.
-pub(super) fn historical_restartable(binding: &PodProcessBinding) -> PodProcessBinding {
-    let mut encoded = serde_json::to_value(binding).unwrap();
-    encoded["restartable"] = json!(true);
-    serde_json::from_value(encoded).unwrap()
-}
-
 /// The same retained Always Pod after its bound container `from` ended with
 /// `code`/`reason` and kubelet started container `to` in place.
 pub(super) fn restarted(pod: &Value, from: &str, to: &str, code: i32, reason: &str) -> Value {

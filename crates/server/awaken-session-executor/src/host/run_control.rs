@@ -6,7 +6,7 @@
 //! durable delivery stages through the canonical dispatch control owner.
 use super::{SessionCtx, SessionExecutionError};
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
-use awaken_dispatch_execution::durable_control::DurableRunControl;
+use awaken_dispatch_execution::durable_control::{DurableRunControl, RunResidence};
 use awaken_dispatch_execution::{AdmissionError, LiveRunControlError};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::control::LiveCommand;
@@ -78,7 +78,10 @@ impl DurableRunCancellation {
         DurableRunControl::new(owner.clone(), Some(claimer.clone()))
             .cancel(
                 &RunId(run.to_owned()),
-                resident.as_ref().map(|ctx| ctx.live_control()),
+                match resident.as_ref() {
+                    Some(ctx) => RunResidence::Resident(ctx.live_control()),
+                    None => RunResidence::Elsewhere,
+                },
             )
             .await
             .map_err(SessionExecutionError::from)

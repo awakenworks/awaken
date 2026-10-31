@@ -141,8 +141,8 @@ async fn live_preview_text_never_becomes_an_outcome_fact() {
         Role::Assistant,
         "FINAL",
     );
-    *runtime.committed.lock().unwrap() = Some(vec![final_message.clone()]);
-    runtime.outcome_projections.lock().unwrap().insert(
+    *runtime.committed.lock() = Some(vec![final_message.clone()]);
+    runtime.outcome_projections.lock().insert(
         (session_id.into(), outcome_id.clone()),
         CommittedOutcomeProjection::Completed(OutcomeReport {
             iterations: vec![
@@ -170,14 +170,12 @@ async fn live_preview_text_never_becomes_an_outcome_fact() {
     runtime
         .state_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session_id.into(), vec![10, 20, 20, 20]);
     runtime
         .message_cursors_by_thread
         .lock()
-        .unwrap()
         .insert(session_id.into(), vec![20]);
-    *runtime.root_store_cursor_override.lock().unwrap() = Some(30);
+    *runtime.root_store_cursor_override.lock() = Some(30);
     warm.refresh_committed_events(session_id).await.unwrap();
 
     let completed = listed(&warm, session_id);

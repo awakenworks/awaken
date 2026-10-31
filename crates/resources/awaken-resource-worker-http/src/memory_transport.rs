@@ -659,7 +659,7 @@ async fn memory_operation(
                 return StatusCode::FORBIDDEN.into_response();
             }
             if awaken_worker_transport_security::verify_claim_owner(
-                Some(service.directory.as_ref()),
+                service.directory.as_ref(),
                 &worker,
                 request.identity.as_ref(),
                 &reference.claim,

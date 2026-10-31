@@ -984,7 +984,7 @@ async fn ended_never_registered_release_requires_an_ended_exact_retained_pod() {
     // | E3   | n  | ended              | y  | no write (successor untouched)      |
     // | E4   | y  | ended              | n  | no write (nothing retained)         |
     // Listing selects ended Pods with the Worker finalizer (E1 and E3 shapes).
-    for (row, phase, uid, retained, released) in [
+    for (row, phase, uid, is_retained, released) in [
         ("E1 succeeded", "Succeeded", "uid-a", true, true),
         ("E1 failed", "Failed", "uid-a", true, true),
         ("E2 running", "Running", "uid-a", true, false),
@@ -996,7 +996,7 @@ async fn ended_never_registered_release_requires_an_ended_exact_retained_pod() {
         let mut pod = running();
         pod["status"]["phase"] = json!(phase);
         pod["metadata"]["uid"] = json!(uid);
-        let pod = if retained {
+        let pod = if is_retained {
             retained(pod)
         } else {
             pod["metadata"]["finalizers"] = json!(["other.example/keep"]);
@@ -1004,7 +1004,7 @@ async fn ended_never_registered_release_requires_an_ended_exact_retained_pod() {
         };
         assert_eq!(
             ended_retained_worker_pod(&pod).is_some(),
-            retained && matches!(phase, "Succeeded" | "Failed"),
+            is_retained && matches!(phase, "Succeeded" | "Failed"),
             "{row}: listing selects ended retained Pods only"
         );
         fixture.facts.lock().unwrap().pod = Some(pod);
@@ -1036,7 +1036,7 @@ async fn ended_never_registered_release_requires_an_ended_exact_retained_pod() {
             finalizers
                 .iter()
                 .any(|value| value == WORKER_PROCESS_EVIDENCE_FINALIZER),
-            retained && !released,
+            is_retained && !released,
             "{row}"
         );
     }

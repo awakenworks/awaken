@@ -158,6 +158,7 @@ async fn open_sse_is_woken_only_by_the_managed_fanout_and_never_duplicates_a_fra
                     "research in the background",
                 )],
                 data_subject_id: None,
+                private_task_input: None,
                 traceparent: None,
                 execution_requirements: Default::default(),
                 replacement: awaken_session_types::SessionRunReplacement::PreservePrior,

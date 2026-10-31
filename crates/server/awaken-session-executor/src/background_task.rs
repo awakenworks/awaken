@@ -971,7 +971,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl RecordingAttentionApplication {
         fn record(&self, call: AttentionCall) -> Result<(), awaken_session_types::RunError> {
             self.calls

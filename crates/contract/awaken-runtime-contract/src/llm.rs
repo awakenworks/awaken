@@ -623,7 +623,8 @@ pub trait LlmExecutor: Send + Sync {
 
 #[cfg(test)]
 mod usage_tests {
-    use super::{ThreadUsage, TokenUsage};
+    use super::TokenUsage;
+    use awaken_agent_contract::thread::usage::ThreadUsage;
 
     fn u(p: u64, c: u64) -> TokenUsage {
         TokenUsage {

@@ -434,13 +434,11 @@ async fn expired_after_read(
     match (&request.authority, run_guard_live) {
         (ResourceOperationFence::Run(_), Some(live)) => (!live).then_some(StatusCode::CONFLICT),
         (ResourceOperationFence::SessionMaterialization(intent), _) => {
-            let (Some(identity), Some(directory)) =
-                (request.identity.as_ref(), service.directory.as_deref())
-            else {
+            let Some(identity) = request.identity.as_ref() else {
                 return Some(StatusCode::SERVICE_UNAVAILABLE);
             };
             verify_session_worker_effect(
-                directory,
+                service.directory.as_ref(),
                 worker,
                 identity,
                 intent.lease(),

@@ -464,7 +464,7 @@ impl crate::SessionRuns {
                 Backend::Acp(_) => self
                     .exec
                     .acp
-                    .as_ref()
+                    .installed()
                     .ok_or_else(|| {
                         SessionExecutionError::bad_request("ACP backend is not installed")
                     })?
