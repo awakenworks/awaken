@@ -175,6 +175,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/contract-convergence.md` | Decision record | Not required | n/a |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
 | `design/test-validation.md` | Meta / introspection | Not required | n/a |
+| `design/guard-consolidation.md` | Meta / introspection | Not required | n/a |
 | `design/session-execution-test-acceptance.md` | Coverage map | Not required | n/a |
 | `design/session-execution-test-acceptance-cases-1.md` | Coverage map | Not required | n/a |
 | `design/session-execution-test-acceptance-cases-2.md` | Coverage map | Not required | n/a |
