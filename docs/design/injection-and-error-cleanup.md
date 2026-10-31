@@ -12,8 +12,12 @@ Production Rust only (`_crate_boundary_workspace.production_rust`), at
 | Pattern | Sites | Note |
 |---|---:|---|
 | `Weak<` | 53 | |
-| `Option<&dyn` / `Option<&'a dyn` | 73 | the plan's 59 omitted the 14 lifetime-named sites |
+| `Option<&dyn` / `Option<&'a dyn` | 74 | the plan's 59 omitted 14 lifetime-named sites and 1 type split across lines |
 | `Internal(<expr>.to_string())` | 13 | |
+| `Option<Arc<dyn` (not in the plan's metric) | 620 | the construction-time form of an optional role; a guard that counts only `Option<&dyn` misses it |
+
+A guard should match across line breaks: the line-based count misses
+`host/capability/execution.rs`.
 
 ## Decision classes
 
@@ -21,7 +25,7 @@ Production Rust only (`_crate_boundary_workspace.production_rust`), at
 |---|---|---:|---:|
 | (i) cycle | replace with build order, an injected role port, or a split component | 31 | 0 |
 | (ii) legitimate weak | observer, lifetime that must not keep its target alive, or cache; exempt with a reason | 22 | exempt |
-| (iii) optional role | required at construction, or a closed enum naming each case | 58 | 4 |
+| (iii) optional role | required at construction, or a closed enum naming each case | 59 | 4 |
 | (iv) SDK public API | defer to item L (SDK SemVer) | 15 | deferred |
 | (v) error flattening | typed variant that keeps its source, classified once | 13 | 13 |
 
@@ -185,14 +189,14 @@ quoted item; line numbers drift.
 
 | Site (`crates/…`, line at `1b56f9aea0`) | Class | Status | Decision |
 |---|---|---|---|
-| `bin/awaken-process-startup/src/service.rs:218` | (iii) | planned | closed enum of the embedded-Worker topology (Colocated(prep) | Disabled) |
+| `bin/awaken-process-startup/src/service.rs:218` | (iii) | planned | closed enum of the embedded-Worker topology (Colocated(prep) or Disabled) |
 | `bin/awaken-worker/src/credential_liveness.rs:137` | (iii) | planned | required at construction: the probe owns its observation sources; an absent source is a typed empty source |
 | `bin/awaken-worker/src/credential_liveness.rs:138` | (iii) | planned | same as above |
 | `bin/awaken-worker/src/credential_liveness.rs:223` | (iii) | planned | same as above |
 | `bin/awaken-worker/src/credential_liveness.rs:232` | (iii) | planned | same as above |
-| `bin/awaken-worker/src/manifest.rs:196` | (iii) | planned | closed enum: brokered ACP model access Supported(&dyn ..) | Unsupported |
-| `contract/awaken-dispatch-contract/src/commit_epoch.rs:186` | (iii) | planned | closed enum: recovery Required(&dyn RunRecoverySource) | NotApplicable |
-| `contract/awaken-provisioning-contract/src/sandbox/effect.rs:32` | (iii) | planned | closed: carry SandboxEffect (Unattached | Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
+| `bin/awaken-worker/src/manifest.rs:196` | (iii) | planned | closed enum: brokered ACP model access Supported(&dyn ..) or Unsupported |
+| `contract/awaken-dispatch-contract/src/commit_epoch.rs:186` | (iii) | planned | closed enum: recovery Required(&dyn RunRecoverySource) or NotApplicable |
+| `contract/awaken-provisioning-contract/src/sandbox/effect.rs:32` | (iii) | planned | closed: carry SandboxEffect (Unattached or Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
 | `contract/awaken-provisioning-contract/src/sandbox/runtime.rs:904` | (iii) | planned | closed: the provider/exporter declares its capability set at construction (enum of role sets), not a per-call query |
 | `contract/awaken-runtime-contract/src/auxiliary_agents.rs:67` | (iv) | deferred-L | pub fn freeze: absent publication source |
 | `contract/awaken-runtime-contract/src/delegation.rs:351` | (iv) | deferred-L | trait default: cancellation capability query |
@@ -201,12 +205,12 @@ quoted item; line numbers drift.
 | `contract/awaken-runtime-contract/src/permission.rs:328` | (iv) | deferred-L | pub fn evaluate_run_policy: absent policy |
 | `contract/awaken-runtime-contract/src/resolver.rs:74` | (iv) | deferred-L | pub fn resolve_delegate_snapshot: absent publication source |
 | `contract/awaken-runtime-contract/src/resolver.rs:105` | (iv) | deferred-L | pub fn freeze_delegation_publications: absent publication source |
-| `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:50` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) | Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
-| `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:118` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) | Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
-| `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:119` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) | Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
+| `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:50` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
+| `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:118` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
+| `contract/awaken-session-configuration-contract/src/resource/binding_checks.rs:119` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
 | `contract/awaken-session-configuration-contract/src/resource/inputs.rs:890` | (iii) | planned | required at construction: the Resource registry/inventory is a deployment role; a deployment without Resources selects a refusing registry type, not None |
-| `contract/awaken-session-configuration-contract/src/skill_delivery.rs:93` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) | Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
-| `contract/awaken-session-configuration-contract/src/skill_delivery.rs:135` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) | Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
+| `contract/awaken-session-configuration-contract/src/skill_delivery.rs:93` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
+| `contract/awaken-session-configuration-contract/src/skill_delivery.rs:135` | (iii) | planned | closed enum per verifier: Configured(&dyn ..) or Unconfigured, whose refusal rows (B1-B6, P1-P7) already exist |
 | `contract/awaken-session-environment-contract/src/tool_export.rs:27` | (iii) | planned | closed: the provider/exporter declares its capability set at construction (enum of role sets), not a per-call query |
 | `contract/awaken-session-realization-contract/src/session_realization/canonical_publication.rs:82` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
 | `contract/awaken-tool-contract/src/tool.rs:914` | (iv) | deferred-L | trait default: DurableTaskTool capability query |
@@ -224,7 +228,7 @@ quoted item; line numbers drift.
 | `server/awaken-coordinator/src/worker_observation_boundary.rs:265` | (iii) | planned | required at construction: the bootstrap closer holds the binding source |
 | `server/awaken-inference-endpoint/src/brokered_inference.rs:781` | (iii) | done | closed enum ResponseDelivery {Whole, Streamed(sink)} |
 | `server/awaken-protocol-mcp/src/session_export.rs:98` | (iii) | planned | closed: the provider/exporter declares its capability set at construction (enum of role sets), not a per-call query |
-| `server/awaken-run-executor-acp/src/permission.rs:84` | (iii) | planned | closed enum: narrowing Narrowed(&dyn policy) | Unrestricted |
+| `server/awaken-run-executor-acp/src/permission.rs:84` | (iii) | planned | closed enum: narrowing Narrowed(&dyn policy) or Unrestricted |
 | `server/awaken-run-executor-acp/src/permission.rs:214` | (iii) | planned | required at construction: the ACP executor selects its grant observer once (builder role) |
 | `server/awaken-run-executor-acp/src/permission.rs:252` | (iii) | planned | same as above |
 | `server/awaken-run-executor-acp/src/permission.rs:266` | (iii) | planned | same as above |
@@ -238,25 +242,26 @@ quoted item; line numbers drift.
 | `server/awaken-session-application/src/session_input.rs:343` | (iii) | planned | required at construction: the Resource registry/inventory is a deployment role; a deployment without Resources selects a refusing registry type, not None |
 | `server/awaken-session-application/src/session_input.rs:366` | (iii) | planned | required at construction: the Resource registry/inventory is a deployment role; a deployment without Resources selects a refusing registry type, not None |
 | `server/awaken-session-application/src/terminal_cleanup/claims.rs:82` | (iii) | planned | required at construction: terminal cleanup holds the Worker incarnation source |
-| `server/awaken-session-executor/src/application/realization_renewal.rs:195` | (iii) | planned | closed enum: renewal Local | Controlled(&dyn SessionRealizationControl) |
+| `server/awaken-session-executor/src/application/realization_renewal.rs:195` | (iii) | planned | closed enum: renewal Local or Controlled(&dyn SessionRealizationControl) |
 | `server/awaken-session-executor/src/application/realization_renewal.rs:237` | (iii) | planned | same as above |
 | `server/awaken-session-executor/src/delegate.rs:242` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
 | `server/awaken-session-executor/src/delegate.rs:599` | (iv) | deferred-L | platform impl of the SDK cancellation query; follows its signature |
 | `server/awaken-session-executor/src/outcome_controller.rs:114` | (iii) | done | executor moved into OutcomeCommand::Resume; Prepare never carries one |
 | `server/awaken-session-mcp/src/mcp/attachment.rs:100` | (iii) | planned | required at construction: the MCP attachment adapter owns its refresh factory |
-| `server/awaken-session-mcp/src/mcp/attachment.rs:101` | (iii) | planned | closed enum: platform egress Provisioned(&dyn ..) | Direct |
-| `server/awaken-session-realization/src/environment_holding/realization.rs:106` | (iii) | planned | closed: carry SandboxEffect (Unattached | Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
-| `server/awaken-session-realization/src/test_support.rs:57` | (iii) | planned | closed: carry SandboxEffect (Unattached | Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
+| `server/awaken-session-mcp/src/mcp/attachment.rs:101` | (iii) | planned | closed enum: platform egress Provisioned(&dyn ..) or Direct |
+| `server/awaken-session-realization/src/environment_holding/realization.rs:106` | (iii) | planned | closed: carry SandboxEffect (Unattached or Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
+| `server/awaken-session-realization/src/test_support.rs:57` | (iii) | planned | closed: carry SandboxEffect (Unattached or Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
 | `server/awaken-session-run-delivery/src/auxiliary_snapshot.rs:41` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
 | `server/awaken-session-run-delivery/src/child_dispatch.rs:23` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
 | `server/awaken-session-run-delivery/src/delivery/outcomes.rs:116` | (iii) | done | executor moved into OutcomeCommand::Resume; Prepare never carries one |
 | `server/awaken-session-run-delivery/src/session_projections.rs:424` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
-| `server/awaken-session-run-delivery/src/session_run_reservation.rs:49` | (iii) | planned | closed enum: Skills Offered(&dyn SkillRegistry) | NotOffered |
-| `server/awaken-session-run-delivery/src/thread_coordination/terminal_quiescence.rs:60` | (iii) | planned | closed enum: root attempt Resident(&dyn ..) | Elsewhere |
+| `server/awaken-session-run-delivery/src/session_run_reservation.rs:49` | (iii) | planned | closed enum: Skills Offered(&dyn SkillRegistry) or NotOffered |
+| `server/awaken-session-run-delivery/src/thread_coordination/terminal_quiescence.rs:60` | (iii) | planned | closed enum: root attempt Resident(&dyn ..) or Elsewhere |
 | `server/awaken-worker-transport-security/src/lib.rs:146` | (iii) | planned | required at construction: registered routers always hold the Worker directory; the local compatibility router is a separate type |
+| `server/awaken-session-executor/src/host/capability/execution.rs:17` | (iii) | planned | closed enum: ACP backend Installed(factory) or Projection(&'static policy) for a Coordinator, instead of two independent options |
 | `shared/awaken-dispatch-execution/src/session_dispatch.rs:73` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
 | `shared/awaken-dispatch-execution/src/session_dispatch.rs:110` | (iii) | planned | required at construction: every deployment selects a publication source; Some(..) only at the SDK call |
-| `worker/awaken-sandbox-local/src/namespace/memory_mount.rs:195` | (iii) | planned | closed: carry SandboxEffect (Unattached | Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
+| `worker/awaken-sandbox-local/src/namespace/memory_mount.rs:195` | (iii) | planned | closed: carry SandboxEffect (Unattached or Fenced) from AuthorizedSessionEnvironmentEffect instead of a fence and an authority option |
 | `worker/awaken-sandbox-local/src/provider.rs:1619` | (iii) | planned | closed: the provider/exporter declares its capability set at construction (enum of role sets), not a per-call query |
 
 ### `Internal(x.to_string())`
