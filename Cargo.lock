@@ -2603,7 +2603,9 @@ name = "awaken-resource-reclaimer"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
+ "awaken-resource-store",
  "tokio",
 ]
 
@@ -2944,6 +2946,7 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-file-store",
  "awaken-fs-durability",
+ "awaken-lease-contract",
  "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",

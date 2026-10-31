@@ -29,9 +29,14 @@ async fn phase<Q: WorkBackend>(queue: &Q, phase: &str, record: &str) {
             assert_eq!(&old[38..], "0000000000000000");
             assert_eq!(&next[38..], "0000000000000001");
         }
+        "seed-lease" => lease::seed(queue, record).await,
+        "assert-lease" => lease::assert_after_restart(queue, record).await,
         _ => panic!("invalid parent-owned restart phase"),
     }
 }
+
+#[path = "work_identity_restart_lease.rs"]
+mod lease;
 
 #[tokio::test]
 #[ignore = "requires exact parent-owned identity fixture"]
@@ -67,7 +72,11 @@ async fn identity_restart_child() {
 }
 
 fn run(kind: &str, endpoint: &str, record: &std::path::Path) {
-    for phase in ["seed", "assert"] {
+    run_phases(kind, endpoint, record, &["seed", "assert"]);
+}
+
+fn run_phases(kind: &str, endpoint: &str, record: &std::path::Path, phases: &[&str]) {
+    for &phase in phases {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap());
         child
             .args([

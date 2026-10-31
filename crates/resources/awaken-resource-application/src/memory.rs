@@ -293,6 +293,12 @@ impl<T: MemoryContentPurge + ?Sized> MemoryContentPurge for InvalidatingMemoryRe
 }
 
 #[cfg(test)]
+mod bus_identity_tests;
+
+#[cfg(test)]
+mod notification_tests;
+
+#[cfg(test)]
 mod tests {
     use super::InvalidatingMemoryRepository;
     use awaken_memory_store::VolatileMemoryRepository;

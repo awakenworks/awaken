@@ -17,6 +17,10 @@ awaken-resource-contract.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+# T26-C02: the reclaimer driven over real SQL lifecycle stores, with a real
+# child-process crash between claim/fence and the physical receipt.
+awaken-resource-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 
 [lints]
 workspace = true

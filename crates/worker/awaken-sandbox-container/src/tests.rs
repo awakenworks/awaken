@@ -23,6 +23,7 @@ use tokio::io::AsyncWriteExt;
 
 mod effect_gate_window;
 mod memory_reservation;
+mod stale_identity;
 mod terminal_missing_handle;
 mod terminal_preparation;
 

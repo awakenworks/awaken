@@ -629,6 +629,9 @@ pub(crate) fn push_repo_to_at(
 }
 
 #[cfg(test)]
+mod credential_clone_tests;
+
+#[cfg(test)]
 mod tests {
     use std::io::{BufRead as _, Write as _};
     use std::sync::Arc;

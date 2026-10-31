@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod scheduler_wait;
+
 async fn q() -> SqliteWorkQueue {
     // Claims in these decision tables use the logical epoch-zero timeline.
     SqliteWorkQueue::open_in_memory(Arc::new(awaken_lease_testkit::ManualClock::new(0)))

@@ -6,6 +6,8 @@
 //! across `LocalProvider` instances and Host process loss.
 
 #[cfg(test)]
+mod crash_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
