@@ -1,9 +1,14 @@
 # Remote Task Control and the Queue-Only Session Application
 
-Status: designed; the Task codec, the private Run input, the codec demand and
-the attention port are implemented; the Worker transport, claimed committed
-reads and the removal of `SessionApplicationBinding` remain (see
-[Remaining](#remaining)).
+Status: designed. Implemented: the Task observation codec and delivered
+candidates (`awaken-ext-background-task`), the private Run input and the codec
+demand (`awaken-session-application-contract`, `awaken-dispatch-contract`),
+Task attention admission with its acknowledgement
+(`SessionRunApplication::submit_task_attention`), attention that carries the
+observation and claimed input offered before execution
+(`awaken-session-executor`), and the Coordinator's Task attention route
+(`awaken-dispatch-http`). Remaining: the Worker side and the queue-only
+application ([Remaining](#remaining)).
 Principles: P2 (one owner per state machine), P5 (construction-time
 injection), P6 (errors are values) of the architecture plan.
 
@@ -122,14 +127,24 @@ Removal condition for `SessionApplicationBinding`: Q2 no longer exists.
 
 ## Remaining
 
-1. Claimed committed reads: the terminal observer launches Tasks from
-   `CommittedAuthority`, which a Worker's recovery projection cannot mint. A
-   Worker needs the state its own acknowledged claimed commit wrote, as a
-   per-Run committed snapshot.
-2. Worker transport: the Task attention route on the Coordinator
-   (authenticated owner, A3) and its client; the Worker selects the client in
-   place of the binding.
-3. Lift the plan guard once 1 and 2 hold; the codec demand (C1) then keeps
-   older Workers from claiming.
-4. Q3: retire `LocalWorker`, then delete `SessionApplicationBinding`, its
-   exemption and `SessionApplications::Local`.
+1. Claimed committed reads. The terminal observer launches Tasks from
+   `CommittedAuthority`, which a Worker's recovery projection cannot mint
+   (`background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection`).
+   A Worker needs the state its own acknowledged claimed commit wrote, as a
+   per-Run committed snapshot handed to that Run's observer.
+2. Worker selection. A registered Worker builds its supervisor with
+   `registered_task_holder(worker_id, incarnation_id)` and publishes attention
+   through `WORKER_TASK_ATTENTION_PATH` (client on `WorkerControlClient`) in
+   place of the binding, which has no application on a claimed Worker.
+3. Lift the guard in `context/plan.rs` ("background_task requires a co-located
+   Session application ...") once 1 and 2 hold. The codec demand (C1) then
+   keeps Workers without `background-task-control/v1` from claiming.
+4. Queue-only application (Q3). Retire the `LocalWorker` placement: the
+   co-located executor runs as an in-process registered Worker over the same
+   Dispatch store, with in-process implementations of the claimed transport
+   ports (commit, realization control, coordination control, Task attention)
+   that apply the same authority checks as the HTTP handlers. Then delete
+   `SessionApplicationBinding`, `SessionApplications::Local`, its exemption in
+   [injection-and-error-cleanup.md](injection-and-error-cleanup.md#exemptions-for-the-v1-guard)
+   and `test_application_bindings`. Executor unit tests that build a local
+   application move to the in-process Worker fixture.

@@ -1,6 +1,6 @@
 # Construction-Time Injection and Typed Errors
 
-Status: classification complete; (v) done, (iv) decided by item L, (iii) done except two test-fixture sites (rule below), (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is sequenced with package G. Family B classified: one redundant edge removed, containment edges exempt with a removal condition.
+Status: classification complete; (v) done, (iv) decided by item L, (iii) done except two test-fixture sites (rule below), (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is designed in [remote-task-control.md](remote-task-control.md) and waits for the `LocalWorker` placement to retire. Family B classified: one redundant edge removed, containment edges exempt with a removal condition.
 Principles: P5 (interface segregation, construction-time injection) and P6
 (errors are values, classified once) of the architecture plan.
 
@@ -131,6 +131,16 @@ Either remedy touches V0's run paths and the Family B registry.
 **Decision (user, 2026-10-31).** Remedy (a), the first one above, is the final
 design and lands with package G (plan v5, V9). Until then, remedy (c) converges
 the late binding into one typed value.
+
+**Remedy (a), designed.** [remote-task-control.md](remote-task-control.md)
+(Q1-Q3) makes it concrete: the `RegisteredWorker` placement already builds the
+application over `WorkerPlacedSessions` (Dispatch queue, committed reads,
+frozen projections) with no executor. Remedy (a) is therefore the retirement
+of the `LocalWorker` placement: the co-located executor becomes an in-process
+registered Worker. Package G is its prerequisite, because a claimed Worker
+must run BackgroundTask before the co-located path can become one. The removal
+condition of `SessionApplicationBinding` is that no `LocalWorker` placement
+remains.
 
 **Remedy (c), done.** `SessionApplicationBinding`
 (`awaken-session-execution-contract`, `application_binding.rs`) is the one late
@@ -284,7 +294,7 @@ quoted item; line numbers drift.
 | `crates/server/awaken-session-mcp/src/mcp_relay.rs` | `Weak<` ×1 | background server lifetime: the process MCP relay admits routes only while the root authority lives; it must not keep the Host alive |
 | `crates/server/awaken-session-realization/src/execution_authority.rs` | `Weak<` ×2 | captured authorization: a later effect fails closed once the installed Sessions are gone |
 | `crates/server/awaken-session-realization/src/session_realizations.rs` | `Weak<` ×1 | the one constructor of the captured authorization handle above |
-| `crates/contract/awaken-session-execution-contract/src/application_binding.rs` | `SessionApplicationBinding`: `Weak<` ×2 and its one `OnceLock` | the one late binding of Family A: the executor calls back into the application that launches Runs through it, so the composition root completes it after building the application, and it must not keep that application alive. Remove when package G lands remedy (a): the application starts Runs only through the dispatch queue and reads only committed state |
+| `crates/contract/awaken-session-execution-contract/src/application_binding.rs` | `SessionApplicationBinding`: `Weak<` ×2 and its one `OnceLock` | the one late binding of Family A: the executor calls back into the application that launches Runs through it, so the composition root completes it after building the application, and it must not keep that application alive. Remove when the `LocalWorker` placement is retired (remedy (a), [remote-task-control.md](remote-task-control.md) Q3): the application then starts Runs only through the dispatch queue and reads only committed state |
 | `crates/server/awaken-session-run-delivery/src/background.rs` | `Weak<` ×1 | interning cache: one shared admission per (thread, task) while some Run holds it |
 | `crates/server/awaken-session-run-delivery/src/completion.rs` | `Weak<` ×1 | drop guard: removing a waiter must not keep the completion registry alive |
 | `crates/worker/awaken-sandbox-local/src/provider/execution.rs` | `Weak<` ×1 | observer: the execution scope signals live child processes it does not own |

@@ -324,13 +324,11 @@ Background heartbeat checkpoints and prepared Run/Outcome admission with the
 phase-failure journal are on main and await the batched verification. The
 heartbeat task-move proof fixture remains unexecuted, and earlier Kani timeouts
 remain inconclusive. Worker
-BackgroundTask still needs per-Run private Task authority, explicit
-version/codec admission, claim-bound StepStart, independent Task tenure and
-durable-result ACK transport. A private carrier/history projection and
-request-bound context adaptation exist only as uncommitted candidates; retained
-attention success alone cannot release background activity or prove durable
-completion. The remote BackgroundTask refusal guards stay until that path is
-qualified.
+BackgroundTask is designed in [remote-task-control.md](remote-task-control.md):
+the Task codec, private Run input, codec demand, acknowledged Task attention
+and the Coordinator route are implemented; claimed committed reads and the
+Worker's attention client remain. The remote BackgroundTask refusal guard
+stays until that path is complete.
 
 ## Embedded Runtime SDK Boundary
 
