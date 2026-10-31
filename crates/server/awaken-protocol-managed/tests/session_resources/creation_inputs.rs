@@ -305,3 +305,122 @@ async fn both_create_routes_pin_exact_credentials_and_profiled_drift_stays_after
         "F7 existing Profiled root unchanged"
     );
 }
+
+/// The ordering oracle for one Session id: the effects a root committed before
+/// Resource finalization leaves behind. The store exposes no root removal, so
+/// a root written first and compensated later is still visible here.
+async fn creation_effects(
+    sessions: &SqliteManagedSessionRepository,
+    session_id: &str,
+) -> Vec<&'static str> {
+    use awaken_session_contract::LifecycleOutbox as _;
+    let mut effects = Vec::new();
+    if sessions.get(&SessionId::from(session_id)).await.is_ok() {
+        effects.push("root");
+    }
+    if sessions
+        .pending_lifecycle()
+        .await
+        .expect("lifecycle outbox is readable")
+        .iter()
+        .any(|fact| fact.object_id == session_id)
+    {
+        effects.push("lifecycle fact");
+    }
+    effects
+}
+
+/// | Rule | route | finalization | Effect |
+/// |---|---|---|---|
+/// | O1 | requested | credential pinning fails | no root, no atomic lifecycle fact, no Runtime |
+/// | O2 | Profiled | credential pinning fails | same as O1 |
+/// | NC | requested | a root committed before the check | the same oracle reports root and fact |
+#[tokio::test]
+async fn failed_finalization_commits_no_root_or_lifecycle_fact_on_either_route() {
+    for profiled in [false, true] {
+        let runtime = AcceptingFake::default();
+        let prepared = runtime.prepared.clone();
+        let sessions = support::session_repository("creation ordering store").await;
+        let catalog = resource_registry().await;
+        let ingress = Arc::new(CountingCredentialMaterialIngress::default());
+        let state = Arc::new(
+            {
+                let session_fixture_clock = awaken_time::system_clock();
+                awaken_protocol_managed_testkit::managed_state_from_parts(
+                    std::sync::Arc::new(runtime),
+                    None,
+                    sessions.clone(),
+                    awaken_protocol_managed_testkit::environment_fixture(
+                        session_fixture_clock.clone(),
+                    )
+                    .execution,
+                    session_fixture_clock,
+                    std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                )
+            }
+            .with_resource_registry(catalog)
+            .with_credential_material_ingress(ingress.clone()),
+        );
+        let (app, uri, body) = if profiled {
+            (
+                profiled_router(state.clone(), "default"),
+                "/v1/awaken/sessions",
+                profiled_request(
+                    "ordering-profiled-failure",
+                    "a",
+                    Some(awaken_credential_contract::CredentialRef {
+                        id: "external-ordering-source".into(),
+                        revision: 1,
+                    }),
+                ),
+            )
+        } else {
+            (
+                router(state.clone()),
+                "/v1/sessions",
+                json!({
+                    "agent": "a", "resources": [{"type": "github_repository", "url": REMOTE,
+                        "mount_path": "/workspace/finalized", "authorization_token": "ordering-fixture-token"}] // awaken-allow(secret):
+                }),
+            )
+        };
+        call(&app, "POST", uri, Some(body))
+            .await
+            .expect(StatusCode::BAD_REQUEST);
+        let session_id = if profiled {
+            "ordering-profiled-failure".to_string()
+        } else {
+            let repository_id = ingress.sources.lock().unwrap()[0]
+                .strip_suffix(":credential")
+                .unwrap()
+                .to_string();
+            awaken_session_application::SessionRepositoryOwner::from_repository_id(&repository_id)
+                .unwrap()
+                .session_id()
+                .to_string()
+        };
+        assert_eq!(
+            creation_effects(&sessions, &session_id).await,
+            Vec::<&str>::new(),
+            "O1/O2 profiled={profiled}"
+        );
+        assert!(prepared.lock().unwrap().is_empty(), "O1/O2 no Runtime");
+
+        // NC: a root that is committed is visible to the same oracle, so a
+        // root-before-finalization ordering cannot pass O1/O2.
+        let created = call(
+            &router(state),
+            "POST",
+            "/v1/sessions",
+            Some(json!({ "agent": "a" })),
+        )
+        .await
+        .expect(StatusCode::OK);
+        let committed = created["id"].as_str().expect("created id");
+        assert_eq!(
+            creation_effects(&sessions, committed).await,
+            ["root", "lifecycle fact"],
+            "NC profiled={profiled} the oracle observes a committed root"
+        );
+    }
+}

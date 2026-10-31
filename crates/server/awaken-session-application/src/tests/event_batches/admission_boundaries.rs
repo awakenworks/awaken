@@ -421,3 +421,5 @@ async fn interrupt_of_unknown_child_target_is_rejected_without_effect() {
         "an invalid target appends no fact"
     );
 }
+
+mod receipt_identity;

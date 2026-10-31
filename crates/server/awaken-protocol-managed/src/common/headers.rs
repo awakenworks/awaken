@@ -78,7 +78,7 @@ pub const LEGACY_TUNNELS_BETA: &str = ManagedCapability::TunnelsLegacy.beta();
 pub const TUNNELS_BETA: &str = ManagedCapability::TunnelsCurrent.beta();
 
 #[must_use]
-pub fn has_capability(headers: &HeaderMap, capability: ManagedCapability) -> bool {
+pub(crate) fn has_capability(headers: &HeaderMap, capability: ManagedCapability) -> bool {
     headers
         .get_all("anthropic-beta")
         .iter()

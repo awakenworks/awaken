@@ -623,3 +623,7 @@ fn required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_ad
         "tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration",
     );
 }
+
+mod frozen_tools;
+mod instance_lifecycle;
+mod rejection_precedence;

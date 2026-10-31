@@ -894,3 +894,6 @@ mod private_content_tests;
 
 #[cfg(all(test, feature = "test-support"))]
 mod rebuild_interruption_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+mod source_authorization_tests;

@@ -193,3 +193,6 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
         "F4/E3 a non-advancing cursor grants zero purge authority"
     );
 }
+
+mod backend_recovery;
+mod single_path;
