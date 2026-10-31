@@ -251,7 +251,7 @@ mod tests {
         assert!(
             matches!(
                 authority.0.try_lock(),
-                Err(std::sync::TryLockError::WouldBlock)
+                Err(awaken_sync::TryLockFailure::WouldBlock)
             ),
             "W10"
         );
