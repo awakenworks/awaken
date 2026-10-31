@@ -46,6 +46,9 @@ pub(crate) fn provision_repo_at(
 ) -> Result<(), SandboxError> {
     let dest = std::path::absolute(jailed_at(root, logical)?)
         .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
+    let root_path = std::path::absolute(root.root())
+        .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
+    contained_destination_parent(&root_path, &dest, false)?;
     let destination_state =
         repository_destination_state(&dest, url, initial_branch, initial_commit)?;
     match destination_state {
@@ -73,8 +76,7 @@ pub(crate) fn provision_repo_at(
             dest.display()
         ))
     })?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
+    contained_destination_parent(&root_path, &dest, true)?;
     let stage_guard = repository_stage(parent)?;
     let stage = stage_guard.path().to_path_buf();
     let realization = (|| {
@@ -183,6 +185,64 @@ enum RepositoryDestinationState {
     Exact,
     CompleteDifferent,
     Incomplete,
+}
+
+/// Every ancestor of the Repository destination below the sandbox root must be
+/// a real directory: a link there would stage and publish the clone outside
+/// the root. Existing components are checked without following links; with
+/// `create`, a missing component is created one level at a time and checked
+/// again, so a link raced into its place is refused rather than followed.
+fn contained_destination_parent(
+    root: &Path,
+    destination: &Path,
+    create: bool,
+) -> Result<(), SandboxError> {
+    let escape = |at: &Path| {
+        SandboxError::invalid(format!(
+            "repository destination ancestor `{}` is not a directory inside the sandbox root",
+            at.display()
+        ))
+    };
+    let relative = destination
+        .strip_prefix(root)
+        .map_err(|_| escape(destination))?;
+    let Some(parent) = relative.parent() else {
+        return Err(escape(destination));
+    };
+    if create {
+        std::fs::create_dir_all(root)
+            .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
+    }
+    let mut current = root.to_path_buf();
+    for component in parent.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(escape(&current));
+        };
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(escape(&current)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(SandboxError::backend("provision_repo_at", error));
+                    }
+                }
+                let metadata = std::fs::symlink_metadata(&current)
+                    .map_err(|error| SandboxError::backend("provision_repo_at", error))?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(escape(&current));
+                }
+            }
+            Err(error) => return Err(SandboxError::backend("provision_repo_at", error)),
+        }
+    }
+    Ok(())
 }
 
 fn repository_destination_state(
