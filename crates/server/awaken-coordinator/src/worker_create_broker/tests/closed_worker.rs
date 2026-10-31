@@ -304,7 +304,11 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
         let activation = awaken_dispatch_testkit::worker_http::activation("closed-creator");
         let run = activation.run_id.clone();
         store
-            .enqueue(awaken_dispatch::RunDispatch::new(activation))
+            .enqueue(
+                // A Worker-bound Native Run publishes the journal codec it
+                // requires; an unmarked request is never Worker-claimable.
+                awaken_dispatch::RunDispatch::new(activation).with_worker_codec_requirements(),
+            )
             .await
             .unwrap();
         let old = awaken_dispatch::RunClaim::from(
