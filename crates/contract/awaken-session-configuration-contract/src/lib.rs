@@ -1,8 +1,4 @@
 //! Immutable Session configuration and its resolution ports.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod accepted_agent;
 pub use accepted_agent::{

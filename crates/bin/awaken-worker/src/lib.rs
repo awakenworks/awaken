@@ -27,10 +27,6 @@
 //! the injected [`InferenceExecutorMaterializer`]. The host's inert executor
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_provisioning_contract::{SandboxProvider, SessionSandbox};
 use futures_util::FutureExt as _;

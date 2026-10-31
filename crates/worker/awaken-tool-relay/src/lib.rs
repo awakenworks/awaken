@@ -15,10 +15,6 @@
 //! (ADR-0044 D2). Transport and topology are out of scope here — the crate is
 //! written against an abstract `AsyncRead + AsyncWrite` channel, and
 //! `awaken-connection-plan` (ADR-0045) chooses how the two ends meet.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod executor;
 mod hand_executor;

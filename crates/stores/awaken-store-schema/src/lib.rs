@@ -12,10 +12,6 @@
 //! the migrator's dialect-neutral tokens, so the *same* bundle drives both the
 //! Postgres and SQLite runners (both on `sqlx`). This crate names no SQL
 //! driver — it owns the schema, the backends own the runner.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 

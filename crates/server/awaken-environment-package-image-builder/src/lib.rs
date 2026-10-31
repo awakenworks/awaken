@@ -11,10 +11,6 @@
 //! Coordinator adapter from an exact Environment build demand to the existing
 //! container package-image provisioner. It owns no job state, lease, cache, or
 //! registry client; those remain in their authoritative components.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 

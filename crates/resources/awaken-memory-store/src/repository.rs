@@ -100,6 +100,13 @@ pub(crate) fn stored_now_nanos(clock: &dyn WallClock) -> Result<i64, MemErr> {
         .map_err(|_| MemErr::Storage("Memory timestamp exceeds SQL nanosecond range".into()))
 }
 
+/// The read side of [`stored_now_nanos`]: a stored timestamp was written from
+/// a non-negative clock read, so its bits are the nanosecond count.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn stored_unix_nanos(stored: i64) -> u128 {
+    u128::from(stored.cast_unsigned())
+}
+
 /// Validate a memory path: absolute, non-root, no `//`, no `.`/`..` segment, no
 /// control chars, ≤ [`MAX_PATH_BYTES`].
 #[cfg(any(

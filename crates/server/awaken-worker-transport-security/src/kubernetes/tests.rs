@@ -150,7 +150,7 @@ async fn one_pod_authenticates_only_its_container_instance_incarnations() {
     for identity in [
         WorkerIdentity::new(pod().worker_id(), "new-random-boot", 1),
         WorkerIdentity::new(pod().worker_id(), "another-pod-uid", 1),
-        WorkerIdentity::new(pod().worker_id(), &"a".repeat(129), 1),
+        WorkerIdentity::new(pod().worker_id(), "a".repeat(129), 1),
         WorkerIdentity::new(pod().worker_id(), "0f3a9c", 0),
     ] {
         assert!(

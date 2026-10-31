@@ -2,10 +2,6 @@
 //! ports, the durable tool-call batch, and the tool-discovery input.
 //!
 //! Consumers name these types and ports directly through this defining crate.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod tool;
 pub mod tool_batch;

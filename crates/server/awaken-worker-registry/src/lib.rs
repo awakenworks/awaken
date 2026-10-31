@@ -3,10 +3,6 @@
 //! Memory, SQLite, and PostgreSQL differ only in atomic storage mechanics. Every
 //! incarnation/generation/state decision is delegated to `transition`, preventing
 //! a backend-specific second implementation of worker replacement semantics.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod codec;
 #[cfg(any(test, feature = "test-support"))]

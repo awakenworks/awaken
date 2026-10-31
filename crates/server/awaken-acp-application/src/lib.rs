@@ -9,10 +9,6 @@
 //! ```compile_fail
 //! use awaken_acp_application::HostAcpAdapters;
 //! ```
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_acp_contract::{AcpLocalCredentialBinding, AcpPublicationCapability};
 use awaken_credential_contract::CredentialRef;

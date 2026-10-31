@@ -8,10 +8,6 @@
 //! drives an idempotent physical adapter behind a fenced durable intent. Local
 //! embedding and cloud deployment therefore share the same state machine while
 //! supplying different repository/guard/reclaimer adapters.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 

@@ -820,7 +820,10 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 panic!("S3 exact local exit")
             };
             assert_eq!(receipt.binding(), &bound);
-            assert_eq!(receipt.evidence_ref(), "7");
+            // The evidence is the exact container exit (container-instance
+            // incarnations), not the Pod resource version.
+            let exact_exit = r#"k8s-container-exit:v1:[{"name":"worker","container_id":"containerd://exact","exit_code":137,"reason":"Error","finished_at":"2026-09-09T00:01:00Z"}]"#;
+            assert_eq!(receipt.evidence_ref(), exact_exit);
             let persisted = directory
                 .incarnation(&worker)
                 .await
@@ -828,7 +831,11 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 .unwrap()
                 .process_exit
                 .unwrap();
-            assert_eq!(persisted.evidence_ref(), "7", "S4 commit before release");
+            assert_eq!(
+                persisted.evidence_ref(),
+                exact_exit,
+                "S4 commit before release"
+            );
             assert_eq!(facts.updates.lock().unwrap().len(), 1, "S4 one release");
             assert!(
                 !facts.pod.lock().unwrap().1["metadata"]["finalizers"]

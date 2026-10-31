@@ -9,10 +9,6 @@
 //! arm, so the same brain/hand code runs from a laptop to a fleet. (A brokered
 //! topology is not modeled until a broker transport ships — a variant with no
 //! producer would only mislead.)
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 mod factory;
 mod multiplex;
 mod plan;

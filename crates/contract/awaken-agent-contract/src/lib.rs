@@ -1,9 +1,5 @@
 // @formal entrypoint tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
 //! Agent-domain contract for runtime truth, commits, facts, and neutral events.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod acp;
 pub mod agent;

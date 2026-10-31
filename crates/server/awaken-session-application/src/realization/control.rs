@@ -3,7 +3,6 @@
 // @formal evidence session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 //! Durable realization and terminal-cleanup control state machine.
 
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use std::sync::Arc;

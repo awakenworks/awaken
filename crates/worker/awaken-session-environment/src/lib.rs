@@ -8,10 +8,6 @@
 //! ([`SandboxEnvironment::into_session_environment`],
 //! [`SandboxEnvironmentProvider::into_provider_roles`]). The Runtime Host
 //! never links this crate outside its own tests.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod agent_sandbox;
 mod container_files;

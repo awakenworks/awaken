@@ -22,10 +22,6 @@
 //! Startup reads only the global commit fence. Coordinator opens a Thread's
 //! process-local execution view on demand from one consistent recovery snapshot;
 //! durable event, lifecycle and policy reads query committed SQL directly.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 #![cfg_attr(
     not(test),
     deny(

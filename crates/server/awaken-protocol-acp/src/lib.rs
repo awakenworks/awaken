@@ -19,10 +19,6 @@
 //! converge through the same projection + appender boundary. The agent process
 //! runs OUTSIDE us on a `tool_transparent` tier — its own syscalls are OS-jailed,
 //! not routed through our tool layer.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use async_trait::async_trait;
 #[cfg(feature = "real-acp")]

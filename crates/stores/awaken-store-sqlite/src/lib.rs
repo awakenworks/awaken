@@ -27,10 +27,6 @@
 //! synchronous read ports are served from an in-memory projection rebuilt from
 //! the log on construction (durable across restart) and advanced in lockstep
 //! with each commit — never an independent authority.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 #![cfg_attr(
     not(test),
     deny(

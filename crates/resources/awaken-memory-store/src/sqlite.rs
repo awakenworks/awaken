@@ -78,7 +78,7 @@ async fn migrate_pool(pool: &EmbeddedPool) -> Result<(), StoreError> {
 
 use crate::repository::{
     ConditionalDeleteAdmission, HeadUpdateAdmission, rename_replace_identity, stored_now_nanos,
-    under_prefix, validate_path, validate_size,
+    stored_unix_nanos, under_prefix, validate_path, validate_size,
 };
 use crate::{
     MemErr, Memory, MemoryActor, MemoryContentPurge, MemoryCopyConflictPreservation,
@@ -198,8 +198,8 @@ fn row_memory(
         path,
         content_sha256: sha,
         version: domain_version(version)?,
-        created_unix_nanos: created as u128,
-        updated_unix_nanos: updated as u128,
+        created_unix_nanos: stored_unix_nanos(created),
+        updated_unix_nanos: stored_unix_nanos(updated),
     })
 }
 
@@ -262,9 +262,9 @@ fn row_version(row: VersionRow) -> Result<MemoryVersion, MemErr> {
         operation: parse_operation(&operation)?,
         path,
         content,
-        created_unix_nanos: created as u128,
+        created_unix_nanos: stored_unix_nanos(created),
         created_by: actor(created_by_json)?,
-        redacted_unix_nanos: redacted.map(|value| value as u128),
+        redacted_unix_nanos: redacted.map(stored_unix_nanos),
         redacted_by: actor(redacted_by_json)?,
     })
 }
@@ -318,7 +318,7 @@ async fn append_version(
         operation: append.operation,
         path: append.path.to_string(),
         content: append.content.map(str::to_string),
-        created_unix_nanos: append.created as u128,
+        created_unix_nanos: stored_unix_nanos(append.created),
         created_by: append.actor.cloned(),
         redacted_unix_nanos: None,
         redacted_by: None,
@@ -453,7 +453,7 @@ impl SqliteMemoryRepository {
                     content_sha256: sha,
                     content_size: u64::try_from(size).map_err(mem_err)?,
                     version: domain_version(version)?,
-                    updated_unix_nanos: updated as u128,
+                    updated_unix_nanos: stored_unix_nanos(updated),
                 })
             })
             .collect::<Result<Vec<_>, MemErr>>()
@@ -566,8 +566,8 @@ impl SqliteMemoryRepository {
                 path,
                 content_sha256: sha,
                 version: 1,
-                created_unix_nanos: now as u128,
-                updated_unix_nanos: now as u128,
+                created_unix_nanos: stored_unix_nanos(now),
+                updated_unix_nanos: stored_unix_nanos(now),
             })
         })
         .await
@@ -699,8 +699,8 @@ impl SqliteMemoryRepository {
                 path: to,
                 content_sha256: sha,
                 version: next_domain_version(version)?,
-                created_unix_nanos: created as u128,
-                updated_unix_nanos: now as u128,
+                created_unix_nanos: stored_unix_nanos(created),
+                updated_unix_nanos: stored_unix_nanos(now),
             })
         })
         .await
@@ -904,7 +904,7 @@ impl SqliteMemoryRepository {
                 .await
                 .map_err(mem_err)?;
                 version.content = None;
-                version.redacted_unix_nanos = Some(redacted as u128);
+                version.redacted_unix_nanos = Some(stored_unix_nanos(redacted));
                 version.redacted_by = actor.clone();
             }
             tx.commit().await.map_err(mem_err)?;
@@ -1102,8 +1102,8 @@ impl SqliteMemoryRepository {
                 path: requested_path,
                 content_sha256: new_sha,
                 version: next_domain_version(version)?,
-                created_unix_nanos: created as u128,
-                updated_unix_nanos: now as u128,
+                created_unix_nanos: stored_unix_nanos(created),
+                updated_unix_nanos: stored_unix_nanos(now),
             })
         })
         .await

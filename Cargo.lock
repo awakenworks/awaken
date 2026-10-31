@@ -3616,6 +3616,7 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
+ "awaken-worker-contract",
  "serde_json",
  "thiserror",
  "tokio",

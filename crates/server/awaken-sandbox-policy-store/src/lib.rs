@@ -2,10 +2,6 @@
 // @formal reason: This source implements the repository-controlled permission product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Durable SandboxExecutionPolicy versions.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod expanded_schema;
 

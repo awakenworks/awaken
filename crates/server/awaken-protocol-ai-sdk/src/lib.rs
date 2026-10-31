@@ -10,10 +10,6 @@
 //! It shares nothing with the Managed Agents adapter above the neutral port: the
 //! same host can back both, so an AI SDK frontend and a Managed backend interact
 //! on the same thread, but their wire types stay one adapter each.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod encoder;
 pub mod org_admission;

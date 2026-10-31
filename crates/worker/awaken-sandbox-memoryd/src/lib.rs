@@ -9,10 +9,6 @@
 //!
 //! On Linux, the `fuse` feature (default) gates the fuser-backed mount ([`fuse`]);
 //! the pure helpers and copy fallback build on every platform.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeMap;
 

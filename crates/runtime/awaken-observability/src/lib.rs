@@ -18,10 +18,6 @@
 //!
 //! The spans themselves live in the crates they describe (via `#[instrument]`); this
 //! crate never emits domain spans, only owns the exporter and propagation wiring.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod config;
 mod http;

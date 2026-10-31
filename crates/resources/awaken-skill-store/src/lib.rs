@@ -5,10 +5,6 @@
 //! Runtime and HTTP adapters consume the same truth; there is no process-local
 //! version registry beside it. Authorization stays outside this crate: operations
 //! receive an already-trusted Workspace id and enforce only intrinsic ownership.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 #[cfg(any(test, feature = "test-support"))]
 use awaken_sync::LeafLock;

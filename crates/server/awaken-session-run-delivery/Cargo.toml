@@ -20,6 +20,7 @@ separation = "coordinator-side"
 awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
+awaken-worker-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-session-application-contract.workspace = true

@@ -1,10 +1,10 @@
 // @formal entrypoint assembly_role.release_consumption_requires_exact_artifact_profile_and_completed_proofs
 // @formal entrypoint assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 #[cfg(feature = "standalone-release-admission")]
+#[expect(
+    unreachable_pub,
+    reason = "the standalone binary compiles the library's public release_admission module privately"
+)]
 mod release_admission;
 
 #[cfg(not(feature = "standalone-release-admission"))]

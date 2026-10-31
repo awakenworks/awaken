@@ -12,10 +12,6 @@
 //! Consumers: the CLI's process stores and installation binding, the Worker's
 //! host and container realization namespace, and the scenario host. All pass
 //! the resolved coordinate to the Runtime Host as a value.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::io;
 use std::path::Path;

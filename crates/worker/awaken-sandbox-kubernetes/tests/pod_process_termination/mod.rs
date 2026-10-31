@@ -178,7 +178,7 @@ async fn stop_and_observe(
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             match stopper.request_stop(binding).await {
-                Ok(PodProcessTermination::Observed(receipt)) => break receipt,
+                Ok(PodProcessTermination::Observed(receipt)) => break *receipt,
                 Ok(PodProcessTermination::Unknown) => {}
                 Err(error) => last_error = Some(error.to_string()),
             }

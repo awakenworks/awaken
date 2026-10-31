@@ -11,10 +11,6 @@
 //! secrets already resolved — this crate holds only signing, the event shape, and
 //! delivery, no persistence. [`lifecycle`] adapts it to the Session lifecycle
 //! outbox: it implements that outbox's delivery port over committed facts.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod dispatch;
 mod event;

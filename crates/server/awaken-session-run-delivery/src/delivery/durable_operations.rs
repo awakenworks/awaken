@@ -17,7 +17,7 @@ use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchMaintenance as _, DispatchReads as _, DispatchState,
     DispatchSummary,
 };
-use awaken_dispatch_execution::durable_control::DurableRunControl;
+use awaken_dispatch_execution::durable_control::{DurableRunControl, RunResidence};
 use awaken_dispatch_execution::{AdmissionError, LiveRunControlError};
 use awaken_session_execution_contract::{
     ApplicationError, DurableDispatchStatus, DurableRunOperations,

@@ -14,10 +14,6 @@
 //! in `awaken-time`, the Runtime SDK's depth-0 clock leaf. The fence kernel
 //! depends on it for `Expiry` and `UtcTime`; nothing else, so the SDK can use
 //! the clock without linking the fence.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod authority;
 pub mod fence;

@@ -1,8 +1,4 @@
 //! Coordinator application for durable Environment image realization.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod application;
 mod durable;

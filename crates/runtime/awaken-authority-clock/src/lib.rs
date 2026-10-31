@@ -12,10 +12,6 @@
 //! physical cutoff that is its whole purpose. It is unrelated to the injected
 //! wall clock that stamps observation times, and its values are meaningful only
 //! during the current boot — never durable authority.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_lease_contract::authority::AuthorityProofStarted;
 

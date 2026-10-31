@@ -162,6 +162,7 @@ async fn open_sse_is_woken_only_by_the_managed_fanout_and_never_duplicates_a_fra
                 traceparent: None,
                 execution_requirements: Default::default(),
                 replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+                private_task_input: None,
             },
             Some(Arc::new(NoopSink)),
         )

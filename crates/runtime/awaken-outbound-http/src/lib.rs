@@ -5,10 +5,6 @@
 //! redirects, closing DNS-rebinding and redirect-based SSRF paths. Protocol and
 //! webhook adapters own payloads/retries; this crate owns only transport safety
 //! and the common HTTP retry classification.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;

@@ -7,10 +7,6 @@
 //! The Managed protocol adapter owns wire projection. This inward contract keeps
 //! storage independent of that wire vocabulary while making restart recovery and
 //! multi-replica schedule claims explicit.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use async_trait::async_trait;
 mod model;

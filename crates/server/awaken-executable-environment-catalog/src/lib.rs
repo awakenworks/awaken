@@ -1,9 +1,5 @@
 // @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
 //! Coordinator-owned projection of Control's executable Environment revisions.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLockReadGuard};

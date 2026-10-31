@@ -107,6 +107,14 @@ where
         .with_session_run_replacement(command.replacement);
     // The Task holder's observations ride privately on this row to the
     // claiming process's StepStart; they are already in the command identity.
+    // The row then demands the Task control codec of any Worker that claims
+    // it, as `RunDispatch::validate_worker_codec_requirements` checks.
+    if command.private_task_input.is_some() {
+        request
+            .placement
+            .required_capabilities
+            .insert(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY.to_owned());
+    }
     request.private_task_input = command.private_task_input;
     let worker_bound = !command
         .execution_requirements

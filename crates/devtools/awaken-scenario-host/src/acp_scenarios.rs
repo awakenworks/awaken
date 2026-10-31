@@ -1,6 +1,5 @@
 //! ACP execution Scenario platforms and their deterministic fixtures.
 
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Official-wire ACP agent that asks the host to authorize one mutating tool.

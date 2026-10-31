@@ -2,10 +2,6 @@
 //! `awaken`). It hosts the roles a sandbox pod runs: the ACP `bridge` (stdio<->TCP
 //! for a process-as-container CLI) and `hand` (the neutral tool-execution endpoint).
 //! Kept as a lib so each role is unit-testable without spawning the binary.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod bridge;
 

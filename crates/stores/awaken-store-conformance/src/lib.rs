@@ -15,10 +15,6 @@
 //! reads, committed-event order, and cursor paging (G1/G13). Backends call these
 //! from their own test crate, each with a freshly constructed store, so the suite
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod dream_store;
 pub mod env_registry;

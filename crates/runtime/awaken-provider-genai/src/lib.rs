@@ -6,10 +6,6 @@
 //! This adapter is the only crate allowed to name the model SDK. It maps the
 //! neutral `ChatRequest`/`ChatResponse` onto `genai` types and routes on the
 //! selected `ModelBinding.model_ref` — it never picks a different model (G22).
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::time::Duration;
 

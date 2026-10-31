@@ -34,10 +34,6 @@
 //!
 //! `ToolOutput.state` (staged state commands) is meaningful only inside a run
 //! and is dropped at this boundary.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod export;
 pub mod http;

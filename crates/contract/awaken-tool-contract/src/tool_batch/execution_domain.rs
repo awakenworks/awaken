@@ -3,7 +3,6 @@
 //! Pre-entry effect domains and their immutable canonical history.
 //! This extends ToolBatch; it owns no persistence or execution path.
 
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
 /// Immutable resource provenance label supplied by trusted composition. Runtime

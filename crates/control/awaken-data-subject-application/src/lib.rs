@@ -18,10 +18,6 @@
 //! The neutral `DataSubjectId` / `Purpose` / `ContentCapture` / `ErasureReceipt`
 //! vocabulary is reused from `awaken-runtime-contract`; the Anthropic
 //! `UserProfile` wire shape is a *projection* over this aggregate (Slice 6).
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

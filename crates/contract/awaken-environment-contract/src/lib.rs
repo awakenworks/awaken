@@ -6,10 +6,6 @@
 //! packages, networking, and an exact sandbox-policy reference. Coordinator
 //! receives an executable projection through a registration port; it never opens
 //! this registry. The in-memory and durable adapters live in `awaken-env-store`.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -3,10 +3,6 @@
 //! exact revision history survive restart; Coordinator and Worker see only the
 //! separately registered executable projection. SQLite and PostgreSQL share one
 //! portable migration bundle.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

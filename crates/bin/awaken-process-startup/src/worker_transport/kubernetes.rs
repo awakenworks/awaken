@@ -355,7 +355,6 @@ async fn registry_releases_unregistered(
     worker_id: &str,
     last_incarnation: &str,
 ) -> Result<bool, ApplicationError> {
-    use awaken_worker_contract::WorkerCurrentSource as _;
     let current = directory
         .current(worker_id)
         .await

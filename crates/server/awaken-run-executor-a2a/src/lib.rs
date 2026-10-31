@@ -21,10 +21,6 @@
 //! port; tests may substitute an anonymous or scripted transport.
 //! Each outbound message first commits a versioned Prepared operation to the
 //! existing Run StateCell; only the exact returned task advances it to Accepted.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 

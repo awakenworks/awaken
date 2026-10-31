@@ -9,10 +9,6 @@
 //!
 //! Like the other protocol adapters, it shares nothing above the neutral port and
 //! the neutral projection seam, so the same host backs it on the same thread.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod encoder;
 pub mod org_admission;

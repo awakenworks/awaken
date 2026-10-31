@@ -1,10 +1,6 @@
 //! The Session ↔ execution boundary: the Session roles execution calls, coordination
 //! and Run admission, and the one late binding from execution back to the Session
 //! application.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod application_binding;
 mod claimed_coordination;

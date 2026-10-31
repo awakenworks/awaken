@@ -4,10 +4,6 @@
 //! The values in this crate are transport commands configured from existing
 //! publication and Session projection values. They are not a second Agent model,
 //! catalog implementation, persistence API, or RPC framework.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use async_trait::async_trait;
 pub use awaken_runtime_contract::ExecutableAgentSnapshot;

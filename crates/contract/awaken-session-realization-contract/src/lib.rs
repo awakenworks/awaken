@@ -1,8 +1,4 @@
 //! Session realization commands, projections, and control ports.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod claimed_control;
 #[cfg(feature = "test-support")]

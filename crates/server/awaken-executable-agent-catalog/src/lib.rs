@@ -6,10 +6,6 @@
 //! This crate owns only the rebuildable execution projection. Control's
 //! `StoredPublication` remains authoritative and exact historical registrations
 //! remain addressable after current availability changes.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLockReadGuard, RwLockWriteGuard};

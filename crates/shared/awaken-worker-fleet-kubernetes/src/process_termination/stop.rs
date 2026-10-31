@@ -256,9 +256,7 @@ impl PodProcessStopper {
         {
             return Ok(observe(binding, pod));
         }
-        if pod.metadata.deletion_timestamp.is_none()
-            && fates.iter().any(|fate| *fate == ContainerFate::Running)
-        {
+        if pod.metadata.deletion_timestamp.is_none() && fates.contains(&ContainerFate::Running) {
             self.request_exact_delete(&binding.name, &binding.uid, pod)
                 .await?;
         }

@@ -5,10 +5,6 @@
 //! The `coding-agent` feature adds a fuller example: a coding agent assembled from
 //! the built-in tools, the permission gate, and `ExecutableAgentSnapshot` (see
 //! [`coding_agent`]).
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 #[cfg(feature = "coding-agent")]
 pub mod coding_agent;

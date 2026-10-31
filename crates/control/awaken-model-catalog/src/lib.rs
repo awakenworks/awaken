@@ -14,10 +14,6 @@
 //! material — only a credential *reference* is resolved elsewhere.
 
 #![forbid(unsafe_code)]
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod repo;
 

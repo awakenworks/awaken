@@ -11,10 +11,6 @@
 //!
 //! Domain components register their recurring loops here, while the outermost
 //! service host remains the sole owner of cancellation, readiness, and bounded join.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::future::Future;
 use std::mem;

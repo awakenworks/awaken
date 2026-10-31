@@ -40,10 +40,6 @@
 //! authority and Session digest. Its successful retry returns the stopped
 //! decision without sampling a clock or restoring either grant. Historical
 //! rows without a recorded stop subject cannot be attributed retroactively.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

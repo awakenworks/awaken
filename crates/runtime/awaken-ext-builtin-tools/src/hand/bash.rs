@@ -3,7 +3,6 @@
 // @formal reason: implementation, re-exported through the unchanged public catalog. Product-boundary
 // @formal reason: classification, not a formal proof of process termination.
 //! Persistent shell execution owned by the Hand toolset, with its lifecycle tests.
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};

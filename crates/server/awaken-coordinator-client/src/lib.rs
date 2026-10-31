@@ -1,9 +1,5 @@
 //! The Worker's authenticated HTTP clients of the Coordinator: dispatch queue,
 //! claimed commits, Worker lifecycle and Session control.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod claimed_commit_client;
 mod dispatch_client;

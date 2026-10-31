@@ -23,10 +23,6 @@
 //! liveness and the host decides whether to replace that server; automatic
 //! health-budget replacement is not implemented. This is distinct from the
 //! HTTP transport's existing SSE reconnect handling.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod client;
 pub mod credential;

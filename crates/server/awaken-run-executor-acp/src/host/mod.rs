@@ -796,3 +796,29 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
         )
     }
 }
+
+/// Loom's model checker needs its own mutex. This mirrors
+/// `awaken_sync::LeafLock`'s recovering acquisition, so the model runs the
+/// production critical sections unchanged.
+#[cfg(all(test, feature = "loom"))]
+mod loom_lock {
+    pub(super) struct LeafLock<T>(loom::sync::Mutex<T>);
+
+    impl<T> LeafLock<T> {
+        pub(super) fn new(value: T) -> Self {
+            Self(loom::sync::Mutex::new(value))
+        }
+
+        pub(super) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        pub(super) fn into_inner(self) -> T {
+            self.0
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
+}

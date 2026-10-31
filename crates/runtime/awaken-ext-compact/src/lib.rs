@@ -9,10 +9,6 @@
 //! Compaction is a *different* concern from memory (`awaken-ext-memory`): memory
 //! is cross-session persistence, compaction is within-session window management.
 //! They share only the aux-agent substrate.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod agent;
 pub mod backend;

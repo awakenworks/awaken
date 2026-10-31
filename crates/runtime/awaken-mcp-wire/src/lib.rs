@@ -12,10 +12,6 @@
 //! Hoisted out of `awaken-ext-mcp` when the server crate arrived, so the two
 //! directions speak one wire shape that cannot drift — the same precedent as
 //! `awaken-credential`.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 pub mod http;
 pub mod jsonrpc;

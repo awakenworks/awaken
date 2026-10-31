@@ -8,10 +8,6 @@
 //! Public protocol adapters translate their wire DTOs into the commands in this
 //! crate. Repository adapters persist opaque encodings of these application
 //! records, so neither storage nor this owner depends on Axum or Managed DTOs.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod scheduler;
 

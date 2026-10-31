@@ -156,7 +156,7 @@ pub enum PodProcessTermination {
     Unknown,
     /// Exact non-restarting container terminated. This variant is an observation,
     /// not a whole-attempt acknowledgement or proof about remote participants.
-    Observed(ObservedPodProcessExit),
+    Observed(Box<ObservedPodProcessExit>),
 }
 
 /// Subject-bound evidence minted only by authenticated observation. Private
@@ -757,11 +757,11 @@ fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
     proof.map_or(
         PodProcessTermination::Unknown,
         |(resource_version, exits)| {
-            PodProcessTermination::Observed(ObservedPodProcessExit {
+            PodProcessTermination::Observed(Box::new(ObservedPodProcessExit {
                 binding: binding.clone(),
                 resource_version,
                 exits,
-            })
+            }))
         },
     )
 }

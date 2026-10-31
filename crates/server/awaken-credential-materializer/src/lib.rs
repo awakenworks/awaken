@@ -10,10 +10,6 @@
 //! The Control Vault adapter alone rechecks the persisted source row and opens
 //! sealed bytes. Native provider execution, optional brokered inference, and
 //! ACP provisioning share this adapter so candidate routing cannot drift.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::CredentialEnvelopeValidation;

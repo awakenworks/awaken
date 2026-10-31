@@ -11,10 +11,6 @@
 //! backend — and installs them into the Host. Process roots — `awaken-worker`,
 //! `awaken-cli`'s all-in-one path, and the scenario host — call
 //! [`with_session_environment_from_deployment`].
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::Arc;
 

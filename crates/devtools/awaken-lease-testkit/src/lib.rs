@@ -5,10 +5,6 @@
 //! clock compiled into a shipped binary is one constructor away from becoming
 //! the production clock. They now live only here, in a crate that test and
 //! conformance code depend on and no shipped binary links.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

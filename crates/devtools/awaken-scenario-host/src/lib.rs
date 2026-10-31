@@ -3,10 +3,6 @@
 //! `awaken-coordinator` so the product crate carries zero mocks. It reuses the
 //! product crate's now-`pub` data-plane assembly helpers (`mount` /
 //! `mount_with_managed`) and production executors via `awaken_coordinator::`.
-#![expect(
-    unreachable_pub,
-    reason = "pending: narrow the unreachable items to pub(crate)"
-)]
 
 mod acp_gateway;
 mod acp_scenarios;

@@ -502,7 +502,10 @@ async fn restartable_stop_settles_by_container_instance_and_never_harms_a_newer_
     let fixture = Fixture::new(Fault::None);
     fixture.facts.lock().unwrap().pod = Some(retained(live.clone()));
     let binding = fixture.binding().await;
-    fixture.facts.lock().unwrap().pod = Some(decode(once));
+    // `once` inherits the Worker evidence finalizer of `retained_always`.
+    let mut unretained = once;
+    unretained["metadata"]["finalizers"] = json!(["other.example/keep"]);
+    fixture.facts.lock().unwrap().pod = Some(decode(unretained));
     let before = fixture.facts.lock().unwrap().calls.len();
     assert!(
         fixture.stopper().request_stop(&binding).await.is_err(),
