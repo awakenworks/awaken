@@ -132,7 +132,8 @@ async fn repository_error_classes_survive_application_reads_and_cas() {
 #[tokio::test]
 async fn invalid_applied_revision_is_permanent_and_never_reloaded() {
     // C1 correct next revision, C2 same revision, C3 skipped revision.
-    // E1 only C1 succeeds; E2 C2/C3 are Internal, no repair read/second CAS.
+    // E1 only C1 succeeds; E2 C2/C3 are the aggregate's typed revision
+    // refusal (the permanent Internal class), no repair read/second CAS.
     for (revision, valid) in [(1, true), (0, false), (2, false)] {
         let mut aggregate = crate::mutation::aggregate_from_snapshot(super::super::persisted(
             "revision", false, "idle",
@@ -160,9 +161,21 @@ async fn invalid_applied_revision_is_permanent_and_never_reloaded() {
             assert_eq!(result.unwrap().committed_revision(), SessionRevision(1));
         } else {
             assert!(
-                matches!(result, Err(SessionMutationError::Internal(_))),
+                matches!(
+                    result,
+                    Err(SessionMutationError::Invalid(
+                        crate::SessionStateViolation::Aggregate(
+                            awaken_session_contract::SessionMutationValidationError::ReplacementRevisionMismatch
+                        )
+                    ))
+                ),
                 "revision={revision}"
             );
+            if let Err(error) = result {
+                let error: awaken_session_types::RunError = error.into();
+                assert_eq!(error.kind, RunErrorKind::Internal, "revision={revision}");
+                assert!(!error.is_unclassified_internal(), "revision={revision}");
+            }
         }
         assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     }
@@ -189,6 +202,18 @@ fn permanent_mutation_failures_do_not_become_retryable_domain_errors() {
     for (cause, kind) in [
         (
             SessionMutationError::Internal("same detail".into()),
+            RunErrorKind::Internal,
+        ),
+        (
+            SessionMutationError::Invalid(crate::SessionStateViolation::Aggregate(
+                awaken_session_contract::SessionMutationValidationError::ReplacementRevisionMismatch,
+            )),
+            RunErrorKind::Internal,
+        ),
+        (
+            SessionMutationError::Invalid(crate::SessionStateViolation::Budget(
+                awaken_session_contract::ManagedListPriceError::MissingModel("same detail".into()),
+            )),
             RunErrorKind::Internal,
         ),
         (

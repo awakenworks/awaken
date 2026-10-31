@@ -262,7 +262,7 @@ pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparatio
             .into(),
         ),
         SessionMutationError::Unavailable(message) => SessionPreparationError::Unavailable(message),
-        error @ SessionMutationError::Internal(_) => {
+        error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
             SessionPreparationError::Rejected(error.into())
         }
     }

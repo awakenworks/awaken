@@ -162,7 +162,7 @@ impl SessionRecoveryCandidates {
 mod mutation;
 mod recovery_sweep;
 pub use awaken_session_application_contract::SessionParticipantProvenance;
-pub use mutation::{SessionMutationError, SessionMutations, SnapshotCommit};
+pub use mutation::{SessionMutationError, SessionMutations, SessionStateViolation, SnapshotCommit};
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{
     SessionEventBatchCutoverValidationSnapshot, SessionEventBatchCutoverValidationSource,

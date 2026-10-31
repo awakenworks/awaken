@@ -101,7 +101,9 @@ impl From<awaken_session_application::SessionMutationError> for StateError {
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
             SessionMutationError::Unavailable(message) => Self::Run(RunError::unavailable(message)),
-            error @ SessionMutationError::Internal(_) => Self::Run(error.into()),
+            error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
+                Self::Run(error.into())
+            }
         }
     }
 }

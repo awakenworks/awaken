@@ -1576,7 +1576,9 @@ fn mutation_run_error(error: SessionMutationError) -> RunError {
                 .into()
         }
         SessionMutationError::Unavailable(message) => RunError::unavailable(message),
-        error @ SessionMutationError::Internal(_) => error.into(),
+        error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
+            error.into()
+        }
     }
 }
 

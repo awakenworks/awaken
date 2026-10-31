@@ -114,6 +114,20 @@ impl SnapshotCommit {
     }
 }
 
+/// A typed refusal raised inside the application by the Session aggregate or
+/// its budget ledger. Repeating the same command cannot repair it, so it is
+/// classified once, with [`SessionMutationError::Internal`]; unlike a fixed
+/// invariant message it keeps the refusal it came from.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SessionStateViolation {
+    /// The aggregate refused to validate or apply a snapshot.
+    #[error(transparent)]
+    Aggregate(#[from] awaken_session_contract::SessionMutationValidationError),
+    /// Usage could not be priced or reconciled against the frozen budget.
+    #[error(transparent)]
+    Budget(#[from] awaken_session_contract::ManagedListPriceError),
+}
+
 /// Failure returned by the Session application's one repository CAS boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionMutationError {
@@ -130,6 +144,10 @@ pub enum SessionMutationError {
     /// same command cannot repair this failure; adapters must preserve 500.
     #[error("Session mutation failed because durable state is invalid: {0}")]
     Internal(String),
+    /// The aggregate or budget ledger refused the transition: the same
+    /// permanent class as `Internal`, carrying its typed source.
+    #[error("Session mutation failed because durable state is invalid: {0}")]
+    Invalid(#[from] SessionStateViolation),
 }
 
 impl From<SessionMutationError> for awaken_session_types::RunError {
@@ -143,6 +161,9 @@ impl From<SessionMutationError> for awaken_session_types::RunError {
             SessionMutationError::Unavailable(message) => Self::unavailable(message),
             SessionMutationError::Internal(message) => {
                 Self::classified("session_application_invalid", message)
+            }
+            SessionMutationError::Invalid(violation) => {
+                Self::classified("session_application_invalid", violation.to_string())
             }
         }
     }
@@ -159,7 +180,13 @@ impl From<SessionMutationError>
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::Unavailable(detail) => Self::Unavailable(detail),
             SessionMutationError::Internal(detail) => Self::Internal(detail),
-            error @ SessionMutationError::IdempotencyMismatch => Self::Internal(error.to_string()),
+            // The serialized control failure crosses the Worker boundary as its
+            // closed class plus text; this is the one place the typed cause is
+            // rendered for it.
+            SessionMutationError::Invalid(violation) => Self::Internal(violation.to_string()),
+            SessionMutationError::IdempotencyMismatch => {
+                Self::Internal("Session idempotency key was reused with another payload".into())
+            }
         }
     }
 }
@@ -494,7 +521,7 @@ impl SessionMutations {
         let session = if transitioned {
             session
                 .into_applied_snapshot(committed_revision)
-                .map_err(|error| SessionMutationError::Internal(error.to_string()))?
+                .map_err(SessionStateViolation::from)?
         } else {
             self.repository
                 .get(&session_id)

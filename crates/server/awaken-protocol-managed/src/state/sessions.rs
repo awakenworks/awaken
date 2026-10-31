@@ -138,6 +138,11 @@ impl ManagedState {
             awaken_session_application::SessionCreationError::Internal(message) => StateError::Run(
                 awaken_session_application::SessionMutationError::Internal(message).into(),
             ),
+            awaken_session_application::SessionCreationError::Invalid(violation) => {
+                StateError::Run(
+                    awaken_session_application::SessionMutationError::Invalid(violation).into(),
+                )
+            }
         }
     }
 
