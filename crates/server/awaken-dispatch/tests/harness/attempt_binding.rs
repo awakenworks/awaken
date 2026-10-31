@@ -24,7 +24,8 @@ pub async fn bound_claim(
     store
         .enqueue(
             RunDispatch::new(super::activation_on(name, name))
-                .with_placement(PlacementRequirements::remote_required()),
+                .with_placement(PlacementRequirements::remote_required())
+                .with_worker_codec_requirements(),
         )
         .await
         .unwrap();
@@ -437,7 +438,8 @@ pub async fn assert_binding_lifecycle(
                 "logical-thread",
             ))
             .for_session(ThreadId("session-thread".into()))
-            .with_placement(PlacementRequirements::remote_required()),
+            .with_placement(PlacementRequirements::remote_required())
+            .with_worker_codec_requirements(),
         )
         .await
         .unwrap();

@@ -599,8 +599,10 @@ async fn local_claims_skip_remote_only_work(
     let local_id = run_id(ns, "local-fallback");
     store
         .enqueue_with(
-            dispatch(ns, "worker-private", "worker-private-thread")
-                .with_placement(remote_placement),
+            current_placed(
+                dispatch(ns, "worker-private", "worker-private-thread"),
+                remote_placement,
+            ),
             SubmitOptions {
                 priority: 100,
                 ..SubmitOptions::default()

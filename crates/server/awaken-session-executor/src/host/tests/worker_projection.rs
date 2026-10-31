@@ -1596,6 +1596,10 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     manifest
         .capabilities
         .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
+    // A current Worker also offers the wire codecs the reserved row requires.
+    manifest.capabilities.extend(
+        awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest().capabilities,
+    );
     let capability_fingerprint = manifest
         .fingerprint()
         .expect("R1 deterministic Worker capability fingerprint");
