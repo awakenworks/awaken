@@ -2440,7 +2440,6 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
- "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
  "awaken-session-application",
  "awaken-session-application-contract",

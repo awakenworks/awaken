@@ -2471,7 +2471,7 @@ fn merge_thread_usage_fails_closed_and_does_not_reset_a_drifted_tally() {
     // untouched (never overwrite it with a fresh, partial tally).
     use awaken_agent_contract::agent::state::{Key, MergePolicy};
     use awaken_agent_contract::audit::model_request::TokenUsage;
-    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
+    use awaken_agent_contract::thread::usage::{THREAD_USAGE_STATE_KEY, ThreadUsage};
 
     let mut store = Store::new();
     let corrupt = serde_json::json!("corrupt-not-a-usage");

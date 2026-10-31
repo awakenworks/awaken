@@ -310,7 +310,7 @@ mod tests {
         let empty = session_usage_from_thread_usage(Default::default());
         assert_eq!(empty, SessionUsage::default(), "R1/E1,E4");
 
-        let attributed = awaken_runtime_contract::llm::ThreadUsage {
+        let attributed = awaken_agent_contract::thread::usage::ThreadUsage {
             by_model: std::collections::BTreeMap::from([
                 (
                     "model-a".into(),
@@ -334,7 +334,7 @@ mod tests {
         };
 
         let one_model =
-            session_usage_from_thread_usage(awaken_runtime_contract::llm::ThreadUsage {
+            session_usage_from_thread_usage(awaken_agent_contract::thread::usage::ThreadUsage {
                 by_model: std::collections::BTreeMap::from([(
                     "model-a".into(),
                     awaken_agent_contract::audit::model_request::TokenUsage {

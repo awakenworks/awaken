@@ -314,7 +314,7 @@ async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {
             "U2 exact source error"
         );
         for tokens in [17, 29] {
-            let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
+            let mut usage = awaken_agent_contract::thread::usage::ThreadUsage::default();
             usage.record(
                 "usage-state-model",
                 awaken_agent_contract::audit::model_request::TokenUsage {
@@ -326,7 +326,7 @@ async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {
             queries.replace(Ok(vec![StateCommand::set(
                 Scope::Thread,
                 MergePolicy::Commutative,
-                awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+                awaken_agent_contract::thread::usage::THREAD_USAGE_STATE_KEY,
                 serde_json::to_value(usage).unwrap(),
             )]));
             let restarted = crate::host::session_executor(&make_host().await);
@@ -515,8 +515,8 @@ async fn child_recovery_snapshot_reuses_the_parent_commit_consistency_boundary()
                 StateCommand::set(
                     Scope::Thread,
                     MergePolicy::Commutative,
-                    awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
-                    serde_json::to_value(awaken_runtime_contract::llm::ThreadUsage {
+                    awaken_agent_contract::thread::usage::THREAD_USAGE_STATE_KEY,
+                    serde_json::to_value(awaken_agent_contract::thread::usage::ThreadUsage {
                         by_model: std::collections::BTreeMap::from([(
                             "snapshot-model".into(),
                             awaken_agent_contract::audit::model_request::TokenUsage {

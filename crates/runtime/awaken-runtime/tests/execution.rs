@@ -29,6 +29,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
@@ -38,7 +39,7 @@ use awaken_runtime_contract::delegation::{
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ModelRequestAdmission,
-    ModelRequestAdmissionRequest, ModelRequestGate, StopReason, ThreadUsage,
+    ModelRequestAdmissionRequest, ModelRequestGate, StopReason,
 };
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{

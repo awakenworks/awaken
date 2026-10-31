@@ -85,7 +85,7 @@ replaces it with the rendered text.
 |---|---|
 | `awaken-ext-goal`: `run_settlement::{RunSettlement, OutcomeRuns}`, `Controller::new(&dyn OutcomeRuns)` | breaking; inside the pending `2.0.0`, recorded in its changelog |
 | `LiveInbox` lock | `InvariantLock`. A poisoned inbox admits nothing (`Offer::Closed`, wake no-op), reads as closed and empty, and reports `version() -> Option<u64>` `None`, `EditError::Unavailable`, `WaitOutcome::Unavailable`. Session execution maps both to `LiveInboxError::Unavailable`. Breaking, inside runtime-contract `2.0.0` |
-| runtime-contract `llm::{ThreadUsage, ThreadUsageKey, THREAD_USAGE_STATE_KEY}` | removed: they forward `awaken-agent-contract::thread::usage`, and runtime-contract is in a pending major (ADR-0088 2026-10-28 deferred them to this release). Callers import the Agent owner; awaken-cloud uses none of them |
+| runtime-contract `llm::{ThreadUsage, ThreadUsageKey, THREAD_USAGE_STATE_KEY}` | removed: they forward `awaken-agent-contract::thread::usage`, and runtime-contract is in a pending major (ADR-0088 2026-10-28 deferred them to this release). Callers import the Agent owner. awaken-cloud uses none of them; awaken-flow (pinned at `f6ccb85caa`) imports `llm::ThreadUsage` once and changes that import when it moves its pin |
 | 15 SDK optional-role sites (class (iv) of [injection cleanup](injection-and-error-cleanup.md)) | kept; reasons below |
 
 ### Optional roles in the SDK API

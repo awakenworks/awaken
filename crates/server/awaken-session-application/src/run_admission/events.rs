@@ -139,8 +139,9 @@ impl crate::SessionRunAdmissions {
             &snapshot.messages,
             run_id,
         );
-        let usage =
-            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&snapshot.state);
+        let usage = awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(
+            &snapshot.state,
+        );
         Ok(SessionRunEventPage {
             session_id: session_id.to_string(),
             run_id: run_id.clone(),

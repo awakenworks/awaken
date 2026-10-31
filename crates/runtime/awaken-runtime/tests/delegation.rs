@@ -34,6 +34,7 @@ use run_input::MarkPlugin;
 mod reader_sealing;
 
 use awaken_agent_contract::audit::model_request::TokenUsage;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
@@ -42,9 +43,7 @@ use awaken_runtime_contract::delegation::{
     RunDelegationService, RunDelegations,
 };
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,

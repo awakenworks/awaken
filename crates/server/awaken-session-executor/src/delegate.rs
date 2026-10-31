@@ -667,10 +667,11 @@ mod durable_cancel_tests {
     use awaken_dispatch_contract::DispatchReads;
 
     use awaken_agent_contract::audit::model_request::TokenUsage;
+    use awaken_agent_contract::thread::usage::ThreadUsage;
     use awaken_runtime_contract::agent_bindings::{
         AgentAdvisorBinding, AgentBindings, AgentDelegateBinding, InferenceOptions, ReasoningEffort,
     };
-    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, ThreadUsage};
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolDescriptor};
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     use awaken_store_inmem::MemoryCommitCoordinator;

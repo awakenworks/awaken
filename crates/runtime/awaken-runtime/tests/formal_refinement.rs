@@ -33,6 +33,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
+use awaken_agent_contract::thread::usage::ThreadUsage;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
@@ -40,9 +41,7 @@ use awaken_runtime_contract::delegation::{
     PendingChildRunResults, RunDelegationService, RunDelegations,
 };
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage,
-};
+use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::permission::{GateDecision, GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,

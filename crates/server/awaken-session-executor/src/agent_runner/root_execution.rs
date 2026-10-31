@@ -13,10 +13,11 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::usage::ThreadUsage;
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::delegation::RunDelegationService;
-use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
+use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
