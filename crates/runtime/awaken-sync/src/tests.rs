@@ -162,7 +162,7 @@ fn e1_refusal_names_the_guarded_state_and_is_an_error() {
         let _held = lock.lock().expect("healthy");
         panic!("poison");
     });
-    let refusal = lock.lock().err().expect("poisoned");
+    let refusal = lock.lock().expect_err("poisoned");
     assert!(refusal.guarded().contains("BTreeMap"));
     let message = refusal.to_string();
     assert!(
