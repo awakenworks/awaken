@@ -25,6 +25,14 @@ const ENV: &str = "restart-lease";
 const SESSION: &str = "same-session";
 const OWNER: &str = "same-worker";
 
+/// The grant instant on the store's own clock. The store fences ack and stop
+/// on that clock (the queue is opened with the system clock), so a lease
+/// granted at the epoch would already be expired when W2's bearer acts (E4).
+fn granted_at() -> u64 {
+    use awaken_time::WallClockExt as _;
+    awaken_time::system_clock().now_ms()
+}
+
 fn record_line(access: &WorkSessionAccess) -> String {
     serde_json::json!({
         "work_id": access.work_id,
@@ -78,7 +86,7 @@ pub(super) async fn seed<Q: WorkBackend>(queue: &Q, record: &str) {
     let digest = awaken_work_store::test_session_access_digest(9301);
     queue.enqueue_session(ENV, &SESSION.into()).await.unwrap();
     queue
-        .claim_with_session_access(ENV, OWNER, "poller", 0, None, &digest)
+        .claim_with_session_access(ENV, OWNER, "poller", granted_at(), None, &digest)
         .await
         .unwrap()
         .expect("C1 claim");
@@ -106,7 +114,7 @@ pub(super) async fn assert_after_restart<Q: WorkBackend>(queue: &Q, record: &str
     queue.enqueue_session(ENV, &SESSION.into()).await.unwrap();
     let new_digest = awaken_work_store::test_session_access_digest(9302);
     queue
-        .claim_with_session_access(ENV, OWNER, "poller", 0, None, &new_digest)
+        .claim_with_session_access(ENV, OWNER, "poller", granted_at(), None, &new_digest)
         .await
         .unwrap()
         .expect("C3 claim");
