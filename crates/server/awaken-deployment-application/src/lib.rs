@@ -420,7 +420,7 @@ impl DeploymentApplication {
         validate_record(&candidate)?;
         let current_had_schedule = current.schedule.is_some();
         if !current_had_schedule && candidate.schedule.is_some() {
-            ensure_scheduled_capacity(&self.deployments.lock()?, self.scheduled_limit)?;
+            ensure_scheduled_capacity(&*self.deployments.lock()?, self.scheduled_limit)?;
         }
         candidate.updated_at = timestamp(self.clock.now_ms());
         candidate.revision = next_revision(current.revision)?;
