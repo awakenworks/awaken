@@ -6,6 +6,8 @@ use axum::http::{Request, StatusCode};
 #[cfg(feature = "kubernetes")]
 use serde_json::{Value, json};
 #[cfg(feature = "kubernetes")]
+use std::sync::Mutex;
+#[cfg(feature = "kubernetes")]
 use std::sync::atomic::AtomicUsize;
 #[cfg(feature = "kubernetes")]
 use std::time::Duration;
