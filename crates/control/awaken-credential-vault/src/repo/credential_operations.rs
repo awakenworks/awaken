@@ -1169,12 +1169,33 @@ async fn enter_prepared_credential_inner(
             .insert(slot, reference.clone());
         materials.push((reference, secret));
     }
-    let committed =
-        execute_source_mutation(before, source, materials, Some(store), repo, clock).await?;
+    let committed = execute_source_mutation(
+        before,
+        source,
+        SourceMaterialMutation::Stored { store, materials },
+        repo,
+        clock,
+    )
+    .await?;
     Ok(CredentialEntry {
         source: committed.after,
         created: true,
     })
+}
+
+/// The SecretStore participation of one source-only mutation, chosen by the
+/// command. Material is written only through its store, so a material write
+/// without its SecretStore participant cannot be expressed.
+enum SourceMaterialMutation<'a> {
+    /// Metadata only: no SecretStore participates, nothing is written or
+    /// reclaimed, and publication completes the mutation.
+    MetadataOnly,
+    /// The store writes these materials (possibly none) before publication and
+    /// reclaims the superseded ones after it.
+    Stored {
+        store: &'a dyn SecretStore,
+        materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
+    },
 }
 
 /// Execute the source-only publication envelope through the same durable
@@ -1184,16 +1205,14 @@ async fn enter_prepared_credential_inner(
 async fn execute_source_mutation(
     before: Option<CredentialSource>,
     after: CredentialSource,
-    mut materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
-    store: Option<&dyn SecretStore>,
+    material: SourceMaterialMutation<'_>,
     repo: &dyn CredentialRepo,
     clock: &dyn WallClock,
 ) -> Result<CredentialMutationIntent, CredentialError> {
-    if !materials.is_empty() && store.is_none() {
-        return Err(CredentialError::MutationConflict(
-            "credential material mutation requires its SecretStore participant".into(),
-        ));
-    }
+    let (store, mut materials) = match material {
+        SourceMaterialMutation::MetadataOnly => (None, Vec::new()),
+        SourceMaterialMutation::Stored { store, materials } => (Some(store), materials),
+    };
     let mut intent =
         CredentialMutationIntent::prepare(before, after, credential_material_now_unix_ms(clock)?)?;
     fence_material_writes(
@@ -1213,7 +1232,8 @@ async fn execute_source_mutation(
     }
 
     for (reference, material) in materials {
-        let store = store.expect("material store checked before durable begin");
+        // Only `Stored` carries materials, so a write always has its store.
+        let Some(store) = store else { break };
         if let Err(error) = persist_material_exact(store, &reference, material).await {
             // A failed put may have written bytes. External cleanup starts only
             // after exact repository CAS has made ReclaimingAbort durable. If
@@ -1497,9 +1517,15 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
             }
         }
     }
-    execute_source_mutation(Some(before), after, materials, Some(store), repo, clock)
-        .await
-        .map(|committed| committed.after)
+    execute_source_mutation(
+        Some(before),
+        after,
+        SourceMaterialMutation::Stored { store, materials },
+        repo,
+        clock,
+    )
+    .await
+    .map(|committed| committed.after)
 }
 
 /// Atomically cut one exact undescribed provider-scoped row over to its
@@ -1579,8 +1605,10 @@ pub(super) async fn migrate_legacy_provider_to_descriptor_exact(
     execute_source_mutation(
         Some(before),
         after,
-        vec![(primary_ref, primary)],
-        Some(store),
+        SourceMaterialMutation::Stored {
+            store,
+            materials: vec![(primary_ref, primary)],
+        },
         repo,
         clock,
     )
@@ -1604,9 +1632,15 @@ pub async fn advance_credential_revision(
         .version
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    execute_source_mutation(Some(before), after, Vec::new(), None, repo, clock)
-        .await
-        .map(|committed| committed.after)
+    execute_source_mutation(
+        Some(before),
+        after,
+        SourceMaterialMutation::MetadataOnly,
+        repo,
+        clock,
+    )
+    .await
+    .map(|committed| committed.after)
 }
 
 /// Explicitly widen one active, provider-bound credential from an exact
@@ -1641,9 +1675,15 @@ pub async fn widen_credential_to_provider_scope_exact(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after.protocol_endpoint_id = None;
-    execute_source_mutation(Some(before), after, Vec::new(), None, repo, clock)
-        .await
-        .map(|committed| committed.after)
+    execute_source_mutation(
+        Some(before),
+        after,
+        SourceMaterialMutation::MetadataOnly,
+        repo,
+        clock,
+    )
+    .await
+    .map(|committed| committed.after)
 }
 
 /// Change only lifecycle availability while retaining material. This is the
@@ -1665,9 +1705,15 @@ pub async fn transition_credential_status(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after.status = status;
-    execute_source_mutation(Some(before), after, Vec::new(), None, repo, clock)
-        .await
-        .map(|committed| committed.after)
+    execute_source_mutation(
+        Some(before),
+        after,
+        SourceMaterialMutation::MetadataOnly,
+        repo,
+        clock,
+    )
+    .await
+    .map(|committed| committed.after)
 }
 
 /// Terminally revoke one exact source revision: reject a stale command before
@@ -1699,9 +1745,18 @@ pub async fn revoke_credential_exact(
     };
     after.material_ref = None;
     after.auxiliary_material_refs.clear();
-    execute_source_mutation(Some(before), after, Vec::new(), Some(store), repo, clock)
-        .await
-        .map(|committed| committed.after)
+    execute_source_mutation(
+        Some(before),
+        after,
+        SourceMaterialMutation::Stored {
+            store,
+            materials: Vec::new(),
+        },
+        repo,
+        clock,
+    )
+    .await
+    .map(|committed| committed.after)
 }
 
 /// Reconcile every interrupted source-only mutation through the shared
