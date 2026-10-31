@@ -18,6 +18,7 @@ pub mod peers;
 pub mod realization_error;
 pub mod realization_executor;
 pub mod realization_state;
+pub mod rebuild_source;
 pub mod resource_staging;
 pub mod sandbox_projection;
 pub mod session_environment;

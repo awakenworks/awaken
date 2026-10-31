@@ -278,3 +278,141 @@ async fn first_admission_waits_for_real_cas_and_returns_the_durable_winner_after
         "L3 receipt replay has no new CAS"
     );
 }
+
+#[tokio::test]
+async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
+    // Error-mapping table of a Managed Rebuild through the real Repository
+    // sink over a completed Create origin.
+    // | Rule | source evidence | aggregate decision | RunError |
+    // | M1 | none / open | MaterializationPending | Unavailable `session_environment_materialization_pending` (retry, 503) |
+    // | M2 | closed, no access | RebuildSourceUnavailable | Conflict `session_environment_rebuild_source_unavailable` (409, permanent: Worker class Terminal, never 503) |
+    // | M3 | closed + Repository | Materialize(Rebuild) | admitted write-ahead; the exact receipt lands as the new origin |
+    // M1 and M2 leave the stored root byte-identical.
+    use awaken_session_contract::{
+        RebuildSourceAccess, RebuildSourceEvidence, SessionEnvironmentEffectIntent,
+        SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
+    };
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let persistence = crate::SessionPersistence::new(
+        repo.clone(),
+        Arc::new(awaken_lease_testkit::ManualClock::new(200)),
+    );
+    let sink = persistence.environment_binding_sink();
+    let app = SessionApplicationBuilder::fixture(
+        Arc::new(RecordingCleanupRuntime::default()),
+        Arc::new(NoopMcpRealizer),
+        persistence,
+        Arc::new(RecordingEnvironmentSource::default()),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    )
+    .build()
+    .expect("valid fixture Session application");
+    let id = "rebuild-error-mapping";
+    create(repo.as_ref(), fresh_subject(id)).await;
+    let lease = original_lease();
+    claim_subject(&app, repo.as_ref(), id, &lease).await;
+    let create_intent = intent(id, &lease);
+    sink.authorize(&create_intent).await.unwrap();
+    sink.persist(SessionEnvironmentReceipt::from_intent(&create_intent, "first-binding").unwrap())
+        .await
+        .unwrap();
+    let resident = repo.get(&SessionId::from(id)).await.unwrap();
+    let rebuild = SessionEnvironmentEffectIntent::new(
+        id,
+        SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: resident
+                .environment
+                .generation()
+                .map(|generation| generation.id().to_owned()),
+        },
+        Some(lease),
+    )
+    .for_environment("env-7")
+    .from_binding("first-binding");
+    for (rule, evidence) in [
+        ("M1 historical", None),
+        (
+            "M1 open",
+            Some(RebuildSourceEvidence::new(
+                false,
+                Some(RebuildSourceAccess::Repository),
+            )),
+        ),
+    ] {
+        let requested = match evidence {
+            Some(evidence) => rebuild.clone().with_rebuild_source(evidence),
+            None => rebuild.clone(),
+        };
+        let error = sink.authorize(&requested).await.unwrap_err();
+        assert_eq!(
+            error.kind,
+            awaken_session_types::RunErrorKind::Unavailable,
+            "{rule}"
+        );
+        assert_eq!(
+            error.code, "session_environment_materialization_pending",
+            "{rule}"
+        );
+        assert_eq!(
+            repo.get(&resident.session_id).await.unwrap(),
+            resident,
+            "{rule} zero root mutation"
+        );
+    }
+    let lost = rebuild
+        .clone()
+        .with_rebuild_source(RebuildSourceEvidence::new(true, None));
+    let error = sink.authorize(&lost).await.unwrap_err();
+    assert_eq!(
+        error.kind,
+        awaken_session_types::RunErrorKind::Conflict,
+        "M2 a 409 state conflict, never Unavailable"
+    );
+    assert_eq!(
+        error.code, "session_environment_rebuild_source_unavailable",
+        "M2"
+    );
+    assert_eq!(
+        awaken_session_realization_contract::effect_failure_disposition(&error),
+        awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal,
+        "M2 permanent: reported once, never a budgeted retry"
+    );
+    assert_eq!(
+        repo.get(&resident.session_id).await.unwrap(),
+        resident,
+        "M2 zero root mutation"
+    );
+    let admitted = rebuild.with_rebuild_source(RebuildSourceEvidence::new(
+        true,
+        Some(RebuildSourceAccess::Repository),
+    ));
+    assert_eq!(
+        sink.authorize(&admitted).await.unwrap().intent(),
+        &admitted,
+        "M3 admitted"
+    );
+    assert_eq!(
+        repo.get(&resident.session_id)
+            .await
+            .unwrap()
+            .environment_materialization()
+            .unwrap()
+            .pending(),
+        Some(&admitted),
+        "M3 written ahead"
+    );
+    sink.persist(SessionEnvironmentReceipt::from_intent(&admitted, "rebuilt-binding").unwrap())
+        .await
+        .unwrap();
+    let rebuilt = repo.get(&resident.session_id).await.unwrap();
+    assert_eq!(rebuilt.environment.binding(), Some("rebuilt-binding"), "M3");
+    assert_eq!(
+        rebuilt.environment_materialization().unwrap().origin(),
+        Some(&admitted),
+        "M3 the landed Rebuild is the new origin"
+    );
+}

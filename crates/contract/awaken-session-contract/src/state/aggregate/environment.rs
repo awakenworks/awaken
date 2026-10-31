@@ -1,8 +1,8 @@
 // @formal surface requirement=session.lifecycle.session_state
 // @formal reason: The existing Session aggregate owns Environment admission, first intent and receipt
 // @formal reason: transitions. Its caller commits the controlled mutation before provider I/O; admission
-// @formal reason: and late receipt use the same materialization law. Original request closure and domain
-// @formal reason: access remain physical evidence, so unknown Managed Rebuild stays pending, not proved.
+// @formal reason: and late receipt use the same materialization law. Source closure and access are the
+// @formal reason: realization's physical evidence on a Rebuild intent; without it a Rebuild stays pending.
 use super::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SessionEnvironmentDecision,
     SessionEnvironmentEvent, SessionEnvironmentFacts, SessionEnvironmentOperation,
@@ -70,7 +70,8 @@ impl SessionEnvironmentOperations<'_> {
         (bool, crate::state::SessionEnvironmentEffectAuthorization),
         crate::state::SessionEnvironmentReceiptError,
     > {
-        let decided = self.decide(
+        let decided = transition_environment(
+            SessionEnvironmentFacts::project_admission(&self.aggregate.state, now_unix_ms, intent),
             SessionEnvironmentEvent::AdmitMaterialization {
                 kind: intent.kind().materialization_kind(),
                 already_applied: self
@@ -79,8 +80,6 @@ impl SessionEnvironmentOperations<'_> {
                     .environment
                     .records_effect(intent.effect_id()),
             },
-            now_unix_ms,
-            intent.realization(),
         );
         // A terminal Session refuses first. An unfinished original
         // materialization is retryable evidence that precedes every other
@@ -96,9 +95,40 @@ impl SessionEnvironmentOperations<'_> {
             session.authorize_environment_effect(owner_scope, intent, now_unix_ms)?;
         match intent.kind() {
             crate::state::SessionEnvironmentEffectKind::Rebuild { .. } => {
-                // Source closure/access is not available in this slice. A
-                // target receipt or current lease cannot supply it.
-                Err(SessionEnvironmentRejection::MaterializationPending.into())
+                // The decision admitted a closed, accessible source under the
+                // current lease, or the replay of a recorded Rebuild. The
+                // Rebuild is write-ahead like Create: its pending value is the
+                // one operation a late receipt may complete.
+                if session.realization.is_none() || intent.realization().is_none() {
+                    return Err(crate::state::SessionEnvironmentReceiptError::RealizationStale);
+                }
+                let facts = session
+                    .environment_materialization
+                    .as_deref()
+                    .ok_or(crate::state::SessionEnvironmentReceiptError::MaterializationUnknown)?;
+                if let Some(pending) = facts.pending() {
+                    // The origin check above admitted only this exact Rebuild
+                    // as pending; replay its saved assertion.
+                    let original =
+                        session.authorize_environment_effect(owner_scope, pending, now_unix_ms)?;
+                    return Ok((false, original));
+                }
+                match authorization {
+                    crate::state::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                        ..
+                    } => Ok((false, authorization)),
+                    crate::state::SessionEnvironmentEffectAuthorization::Authorized { .. } => {
+                        session
+                            .environment_materialization
+                            .as_deref_mut()
+                            .expect("known materialization fact was checked")
+                            .admit_first(intent);
+                        Ok((true, authorization))
+                    }
+                    crate::state::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
+                        Err(SessionEnvironmentRejection::InvalidTransition.into())
+                    }
+                }
             }
             crate::state::SessionEnvironmentEffectKind::Create => {
                 if session.realization.is_none() || intent.realization().is_none() {

@@ -110,12 +110,12 @@ pub enum FrozenResourceTransitionUse {
 impl FrozenSessionProjection {
     /// Read original provenance for cold observation; cleanup grants remain
     /// separate. Domain failures are mapped at this existing realization port.
-    pub fn original_create_fence(
+    pub fn materializing_effect_fence(
         &self,
         session_id: &str,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, crate::RunError> {
         use awaken_session_contract::SessionEnvironmentReceiptError as Error;
-        awaken_session_contract::SessionEnvironmentMaterialization::original_create_fence(
+        awaken_session_contract::SessionEnvironmentMaterialization::materializing_effect_fence(
             self.environment_materialization.as_deref(),
             session_id,
         )

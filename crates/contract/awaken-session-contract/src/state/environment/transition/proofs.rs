@@ -3,7 +3,8 @@
 //! the production `transition_environment` inputs.
 
 use super::laws::{
-    EVENT_COUNT, STEPS, effects_require_current_lease, event, steps_follow_declared_edges,
+    EVENT_COUNT, STEPS, effects_require_current_lease, event,
+    rebuild_requires_closed_accessible_source, steps_follow_declared_edges,
     terminal_never_reenters,
 };
 use super::*;
@@ -31,6 +32,8 @@ fn any_facts() -> SessionEnvironmentFacts {
         checkpoint_live: kani::any(),
         continuation_topology_supported: kani::any(),
         suspend_memory_admitted: kani::any(),
+        source_closed: kani::any(),
+        source_access: kani::any(),
     }
 }
 
@@ -68,6 +71,18 @@ fn environment_effects_require_a_current_realization_lease() {
     let facts = any_facts();
     let event = any_event();
     assert!(effects_require_current_lease(
+        facts,
+        event,
+        transition_environment(facts, event)
+    ));
+}
+
+/// @obligation session_environment.rebuild_requires_a_closed_source_with_access
+#[kani::proof]
+fn rebuild_requires_a_closed_source_with_access() {
+    let facts = any_facts();
+    let event = any_event();
+    assert!(rebuild_requires_closed_accessible_source(
         facts,
         event,
         transition_environment(facts, event)
