@@ -123,7 +123,7 @@ pub use awaken_dispatch_execution::{
     ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, ControlDispatch,
     DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService, DispatchServiceConfig,
     DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit, InferenceMaterializerFn,
-    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence,
+    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence, PoolShutdown,
     RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
     claim_bound_ownership_verifier, publish_dispatch_hint,
 };

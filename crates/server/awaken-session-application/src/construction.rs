@@ -503,6 +503,7 @@ impl SessionAssembly {
                 event_batches: event_batches.clone(),
                 outcome_reconciliation: outcome_reconciliation.clone(),
                 event_batch_cutover_validation: kernel.event_batch_cutover_validation.clone(),
+                repository_participants: foundation.repository_participants.clone(),
             },
         ));
         UseCases {
@@ -575,6 +576,7 @@ impl SessionAssembly {
             )),
             repository_participants: Arc::new(crate::SessionRepositoryParticipants::new(
                 kernel.mutations.clone(),
+                kernel.store.clone(),
                 resource_references.clone(),
                 credentials.clone(),
                 self.resource_registry.clone(),

@@ -622,7 +622,7 @@ mod tests {
         // Test design — Causes: each closed LiveInbox failure variant is rendered.
         // Effects: it produces its exact distinct operator-facing text.
         // Constraints/invariants: display text is a pinned wire/debug boundary;
-        // variants never alias. Decision rule L1: enumerate all variants=>four
+        // variants never alias. Decision rule L1: enumerate all variants=>five
         // exact, pairwise-distinct messages.
         assert_eq!(
             LiveInboxError::Inactive.to_string(),
@@ -639,6 +639,10 @@ mod tests {
         assert_eq!(
             LiveInboxError::Unavailable.to_string(),
             "the live-inbox owner registry is unreadable",
+        );
+        assert_eq!(
+            LiveInboxError::Full.to_string(),
+            "the live inbox is full; retry after the Run drains it",
         );
     }
 

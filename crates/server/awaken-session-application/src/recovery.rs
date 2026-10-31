@@ -46,6 +46,7 @@ pub struct SessionRecovery {
     event_batches: Arc<crate::SessionEventBatchCommands>,
     outcome_reconciliation: Arc<crate::SessionOutcomeReconciliation>,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
+    repository_participants: Arc<crate::SessionRepositoryParticipants>,
 }
 
 /// The collaborators [`SessionRecovery`] is constructed from.
@@ -60,6 +61,7 @@ pub(crate) struct SessionRecoveryCollaborators {
     pub(crate) event_batches: Arc<crate::SessionEventBatchCommands>,
     pub(crate) outcome_reconciliation: Arc<crate::SessionOutcomeReconciliation>,
     pub(crate) event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
+    pub(crate) repository_participants: Arc<crate::SessionRepositoryParticipants>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -195,6 +197,7 @@ impl SessionRecovery {
             event_batches,
             outcome_reconciliation,
             event_batch_cutover_validation,
+            repository_participants,
         } = collaborators;
         Self {
             repository,
@@ -207,6 +210,7 @@ impl SessionRecovery {
             event_batches,
             outcome_reconciliation,
             event_batch_cutover_validation,
+            repository_participants,
         }
     }
 
@@ -271,6 +275,12 @@ impl SessionRecovery {
         // owns this value across sequential cycles, so an older concurrent
         // status/phase scan cannot overwrite a newer diagnostic view.
         let scan_elapsed = cycle_started.elapsed();
+        // Pre-root creation intents have no Session root, so no candidate
+        // scan can reach them; they are driven from their own durable rows.
+        let creation_intents = self
+            .repository_participants
+            .reconcile_creation_intents()
+            .await;
         let resources = PhaseReport::resources(
             self.resource_reconciliation
                 .reconcile_resource_activations_from(&candidates)
@@ -305,6 +315,7 @@ impl SessionRecovery {
         let phases = [resources, realizations, event_batches, outcomes];
         let retryable_failures = continuation_failures
             + validation_failures
+            + creation_intents.failures
             + phases.iter().map(|phase| phase.failures).sum::<usize>();
         tracing::info!(
             pending_sessions = phases.iter().map(|phase| phase.pending).max().unwrap_or(0),
@@ -326,7 +337,8 @@ impl SessionRecovery {
         );
         SessionRecoveryCycle {
             retryable_failures,
-            settled: phases.iter().map(|phase| phase.settled).sum(),
+            settled: creation_intents.settled
+                + phases.iter().map(|phase| phase.settled).sum::<usize>(),
             elapsed: cycle_started.elapsed(),
         }
     }

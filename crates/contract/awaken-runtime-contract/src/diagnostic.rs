@@ -55,7 +55,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<awaken_agent_contract::thread::commit::coordinator::Error> for Error {
     fn from(source: awaken_agent_contract::thread::commit::coordinator::Error) -> Self {
-        RuntimeDiagnostic::new(RuntimeErrorKind::Internal, "commit_failed", source).into()
+        use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
+        let (kind, code) = match &source {
+            CommitError::Rejected(_) => (RuntimeErrorKind::Internal, "commit_failed"),
+            CommitError::CapacityExhausted(_) => {
+                (RuntimeErrorKind::Unavailable, "commit_capacity_exhausted")
+            }
+        };
+        RuntimeDiagnostic::new(kind, code, source).into()
     }
 }
 

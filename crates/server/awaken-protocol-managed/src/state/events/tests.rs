@@ -620,6 +620,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
             None,
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .unwrap();
     warm.refresh_committed_events(&session.id).await.unwrap();
     let issued_prefix = warm
@@ -657,6 +658,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
             None,
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .unwrap();
     persist_batch_projection_anchors(&warm, &session.id, &interrupt.batch_id, &[7]).await;
 
@@ -1066,6 +1068,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             Some((key.into(), fingerprint)),
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .expect("IR1 durable root receipt");
     let revision = state
         .roles
@@ -1260,6 +1263,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                         Some(("race-key".into(), fingerprint)),
                     )
                     .await
+                    .map(|batch| batch.expect("the Event batch is admitted"))
                     .unwrap(),
             )
         };
@@ -2783,6 +2787,7 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                     Some(("original".into(), fingerprint)),
                 )
                 .await
+                .map(|batch| batch.expect("the Event batch is admitted"))
                 .expect("R1 retain the exact accepted receipt");
             let expected = SendEventsResponse {
                 data: accepted_inbound_receipts(&session_id, &retained)
@@ -2938,6 +2943,7 @@ async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
             None,
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .expect("AR2 retain reply without driving it");
 
     let followup = state
@@ -4689,6 +4695,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
             None,
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .expect("C1 retains the canonical User Event in the Session root");
     let operation_id = retained.events[0].event.operation_id().to_string();
     persist_batch_projection_anchors(&warm, &session.id, &retained.batch_id, &[1]).await;
@@ -5178,6 +5185,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                     None,
                 )
                 .await
+                .map(|batch| batch.expect("the Event batch is admitted"))
                 .unwrap();
             let first_activity = warm
                 .application
@@ -5211,6 +5219,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                     None,
                 )
                 .await
+                .map(|batch| batch.expect("the Event batch is admitted"))
                 .unwrap();
             let overlapping_activity = warm
                 .application
@@ -5364,6 +5373,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 None,
             )
             .await
+            .map(|batch| batch.expect("the Event batch is admitted"))
             .unwrap();
         let second_activity = warm
             .application
@@ -5685,6 +5695,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
             None,
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .unwrap();
     warm.application
         .activities()
@@ -5879,6 +5890,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
             None,
         )
         .await
+        .map(|batch| batch.expect("the Event batch is admitted"))
         .unwrap();
     state
         .update_session(
@@ -12479,6 +12491,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                         None,
                     )
                     .await
+                    .map(|batch| batch.expect("the Event batch is admitted"))
                     .unwrap();
                 let run = match &retained.events[0].event {
                     SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
@@ -12569,7 +12582,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                         expected_thread_version: Some(2), answered_pending_commit_cursor: Some(2),
                         runtime_tool_use_id: "test-call".into(),
                         reply: awaken_session_contract::SessionEventToolReplyKind::Confirmation { allow: true, deny_message: None },
-                    })], None, None, None).await.unwrap();
+                    })], None, None, None).await.map(|batch| batch.expect("the Event batch is admitted")).unwrap();
                 persist_batch_projection_anchors(&state, &session.id, &reply.batch_id, &[3]).await;
                 let second = state
                     .application

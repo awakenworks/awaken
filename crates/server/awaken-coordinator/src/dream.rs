@@ -12,8 +12,9 @@ use awaken_dream_application::{
 use awaken_provisioning_contract::{MountAccess, MountLifetime, MountRequirement, MountSource};
 use awaken_resource_contract::{
     BindingId, CreateMemoryStoreCommand, ExecutionResourceResolver, FileApplicationService,
-    InputBinding, InputResourceId, Memory, MemoryContentPurge, MemorySnapshotSource,
-    MemoryStoreApplicationService, MemoryStoreId, MemoryWriter, ResourceAccess, ResourceState,
+    InputBinding, InputResourceId, MemErr, Memory, MemoryContentPurge, MemorySnapshotSource,
+    MemoryStoreApplicationError, MemoryStoreApplicationService, MemoryStoreId, MemoryWriter,
+    ResourceAccess, ResourceRegistryError, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_configuration_contract::SessionToolConfiguration;
@@ -263,30 +264,64 @@ impl BuiltInDreamAgent {
         Ok(session_id)
     }
 
-    async fn release_result(&self, request: &DreamRequest, retain_result: bool) {
+    /// Retire the private Dream stores. Every step is attempted; the first
+    /// failure is reported so the caller keeps cleanup pending and retries.
+    /// A store that was never created counts as already retired.
+    async fn release_result(
+        &self,
+        request: &DreamRequest,
+        retain_result: bool,
+    ) -> Result<(), DreamFailure> {
         let result_id = match &request.output_behavior {
             DreamOutputBehavior::CreateNew => format!("mem_result_{}", request.job_id),
             DreamOutputBehavior::UpdateExisting { memory_store_id } => memory_store_id.clone(),
         };
+        let snapshot_id = format!("mem_snapshot_{}", request.job_id);
+        let mut retired = Vec::with_capacity(2);
         if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) && !retain_result {
-            let _ = self
-                .stores
-                .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
-                .await;
-            let _ = self.content_purge.purge_store(&result_id).await;
+            retired.push(result_id);
         }
-        let _ = self
-            .stores
-            .set_state(
-                &request.workspace_id,
-                &format!("mem_snapshot_{}", request.job_id),
-                ResourceState::Deleted,
-            )
-            .await;
-        let _ = self
-            .content_purge
-            .purge_store(&format!("mem_snapshot_{}", request.job_id))
-            .await;
+        retired.push(snapshot_id);
+        let mut first_failure = None;
+        for store in &retired {
+            let deleted = match self
+                .stores
+                .set_state(&request.workspace_id, store, ResourceState::Deleted)
+                .await
+            {
+                Ok(_)
+                | Err(MemoryStoreApplicationError::Registry(ResourceRegistryError::NotFound(_))) => {
+                    Ok(())
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            let purged = self
+                .content_purge
+                .purge_store(store)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            if let Err(error) = deleted.and(purged) {
+                first_failure.get_or_insert_with(|| {
+                    DreamFailure::new(
+                        "internal_error",
+                        format!("private Dream store `{store}` cleanup failed: {error}"),
+                    )
+                });
+            }
+        }
+        first_failure.map_or(Ok(()), Err)
+    }
+}
+
+/// A memory write that hit the store's capacity is the documented org-limit
+/// failure, not an internal fault; every other write error stays internal.
+fn memory_write_failure(error: MemErr) -> DreamFailure {
+    match error {
+        MemErr::AtCapacity => {
+            DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
+        }
+        error => DreamFailure::new("internal_error", error.to_string()),
     }
 }
 
@@ -425,7 +460,8 @@ impl DreamExecutor for BuiltInDreamAgent {
                         "awaken.dream_job_id".into(),
                         request.job_id.clone(),
                     )]),
-                    initial_state: ResourceState::Active,
+                    // Never visible as Active before every head is cloned.
+                    initial_state: ResourceState::Suspended,
                     retention_policy: Default::default(),
                 })
                 .await
@@ -452,14 +488,20 @@ impl DreamExecutor for BuiltInDreamAgent {
             self.writer
                 .create(&snapshot.snapshot_memory_store_id, &head.path, content)
                 .await
-                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+                .map_err(memory_write_failure)?;
             if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
                 self.writer
                     .create(&result_id, &head.path, content)
                     .await
-                    .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+                    .map_err(memory_write_failure)?;
             }
         }
+        // The complete snapshot becomes visible in one state change; an
+        // interrupted clone leaves only a Suspended, private entry behind.
+        self.stores
+            .set_state(&request.workspace_id, &snapshot_id, ResourceState::Active)
+            .await
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
             self.stores
                 .create(CreateMemoryStoreCommand {
@@ -579,8 +621,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                     .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             }
         }
-        self.release_result(request, preparation.is_some()).await;
-        Ok(())
+        self.release_result(request, preparation.is_some()).await
     }
 
     async fn cancel(

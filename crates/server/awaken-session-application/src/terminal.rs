@@ -230,7 +230,8 @@ impl From<SessionMutationError> for SessionArchiveWithRepositoryPublicationError
             SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
                 Self::Conflict
             }
-            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::Unavailable(message)
+            | SessionMutationError::NotApplied(message) => Self::Unavailable(message),
             error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
                 Self::Rejected(error.into())
             }

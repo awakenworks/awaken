@@ -190,7 +190,7 @@
 - 必须断言：确定未接纳可重新接纳；已提交回原回执；未知效果先观察原 operation。
 - 反向控制：对所有 5xx 无条件创建新 operation 的实现必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`retries_keep_the_original_admission_identity`、`minting_a_new_operation_on_unavailable_is_detected`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `unadmitted_and_unknown_failures_are_classified_apart`（忽略，不计证据；E17 为预期失败）：未接纳与结果未知两类都表现为 Unavailable。完整场景：待验收。
+- 绑定及状态：`retries_keep_the_original_admission_identity`、`minting_a_new_operation_on_unavailable_is_detected`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ### T33-C03 跨适配器一致
 
@@ -350,7 +350,7 @@
 - 必须断言：资源增长受既有容量约束；背压/拒绝分类正确；不静默丢已接纳责任；关闭仍在共享预算内。
 - 反向控制：无界缓冲或依赖永不返回导致 drain 永不结束必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`saturated_pool_backpressures_without_dropping_and_drains_within_budget`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `shutdown_is_bounded_when_a_dependency_never_returns`、`live_inbox_applies_backpressure_to_a_stalled_consumer`（忽略，不计证据；E17 为预期失败）：DispatchPool::shutdown 没有期限；LiveInbox::offer 无界。完整场景：待验收。
+- 绑定及状态：`saturated_pool_backpressures_without_dropping_and_drains_within_budget`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ### T38-C03 空间与资源失败
 
@@ -358,7 +358,7 @@
 - 必须断言：保留已提交/不确定责任；无 partial success/全局 panic；恢复原 operation；不以调大超时遮蔽失败。
 - 反向控制：真实磁盘填满主机不是合法 fixture，应使用受控配额/注入层。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`exhausted_capacity_rejects_atomically_and_retry_commits_once_with_original_receipt`、`sqlite_file_memory_quota_rejects_atomically_and_retry_commits_once`、`capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `exhausted_capacity_has_a_distinct_classification`、`wedged_single_connection_fails_admission_promptly`、`capacity_exhausted_snapshot_clone_has_a_distinct_failure_kind`（忽略，不计证据；E17 为预期失败）：磁盘满归入通用 Rejected；Dream 把 AtCapacity 映射为 internal_error；连接卡死时接纳最长等待 24h。完整场景：待验收。
+- 绑定及状态：`exhausted_capacity_rejects_atomically_and_retry_commits_once_with_original_receipt`、`sqlite_file_memory_quota_rejects_atomically_and_retry_commits_once`、`capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ## T39 Environment 镜像与软件包交付
 

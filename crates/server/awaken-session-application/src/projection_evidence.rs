@@ -280,7 +280,8 @@ impl SessionProjectionReads for SessionQueries {
                 SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
                     SessionProjectionRecoveryError::Unavailable(error.to_string())
                 }
-                SessionMutationError::Unavailable(message) => {
+                SessionMutationError::Unavailable(message)
+                | SessionMutationError::NotApplied(message) => {
                     SessionProjectionRecoveryError::Unavailable(message)
                 }
                 error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {

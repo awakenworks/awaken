@@ -101,7 +101,8 @@ impl SessionResourceManifestError {
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
-            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::Unavailable(message)
+            | SessionMutationError::NotApplied(message) => Self::Unavailable(message),
             error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
                 Self::Rejected(error.into())
             }

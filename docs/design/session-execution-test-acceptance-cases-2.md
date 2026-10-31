@@ -120,7 +120,7 @@
 - 必须断言：无授权前效果；已开始准备可凭稳定 intent 找回；可发现性不依赖 Session root 存在。
 - 反向控制：只在局部变量保存资源身份的实现必须失败。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`crash_before_or_after_prepare_keeps_identity_for_the_original_intent`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `crash_after_prepare_is_recoverable_without_the_original_caller`（忽略，不计证据；E17 为预期失败）：没有 root 之前的持久 intent，崩溃后只有原调用者能找回已开始的准备。完整场景：待验收。
+- 绑定及状态：`crash_before_or_after_prepare_keeps_identity_for_the_original_intent`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ### T17-C02 补偿失败
 
@@ -128,7 +128,7 @@
 - 必须断言：持久责任保持 pending/uncertain；幂等重试原补偿；不报告完成或泄露材料。
 - 反向控制：best-effort cleanup 后丢弃错误不能签收。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`compensation_failure_hang_or_lost_response_never_reports_completion`、`failing_compensation_reports_incompleteness_to_its_caller`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `failed_compensation_is_retried_by_a_rebuilt_service`（忽略，不计证据；E17 为预期失败）：补偿失败只记日志，不留下持久的待处理责任。完整场景：待验收。
+- 绑定及状态：`compensation_failure_hang_or_lost_response_never_reports_completion`、`failing_compensation_reports_incompleteness_to_its_caller`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ### T17-C03 并发重试
 
@@ -136,7 +136,7 @@
 - 必须断言：不创建第二个外部对象；只有原确切对象可发布/清理；冲突重试拒绝。
 - 反向控制：仅验证同一对象上的第二次函数调用不足。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`concurrent_continuations_share_one_external_object`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `compensation_cannot_retire_a_participant_adopted_concurrently`（忽略，不计证据；E17 为预期失败）：补偿先检查后退役，缺少针对并发 adopt 的 fence。完整场景：待验收。
+- 绑定及状态：`concurrent_continuations_share_one_external_object`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ## T18 archive 与 delete 竞争
 
@@ -357,7 +357,7 @@
 - 必须断言：保留现有受保护输出；成功重建来自一个新完整快照；失败不会发布半快照。
 - 反向控制：只在同一内存对象重复初始化不证明持久恢复。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：`interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output`、`crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `interrupted_snapshot_clone_never_exposes_a_half_snapshot`、`failed_snapshot_cleanup_is_reported_or_leaves_no_private_content`（忽略，不计证据；E17 为预期失败）：Dream prepare 在克隆完成前就把快照条目登记为 Active；release_result 吞掉清理错误。完整场景：待验收。
+- 绑定及状态：`interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output`、`crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ## T24 Copy 写回与 ABA
 

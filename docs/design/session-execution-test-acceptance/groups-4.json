@@ -466,7 +466,7 @@
           "B245",
           "B246"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -485,13 +485,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "Dream prepare 在克隆完成前就把快照条目登记为 Active；release_result 吞掉清理错误",
-          "follow_up": "coordinator Dream prepare（M）与 cleanup（S）",
-          "reproducers": [
-            "interrupted_snapshot_clone_never_exposes_a_half_snapshot",
-            "failed_snapshot_cleanup_is_reported_or_leaves_no_private_content"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "Dream prepare 在克隆完成前就把快照条目登记为 Active；release_result 吞掉清理错误",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       }
     ],

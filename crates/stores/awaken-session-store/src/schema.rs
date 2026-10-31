@@ -238,6 +238,19 @@ fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, Migra
              ON {prefix}_session_reconciliation_work (worker_owner) \
              WHERE worker_owner IS NOT NULL",
     )?);
+    migrations.push(Migration::new(
+        next + 2,
+        "record pre-root creation intents for prepared Session participants",
+        "CREATE TABLE {prefix}_session_creation_intent (\
+             session_id TEXT PRIMARY KEY CHECK (length(session_id) > 0), \
+             scope_id TEXT NOT NULL CHECK (length(scope_id) > 0), \
+             phase TEXT NOT NULL CHECK (phase IN ('preparing', 'aborting')), \
+             repository_ids_json TEXT NOT NULL, \
+             lease_expires_at_unix_ms BIGINT NOT NULL \
+                 CHECK (lease_expires_at_unix_ms >= 0)); \
+         CREATE INDEX {prefix}_session_creation_intent_recoverable_idx \
+             ON {prefix}_session_creation_intent (lease_expires_at_unix_ms, session_id)",
+    )?);
     MigrationBundle::new(bundle.bundle_id(), migrations)
 }
 
@@ -258,7 +271,7 @@ mod tests {
 
     #[test]
     fn session_schema_preserves_v1_and_adds_owned_dependency_and_worker_indexes() {
-        // Causes: C1 published V1 receipt; C2 missing additive V2/V3/V4;
+        // Causes: C1 published V1 receipt; C2 missing additive V2/V3/V4/V5;
         // C3 current receipts. Effects: E1 V1 checksum remains accepted;
         // E2 deterministic source, tombstone and Worker-obligation DDL tails;
         // E3 current ledger replay is a no-op. M1=C1+C2=>E1+E2;
@@ -271,7 +284,7 @@ mod tests {
                 .iter()
                 .map(awaken_scoped_migration::Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4]
+            [1, 2, 3, 4, 5]
         );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
@@ -332,7 +345,7 @@ mod tests {
         );
         assert_eq!(
             original.complete.migrations().last().unwrap().version(),
-            25,
+            26,
             "E2"
         );
         let compacted_receipts = BTreeMap::from([
@@ -355,7 +368,7 @@ mod tests {
         );
         assert_eq!(
             compacted.complete.migrations().last().unwrap().version(),
-            23,
+            24,
             "E3"
         );
         let converged_original_receipts = original

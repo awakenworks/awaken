@@ -43,6 +43,9 @@ fn extension_error(error: LiveInboxApplicationError) -> ExtensionRejection {
         LiveInboxApplicationError::Edit(LiveInboxError::Inactive) => {
             (StatusCode::GONE, "invalid_request_error")
         }
+        LiveInboxApplicationError::Edit(LiveInboxError::Full) => {
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error")
+        }
         LiveInboxApplicationError::AuthorityUnavailable { .. }
         | LiveInboxApplicationError::Edit(LiveInboxError::Unavailable) => {
             (StatusCode::SERVICE_UNAVAILABLE, "api_error")
@@ -190,7 +193,8 @@ mod tests {
         // Cause/effect decision table: C1 missing/foreign Session or message ->
         // E1 404; C2 stale order -> E2 409; C3 inactive attempt -> E3 410; C4
         // infrastructure unavailable, including an unreadable live-inbox owner
-        // registry -> E4 503; C5 corrupt authority state -> E5 500.
+        // registry -> E4 503; C5 corrupt authority state -> E5 500; C6 a full
+        // inbox (backpressure) -> E6 429.
         // These outcomes must not inherit Anthropic routing.
         assert_eq!(
             extension_error(LiveInboxApplicationError::NotFound).0,
@@ -223,6 +227,11 @@ mod tests {
             extension_error(LiveInboxError::Unavailable.into()).0,
             StatusCode::SERVICE_UNAVAILABLE,
             "C4 unreadable owner registry"
+        );
+        assert_eq!(
+            extension_error(LiveInboxError::Full.into()).0,
+            StatusCode::TOO_MANY_REQUESTS,
+            "C6 backpressure"
         );
     }
 

@@ -822,7 +822,7 @@
           "B172",
           "B237"
         ],
-        "evidence_state": "product_gap",
+        "evidence_state": "source_binding_only",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -841,12 +841,10 @@
             "T35 platform gate open (Linux not run by policy)"
           ]
         },
-        "product_gap": {
-          "reason": "未接纳与结果未知两类都表现为 Unavailable",
-          "follow_up": "run admission 错误分类（M）",
-          "reproducers": [
-            "unadmitted_and_unknown_failures_are_classified_apart"
-          ]
+        "pending_batch": {
+          "fixed_by": "ADR-0102",
+          "former_gap": "未接纳与结果未知两类都表现为 Unavailable",
+          "awaits": "batched native Windows execution of the un-ignored reproducers"
         }
       },
       {

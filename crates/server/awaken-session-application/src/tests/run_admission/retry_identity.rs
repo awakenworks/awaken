@@ -10,13 +10,13 @@
 //!
 //! | Row | Fault at the activity CAS | Caller sees | Retry (same operation) | Expected root |
 //! |---|---|---|---|---|
-//! | Q1 | outage before commit | `Err` | admitted | exactly one record, the retry's epoch |
+//! | Q1 | outage before commit (store proves nothing applied) | `Err` `session_run_not_admitted` | admitted | exactly one record, the retry's epoch |
 //! | Q2 | commit, response reported as conflict | `Ok` (the call observes its own commit) | same epoch | exactly one record |
-//! | Q3 | commit, response lost as `Unavailable` | `Err` (unknown) | the committed epoch | exactly one record, committed before the retry |
+//! | Q3 | commit, response lost as `Unavailable` | `Err` `session_run_admission_pending` (unknown) | the committed epoch | exactly one record, committed before the retry |
 //! | NC | Q3, but the client mints a NEW operation on `Unavailable` | - | - | two epochs: detected by the same checker |
 //!
-//! The Q1/Q3 caller errors are indistinguishable; the ignored reproducer
-//! records the missing "not admitted" / "unknown" classification.
+//! The Q1/Q3 caller errors carry distinct classes (ADR-0094 D3 as amended):
+//! "not admitted" and "unknown"; both retry only the same operation.
 use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
 use crate::tests::run_admission::response_loss_store::ResponseLossStore;
@@ -251,7 +251,6 @@ async fn minting_a_new_operation_on_unavailable_is_detected() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: run admission errors carry no 'not admitted' vs 'unknown outcome' class; a pre-commit outage and a lost committed response both surface as the same Unavailable"]
 async fn unadmitted_and_unknown_failures_are_classified_apart() {
     let fixture = fixture(&["t33-gap-q1", "t33-gap-q3"]).await;
     fixture.loss.commit_unavailable_once(ACTIVITY_CAS);
@@ -268,5 +267,13 @@ async fn unadmitted_and_unknown_failures_are_classified_apart() {
         (not_admitted.kind, not_admitted.code.clone()),
         (unknown.kind, unknown.code.clone()),
         "a caller must be able to tell 'retry may admit' from 'observe the original first'"
+    );
+    assert_eq!(
+        not_admitted.code, "session_run_not_admitted",
+        "Q1 the store proved nothing was applied"
+    );
+    assert_eq!(
+        unknown.code, "session_run_admission_pending",
+        "Q3 the outcome is unknown until observed"
     );
 }

@@ -168,7 +168,7 @@
 - 必须断言：已准备责任可凭原意图发现并补偿/观察；精确重试保留原身份。
 - 反向控制：仅在同一调用栈执行 best-effort cleanup 不能满足崩溃恢复。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：`sqlite_prepared_participant_survives_root_failure_and_rebuild`、`postgres_prepared_participant_survives_root_failure_and_rebuild`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `orphaned_prepare_is_found_by_recovery_after_rebuild`（忽略，不计证据；E17 为预期失败）：没有持久的准备 intent，root 失败后重建的服务无法凭原意图找回已准备的参与者。完整场景：待验收。
+- 绑定及状态：`sqlite_prepared_participant_survives_root_failure_and_rebuild`、`postgres_prepared_participant_survives_root_failure_and_rebuild`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ## T05 Session CAS 与回执重放
 
@@ -231,7 +231,7 @@
 - 必须断言：在契约规定的物理授权线性化点再次校验；不使用缓存成功绕过新撤权。
 - 反向控制：把再次校验移到长等待之前的负控必须被检测。
 - 层级与基质：L3；actual selected native executor/provider；barrier-controlled fault or child death；effect/cleanup observer。实际启用模式；内核、引擎或物理恢复额外需要 L4。
-- 绑定及状态：`t06_c02_settlement_during_physical_read_linearizes_after_the_read`、`t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is_detected`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `t06_c02_lease_expiry_during_lock_wait_is_rechecked`、`t06_c02_lease_expiry_during_physical_read_releases_no_bytes`（忽略，不计证据；E17 为预期失败）：锁等待前只采样一次租约时钟；物理读取不带 fence 且读取后不再校验。完整场景：待验收。
+- 绑定及状态：`t06_c02_settlement_during_physical_read_linearizes_after_the_read`、`t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is_detected`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ### T06-C03 冻结与动态事实
 
@@ -431,7 +431,7 @@
 - 必须断言：只接纳既有策略允许动作；同事务记录一起回滚。
 - 反向控制：把暂停处理放入协议 parser 或允许半批次提交必须失败。
 - 层级与基质：L2；file SQLite；live PostgreSQL；independent clients/processes where required。需要持久性时真实文件和重开；仅 in-memory SQLite 不足。
-- 绑定及状态：`budget_paused_session_retains_ordinary_batches_without_execution`、`sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction`、`postgres_mid_write_failure_rolls_back_the_whole_batch_transaction`（E16 本机 Windows 执行通过，覆盖已成立部分）；产品缺口复现 `budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission`（忽略，不计证据；E17 为预期失败）：仅 interrupt 的预算暂停 no-op 只在协议 parser 中，不在 root 接纳处。完整场景：待验收。
+- 绑定及状态：`budget_paused_session_retains_ordinary_batches_without_execution`、`sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction`、`postgres_mid_write_failure_rolls_back_the_whole_batch_transaction`（E16 本机 Windows 执行通过，覆盖已成立部分）；原产品缺口复现已按 [ADR-0102](../adr/0102-session-execution-product-gap-closure.md) 修复并取消忽略，状态为 `source_binding_only`，待本机 Windows 批量执行后登记证据。
 
 ## T13 预算与动态策略
 

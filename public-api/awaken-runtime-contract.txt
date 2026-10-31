@@ -403,6 +403,7 @@ pub awaken_runtime_contract::live_inbox::MessageOrigin::Run
 pub enum awaken_runtime_contract::live_inbox::Offer
 pub awaken_runtime_contract::live_inbox::Offer::Accepted(awaken_runtime_contract::live_inbox::LiveInboxMessageId)
 pub awaken_runtime_contract::live_inbox::Offer::Closed
+pub awaken_runtime_contract::live_inbox::Offer::Full
 pub enum awaken_runtime_contract::live_inbox::WaitOutcome
 pub awaken_runtime_contract::live_inbox::WaitOutcome::Cancelled
 pub awaken_runtime_contract::live_inbox::WaitOutcome::Changed(u64)
@@ -427,6 +428,7 @@ pub awaken_runtime_contract::live_inbox::LiveInboxMessage::id: awaken_runtime_co
 pub awaken_runtime_contract::live_inbox::LiveInboxMessage::message: awaken_agent_contract::agent::message::Message
 pub awaken_runtime_contract::live_inbox::LiveInboxMessage::origin: awaken_runtime_contract::live_inbox::MessageOrigin
 pub struct awaken_runtime_contract::live_inbox::LiveInboxMessageId(pub u64)
+pub const awaken_runtime_contract::live_inbox::LIVE_INBOX_CAPACITY: usize
 pub mod awaken_runtime_contract::llm
 pub enum awaken_runtime_contract::llm::Error
 pub awaken_runtime_contract::llm::Error::Admission

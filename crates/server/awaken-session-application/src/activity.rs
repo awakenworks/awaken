@@ -47,6 +47,9 @@ pub enum SessionActivityError {
     Conflict,
     #[error("Session activity persistence is unavailable: {0}")]
     Unavailable(String),
+    /// Persistence refused before applying the activity; nothing changed.
+    #[error("Session activity was not applied: {0}")]
+    NotApplied(String),
     #[error("Session activity durable state is invalid: {0}")]
     Internal(String),
     /// The aggregate or budget ledger refused the activity transition: the
@@ -291,6 +294,7 @@ impl SessionActivityError {
                 "activity mutation idempotency key unexpectedly changed payload".into(),
             ),
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+            SessionMutationError::NotApplied(message) => Self::NotApplied(message),
             SessionMutationError::Internal(message) => Self::Internal(message),
             SessionMutationError::Invalid(violation) => Self::Invalid(violation),
         }
@@ -313,7 +317,9 @@ impl SessionActivityError {
                 "Session activity epoch is exhausted",
             ),
             Self::Conflict => RunError::unavailable("Session activity changed concurrently"),
-            Self::Unavailable(message) => RunError::unavailable(message),
+            Self::Unavailable(message) | Self::NotApplied(message) => {
+                RunError::unavailable(message)
+            }
             Self::Internal(message) => SessionMutationError::Internal(message).into(),
             Self::Invalid(violation) => SessionMutationError::Invalid(violation).into(),
         }
@@ -600,13 +606,32 @@ impl SessionActivities {
         )
     }
 
-    /// Run reservations remain undecided on failed observations or CAS; other
+    /// The store proved it applied nothing: the Run was not admitted. Like a
+    /// pending outcome, only the same operation may retry it, because the
+    /// durable reservation can still be completed by repair.
+    fn admission_not_applied(error: SessionActivityError) -> RunError {
+        RunError::unavailable_classified(
+            "session_run_not_admitted",
+            format!(
+                "Session Run was not admitted; retry the same operation: {}",
+                error.run_error().message
+            ),
+        )
+    }
+
+    /// Run reservations remain undecided on failed observations or CAS, and
+    /// are not admitted when the store proved it applied nothing; other
     /// coordination operations keep their original activity error classes.
     pub(crate) fn activity_operation_error(
         operation_id: &str,
         error: SessionActivityError,
     ) -> RunError {
         match error {
+            error @ SessionActivityError::NotApplied(_)
+                if Self::is_run_activity_operation(operation_id) =>
+            {
+                Self::admission_not_applied(error)
+            }
             error @ (SessionActivityError::Unavailable(_) | SessionActivityError::Conflict)
                 if Self::is_run_activity_operation(operation_id) =>
             {

@@ -165,7 +165,10 @@ impl SessionRepository for ResponseLossStore {
             (before, after)
         };
         if before {
-            return Err(lost("root-CAS outage before commit"));
+            // The store refused before applying: a determinate outcome.
+            return Err(SessionRepositoryError::NotApplied(
+                "injected root-CAS outage before commit".into(),
+            ));
         }
         self.commits.fetch_add(1, Ordering::SeqCst);
         let result = self.inner.commit(owner_scope, mutation).await?;
@@ -217,5 +220,58 @@ impl awaken_session_contract::LifecycleOutbox for ResponseLossStore {
 
     async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
         self.inner.complete_lifecycle(fact_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::PreparedParticipantIntents for ResponseLossStore {
+    async fn record_creation_intent(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        repository_id: &str,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<
+        awaken_session_contract::PreparedParticipantIntentRecord,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .record_creation_intent(
+                owner_scope,
+                session_id,
+                repository_id,
+                lease_expires_at_unix_ms,
+            )
+            .await
+    }
+
+    async fn claim_creation_abort(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<
+        awaken_session_contract::PreparedParticipantIntentClaim,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner.claim_creation_abort(session_id).await
+    }
+
+    async fn complete_creation_abort(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+        self.inner.complete_creation_abort(session_id).await
+    }
+
+    async fn recoverable_creation_intents(
+        &self,
+        now_unix_ms: u64,
+        limit: usize,
+    ) -> Result<
+        Vec<awaken_session_contract::PreparedParticipantIntent>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .recoverable_creation_intents(now_unix_ms, limit)
+            .await
     }
 }

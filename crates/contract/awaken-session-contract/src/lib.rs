@@ -71,7 +71,9 @@ pub use event::{
     session_outcome_convenience_id, session_terminated_fact_id,
 };
 pub use repository::{
-    LifecycleOutbox, SessionReconciliation, SessionRepository, SessionRepositoryReads,
+    LifecycleOutbox, PreparedParticipantIntent, PreparedParticipantIntentClaim,
+    PreparedParticipantIntentPhase, PreparedParticipantIntentRecord, PreparedParticipantIntents,
+    SessionReconciliation, SessionRepository, SessionRepositoryReads,
 };
 pub use state::{
     ActivationState, CheckpointReceipt, IdempotencyRecord, MaterializationKind, PersistedSession,

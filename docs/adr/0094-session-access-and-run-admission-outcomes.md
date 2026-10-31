@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-25
+- Amended by: ADR-0102 (D3 splits determinate not-admitted from undecided)
 
 ## Context
 
@@ -67,17 +68,21 @@ per-owner id scheme is introduced.
 
 ### D3 Run admission outcomes are classified
 
-After the Run reservation is durable, the Session activity admission has three
-outcomes:
+After the Run reservation is durable, the Session activity admission has four
+outcomes (amended by ADR-0102 D2):
 
 | Refusal | Durable effect | Caller answer | Reservation repair |
 |---|---|---|---|
 | budget boundary (definitive) | rejection receipt `managed:session-run-rejection:` in the root's idempotency index | `budget_reached` | `Rejected`, replayed by the caller's retry and cancellation alike |
-| Session store outage or CAS conflict (undecided) | none | `session_run_admission_pending` (retry the same operation) | completes the admission exactly once, or deletes it on cancellation |
+| Session store refused before applying (`NotApplied`, determinate) | none | `session_run_not_admitted` (retry the same operation) | completes the admission exactly once, or deletes it on cancellation |
+| Session store outage with unknown effect, or CAS conflict (undecided) | none | `session_run_admission_pending` (retry the same operation) | completes the admission exactly once, or deletes it on cancellation |
 | other admission rule | none | its own class | its own class |
 
 An undecided outcome is not a failure: the reservation repair owns its
-settlement, and the same operation id is the only safe retry. A rejection
+settlement, and the same operation id is the only safe retry. A store reports
+`NotApplied` only when it can prove nothing was applied; any doubt stays
+`AuthorityUnavailable`, which is undecided. Not admitted still means the same
+operation id, because repair may complete the durable reservation. A rejection
 receipt is written only when the store is healthy; if it cannot be written the
 refusal is reported as pending, which repair still settles.
 

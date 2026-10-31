@@ -230,4 +230,57 @@ mod session_repository {
             self.inner.complete_lifecycle(fact_id).await
         }
     }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::PreparedParticipantIntents for ConflictInjectingRepo {
+        async fn record_creation_intent(
+            &self,
+            owner_scope: &str,
+            session_id: &awaken_session_types::SessionId,
+            repository_id: &str,
+            lease_expires_at_unix_ms: u64,
+        ) -> Result<
+            awaken_session_contract::PreparedParticipantIntentRecord,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner
+                .record_creation_intent(
+                    owner_scope,
+                    session_id,
+                    repository_id,
+                    lease_expires_at_unix_ms,
+                )
+                .await
+        }
+
+        async fn claim_creation_abort(
+            &self,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<
+            awaken_session_contract::PreparedParticipantIntentClaim,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner.claim_creation_abort(session_id).await
+        }
+
+        async fn complete_creation_abort(
+            &self,
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+            self.inner.complete_creation_abort(session_id).await
+        }
+
+        async fn recoverable_creation_intents(
+            &self,
+            now_unix_ms: u64,
+            limit: usize,
+        ) -> Result<
+            Vec<awaken_session_contract::PreparedParticipantIntent>,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner
+                .recoverable_creation_intents(now_unix_ms, limit)
+                .await
+        }
+    }
 }

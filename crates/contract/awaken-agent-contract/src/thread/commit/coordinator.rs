@@ -7,6 +7,11 @@ use thiserror::Error;
 pub enum Error {
     #[error("commit rejected: {0}")]
     Rejected(String),
+    /// The durable store has no room for the commit (disk or quota full).
+    /// Nothing was applied; unlike `Rejected`, the same commit may succeed
+    /// once capacity is restored.
+    #[error("commit storage capacity exhausted: {0}")]
+    CapacityExhausted(String),
 }
 
 /// The single durable write boundary (G1/G13). Async because a real store

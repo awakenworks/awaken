@@ -26,12 +26,16 @@ use awaken_time::WallClockExt as _;
 
 use crate::credentials::internal;
 use crate::credentials::{mutation_failure, repository_preparation};
+mod creation_intents;
 mod repository_reference;
 
 use crate::{
     SessionCredentials, SessionMutationError, SessionMutations, SessionParticipantProvenance,
     SessionPreparationError, SessionResourceReferences,
 };
+use creation_intents::AbortAdoption;
+#[cfg(test)]
+pub(crate) use creation_intents::CREATION_INTENT_LEASE_MS;
 use repository_reference::{
     session_resources_reference_repository, session_resources_reference_repository_generation,
 };
@@ -162,6 +166,8 @@ pub struct ConfiguredSessionRepository {
 enum OwnedRepositoryRetirement {
     Retired,
     NotOwned,
+    /// A root adopted the participant before the abort fence; nothing retired.
+    Adopted,
     Pending,
 }
 
@@ -184,6 +190,7 @@ pub(crate) enum RepositoryRetirementCause {
 
 pub struct SessionRepositoryParticipants {
     mutations: Arc<SessionMutations>,
+    intents: Arc<dyn awaken_session_contract::PreparedParticipantIntents>,
     resource_references: Arc<SessionResourceReferences>,
     credentials: Arc<SessionCredentials>,
     registry: Option<Arc<dyn ResourceRegistry>>,
@@ -194,6 +201,7 @@ pub struct SessionRepositoryParticipants {
 impl SessionRepositoryParticipants {
     pub(crate) fn new(
         mutations: Arc<SessionMutations>,
+        intents: Arc<dyn awaken_session_contract::PreparedParticipantIntents>,
         resource_references: Arc<SessionResourceReferences>,
         credentials: Arc<SessionCredentials>,
         registry: Option<Arc<dyn ResourceRegistry>>,
@@ -202,12 +210,21 @@ impl SessionRepositoryParticipants {
     ) -> Self {
         Self {
             mutations,
+            intents,
             resource_references,
             credentials,
             registry,
             purge,
             clock,
         }
+    }
+
+    fn intents(&self) -> &dyn awaken_session_contract::PreparedParticipantIntents {
+        self.intents.as_ref()
+    }
+
+    fn mutations(&self) -> &SessionMutations {
+        &self.mutations
     }
 
     pub async fn configure(
@@ -317,6 +334,8 @@ impl SessionRepositoryParticipants {
             initial_config.clone(),
         )
         .map_err(&map_registry_error)?;
+        self.record_creation_intent(&owner, &definition.workspace_id, repository_id.as_str())
+            .await?;
         let (registered_state, registry_provenance) = match catalog
             .register_repository(awaken_resource_contract::RegisterRepository {
                 definition: definition.clone(),
@@ -646,6 +665,7 @@ impl SessionRepositoryParticipants {
     /// command and are never inferred to be disposable.
     pub async fn abort_unadopted(&self, configured: &[ConfiguredSessionRepository]) -> bool {
         let mut retired = true;
+        let mut claimed = Vec::new();
         for configured in configured.iter().rev() {
             let adopted = match self
                 .mutations
@@ -671,13 +691,23 @@ impl SessionRepositoryParticipants {
                 continue;
             }
             if configured.registry_provenance == SessionParticipantProvenance::Applied {
-                retired &= self
-                    .retire_owned(
+                let retirement = self
+                    .retire_participants(
                         &configured.workspace_id,
                         &configured.owner,
                         configured.repository_id.as_str(),
+                        None,
+                        true,
                     )
                     .await;
+                if retirement == OwnedRepositoryRetirement::Adopted {
+                    // A concurrent root won the fence: nothing to retire.
+                    continue;
+                }
+                if retirement == OwnedRepositoryRetirement::Retired {
+                    claimed.push(configured.owner.session_id().to_owned());
+                }
+                retired &= retirement.is_complete();
             }
             if let Some(credential) = &configured.credential
                 && credential.created
@@ -689,6 +719,12 @@ impl SessionRepositoryParticipants {
                         &credential.credential,
                     )
                     .await;
+            }
+        }
+        if retired {
+            claimed.dedup();
+            for session_id in &claimed {
+                retired &= self.complete_creation_abort(session_id).await;
             }
         }
         retired
@@ -726,6 +762,7 @@ impl SessionRepositoryParticipants {
             &owner,
             repository_id.as_str(),
             owned_credential,
+            false,
         )
         .await
         .is_complete()
@@ -737,17 +774,21 @@ impl SessionRepositoryParticipants {
         owner: &SessionRepositoryOwner,
         repository_id: &str,
     ) -> bool {
-        self.retire_participants(owner_scope, owner, repository_id, None)
+        self.retire_participants(owner_scope, owner, repository_id, None, false)
             .await
             .is_complete()
     }
 
+    /// `fence_unadopted` claims the Session's creation intent after the purge
+    /// is scheduled and before the definition is retired, so a root that
+    /// adopted the participant after the caller's adoption check wins.
     async fn retire_participants(
         &self,
         owner_scope: &str,
         owner: &SessionRepositoryOwner,
         repository_id: &str,
         credential: Option<&awaken_credential_contract::CredentialRef>,
+        fence_unadopted: bool,
     ) -> OwnedRepositoryRetirement {
         let Some(catalog) = self.registry.as_deref() else {
             return OwnedRepositoryRetirement::Pending;
@@ -793,6 +834,16 @@ impl SessionRepositoryParticipants {
         {
             return OwnedRepositoryRetirement::Pending;
         }
+        if fence_unadopted {
+            match self
+                .fence_creation_abort(owner.session_id(), repository_id)
+                .await
+            {
+                Some(AbortAdoption::Claimed | AbortAdoption::Unclaimed) => {}
+                Some(AbortAdoption::Adopted) => return OwnedRepositoryRetirement::Adopted,
+                None => return OwnedRepositoryRetirement::Pending,
+            }
+        }
         if catalog
             .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
                 workspace_id: owner_scope.into(),
@@ -809,7 +860,8 @@ impl SessionRepositoryParticipants {
     }
 
     /// Retire the Repository participants a failed request configured; a
-    /// compensation that cannot finish is left to terminal reconciliation.
+    /// compensation that cannot finish stays pending in the Session's durable
+    /// creation intent, which the recovery cycle completes.
     pub(crate) async fn compensate(
         &self,
         session_id: &str,

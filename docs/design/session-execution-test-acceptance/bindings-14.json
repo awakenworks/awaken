@@ -51,20 +51,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
-        "line": 162,
-        "file_sha256": "aaa7111039deb54abf5d8439e4028f6f7342e1e15defeb504cc1c7738813f6dd"
+        "line": 161,
+        "file_sha256": "f763c581aa255e82adb16579951ddd174dbb28da8d1a7e954c3aee0d8e254fdc"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T38-C02": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          3
+        ],
+        "negative_control": true
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: DispatchPool::shutdown has no deadline",
-    "limitation": "Not execution evidence. Follow-up: run-ingress dispatch pool shutdown (S-M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B253"
   },
   {
@@ -72,20 +74,23 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
-        "line": 175,
-        "file_sha256": "aaa7111039deb54abf5d8439e4028f6f7342e1e15defeb504cc1c7738813f6dd"
+        "line": 173,
+        "file_sha256": "f763c581aa255e82adb16579951ddd174dbb28da8d1a7e954c3aee0d8e254fdc"
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T38-C02": {
-        "oracles": [],
-        "negative_control": false
+        "oracles": [
+          0,
+          1
+        ],
+        "negative_control": true
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: LiveInbox::offer is unbounded",
-    "limitation": "Not execution evidence. Follow-up: runtime live inbox capacity (M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B254"
   },
   {
@@ -98,15 +103,17 @@
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T06-C02": {
-        "oracles": [],
+        "oracles": [
+          0
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the lease clock is sampled once before the commit-epoch lock wait",
-    "limitation": "Not execution evidence. Follow-up: resource-worker-http read_file_content (S)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B255"
   },
   {
@@ -119,15 +126,18 @@
       }
     ],
     "execution_witnesses": [],
-    "relation": "reproduces_product_gap",
+    "relation": "supports_subset_only",
     "covers": {
       "T06-C02": {
-        "oracles": [],
+        "oracles": [
+          0,
+          1
+        ],
         "negative_control": false
       }
     },
-    "review": "Ignored reproducer asserting the correct behaviour; fails today: the physical read receives no fence and nothing re-checks after it",
-    "limitation": "Not execution evidence. Follow-up: resource-worker-http and resource-application file source (M)",
+    "review": "Former product-gap reproducer, un-ignored after the ADR-0102 fix; asserts the corrected behaviour through the production entrypoint.",
+    "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered.",
     "id": "B256"
   },
   {
@@ -432,7 +442,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_repo_conformance/mcp_candidate_recovery.rs",
-        "line": 237,
+        "line": 236,
         "file_sha256": "871a07c0da626c3610b6d7a9170ab6fd0eb9a43800abc852fdcf84eb69d30aa0"
       }
     ],
@@ -456,7 +466,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_repo_conformance/mcp_candidate_recovery.rs",
-        "line": 309,
+        "line": 308,
         "file_sha256": "871a07c0da626c3610b6d7a9170ab6fd0eb9a43800abc852fdcf84eb69d30aa0"
       }
     ],

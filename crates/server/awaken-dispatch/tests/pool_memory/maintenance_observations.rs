@@ -119,8 +119,8 @@ async fn check_case(
             .expect("service retains the same selected binding")
             .shutdown(),
         ),
-        "pool" => Box::pin(
-            DispatchPool::spawn_bound(
+        "pool" => Box::pin({
+            let pool = DispatchPool::spawn_bound(
                 binding.clone(),
                 clock,
                 "pool",
@@ -131,9 +131,11 @@ async fn check_case(
                 wake.clone(),
                 None,
             )
-            .expect("valid test Pool binding")
-            .shutdown(),
-        ),
+            .expect("valid test Pool binding");
+            async move {
+                pool.shutdown().await;
+            }
+        }),
         "reconciler" => {
             let selected = DispatchReconciler::spawn_for_binding(
                 binding,

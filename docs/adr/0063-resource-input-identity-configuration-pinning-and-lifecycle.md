@@ -4,6 +4,7 @@
 - Date: 2026-07-21
 - Supersedes: ADR-0051 (its `ScopedRepo` mechanism; see the ADR-0051 supersession note; recorded 2026-10-09)
 - Amended by: ADR-0075 (supersedes the late Worker-authored Session-input path)
+- Amended by: ADR-0102 (durable pre-root creation intents for prepared participants)
 - Amended: 2026-10-09 (reconciled with ADR-0069: resource databases come from typed deployment configuration)
 - Amended: 2026-08-01 — logical File identity and canonical Resources application
 - Amended: 2026-08-10 — typed application-contributed Session inputs
@@ -602,6 +603,11 @@ root: an unavailable or corrupt root is preserved for reconciliation, a
 concurrent winner that references the participant has adopted it, and only an
 unreferenced participant is retired. Whole-manifest replacement uses this same
 participant/root boundary rather than a second cleanup path.
+
+Amended by ADR-0102 D1: before the prepare, the participant is recorded under
+the Session's durable creation intent. The root insert consumes that intent,
+and compensation claims it right before retiring, so a concurrent adopting
+create wins. Recovery completes an intent whose caller is gone, without a root.
 
 After root adoption, the existing Session Resource state and reconciler own
 release; there is no protocol-local cleanup saga. When a replacement generation

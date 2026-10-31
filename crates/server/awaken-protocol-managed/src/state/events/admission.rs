@@ -583,9 +583,11 @@ impl ManagedState {
                             idempotency_key.clone().zip(request_fingerprint.clone()),
                         )
                         .await
-                        .map(|batch| (batch, None))
+                        .map(|batch| batch.map(|batch| (batch, None)))
                 };
-                append.map(Some).map_err(|error| {
+                // `None` is the root-CAS budget-pause no-op: a pause that won
+                // the race after validation still answers with no receipt.
+                append.map_err(|error| {
                     if error.code == "idempotency_conflict" {
                         StateError::IdempotencyMismatch
                     } else {

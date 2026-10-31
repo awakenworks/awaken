@@ -634,22 +634,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 151,
+        "line": 150,
         "file_sha256": "f19a03f0741490c96bccff47284168c45c90324aa38ea0c9a0d042c1c3de9d92"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 159
+        "line": 158
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 166
+        "line": 165
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 174
+        "line": 173
       }
     ],
     "execution_witnesses": [

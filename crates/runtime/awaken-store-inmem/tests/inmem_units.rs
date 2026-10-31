@@ -159,6 +159,7 @@ async fn commit_rejects_empty_run_id_before_any_write() {
         .expect_err("empty run_id must be rejected");
     match err {
         Error::Rejected(msg) => assert!(msg.contains("run_id"), "message names run_id: {msg}"),
+        other => panic!("expected a logical rejection: {other:?}"),
     }
     // Fail-closed: nothing was written.
     assert_eq!(store.commit_count(), 0);
@@ -180,7 +181,9 @@ async fn commit_rejects_empty_thread_id() {
         ))
         .await
         .expect_err("empty thread_id must be rejected");
-    let Error::Rejected(msg) = err;
+    let Error::Rejected(msg) = &err else {
+        panic!("expected a logical rejection: {err:?}");
+    };
     assert!(msg.contains("thread_id"), "message names thread_id: {msg}");
     assert_eq!(store.commit_count(), 0);
 }
@@ -200,7 +203,9 @@ async fn commit_rejects_ticket_for_a_different_thread() {
         ))
         .await
         .expect_err("cross-thread ticket must be rejected");
-    let Error::Rejected(msg) = err;
+    let Error::Rejected(msg) = &err else {
+        panic!("expected a logical rejection: {err:?}");
+    };
     assert!(
         msg.contains("thread_id"),
         "message flags the thread_id mismatch: {msg}"
@@ -241,7 +246,9 @@ async fn first_ended_commit_is_allowed_then_post_terminal_is_fenced() {
         ))
         .await
         .expect_err("post-terminal commit must be fenced");
-    let Error::Rejected(msg) = err;
+    let Error::Rejected(msg) = &err else {
+        panic!("expected a logical rejection: {err:?}");
+    };
     assert!(msg.contains("already terminal"), "fence message: {msg}");
 
     // Exactly-once: the duplicate transcript/event never landed.

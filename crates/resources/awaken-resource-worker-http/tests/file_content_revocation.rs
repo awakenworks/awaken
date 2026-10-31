@@ -12,8 +12,8 @@
 //! | P1   | inside physical read      | settle the dispatch claim  | settle linearizes after the read;  |
 //! |      |                           |                            | next read 409, zero source entries |
 //! | P2   | commit-epoch lock wait    | settle the dispatch claim  | 409, zero source entries           |
-//! | G1   | commit-epoch lock wait    | claim lease expires        | 409, zero source entries (GAP)     |
-//! | G2   | inside physical read      | claim lease expires        | no bytes released, fenced read (GAP)|
+//! | G1   | commit-epoch lock wait    | claim lease expires        | 409, zero source entries           |
+//! | G2   | inside physical read      | claim lease expires        | no bytes released, fenced read     |
 //! Negative control (executed): an in-test pipeline that checks authority
 //! before the long wait and then reads must be detected by the same oracle.
 
@@ -415,7 +415,6 @@ async fn t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is
 }
 
 #[tokio::test]
-#[ignore = "product gap: read_file_content samples the clock once before the commit-epoch lock wait, so a claim lease that expires during the wait still releases File bytes"]
 async fn t06_c02_lease_expiry_during_lock_wait_is_rechecked() {
     // G1: the lease expires while the handler waits at the commit-epoch lock.
     let fixture = build_fixture().await;
@@ -436,7 +435,6 @@ async fn t06_c02_lease_expiry_during_lock_wait_is_rechecked() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: the physical File read receives fence None and nothing re-checks authority after it, so a lease that expires during the read still releases bytes"]
 async fn t06_c02_lease_expiry_during_physical_read_releases_no_bytes() {
     // G2: the lease expires while the physical read is held at the barrier.
     let fixture = build_fixture().await;
