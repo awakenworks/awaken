@@ -259,8 +259,9 @@ inherits `HTTP(S)_PROXY`, `ExternalHttpClient` reaches third parties and honours
 a configured proxy except toward loopback, and `rustls_client_builder` takes a
 `TransportDeadline` so an unbounded client cannot be expressed. A crate outside
 the registered transport authorities may not declare `reqwest`/`rustls` or name
-a bare client constructor; `check_crate_boundaries.py` enforces both with a
-whole-repository scan against `DIRECT_TRANSPORT_EXEMPTIONS`.
+a bare client constructor: `deny.toml` `[bans]` admits each direct dependency
+only from its listed wrappers, and `check_crate_boundaries.py` refuses a bare
+constructor outside `TRANSPORT_CONSTRUCTION_EXEMPTIONS`.
 
 Registered CA/mTLS, multipart and streaming adapters reuse the same private
 channel builder from `awaken-outbound-http`; its blocking counterpart is an

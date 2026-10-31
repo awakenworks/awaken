@@ -92,7 +92,8 @@ REQUIRED_RELEASE_COMMANDS = (
     "check_public_api.sh --require-tools",
     "scripts/contract/generate-contracts.sh --check",
     "pnpm --filter @awaken/managed-sdk-oracle check",
-    "cargo deny --log-level error check advisories bans",
+    "cargo deny --log-level error check advisories",
+    "cargo deny --exclude-dev --log-level error check -D unused-wrapper bans",
     "check_formal.sh --require-tools",
     "check-reliability.sh --require-tools",
     "pg_tests.sh --require-docker",
@@ -1558,10 +1559,15 @@ def self_test() -> None:
         check_rust,
     ), "R7 latest SDK compatibility"
     assert release_gate_errors(
-        check_all.replace("check advisories bans", "check bans"),
+        check_all.replace("cargo deny --log-level error check advisories\n", "\n"),
         public_api,
         check_rust,
     ), "R7 RustSec advisories cannot disappear behind the bans-only gate"
+    assert release_gate_errors(
+        check_all.replace("--exclude-dev --log-level error check -D unused-wrapper bans", "--log-level error check bans"),
+        public_api,
+        check_rust,
+    ), "R7 the transport bans run on the production graph and refuse a stale wrapper"
     assert release_gate_errors(
         check_all.replace("scripts/e2e/k8s_container_e2e.sh", ""),
         public_api,

@@ -157,6 +157,21 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_test_inventory.py
 
+    # 3b'. A trait default that degrades silently, and a verification gate
+    #      that passes because its dependency was absent, are refused at commit
+    #      as well as in the full gate.
+    degrading-defaults:
+      # >>> generated glob from check_degrading_defaults.py INPUT_GLOBS — do not edit
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/check_degrading_defaults.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py
+
+    dependency-gates:
+      # >>> generated glob from check_dependency_gates.py INPUT_GLOBS — do not edit
+      glob: "{crates/**,e2e/**,scripts/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_dependency_gates.py --self-test && python3 scripts/ci/check_dependency_gates.py
+
     # The Session acceptance ledger's gate tests drive the real workspace
     # guards, impact planner and ledger validator with injected
     # counter-examples; a change to what they read re-proves the refusals.
@@ -500,15 +515,18 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_architecture_vocabulary.py
 
-    # 14. Crate dependency direction (layering) fitness function: a lower layer
-    #    must not depend on a higher one (deny.toml; INVARIANTS G2/G18/G29).
-    #    Skips with a hint if cargo-deny is not installed.
+    # 14. Only the crates deny.toml lists as wrappers depend on a transport
+    #    crate (`reqwest`, `rustls`). Production graph only (`--exclude-dev`);
+    #    an unused wrapper is an error, so a stale exemption cannot stay.
+    #    cargo-deny reads Cargo metadata and builds nothing, so it is started
+    #    directly rather than through the host's build admission. Skips with a
+    #    hint if cargo-deny is not installed.
     check-dep-direction:
       glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
       # Fold to one shell command: Windows' hook launcher cannot carry the
       # nested double-quoted, multiline `sh -c` body intact.
       run: >-
-        if command -v cargo-deny >/dev/null 2>&1; then cargo deny --log-level error check bans;
+        if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans;
         else echo 'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'; fi
 
 commit-msg:

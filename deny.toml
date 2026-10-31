@@ -1,7 +1,7 @@
 # Dependency architecture has one source of truth: each crate's
 # [package.metadata.awaken] context/layer/authority, interpreted by
-# scripts/ci/check_crate_boundaries.py. cargo-deny remains dependency-hygiene
-# tooling and deliberately does not duplicate architecture wrapper lists.
+# scripts/ci/check_crate_boundaries.py. cargo-deny holds the one rule Cargo's
+# graph states directly: which crates may depend on a transport crate.
 
 [graph]
 all-features = true
@@ -9,6 +9,67 @@ all-features = true
 [bans]
 multiple-versions = "allow"
 wildcards = "allow"
+# Outbound transport construction (L1). Selecting the process-wide rustls
+# provider and deciding whether a channel may inherit an ambient `HTTP(S)_PROXY`
+# were once obligations remembered at each client site, which is why they were
+# honoured in two crates and forgotten in fifteen. `awaken-outbound-http` owns
+# both as properties of `InternalHttpClient` / `ExternalHttpClient`, so a crate
+# that cannot name `reqwest` or `rustls` cannot express an unguarded client. A
+# first-party wrapper below states why that crate must own transport
+# construction itself; the third-party wrappers are libraries that build their
+# own clients. Bans run with `--exclude-dev`: a `[dev-dependencies]` client is a
+# test composition root exercising a real server, not an egress path. A bare
+# `reqwest::Client` constructor is refused by check_crate_boundaries.py.
+deny = [
+    { crate = "reqwest", reason = "build an InternalHttpClient/ExternalHttpClient from awaken-outbound-http", wrappers = [
+        # The transport authority: selects the rustls provider and owns the
+        # internal/external proxy variants.
+        "awaken-outbound-http",
+        # Pins reqwest 0.13: the `genai` SDK takes a 0.13 `Client` through
+        # `with_reqwest`, a different type from the authority's 0.12 client.
+        "awaken-provider-genai",
+        # Streams MCP server-sent events off a live `Response` body and mirrors
+        # arbitrary server headers; a JSON request/reply pair cannot express it.
+        "awaken-ext-mcp",
+        # Re-signs and replays one prepared `RequestBuilder` after a credential
+        # rotation, so the retry seam is the request builder itself.
+        "awaken-inference-endpoint",
+        # The Control-owned OAuth Vault refresher sends form-encoded token
+        # exchanges with Basic/client-secret authentication, which the JSON-only
+        # external client cannot express; construction still uses the
+        # authority's rustls builder.
+        "awaken-control",
+        # The MCP relay is a reverse proxy: it forwards a caller-chosen method,
+        # header set and raw body, none of which the JSON client models.
+        "awaken-session-mcp",
+        # Second transport authority, for the Worker-to-Coordinator plane: owns
+        # the signed `RequestBuilder` seam and the private-CA client, and takes
+        # its provider selection from awaken-outbound-http.
+        "awaken-worker-transport-security",
+        # Implements the Worker-to-Coordinator signing seam, whose port is
+        # defined over `reqwest::RequestBuilder` by the authority above.
+        "awaken-coordinator-client",
+        # Third-party and awaken-cloud libraries that build their own clients.
+        "awaken-iam-client",
+        "awaken-iam-host",
+        "awaken-iam-server",
+        "genai",
+        "object_store",
+        "opentelemetry-http",
+        "opentelemetry-otlp",
+    ] },
+    { crate = "rustls", reason = "only the transport authority selects the rustls provider", wrappers = [
+        "awaken-outbound-http",
+        # Third-party TLS clients and connectors.
+        "hyper-rustls",
+        "kube-client",
+        "reqwest",
+        "rustls-platform-verifier",
+        "sqlx-core",
+        "tokio-rustls",
+        "ureq",
+    ] },
+]
 
 # The mandatory trust-root guard limits this semver-shim false positive.
 [advisories]

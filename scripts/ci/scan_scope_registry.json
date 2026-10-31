@@ -1,6 +1,6 @@
 {
   "baseline": {
-    "scanners_without_input_globs": 16,
+    "scanners_without_input_globs": 14,
     "scope_lists": 31
   },
   "comment": [
@@ -28,14 +28,6 @@
     "check_authority_arithmetic.py": {
       "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
       "runner": "scripts/ci/check-rust.sh"
-    },
-    "check_degrading_defaults.py": {
-      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render",
-      "runner": "scripts/ci/check-all.sh"
-    },
-    "check_dependency_gates.py": {
-      "reason": "runs only in the static group of the full gate; it has no pre-commit command, so there is no trigger for a declaration to render",
-      "runner": "scripts/ci/check-all.sh"
     },
     "check_dependency_sources.py": {
       "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",

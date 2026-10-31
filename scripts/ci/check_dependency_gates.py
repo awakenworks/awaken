@@ -35,6 +35,10 @@ import re
 import sys
 from pathlib import Path
 
+# The scan is whole-repository by design (see above): every crate, every e2e
+# runner and every gate script; generate_hooks.py renders the trigger from this.
+INPUT_GLOBS: tuple[str, ...] = ("crates/**", "e2e/**", "scripts/**")
+
 ROOT = Path(__file__).resolve().parents[2]
 PG_GATE = "scripts/ci/pg_tests.sh"
 

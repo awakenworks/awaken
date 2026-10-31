@@ -106,6 +106,25 @@ done
 [ "$node_registered" = 1 ] || { echo "k3d node never registered" >&2; exit 1; }
 kubectl --request-timeout=10s wait --for=condition=Ready nodes --all --timeout=120s
 
+# ADR-0078 same-name isolation, observed against the real API server: an
+# admitted Create paused in admission returns 409 while an inert object of the
+# same Kind holds the namespace/name (reservation-held), publishes a new UID once
+# that object is released (reservation-released), and a Pod Create still lands
+# after its Namespace finalized (namespace-deletion, the counterexample). The
+# control serves its pausing webhook on the host; the cluster reaches the host at
+# the gateway of its Docker network.
+log "qualifying same-name late-Create isolation for every brokered Kind"
+webhook_address="$(docker network inspect "k3d-${CLUSTER}" -f '{{(index .IPAM.Config 0).Gateway}}')"
+late_create() {
+  python3 scripts/ci/k8s_namespace_late_create_negative_control.py \
+    --kubeconfig "$KUBECONFIG_FILE" --advertise-address "$webhook_address" "$@"
+}
+late_create --resource pods --scenario namespace-deletion
+for resource in pods configmaps secrets persistentvolumeclaims jobs daemonsets; do
+  late_create --resource "$resource" --scenario reservation-held
+  late_create --resource "$resource" --scenario reservation-released
+done
+
 # Install the exact graph production imports so the live suite exercises the
 # same source attested by Worker readiness and restricted Pod admission.
 log "installing canonical Sandbox NetworkPolicy graph"

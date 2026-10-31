@@ -75,6 +75,10 @@ from pathlib import Path
 import _architecture_ratchet
 from _architecture_ratchet import Rule
 
+# Every crate's sources and manifests; generate_hooks.py renders the pre-commit
+# trigger from this declaration.
+INPUT_GLOBS: tuple[str, ...] = ("crates/**/*.rs", "crates/**/Cargo.toml")
+
 ROOT = Path(__file__).resolve().parents[2]
 
 RULES = (
