@@ -11,7 +11,7 @@ patches:
   # PostgreSQL is excluded because its primary/standby promotion is explicitly
   # fenced by the database-failover stage instead of automatic Pod relocation.
   - target:
-      kind: Deployment|StatefulSet|Job
+      kind: Deployment|StatefulSet
       name: control|coordinator|worker|provider|awaken-api
     patch: |-
       - op: add
@@ -49,7 +49,7 @@ patches:
           requests: { cpu: 100m, memory: 192Mi }
           limits: { cpu: "2", memory: 2Gi }
   - target:
-      kind: Job
+      kind: StatefulSet
       name: worker
     patch: |-
       - op: add

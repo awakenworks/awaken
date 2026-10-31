@@ -154,18 +154,10 @@ def main() -> None:
     # than disabling kubectl validation or narrowing the retry contract. This
     # shape gate complements the live controller replacement witness; it does
     # not claim that a new Pod or a timer proves old execution has settled.
-    # PR6 (ADR-0078 amendment 2026-10-31): one Pod is one Worker process, so
-    # every registered Worker fleet (product Job and the distributed Indexed
-    # Job) uses this same Never-restart shape; a StatefulSet/Deployment Worker
-    # or restartPolicy Always would restart in place under one UID => reject.
-    def worker_replacement_contract(resources_text: str, marker: str = product_marker) -> bool:
-        if marker not in resources_text:
-            return False
-        worker = resources_text.split(marker, 1)[1].split("\n---", 1)[0]
+    def worker_replacement_contract(resources_text: str) -> bool:
+        worker = resources_text.split(product_marker, 1)[1].split("\n---", 1)[0]
         return (
             "restartPolicy: Never" in worker
-            # The process-evidence finalizer is added at registration only.
-            and "awaken.dev/worker-process-evidence" not in worker
             and "podFailurePolicy:" in worker
             and re.search(r"action: Ignore\s+onExitCodes:\s+containerName: worker\s+operator: NotIn\s+values: \[0\]", worker) is not None
             and re.search(r'action: Ignore\s+onPodConditions:\s+- type: DisruptionTarget\s+status: "True"', worker) is not None
@@ -177,24 +169,23 @@ def main() -> None:
     assert not worker_replacement_contract(product_resources.replace("operator: NotIn", "operator: In"))
     for status in ('', '            status: "False"', '            status: "Unknown"'):
         assert not worker_replacement_contract(product_resources.replace('            status: "True"', status))
-    distributed_marker = "kind: Job\nmetadata: { name: worker, labels: { app: worker } }"
-    assert worker_replacement_contract(resources, distributed_marker), "PR6 distributed Worker fleet"
-    assert "completionMode: Indexed" in resources.split(distributed_marker, 1)[1].split("\n---", 1)[0]
-    assert not worker_replacement_contract(
-        resources.replace("restartPolicy: Never\n      serviceAccountName: worker-runtime",
-                          "restartPolicy: Always\n      serviceAccountName: worker-runtime"),
-        distributed_marker,
-    ), "PR6 restartable Worker Pod"
-    assert not worker_replacement_contract(
+    distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
+    # PR6 (ADR-0078 amendment 2026-10-31): the Coordinator adds the Worker
+    # process-evidence finalizer at registration, once the Pod can bind. A
+    # template finalizer would pin every Pod that never registers, so neither
+    # the product Job nor the distributed StatefulSet template may carry it.
+    def worker_template_finalizer_free(resources_text: str, marker: str) -> bool:
+        worker = resources_text.split(marker, 1)[1].split("\n---", 1)[0]
+        return "awaken.dev/worker-process-evidence" not in worker
+    assert worker_template_finalizer_free(product_resources, product_marker), "PR6 product"
+    assert worker_template_finalizer_free(resources, distributed_marker), "PR6 distributed"
+    assert not worker_template_finalizer_free(
         product_resources.replace(
             "        app.kubernetes.io/name: awaken-worker\n      # No process-evidence",
             "        app.kubernetes.io/name: awaken-worker\n      finalizers: [awaken.dev/worker-process-evidence]\n      # No process-evidence",
         ),
-    ), "template finalizer pins never-registered Pods"
-    assert not worker_replacement_contract(
-        resources.replace(distributed_marker, distributed_marker.replace("kind: Job", "kind: StatefulSet")),
-        distributed_marker,
-    ), "PR6 restartable Worker controller"
+        product_marker,
+    ), "PR6 mutation: template finalizer"
     assert worker_retirement_contract(product_resources, product_marker)
     assert worker_retirement_contract(resources, distributed_marker)
     assert not worker_retirement_contract(
