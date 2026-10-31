@@ -199,6 +199,11 @@ FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
         "error; an unreadable body makes the detail string empty, and the error "
         "itself is raised either way"
     ),
+    "crates/resources/awaken-resource-application/src/reclamation/tests/guard.rs": (
+        "`ZeroOnError` is the deliberately fail-open purge guard the reclamation "
+        "tests run as a negative control; the suite must observe it purging a "
+        "target the real guard would hold, so the default is the mutant itself"
+    ),
     "crates/runtime/awaken-ext-memory/src/plugin.rs": (
         "recall is fail-soft by design (ADR-0055): a memory-store outage must "
         "not fail the turn, and an empty recall is the documented degraded "

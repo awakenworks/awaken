@@ -190,7 +190,10 @@ async fn driven_event_batch_replay_executes_its_run_once() {
             .filter(|entry| entry.starts_with(prefix))
             .count()
     };
-    let (first, first_error) = drive().await.expect("R5 first drive");
+    let (first, first_error) = drive()
+        .await
+        .expect("R5 first drive")
+        .expect("R5 an input batch is not a root no-op");
     assert!(first_error.is_none(), "R5 first drive completes");
     let reserved = runtime.reserved.lock().unwrap().len();
     let activated = runtime.activated.lock().unwrap().len();
@@ -200,7 +203,10 @@ async fn driven_event_batch_replay_executes_its_run_once() {
     assert_eq!(activate_calls, 1, "R5 one activation call");
     let root = repository.get(&session_id).await.unwrap();
 
-    let (replay, _) = drive().await.expect("R5 replay drive");
+    let (replay, _) = drive()
+        .await
+        .expect("R5 replay drive")
+        .expect("R5 the replay is not a root no-op");
     assert!(is_original_receipt(&replay, &first), "R5/O0 driven replay");
     assert_eq!(
         runtime.reserved.lock().unwrap().len(),
