@@ -680,7 +680,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }

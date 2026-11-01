@@ -15,15 +15,18 @@ use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
+use awaken_session_contract::{
+    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
+    SessionThreadToolReplyDelivery,
+};
 use awaken_session_execution_contract::{
     CoordinatedRunIntent, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
     SessionAgentBoundaryRole, SessionAgentBoundaryVisibility, SessionAgentCommittedReport,
     SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
     SessionAgentReportContinuation, SessionAgentRosterEntry, SessionAgentTarget,
-    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
-    SessionThreadToolReply, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
-    coordinated_thread_closed, session_agent_boundary_action, session_agent_report_text,
-    session_agent_run_boundary, session_run_activity_operation_id,
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, coordinated_thread_closed,
+    session_agent_boundary_action, session_agent_report_text, session_agent_run_boundary,
+    session_run_activity_operation_id,
 };
 use awaken_session_types::RunError;
 
@@ -473,16 +476,20 @@ impl SessionCoordination {
             None
         } else {
             match fence.activity {
-                awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
-                awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+                awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
+                awaken_session_contract::SessionThreadToolReplyActivity::Session {
                     prior_epoch,
                 } => {
-                    let (_, epoch) = self.activities
+                    let (_, epoch) = self
+                        .activities
                         .transfer_committed_activity_for_operation(
                             &session_id,
                             &operation_id,
                             prior_epoch,
-                            (&command.target.thread_id(&command.session_id), &command.expected_run_id),
+                            (
+                                &command.target.thread_id(&command.session_id),
+                                &command.expected_run_id,
+                            ),
                         )
                         .await
                         .map_err(crate::SessionActivityError::run_error)?;
@@ -1246,9 +1253,10 @@ impl crate::ProfiledSessionReplies for SessionCoordination {
     async fn reply_profiled_session_run_for_owner(
         &self,
         owner_scope: &str,
-        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), SessionProjectionRecoveryError> {
-        use awaken_session_execution_contract::{SessionAgentCoordination, SessionThreadTarget};
+        use awaken_session_contract::SessionThreadTarget;
+        use awaken_session_execution_contract::SessionAgentCoordination;
         self.run_admissions
             .require_profiled_run_owner(owner_scope, &command.session_id)
             .await?;
@@ -1299,23 +1307,23 @@ mod boundary_tests {
         // | B5 | Running | E4 |
         assert_eq!(
             session_agent_run_boundary(&RunState::Awaiting).expect("B1"),
-            awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
+            awaken_session_contract::SessionAgentRunBoundary::Awaiting,
             "B1/E1"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::NaturalEnd,)).expect("B2"),
-            awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
+            awaken_session_contract::SessionAgentRunBoundary::Completed,
             "B2/E2"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::Error(Failure::StateConflict,)))
                 .expect("B3"),
-            awaken_session_execution_contract::SessionAgentRunBoundary::Failed,
+            awaken_session_contract::SessionAgentRunBoundary::Failed,
             "B3/E3"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::Cancelled)).expect("B4"),
-            awaken_session_execution_contract::SessionAgentRunBoundary::Cancelled,
+            awaken_session_contract::SessionAgentRunBoundary::Cancelled,
             "B4/E3"
         );
         assert!(

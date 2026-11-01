@@ -291,7 +291,7 @@ pub trait ProfiledSessionReplies: Send + Sync {
     async fn reply_profiled_session_run_for_owner(
         &self,
         owner_scope: &str,
-        command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), SessionProjectionRecoveryError>;
 }
 

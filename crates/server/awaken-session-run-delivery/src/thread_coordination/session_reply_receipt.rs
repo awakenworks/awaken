@@ -132,7 +132,7 @@ impl super::CoordinatedThreads {
     /// response loss, Worker settlement, process restart, and projection lag.
     pub(super) async fn session_thread_tool_reply_receipt(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<SessionReplyReceipt, RunError> {
         if !command.has_complete_coordinates() {
             return Err(RunError::bad_request(

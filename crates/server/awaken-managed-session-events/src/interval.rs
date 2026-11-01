@@ -295,10 +295,10 @@ fn interval_owner_openings(
             SessionEventCommand::ToolReply { reply, .. } => Some(IntervalOwnerOpening {
                 run_id: &reply.expected_run_id,
                 target: match &reply.target {
-                    awaken_session_execution_contract::SessionThreadTarget::Primary => {
+                    awaken_session_contract::SessionThreadTarget::Primary => {
                         IntervalOwnerTarget::Primary
                     }
-                    awaken_session_execution_contract::SessionThreadTarget::Child(thread_id) => {
+                    awaken_session_contract::SessionThreadTarget::Child(thread_id) => {
                         IntervalOwnerTarget::Child(thread_id)
                     }
                 },

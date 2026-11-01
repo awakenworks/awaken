@@ -443,7 +443,7 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
     // ticket owner. R1 foreign owner and R2 Managed mode stop before Runtime;
     // R3 child, absent/zero version, empty operation or adjacent System reject
     // before activity transfer. E1 no root mutation or delivery on every row.
-    use awaken_session_execution_contract::{
+    use awaken_session_contract::{
         SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
     };
     let repository = Arc::new(

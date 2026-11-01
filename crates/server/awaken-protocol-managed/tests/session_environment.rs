@@ -9,9 +9,10 @@
 
 mod support;
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 use axum::Router;
@@ -38,7 +39,7 @@ impl SessionRuns for AcceptingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _d: ToolPermissionDecision,
+        _d: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }

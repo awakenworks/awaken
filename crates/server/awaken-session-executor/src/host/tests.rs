@@ -97,15 +97,15 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .settle(&run, claimed.lease.epoch(), DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
-    let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
+    let command = awaken_session_contract::SessionThreadToolReplyCommand {
         session_id: SessionId::from(&thread.0),
         tool_request_event_id: Some("native-response-1".into()),
         expected_thread_version: Some(version),
-        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
+        target: awaken_session_contract::SessionThreadTarget::Primary,
         expected_run_id: run.clone(),
         expected_correlation_id: ticket.correlation_id.clone(),
         tool_use_id: String::new(),
-        reply: awaken_session_execution_contract::SessionThreadToolReply::Input("answer".into()),
+        reply: awaken_session_contract::SessionThreadToolReply::Input("answer".into()),
         accompanying_system: None,
     };
     let mut stale = command.clone();
@@ -119,9 +119,10 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         "R3 stale version"
     );
     let mut wrong_kind = command.clone();
-    wrong_kind.reply = awaken_session_execution_contract::SessionThreadToolReply::Confirm(
-        PermissionDecision::Allow { note: None },
-    );
+    wrong_kind.reply =
+        awaken_session_contract::SessionThreadToolReply::Confirm(PermissionDecision::Allow {
+            note: None,
+        });
     assert!(
         host.coordination
             .threads()
@@ -136,7 +137,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .session_thread_tool_reply_fence(&command)
         .await
         .unwrap();
-    let delivery = awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+    let delivery = awaken_session_contract::SessionThreadToolReplyDelivery {
         command: command.clone(),
         fence: fence.clone(),
         session_activity_epoch: Some(11),
@@ -199,18 +200,15 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
     assert!(replay.already_applied, "R4");
     host.coordination
         .threads()
-        .reply_session_thread_tool(
-            awaken_session_execution_contract::SessionThreadToolReplyDelivery {
-                command: command.clone(),
-                fence: replay,
-                session_activity_epoch: None,
-            },
-        )
+        .reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+            command: command.clone(),
+            fence: replay,
+            session_activity_epoch: None,
+        })
         .await
         .unwrap();
     let mut changed = command;
-    changed.reply =
-        awaken_session_execution_contract::SessionThreadToolReply::Input("changed answer".into());
+    changed.reply = awaken_session_contract::SessionThreadToolReply::Input("changed answer".into());
     assert!(
         host.coordination
             .threads()
@@ -644,7 +642,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         reject_environment_test_coordination()
     }

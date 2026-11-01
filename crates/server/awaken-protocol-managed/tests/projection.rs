@@ -28,9 +28,10 @@ use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
 fn router(state: std::sync::Arc<ManagedState>) -> axum::Router {
     support::edge_stamped(awaken_protocol_managed::router(state))
 }
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_contract::SessionUsage;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
@@ -412,7 +413,7 @@ impl SessionRuns for ScriptFake {
         &self,
         _t: &str,
         _tid: &str,
-        _d: ToolPermissionDecision,
+        _d: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
@@ -533,11 +534,8 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -546,13 +544,11 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
-        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -561,11 +557,9 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
@@ -573,11 +567,8 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::RestoreReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -586,8 +577,8 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
@@ -596,8 +587,8 @@ impl awaken_session_execution_contract::RealizationEffects for ScriptFake {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
             .await
@@ -828,7 +819,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for ScriptFake {
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -843,7 +834,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for ScriptFake {
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -972,11 +963,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ScriptFake 
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await

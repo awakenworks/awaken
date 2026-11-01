@@ -35,6 +35,7 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::awaiting::PermissionDecision;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_credential_contract::{
         CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
@@ -45,12 +46,12 @@ mod tests {
         SessionNetworkPolicy,
     };
     use awaken_session_contract::{IdempotencyRecord, SessionResourceState};
+    use awaken_session_execution_contract::SessionRuns;
     use awaken_session_execution_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
         SessionRealizationControl,
     };
-    use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
     use {
         awaken_agent_contract::McpTarget,
         awaken_session_configuration_contract::mcp::{
@@ -76,7 +77,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
+            _decision: PermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }

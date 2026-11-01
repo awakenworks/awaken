@@ -155,14 +155,14 @@ impl awaken_session_execution_contract::ChildRunCoordination for ChildRunCoordin
 
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         self.threads().reply_session_thread_tool(delivery).await
     }
 
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
         let receipt = self

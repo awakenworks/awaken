@@ -23,7 +23,7 @@ impl crate::ChildRunCoordination {
     /// are shared with background Managed Event reconciliation.
     pub(crate) async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let session_id = delivery.command.session_id.clone();

@@ -400,7 +400,7 @@ impl SessionLifecycle {
         expected_epoch: u64,
         observation: SessionRuntimeIntervalObservation,
         run_id: &RunId,
-        boundary: awaken_session_execution_contract::SessionAgentRunBoundary,
+        boundary: awaken_session_contract::SessionAgentRunBoundary,
     ) -> Result<PersistedSession, SessionActivityError> {
         self.settle_activity_observed_for_event(
             session_id,
@@ -416,10 +416,7 @@ impl SessionLifecycle {
         session_id: &awaken_session_types::SessionId,
         expected_epoch: u64,
         observation: Option<SessionRuntimeIntervalObservation>,
-        event_run_id: Option<(
-            &RunId,
-            awaken_session_execution_contract::SessionAgentRunBoundary,
-        )>,
+        event_run_id: Option<(&RunId, awaken_session_contract::SessionAgentRunBoundary)>,
     ) -> Result<PersistedSession, SessionActivityError> {
         let mutations = &self.mutations;
         for attempt in 0..ROOT_CAS_ATTEMPTS {

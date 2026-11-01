@@ -9,10 +9,10 @@ use awaken_session_execution_contract::{
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::PersistedSession;
-use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use awaken_session_application_contract::DelegatedRun;
@@ -108,11 +108,8 @@ pub struct RehydrateFake {
         >,
     >,
     pub archive_commits: Arc<awaken_sync::LeafLock<Vec<(String, String)>>>,
-    pub thread_tool_replies: Arc<
-        awaken_sync::LeafLock<
-            Vec<awaken_session_execution_contract::SessionThreadToolReplyCommand>,
-        >,
-    >,
+    pub thread_tool_replies:
+        Arc<awaken_sync::LeafLock<Vec<awaken_session_contract::SessionThreadToolReplyCommand>>>,
     pub delegate_ids: Arc<awaken_sync::LeafLock<Vec<String>>>,
     pub custom_tools:
         Arc<awaken_sync::LeafLock<Vec<awaken_session_configuration_contract::CustomTool>>>,
@@ -311,7 +308,7 @@ impl SessionRuns for RehydrateFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: ToolPermissionDecision,
+        _decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
@@ -577,7 +574,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RehydrateFake {
 
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         let command = delivery.command;
         let thread_id = command.target.thread_id(&command.session_id);
@@ -605,7 +602,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RehydrateFake {
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -700,8 +697,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
 
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
         let thread_id = command.target.thread_id(&command.session_id);
         let pending = self
             .pending_by_thread
@@ -711,10 +708,10 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
             .filter(|pending| pending.tool_use_id == command.tool_use_id)
             .ok_or_else(|| RunError::bad_request("reply does not match the pending ticket"))?;
         let run_id = match &command.target {
-            awaken_session_execution_contract::SessionThreadTarget::Primary => {
+            awaken_session_contract::SessionThreadTarget::Primary => {
                 command.expected_run_id.clone()
             }
-            awaken_session_execution_contract::SessionThreadTarget::Child(_) => self
+            awaken_session_contract::SessionThreadTarget::Child(_) => self
                 .coordinated
                 .lock()
                 .iter()
@@ -727,15 +724,12 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFa
         {
             return Err(RunError::bad_request("reply ticket fence is stale"));
         }
-        Ok(
-            awaken_session_execution_contract::SessionThreadToolReplyFence {
-                activity:
-                    awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
-                        prior_epoch: Some(1),
-                    },
-                already_applied: false,
+        Ok(awaken_session_contract::SessionThreadToolReplyFence {
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(1),
             },
-        )
+            already_applied: false,
+        })
     }
 
     /// Validate one model-facing Agent command against the source Run's exact

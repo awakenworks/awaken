@@ -308,7 +308,7 @@ impl SessionRuns for RecordingResourceRuntime {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: awaken_session_execution_contract::ToolPermissionDecision,
+        decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         NoopRuntime.resume(thread, tool_use_id, decision).await
     }
@@ -558,11 +558,11 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingResource
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
-        awaken_session_execution_contract::__macro_support::RunError,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
@@ -571,10 +571,10 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingResource
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
+        awaken_session_contract::SessionCleanupDisposalReceipt,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_terminal_cleanup_for_effect(effect)

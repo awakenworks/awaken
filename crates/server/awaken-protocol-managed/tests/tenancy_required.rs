@@ -16,11 +16,12 @@ mod support;
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{router, tunnels_router};
 use awaken_protocol_managed_testkit::EmptyManagedTunnelApplication;
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
@@ -45,7 +46,7 @@ impl SessionRuns for AcceptingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _d: ToolPermissionDecision,
+        _d: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }

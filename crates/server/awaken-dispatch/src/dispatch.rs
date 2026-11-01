@@ -1422,19 +1422,19 @@ pub(crate) fn validate_session_resume_target(
             "Session resume does not match its dispatch Run and Thread".to_string(),
         ));
     }
-    let activity = awaken_session_execution_contract::SessionThreadToolReplyActivity::from_dispatch(
+    let activity = awaken_session_contract::SessionThreadToolReplyActivity::from_dispatch(
         request.thread_id(),
         request.session_thread_id.as_ref(),
         request.session_activity_epoch,
         session_thread_id,
     );
     let ownership_matches = match activity {
-        Some(awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
-            ..
-        }) => session_activity_epoch.is_some(),
-        Some(
-            awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension,
-        ) => session_activity_epoch.is_none() && prior_session_activity_epoch.is_none(),
+        Some(awaken_session_contract::SessionThreadToolReplyActivity::Session { .. }) => {
+            session_activity_epoch.is_some()
+        }
+        Some(awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension) => {
+            session_activity_epoch.is_none() && prior_session_activity_epoch.is_none()
+        }
         None => false,
     };
     if !ownership_matches {

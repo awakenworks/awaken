@@ -712,7 +712,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::internal(
             "signed Worker transport does not own public Thread replies",

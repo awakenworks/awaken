@@ -319,7 +319,7 @@ impl awaken_session_execution_contract::SessionRuns for ActivationOnlySessionRun
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         unreachable!("activation-only test never resumes")
     }
@@ -647,7 +647,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for ActivationOnlyS
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -662,7 +662,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for ActivationOnlyS
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -781,11 +781,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
@@ -1000,11 +998,11 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
-        awaken_session_execution_contract::__macro_support::RunError,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
@@ -1013,10 +1011,10 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
+        awaken_session_contract::SessionCleanupDisposalReceipt,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_terminal_cleanup_for_effect(effect)
@@ -1603,7 +1601,7 @@ impl awaken_session_execution_contract::SessionRuns for BlockingSessionRunRuntim
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         unreachable!("test never resumes")
     }
@@ -1875,7 +1873,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for BlockingSession
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -1890,7 +1888,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for BlockingSession
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -2007,11 +2005,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for BlockingSes
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await

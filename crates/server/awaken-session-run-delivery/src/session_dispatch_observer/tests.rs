@@ -1,8 +1,8 @@
 use super::*;
 use awaken_agent_contract::agent::run::EndCause;
+use awaken_session_contract::SessionThreadToolReplyCommand;
 use awaken_session_execution_contract::{
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentRosterEntry,
-    SessionThreadToolReplyCommand,
 };
 use awaken_session_types::RunError;
 use std::sync::Mutex;

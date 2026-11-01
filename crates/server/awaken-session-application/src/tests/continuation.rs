@@ -66,7 +66,7 @@ impl SessionRuns for ContinuationRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         unreachable!("continuation tests do not resume")
     }

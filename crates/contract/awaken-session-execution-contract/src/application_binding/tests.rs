@@ -5,10 +5,11 @@ use super::*;
 use crate::{
     PreparedSessionRunActivity, SessionAgentBoundaryCommand, SessionAgentMessageCommand,
     SessionAgentMessageReceipt, SessionAgentRosterEntry, SessionRunActivityAdmission,
-    SessionRunActivityAdmissionMode, SessionThreadToolReplyCommand,
+    SessionRunActivityAdmissionMode,
 };
 use awaken_agent_contract::agent::{message::Message, run::Id as RunId, thread::Id as ThreadId};
 use awaken_session_application_contract::RunApplicationError;
+use awaken_session_contract::SessionThreadToolReplyCommand;
 use awaken_session_types::{RunError, SessionId};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

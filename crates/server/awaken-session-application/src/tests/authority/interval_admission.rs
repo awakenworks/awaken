@@ -456,7 +456,7 @@ async fn user_event_boundary_before_admission_refuses_without_settlement() {
                 epoch,
                 observation,
                 &run,
-                awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
+                awaken_session_contract::SessionAgentRunBoundary::Awaiting,
             )
             .await
             .expect_err("R1/R2 cannot claim a pre-admission User Event commit");

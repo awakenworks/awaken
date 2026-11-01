@@ -1067,6 +1067,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-session-application-contract",
+ "awaken-session-contract",
  "awaken-session-execution-contract",
  "awaken-session-types",
  "awaken-sql-storage",

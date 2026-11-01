@@ -12,6 +12,7 @@ use awaken_session_types::SessionId;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::AtomicU64;
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::{
     content::ContentBlock,
     message::{Id as MessageId, Message, Role},
@@ -24,11 +25,14 @@ use awaken_session_contract::{
     SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric,
     SessionUserRunCommand,
 };
+use awaken_session_contract::{
+    SessionThreadTarget, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
+    SessionThreadToolReplyFence,
+};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, CoordinatedThreadTarget,
     OutcomeDrive, OutcomeReport, SessionRunActivation, SessionRunDelivery, SessionRunReservation,
-    SessionRuns, SessionThreadTarget, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, ToolPermissionDecision,
+    SessionRuns,
 };
 
 use super::*;
@@ -147,7 +151,7 @@ impl SessionRuns for EventBatchRuntime {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: ToolPermissionDecision,
+        decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         NoopRuntime.resume(thread, tool_use_id, decision).await
     }
@@ -516,7 +520,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -643,10 +647,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
         let staged = self.staged_tool_replies.lock().unwrap();
         if staged.get(&operation) == Some(command) {
             return Ok(SessionThreadToolReplyFence {
-                activity:
-                    awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
-                        prior_epoch: None,
-                    },
+                activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                    prior_epoch: None,
+                },
                 already_applied: true,
             });
         }
@@ -667,7 +670,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
             ));
         }
         Ok(SessionThreadToolReplyFence {
-            activity: awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
                 prior_epoch: Some(prior_session_activity_epoch),
             },
             already_applied: false,
@@ -2694,7 +2697,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 session
                     .settle_user_event_dispatch(
                         &first_run,
-                        awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
+                        awaken_session_contract::SessionAgentRunBoundary::Completed,
                         epoch,
                         SessionEventProjectionAnchor {
                             source_commit_cursor: 11
