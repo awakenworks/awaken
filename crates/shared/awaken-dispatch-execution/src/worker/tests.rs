@@ -37,7 +37,7 @@ use awaken_agent_contract::credential::{
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialDelivery};
 use awaken_dispatch::MemoryDispatchStore;
-use awaken_dispatch_contract::DispatchAdministration as _;
+use awaken_dispatch_contract::{DispatchAdministration as _, DispatchExecution as _};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::cancellation::CancellationCause;
 use awaken_runtime_contract::execution::AttemptRecoveryMode;
@@ -242,6 +242,15 @@ async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
             .expect("claim")
             .expect("runnable");
         let claim = RunClaim::from(&claimed.lease);
+        // The drive admits its physical attempt before Runtime runs: durable
+        // cancellation is signalled only to that exact admitted attempt.
+        assert_eq!(
+            store
+                .begin_attempt(&claim, None)
+                .await
+                .expect("admit the physical attempt"),
+            awaken_dispatch_contract::AttemptAdmission::Applied
+        );
         let renewal = super::renew_claim_while_active(store.clone(), &claim, 90);
         let attempt = renewal.attempt_cancellation();
         let expected = if durable_cancel {
