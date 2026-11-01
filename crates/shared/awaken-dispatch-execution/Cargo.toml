@@ -50,6 +50,8 @@ test-support = []
 
 [dev-dependencies]
 awaken-credential-contract.workspace = true
+# Names the claim's Session Work receipt in a scripted claim-guarded read.
+awaken-session-application-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-coordinator-client.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }

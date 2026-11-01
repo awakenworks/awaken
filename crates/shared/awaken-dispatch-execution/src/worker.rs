@@ -113,6 +113,7 @@ pub struct DispatchWorker<S> {
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     recovery_source: Option<Arc<dyn RunRecoverySource>>,
     terminal_scan: crate::TerminalReconciliationScan,
+    terminal_reads: crate::ClaimedTerminalReads,
     settlement_observer: Option<Arc<dyn crate::DispatchSettlementObserver>>,
     session_admission_observer: Option<Arc<dyn crate::SessionRunAdmissionObserver>>,
     owner: String,
@@ -260,14 +261,15 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     }
 }
 
-impl<S: Dispatch + 'static> DispatchWorker<S> {
-    /// Rebuild the sole durable causal scope from the exact claimed instruction.
-    /// Every claim entry uses this helper so recovery, pre-execution failure, and
-    /// ordinary execution cannot drift into separate trace carrier rules.
-    fn claimed_dispatch_span(claimed: &Claimed) -> tracing::Span {
-        awaken_observability::dispatch_span(claimed.request.traceparent.as_deref())
-    }
+/// Rebuild the sole durable causal scope from the exact claimed instruction.
+/// Every claim entry uses this helper so recovery, pre-execution failure, and
+/// ordinary execution cannot drift into separate trace carrier rules. It reads
+/// only the claim, so it is not a Worker method.
+fn claimed_dispatch_span(claimed: &Claimed) -> tracing::Span {
+    awaken_observability::dispatch_span(claimed.request.traceparent.as_deref())
+}
 
+impl<S: Dispatch + 'static> DispatchWorker<S> {
     fn renew_claim_while_driving(&self, claim: &RunClaim) -> ClaimLeaseRenewal {
         renew_claim_while_active(self.store.clone(), claim, self.lease_ms)
     }
@@ -906,7 +908,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // committed-terminal replay, observer delivery, and fenced settlement
         // inside the same `wake.dispatch` span; fragmenting the span around only
         // the executor future disconnects post-commit background effects.
-        let dispatch = Self::claimed_dispatch_span(&claimed);
+        let dispatch = claimed_dispatch_span(&claimed);
         Box::pin(
             self.drive_claimed_inner(claimed, clock, claim_cancellation, execution_capacity)
                 .instrument(dispatch),
@@ -1282,7 +1284,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 PhysicalAttemptOutcome::Deferred => return Ok(None),
             };
             if matches!(&state, RunState::Ended(_)) {
-                self.redeliver_terminal_observers(&run_id, &thread_id)
+                self.redeliver_terminal_observers(&claimed, &run_id, &thread_id)
                     .await?;
             }
             return Ok(self
@@ -1595,7 +1597,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
         let outcome = settle_outcome(&state)?;
         if matches!(&state, RunState::Ended(_)) {
-            self.redeliver_terminal_observers(&run_id, &thread_id)
+            self.redeliver_terminal_observers(&claimed, &run_id, &thread_id)
                 .await?;
         }
         Ok(self
@@ -1942,6 +1944,7 @@ fn construct_dispatch_worker<S: Dispatch + 'static>(
         recovery_projection: None,
         recovery_source: None,
         terminal_scan: Default::default(),
+        terminal_reads: Default::default(),
         settlement_observer: None,
         session_admission_observer: None,
         owner: owner.into(),

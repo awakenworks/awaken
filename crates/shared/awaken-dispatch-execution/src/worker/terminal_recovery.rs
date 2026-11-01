@@ -71,7 +71,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         terminal: CommittedTerminalRun,
         consumed: &[String],
     ) -> Result<CommittedTerminalSettlement, Error> {
-        self.deliver_terminal_observers(&terminal).await?;
+        self.deliver_terminal_observers(claimed, &terminal).await?;
         let run_id = terminal.run_id;
         let state = RunState::Ended(terminal.cause);
         let settled = self
@@ -101,7 +101,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             code: code.into(),
             message: message.into(),
         });
-        let dispatch = Self::claimed_dispatch_span(claimed);
+        let dispatch = super::claimed_dispatch_span(claimed);
         self.prepare_and_end_claimed_before_execution(claimed, cause)
             .instrument(dispatch)
             .await
@@ -116,7 +116,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let dispatch = Self::claimed_dispatch_span(claimed);
+        let dispatch = super::claimed_dispatch_span(claimed);
         self.prepare_and_end_claimed_before_execution(
             claimed,
             awaken_agent_contract::agent::run::EndCause::Indeterminate,
@@ -407,7 +407,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: Claimed,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let dispatch = Self::claimed_dispatch_span(&claimed);
+        let dispatch = super::claimed_dispatch_span(&claimed);
         self.settle_claimed_terminal_inner(claimed)
             .instrument(dispatch)
             .await
@@ -453,6 +453,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
     pub(super) async fn redeliver_terminal_observers(
         &self,
+        claimed: &Claimed,
         run_id: &RunId,
         thread_id: &ThreadId,
     ) -> Result<(), Error> {
@@ -467,14 +468,33 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 ))));
             }
         };
-        self.deliver_terminal_observers(&terminal).await
+        self.deliver_terminal_observers(claimed, &terminal).await
     }
 
+    /// Share the claim-bound committed reads this Worker's terminal observers
+    /// use on a database-less Worker. The same value must reach the observers
+    /// and this Worker, so the composition creates it once for both.
+    #[must_use]
+    pub fn with_claimed_terminal_reads(mut self, reads: crate::ClaimedTerminalReads) -> Self {
+        self.terminal_reads = reads;
+        self
+    }
+
+    /// Deliver the committed terminal of `claimed`'s Run before its claim
+    /// settles. On a database-less Worker the delivering claim is recorded for
+    /// the observers' claim-bound committed reads until delivery returns.
     async fn deliver_terminal_observers(
         &self,
+        claimed: &Claimed,
         terminal: &CommittedTerminalRun,
     ) -> Result<(), Error> {
         let context = self.execution_context();
+        let _delivering = match &self.ports {
+            ExecutionAuthority::Remote { checkpoints, .. } => {
+                Some(self.terminal_reads.deliver(claimed, checkpoints.clone()))
+            }
+            ExecutionAuthority::Local(_) => None,
+        };
         let failures = deliver_committed_terminal(&context.terminal_observers, terminal).await;
         if failures.is_empty() {
             return Ok(());

@@ -7,6 +7,7 @@
 mod admission_error;
 mod attempt_termination;
 pub mod claimed_stream;
+mod claimed_terminal_reads;
 mod commit_fence;
 #[cfg(test)]
 mod composition_tests;
@@ -44,6 +45,7 @@ pub use awaken_dispatch_contract::{
     DispatchSummary, RunDispatch, SettleOutcome,
 };
 pub use awaken_worker_contract::RunClaim;
+pub use claimed_terminal_reads::ClaimedTerminalReads;
 pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
 };
