@@ -17,11 +17,11 @@ pub trait SessionWorkerLeaseAuthority: Send + Sync {
     /// Hint that placement evidence changed; this is not mutation authority.
     fn request_lifecycle_reconciliation(&self) {}
 
+    /// Acquire or renew on the Work store's own clock; the caller supplies no time.
     async fn acquire_session_work(
         &self,
         session_id: &SessionId,
         worker_owner: &str,
-        now_ms: u64,
         acquisition: SessionWorkAcquisition,
     ) -> Result<SessionWorkOwnership, RunError>;
 
@@ -227,11 +227,10 @@ pub async fn acquire_session_work_receipt(
     authority: &dyn SessionWorkerLeaseAuthority,
     session_id: &SessionId,
     worker_owner: &str,
-    now_ms: u64,
     acquisition: SessionWorkAcquisition,
 ) -> Result<Option<SessionWorkAuthorityReceipt>, RunError> {
     let ownership = authority
-        .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
+        .acquire_session_work(session_id, worker_owner, acquisition)
         .await?;
     Ok(SessionWorkAuthorityReceipt::from_acquired(
         session_id.as_str(),

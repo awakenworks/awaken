@@ -346,11 +346,14 @@ impl InMemoryWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: Option<&SessionAccessDigest>,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
         let mut authority = self.authority.lock();
+        // The one store-clock sample, under the authority lock: reclaim, the
+        // new deadline and `started_at` are this reading, and acknowledgement,
+        // authentication and stop judge the lease on the same clock.
+        let now_ms = self.clock.now_ms();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -422,8 +425,9 @@ impl WorkQueries for InMemoryWorkQueue {
         Ok(self.with_owned(env_id, wid, |w, _| w.clone()))
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+    async fn stats(&self, env_id: &str) -> Result<QueueStats, WorkQueueError> {
         let mut authority = self.authority.lock();
+        let now_ms = self.clock.now_ms();
         let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
         let in_env: Vec<&WorkItem> = works
             .values()
@@ -485,9 +489,8 @@ impl WorkConsumer for InMemoryWorkQueue {
         &self,
         env_id: &str,
         worker_id: &str,
-        now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+        self.claim_with_reclaim(env_id, worker_id, worker_id, None)
             .await
     }
 
@@ -496,18 +499,10 @@ impl WorkConsumer for InMemoryWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         Ok(self
-            .claim_inner(
-                env_id,
-                lease_owner,
-                poller_id,
-                now_ms,
-                reclaim_older_than_ms,
-                None,
-            )?
+            .claim_inner(env_id, lease_owner, poller_id, reclaim_older_than_ms, None)?
             .map(|claim| claim.item))
     }
 
@@ -516,7 +511,6 @@ impl WorkConsumer for InMemoryWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
@@ -524,7 +518,6 @@ impl WorkConsumer for InMemoryWorkQueue {
             env_id,
             lease_owner,
             poller_id,
-            now_ms,
             reclaim_older_than_ms,
             Some(session_access),
         )
@@ -544,7 +537,6 @@ impl WorkConsumer for InMemoryWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         Ok(self
@@ -558,6 +550,9 @@ impl WorkConsumer for InMemoryWorkQueue {
                 {
                     return HeartbeatResult::PreconditionFailed;
                 }
+                // Admission precedes the one store-clock sample the extension
+                // starts from.
+                let now_ms = self.clock.now_ms();
                 let extended = w.state.can_extend_lease();
                 let last_heartbeat = heartbeat_at(now_ms, w.latest_heartbeat_at.as_deref());
                 if extended {
@@ -596,9 +591,10 @@ impl SessionAccessAuthenticator for InMemoryWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
-        now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let authority = self.authority.lock();
+        // Liveness is judged on the same clock that granted and renewed it.
+        let now_ms = self.clock.now_ms();
         let Some(work_id) = authority
             .session_token_sha256
             .iter()
@@ -648,7 +644,6 @@ impl SessionWorkLeaseControl for InMemoryWorkQueue {
     async fn heartbeat_with_session_access(
         &self,
         access: &WorkSessionAccess,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         Ok(self
@@ -667,6 +662,9 @@ impl SessionWorkLeaseControl for InMemoryWorkQueue {
                 if admission != WorkLeaseMutationAdmission::Applied {
                     return HeartbeatResult::PreconditionFailed;
                 }
+                // Admission precedes the one store-clock sample the extension
+                // starts from.
+                let now_ms = self.clock.now_ms();
                 let extended = work.state.can_extend_lease();
                 let last_heartbeat = heartbeat_at(now_ms, work.latest_heartbeat_at.as_deref());
                 let ttl_seconds = heartbeat
@@ -858,9 +856,10 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         let mut authority = self.authority.lock();
+        // The one reading this grant is minted and judged on.
+        let now_ms = self.clock.now_ms();
         if let Some(lease) = authority.current_session_lease(env_id, session_id, now_ms) {
             if lease.owner() != worker_owner {
                 return Ok(Some(lease));
