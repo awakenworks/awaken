@@ -11,10 +11,17 @@ use std::time::{Duration, Instant};
 mod scheduler_wait;
 
 async fn q() -> SqliteWorkQueue {
-    // Claims in these decision tables use the logical epoch-zero timeline.
-    SqliteWorkQueue::open_in_memory(Arc::new(awaken_lease_testkit::ManualClock::new(0)))
+    clocked().await.0
+}
+
+/// The queue and its store clock, on the logical epoch-zero timeline these
+/// decision tables advance.
+async fn clocked() -> (SqliteWorkQueue, Arc<awaken_lease_testkit::ManualClock>) {
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let queue = SqliteWorkQueue::open_in_memory(clock.clone())
         .await
-        .unwrap()
+        .unwrap();
+    (queue, clock)
 }
 
 struct SqliteFileFixture {
@@ -60,10 +67,11 @@ async fn sqlite_file_fixtures_isolate_live_work_and_remove_only_their_owned_dire
     // F3 drop one's final store and await its close witness -> remove one too.
     let first = SqliteFileFixture::new("awaken-work-token-");
     let second = SqliteFileFixture::new("awaken-work-token-");
-    let first_queue = SqliteWorkQueue::open(first.path(), system_clock())
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let first_queue = SqliteWorkQueue::open(first.path(), clock.clone())
         .await
         .expect("open first database");
-    let second_queue = SqliteWorkQueue::open(second.path(), system_clock())
+    let second_queue = SqliteWorkQueue::open(second.path(), clock.clone())
         .await
         .expect("open second database");
     let session = awaken_session_types::SessionId::from("same-session");
@@ -71,7 +79,7 @@ async fn sqlite_file_fixtures_isolate_live_work_and_remove_only_their_owned_dire
     let second_id = second_queue.enqueue_session("env", &session).await.unwrap();
     assert_eq!(
         first_queue
-            .claim("env", "owner", 0)
+            .claim("env", "owner")
             .await
             .unwrap()
             .expect("F1 first database has its own claim")
@@ -80,7 +88,7 @@ async fn sqlite_file_fixtures_isolate_live_work_and_remove_only_their_owned_dire
     );
     assert_eq!(
         second_queue
-            .claim("env", "owner", 0)
+            .claim("env", "owner")
             .await
             .unwrap()
             .expect("F1 the first database's live lease cannot block the second")
@@ -100,9 +108,10 @@ async fn sqlite_file_fixtures_isolate_live_work_and_remove_only_their_owned_dire
         WorkState::Active,
         "F2 the original claim survives the neighbor's physical removal"
     );
+    clock.set(1);
     assert!(
         first_queue
-            .claim("env", "other-owner", 1)
+            .claim("env", "other-owner")
             .await
             .unwrap()
             .is_none()
@@ -143,14 +152,13 @@ async fn sqlite_work_authority_waiters_never_block_runtime_timers() {
                     "env",
                     &awaken_session_types::SessionId::from("session"),
                     "owner",
-                    0,
                 )
                 .await
         }
     });
     let stats = tokio::spawn({
         let queue = Arc::clone(&queue);
-        async move { queue.stats("env", 0).await }
+        async move { queue.stats("env").await }
     });
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
@@ -172,7 +180,7 @@ async fn sqlite_work_authority_waiters_never_block_runtime_timers() {
         .expect("Q1/E3 Session lease");
     assert_eq!(lease.session_id(), "session", "Q1/E3");
     stats.await.expect("Q1 stats task").expect("Q1/E3 stats");
-    let final_stats = queue.stats("env", 0).await.expect("Q1/E3 final stats");
+    let final_stats = queue.stats("env").await.expect("Q1/E3 final stats");
     assert_eq!(
         final_stats.depth + final_stats.pending,
         1,
@@ -212,15 +220,15 @@ async fn sqlite_storage_outage_is_typed_for_every_queue_operation() {
     is_storage(q.ensure_healthcheck("env").await.map(|_| ()));
     is_storage(q.list("env").await.map(|_| ()));
     is_storage(q.get("env", "work").await.map(|_| ()));
-    is_storage(q.claim("env", "worker", 0).await.map(|_| ()));
+    is_storage(q.claim("env", "worker").await.map(|_| ()));
     is_storage(
-        q.claim_with_reclaim("env", "worker", "worker", 1, Some(1))
+        q.claim_with_reclaim("env", "worker", "worker", Some(1))
             .await
             .map(|_| ()),
     );
     is_storage(q.ack("env", "work", "worker").await.map(|_| ()));
     is_storage(
-        q.heartbeat("env", "work", "worker", 0, LeaseHeartbeat::unconditional())
+        q.heartbeat("env", "work", "worker", LeaseHeartbeat::unconditional())
             .await
             .map(|_| ()),
     );
@@ -230,7 +238,7 @@ async fn sqlite_storage_outage_is_typed_for_every_queue_operation() {
             .await
             .map(|_| ()),
     );
-    is_storage(q.stats("env", 0).await.map(|_| ()));
+    is_storage(q.stats("env").await.map(|_| ()));
     is_storage(q.remove_env("env").await);
 }
 
@@ -283,14 +291,14 @@ async fn claim_leases_oldest_and_caps_at_one_active() {
         .await
         .expect("enqueue");
     let leased = q
-        .claim("env_a", "w", 0)
+        .claim("env_a", "w")
         .await
         .expect("claim query")
         .expect("leases oldest");
     assert_eq!(leased.id, w1);
     assert_eq!(leased.state, WorkState::Active);
     assert!(
-        q.claim("env_a", "w", 0).await.expect("claim").is_none(),
+        q.claim("env_a", "w").await.expect("claim").is_none(),
         "single active lease"
     );
     q.stop("env_a", &w1, "w")
@@ -299,20 +307,20 @@ async fn claim_leases_oldest_and_caps_at_one_active() {
         .into_item()
         .expect("stop");
     assert!(
-        q.claim("env_a", "w", 0).await.expect("claim").is_some(),
+        q.claim("env_a", "w").await.expect("claim").is_some(),
         "next lease after stop"
     );
 }
 
 #[tokio::test]
 async fn durable_reclaims_an_expired_lease_on_the_next_poll() {
-    let q = q().await;
+    let (q, clock) = clocked().await;
     let w1 = q
         .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
         .await
         .expect("enqueue");
     assert_eq!(
-        q.claim("env_a", "a", 0)
+        q.claim("env_a", "a")
             .await
             .expect("claim query")
             .expect("lease")
@@ -320,12 +328,14 @@ async fn durable_reclaims_an_expired_lease_on_the_next_poll() {
         w1
     );
     // Live lease caps; a lapsed lease is reclaimed and re-leased.
+    clock.set(1_000);
     assert!(
-        q.claim("env_a", "b", 1_000).await.expect("claim").is_none(),
+        q.claim("env_a", "b").await.expect("claim").is_none(),
         "live lease caps"
     );
+    clock.set(LEASE_TTL_MS + 1);
     let reclaimed = q
-        .claim("env_a", "b", LEASE_TTL_MS + 1)
+        .claim("env_a", "b")
         .await
         .expect("claim query")
         .expect("expired lease reclaimed");
@@ -337,36 +347,36 @@ async fn durable_reclaims_an_expired_lease_on_the_next_poll() {
 async fn sqlite_lease_survives_process_store_reopen() {
     let file = SqliteFileFixture::new("awaken-work-lease-");
     let path = file.path();
+    // One store clock across the restart: the reopened store judges the lease
+    // on the clock that granted it.
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     {
-        let q = SqliteWorkQueue::open(path, system_clock())
+        let q = SqliteWorkQueue::open(path, clock.clone())
             .await
             .expect("open first store");
         q.enqueue_session("env", &awaken_session_types::SessionId::from("session"))
             .await
             .expect("enqueue");
-        assert!(
-            q.claim("env", "worker-a", 0)
-                .await
-                .expect("claim")
-                .is_some()
-        );
+        assert!(q.claim("env", "worker-a").await.expect("claim").is_some());
     }
     file.settled().await;
     {
-        let reopened = SqliteWorkQueue::open(path, system_clock())
+        let reopened = SqliteWorkQueue::open(path, clock.clone())
             .await
             .expect("reopen store");
+        clock.set(LEASE_TTL_MS - 1);
         assert!(
             reopened
-                .claim("env", "worker-b", LEASE_TTL_MS - 1)
+                .claim("env", "worker-b")
                 .await
                 .expect("claim")
                 .is_none(),
             "a restart must not erase a live lease"
         );
+        clock.set(LEASE_TTL_MS);
         assert!(
             reopened
-                .claim("env", "worker-b", LEASE_TTL_MS)
+                .claim("env", "worker-b")
                 .await
                 .expect("claim")
                 .is_some(),
@@ -392,8 +402,10 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
     // mutating the replacement lease.
     let file = SqliteFileFixture::new("awaken-work-token-");
     let path = file.path();
+    // One store clock across the reopen, as one process clock would be.
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let (work_id, token, first_access) = {
-        let q = SqliteWorkQueue::open(path, system_clock())
+        let q = SqliteWorkQueue::open(path, clock.clone())
             .await
             .expect("open first store");
         let health = q.enqueue_healthcheck("env").await.unwrap();
@@ -405,7 +417,6 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
                 "env",
                 "owner-a",
                 "poller",
-                0,
                 None,
                 &test_session_access_digest(1),
             )
@@ -415,12 +426,12 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
         assert_eq!(claimed.item.id, health, "T1");
         assert!(claimed.session_access.is_none(), "T1");
         q.stop("env", &health, "owner-a").await.unwrap();
+        clock.set(1);
         let claimed = q
             .claim_with_session_access(
                 "env",
                 "owner-a",
                 "poller",
-                1,
                 None,
                 &test_session_access_digest(2),
             )
@@ -428,13 +439,14 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
             .unwrap()
             .unwrap();
         let token = claimed.session_access.expect("T2 session token");
+        clock.set(2);
         let first_access = q
-            .authenticate_session_access(&token, 2)
+            .authenticate_session_access(&token)
             .await
             .unwrap()
             .expect("T2 current access");
         assert!(
-            q.authenticate_session_access(&test_session_access_digest(u64::MAX), 2,)
+            q.authenticate_session_access(&test_session_access_digest(u64::MAX))
                 .await
                 .unwrap()
                 .is_none(),
@@ -443,23 +455,24 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
         (claimed.item.id, token, first_access)
     };
     file.settled().await;
-    let reopened = SqliteWorkQueue::open(path, system_clock())
+    let reopened = SqliteWorkQueue::open(path, clock.clone())
         .await
         .expect("reopen store");
+    clock.set(LEASE_TTL_MS);
     assert!(
         reopened
-            .authenticate_session_access(&token, LEASE_TTL_MS)
+            .authenticate_session_access(&token)
             .await
             .unwrap()
             .is_some(),
         "T4"
     );
+    clock.set(LEASE_TTL_MS + 1);
     let replacement = reopened
         .claim_with_session_access(
             "env",
             "owner-b",
             "poller-b",
-            LEASE_TTL_MS + 1,
             None,
             &test_session_access_digest(3),
         )
@@ -470,14 +483,14 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
     assert_eq!(replacement.item.id, work_id, "T5 same Work");
     assert!(
         reopened
-            .authenticate_session_access(&token, LEASE_TTL_MS + 1)
+            .authenticate_session_access(&token)
             .await
             .unwrap()
             .is_none(),
         "T5 stale token"
     );
     let replacement_access = reopened
-        .authenticate_session_access(&replacement_token, LEASE_TTL_MS + 1)
+        .authenticate_session_access(&replacement_token)
         .await
         .unwrap()
         .expect("T5 replacement token");
@@ -491,13 +504,10 @@ async fn sqlite_session_token_is_single_delivery_epoch_bound_and_reopen_safe() {
         ),
         "T6 stale epoch cannot stop replacement"
     );
+    clock.set(LEASE_TTL_MS + 2);
     assert!(
         reopened
-            .heartbeat_with_session_access(
-                &replacement_access,
-                LEASE_TTL_MS + 2,
-                LeaseHeartbeat::unconditional(),
-            )
+            .heartbeat_with_session_access(&replacement_access, LeaseHeartbeat::unconditional())
             .await
             .unwrap()
             .into_receipt()
@@ -515,7 +525,7 @@ async fn ack_heartbeat_and_membership_match_the_in_memory_contract() {
         .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
         .await
         .expect("enqueue");
-    q.claim("env_a", "worker", 0)
+    q.claim("env_a", "worker")
         .await
         .expect("claim query")
         .expect("claim");
@@ -529,7 +539,7 @@ async fn ack_heartbeat_and_membership_match_the_in_memory_contract() {
         WorkState::Active
     );
     assert!(
-        q.heartbeat("env_a", &id, "worker", 0, LeaseHeartbeat::unconditional())
+        q.heartbeat("env_a", &id, "worker", LeaseHeartbeat::unconditional())
             .await
             .expect("heartbeat")
             .into_receipt()
@@ -545,7 +555,7 @@ async fn ack_heartbeat_and_membership_match_the_in_memory_contract() {
             .is_not_found()
     );
     assert!(
-        q.heartbeat("env_b", &id, "worker", 0, LeaseHeartbeat::unconditional())
+        q.heartbeat("env_b", &id, "worker", LeaseHeartbeat::unconditional())
             .await
             .expect("heartbeat")
             .is_not_found()
@@ -566,10 +576,10 @@ async fn stats_and_metadata_and_remove_env() {
         .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
         .await
         .expect("enqueue");
-    let st = q.stats("env_a", 0).await.expect("stats");
+    let st = q.stats("env_a").await.expect("stats");
     assert_eq!((st.depth, st.pending, st.workers_polling), (2, 0, 0));
-    q.claim("env_a", "w1", 0).await.expect("claim");
-    let st = q.stats("env_a", 0).await.expect("stats");
+    q.claim("env_a", "w1").await.expect("claim");
+    let st = q.stats("env_a").await.expect("stats");
     assert_eq!((st.depth, st.pending, st.workers_polling), (1, 1, 1));
     let patch = BTreeMap::from([("k".to_string(), Some("v".to_string()))]);
     let up = q
@@ -746,7 +756,7 @@ async fn postgres_concurrent_claim_yields_a_single_active_lease() {
     for w in 0..8u32 {
         let q = q.clone();
         handles.push(tokio::spawn(async move {
-            q.claim("env_a", &format!("worker_{w}"), 0).await
+            q.claim("env_a", &format!("worker_{w}")).await
         }));
     }
     let mut winners = 0;
@@ -760,7 +770,7 @@ async fn postgres_concurrent_claim_yields_a_single_active_lease() {
         "exactly one worker wins the lease under concurrent contention"
     );
     // And the store agrees: exactly one active row (pending == 1), depth drained.
-    let st = q.stats("env_a", 0).await.expect("stats");
+    let st = q.stats("env_a").await.expect("stats");
     assert_eq!(
         (st.depth, st.pending),
         (0, 1),

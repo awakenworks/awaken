@@ -35,14 +35,17 @@ impl SqliteWorkQueue {
         conn: &mut SqliteConnection,
         env_id: &str,
         lease_owner: &str,
-        now_ms: u64,
+        clock: &dyn WallClock,
         age_ms: Option<u64>,
         session_access: Option<SessionAccessDigest>,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
-        // `started_at` is the very reading the lease arithmetic below uses, so a
-        // claim's durable start and its lease window cannot disagree.
-        let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
         let mut tx = backends::immediate(conn).await?;
+        // The one store-clock sample, taken under the write lock: reclaim,
+        // the new deadline and `started_at` are all this reading, so a claim's
+        // durable start and its lease window cannot disagree, and the later
+        // acknowledgement and stop judge that window on the same clock.
+        let now_ms = clock.now_ms();
+        let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
         let cleared = reclaimed_lease_authority();
         if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
             sqlx::query(
@@ -209,7 +212,7 @@ impl SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
         fence: LeaseFence,
-        now_ms: u64,
+        clock: &dyn WallClock,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         let mut tx = backends::immediate(conn).await?;
@@ -227,6 +230,9 @@ impl SqliteWorkQueue {
         {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
+        // Admission precedes the one clock sample; the extension starts from
+        // the store's own reading, the clock that later judges it.
+        let now_ms = clock.now_ms();
         let extended = current.state.can_extend_lease();
         let ttl_seconds = effective_ttl_seconds(heartbeat.desired_ttl_seconds);
         let last_heartbeat = heartbeat_at(now_ms, current.latest_heartbeat_at.as_deref());
@@ -345,10 +351,8 @@ impl SqliteWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         let created_at = self.clock.observed_at();
-        let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
         let mut conn = self.connection().await?;
         let work_id = Self::insert(
             &mut conn,
@@ -359,6 +363,10 @@ impl SqliteWorkQueue {
         )
         .await?;
         let mut tx = backends::immediate(&mut conn).await?;
+        // The one reading this grant is minted and judged on, sampled under the
+        // write lock so no later writer can commit an earlier deadline.
+        let now_ms = self.clock.now_ms();
+        let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
         Self::reclaim_lapsed(&mut tx, env_id, now_ms).await?;
         let current: (String, Option<String>, i64, Option<i64>, Option<i64>) = sqlx::query_as(
             "SELECT state, lease_owner, lease_epoch, lease_expires_ms, lease_refreshed_ms FROM work_queue_item \
@@ -479,11 +487,11 @@ impl PostgresWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         age_ms: Option<u64>,
         session_access: Option<SessionAccessDigest>,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
-        self.book.record_poll(env_id, poller_id, now_ms);
+        self.book
+            .record_poll(env_id, poller_id, self.clock.now_ms());
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let cleared = reclaimed_lease_authority();
         let _: Vec<String> = sqlx::query_scalar(
@@ -493,6 +501,10 @@ impl PostgresWorkQueue {
         .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
+        // The one store-clock sample, taken under the Environment lock: reclaim,
+        // the new deadline and `started_at` are all this reading, and the later
+        // acknowledgement and stop judge that window on the same clock.
+        let now_ms = self.clock.now_ms();
         if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
             sqlx::query(
                 "UPDATE work_queue_item SET state = 'queued', lease_owner = $1, lease_expires_ms = $2, lease_refreshed_ms = $3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
@@ -654,7 +666,6 @@ impl PostgresWorkQueue {
         wid: &str,
         worker_id: &str,
         fence: LeaseFence,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
@@ -688,6 +699,9 @@ impl PostgresWorkQueue {
         {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
+        // Admission precedes the one clock sample; the extension starts from
+        // the store's own reading, the clock that later judges it.
+        let now_ms = self.clock.now_ms();
         let extended = current.state.can_extend_lease();
         let ttl_seconds = effective_ttl_seconds(heartbeat.desired_ttl_seconds);
         let last_heartbeat = heartbeat_at(now_ms, current.latest_heartbeat_at.as_deref());
@@ -851,7 +865,6 @@ mod epoch_tests {
                     &env,
                     "worker",
                     "poller",
-                    0,
                     None,
                     &test_session_access_digest(1),
                 )
@@ -922,7 +935,6 @@ mod epoch_tests {
                     &env,
                     "worker",
                     "poller",
-                    0,
                     None,
                     &test_session_access_digest(2),
                 )

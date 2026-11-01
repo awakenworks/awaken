@@ -21,7 +21,6 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
         &self,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
         _acquisition: awaken_session_application_contract::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_application_contract::SessionWorkOwnership,
@@ -39,7 +38,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
                     session_id.clone(),
                     worker_owner,
                     7,
-                    now_ms + 60_000,
+                    OBSERVED_WORK_EXPIRY_MS,
                 )
                 .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .expect("nonzero epoch"),

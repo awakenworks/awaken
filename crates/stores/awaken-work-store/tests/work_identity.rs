@@ -50,7 +50,6 @@ async fn old_worker_requests_cannot_change_replacement<Q: WorkBackend>(
                 environment,
                 retired_id,
                 "same-worker",
-                2,
                 LeaseHeartbeat::unconditional()
             )
             .await
@@ -96,7 +95,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
         .await
         .unwrap();
     let old = queue
-        .claim("identity-healthcheck", "same-worker", 0)
+        .claim("identity-healthcheck", "same-worker")
         .await
         .unwrap()
         .unwrap();
@@ -125,7 +124,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
         .await
         .unwrap();
     let fresh = queue
-        .claim("identity-healthcheck", "same-worker", 1)
+        .claim("identity-healthcheck", "same-worker")
         .await
         .unwrap()
         .unwrap();
@@ -142,7 +141,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
         .await
         .unwrap();
     let old = queue
-        .claim("identity-session", "same-worker", 0)
+        .claim("identity-session", "same-worker")
         .await
         .unwrap()
         .unwrap();
@@ -160,7 +159,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
         .await
         .unwrap();
     let fresh = queue
-        .claim("identity-session", "same-worker", 1)
+        .claim("identity-session", "same-worker")
         .await
         .unwrap()
         .unwrap();
@@ -175,17 +174,17 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
     queue.enqueue_session(environment, &session).await.unwrap();
     let old_digest = awaken_work_store::test_session_access_digest(9201);
     queue
-        .claim_with_session_access(environment, "same-worker", "poller", 0, None, &old_digest)
+        .claim_with_session_access(environment, "same-worker", "poller", None, &old_digest)
         .await
         .unwrap()
         .unwrap();
     let old_access = queue
-        .authenticate_session_access(&old_digest, 0)
+        .authenticate_session_access(&old_digest)
         .await
         .unwrap()
         .unwrap();
     let old_lease = queue
-        .acquire_session(environment, &session, "same-worker", 0)
+        .acquire_session(environment, &session, "same-worker")
         .await
         .unwrap()
         .unwrap();
@@ -193,12 +192,12 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
     queue.enqueue_session(environment, &session).await.unwrap();
     let new_digest = awaken_work_store::test_session_access_digest(9202);
     queue
-        .claim_with_session_access(environment, "same-worker", "poller", 0, None, &new_digest)
+        .claim_with_session_access(environment, "same-worker", "poller", None, &new_digest)
         .await
         .unwrap()
         .unwrap();
     let new_access = queue
-        .authenticate_session_access(&new_digest, 0)
+        .authenticate_session_access(&new_digest)
         .await
         .unwrap()
         .unwrap();
@@ -208,7 +207,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
     assert_eq!(old_access.expires_at_unix_ms, new_access.expires_at_unix_ms);
     assert!(
         queue
-            .authenticate_session_access(&old_digest, 0)
+            .authenticate_session_access(&old_digest)
             .await
             .unwrap()
             .is_none()
@@ -229,7 +228,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
     );
     assert!(
         queue
-            .heartbeat_with_session_access(&old_access, 1, LeaseHeartbeat::unconditional())
+            .heartbeat_with_session_access(&old_access, LeaseHeartbeat::unconditional())
             .await
             .unwrap()
             .is_not_found()
@@ -237,7 +236,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
     assert!(!queue.release_session(&old_lease).await.unwrap());
     assert_eq!(
         queue
-            .authenticate_session_access(&new_digest, 0)
+            .authenticate_session_access(&new_digest)
             .await
             .unwrap(),
         Some(new_access.clone())
@@ -250,7 +249,7 @@ async fn work_identity_is_not_reused<Q: WorkBackend>(queue: &Q) {
             .is_accepted()
     );
     let new_lease = queue
-        .acquire_session(environment, &session, "same-worker", 0)
+        .acquire_session(environment, &session, "same-worker")
         .await
         .unwrap()
         .unwrap();

@@ -2974,7 +2974,6 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
             .acquire_session_work(
                 &SessionId::from("missing"),
                 "owner",
-                1,
                 SessionWorkAcquisition::RealizationRenewal,
             )
             .await
@@ -2987,7 +2986,6 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
             .acquire_session_work(
                 &SessionId::from("cloud-work"),
                 "owner",
-                1,
                 SessionWorkAcquisition::RealizationRenewal,
             )
             .await
@@ -3000,7 +2998,6 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
         .acquire_session_work(
             &SessionId::from("self-work"),
             "owner",
-            1,
             SessionWorkAcquisition::ClaimedRun,
         )
         .await
@@ -3018,7 +3015,6 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
             .acquire_session_work(
                 &SessionId::from("terminal-work"),
                 "owner",
-                1,
                 SessionWorkAcquisition::ClaimedRun,
             )
             .await
@@ -3039,7 +3035,6 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
             .acquire_session_work(
                 &SessionId::from("renewal-work"),
                 "renewal-owner",
-                2,
                 SessionWorkAcquisition::RealizationRenewal,
             )
             .await

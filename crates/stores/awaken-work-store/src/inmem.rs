@@ -346,11 +346,14 @@ impl InMemoryWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: Option<&SessionAccessDigest>,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
         let mut authority = self.authority.lock();
+        // The one store-clock sample, under the authority lock: reclaim, the
+        // new deadline and `started_at` are this reading, and acknowledgement,
+        // authentication and stop judge the lease on the same clock.
+        let now_ms = self.clock.now_ms();
         let InMemoryQueueAuthority {
             works,
             book,
@@ -422,8 +425,9 @@ impl WorkQueries for InMemoryWorkQueue {
         Ok(self.with_owned(env_id, wid, |w, _| w.clone()))
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+    async fn stats(&self, env_id: &str) -> Result<QueueStats, WorkQueueError> {
         let mut authority = self.authority.lock();
+        let now_ms = self.clock.now_ms();
         let InMemoryQueueAuthority { works, book, .. } = &mut *authority;
         let in_env: Vec<&WorkItem> = works
             .values()
@@ -485,9 +489,8 @@ impl WorkConsumer for InMemoryWorkQueue {
         &self,
         env_id: &str,
         worker_id: &str,
-        now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+        self.claim_with_reclaim(env_id, worker_id, worker_id, None)
             .await
     }
 
@@ -496,18 +499,10 @@ impl WorkConsumer for InMemoryWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         Ok(self
-            .claim_inner(
-                env_id,
-                lease_owner,
-                poller_id,
-                now_ms,
-                reclaim_older_than_ms,
-                None,
-            )?
+            .claim_inner(env_id, lease_owner, poller_id, reclaim_older_than_ms, None)?
             .map(|claim| claim.item))
     }
 
@@ -516,7 +511,6 @@ impl WorkConsumer for InMemoryWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
@@ -524,7 +518,6 @@ impl WorkConsumer for InMemoryWorkQueue {
             env_id,
             lease_owner,
             poller_id,
-            now_ms,
             reclaim_older_than_ms,
             Some(session_access),
         )
@@ -544,7 +537,6 @@ impl WorkConsumer for InMemoryWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         Ok(self
@@ -558,6 +550,9 @@ impl WorkConsumer for InMemoryWorkQueue {
                 {
                     return HeartbeatResult::PreconditionFailed;
                 }
+                // Admission precedes the one store-clock sample the extension
+                // starts from.
+                let now_ms = self.clock.now_ms();
                 let extended = w.state.can_extend_lease();
                 let last_heartbeat = heartbeat_at(now_ms, w.latest_heartbeat_at.as_deref());
                 if extended {
@@ -596,7 +591,6 @@ impl SessionAccessAuthenticator for InMemoryWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
-        now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let authority = self.authority.lock();
         let Some(work_id) = authority
@@ -616,6 +610,9 @@ impl SessionAccessAuthenticator for InMemoryWorkQueue {
         let WorkPayload::Session { id: session_id } = &work.data else {
             return Ok(None);
         };
+        // Subject fencing precedes the one clock sample: liveness is judged on
+        // the clock that granted and renewed the lease.
+        let now_ms = self.clock.now_ms();
         Ok(authority.book.authority(work_id, now_ms).and_then(
             |(lease_owner, lease_epoch, expires_at_unix_ms)| {
                 Some(WorkSessionAccess {
@@ -648,7 +645,6 @@ impl SessionWorkLeaseControl for InMemoryWorkQueue {
     async fn heartbeat_with_session_access(
         &self,
         access: &WorkSessionAccess,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         Ok(self
@@ -667,6 +663,9 @@ impl SessionWorkLeaseControl for InMemoryWorkQueue {
                 if admission != WorkLeaseMutationAdmission::Applied {
                     return HeartbeatResult::PreconditionFailed;
                 }
+                // Admission precedes the one store-clock sample the extension
+                // starts from.
+                let now_ms = self.clock.now_ms();
                 let extended = work.state.can_extend_lease();
                 let last_heartbeat = heartbeat_at(now_ms, work.latest_heartbeat_at.as_deref());
                 let ttl_seconds = heartbeat
@@ -858,9 +857,10 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         let mut authority = self.authority.lock();
+        // The one reading this grant is minted and judged on.
+        let now_ms = self.clock.now_ms();
         if let Some(lease) = authority.current_session_lease(env_id, session_id, now_ms) {
             if lease.owner() != worker_owner {
                 return Ok(Some(lease));
@@ -1001,10 +1001,17 @@ mod tests {
     use crate::{LEASE_TTL_MS, POLLER_WINDOW_MS, test_session_access_digest};
 
     fn q() -> InMemoryWorkQueue {
-        // Claims in these decision tables use the logical epoch-zero timeline.
-        InMemoryWorkQueue::new(std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(
-            0,
-        )))
+        clocked().0
+    }
+
+    /// The queue and its store clock, on the logical epoch-zero timeline these
+    /// decision tables advance.
+    fn clocked() -> (
+        InMemoryWorkQueue,
+        std::sync::Arc<awaken_lease_testkit::ManualClock>,
+    ) {
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        (InMemoryWorkQueue::new(clock.clone()), clock)
     }
 
     // Pin the Anthropic wire vocabulary each `WorkState` renders to. This is the
@@ -1121,7 +1128,7 @@ mod tests {
             .await
             .expect("enqueue");
         let leased = q
-            .claim("env_a", "w", 0)
+            .claim("env_a", "w")
             .await
             .expect("claim query")
             .expect("leases the oldest");
@@ -1129,7 +1136,7 @@ mod tests {
         assert_eq!(leased.state, WorkState::Active);
         // A second poll is capped while one is live-leased.
         assert!(
-            q.claim("env_a", "w", 0).await.expect("claim").is_none(),
+            q.claim("env_a", "w").await.expect("claim").is_none(),
             "single active lease"
         );
         // Stopping the active one frees the lease for the next.
@@ -1139,60 +1146,55 @@ mod tests {
             .into_item()
             .expect("stop");
         assert!(
-            q.claim("env_a", "w", 0).await.expect("claim").is_some(),
+            q.claim("env_a", "w").await.expect("claim").is_some(),
             "next lease after stop"
         );
     }
 
     #[tokio::test]
     async fn an_expired_lease_is_reclaimed_on_the_next_poll() {
-        let q = q();
+        let (q, clock) = clocked();
         let w1 = q
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         // Worker A leases it; while its lease is live, a re-poll is capped.
         assert_eq!(
-            q.claim("env_a", "a", 0)
+            q.claim("env_a", "a")
                 .await
                 .expect("claim query")
                 .expect("lease")
                 .id,
             w1
         );
+        clock.set(1_000);
         assert!(
-            q.claim("env_a", "b", 1_000).await.expect("claim").is_none(),
+            q.claim("env_a", "b").await.expect("claim").is_none(),
             "a live lease caps the env"
         );
+        clock.set(LEASE_TTL_MS + 1);
         // Worker A goes away (no heartbeat). Past the lease TTL, the next poll
         // reclaims the lapsed lease and re-leases the item instead of blocking.
         let reclaimed = q
-            .claim("env_a", "b", LEASE_TTL_MS + 1)
+            .claim("env_a", "b")
             .await
             .expect("claim query")
             .expect("expired lease reclaimed");
         assert_eq!(reclaimed.id, w1);
         assert_eq!(reclaimed.state, WorkState::Active);
+        clock.set(LEASE_TTL_MS + 2);
         // A heartbeat before expiry keeps the lease alive (no reclaim).
         assert!(
-            q.heartbeat(
-                "env_a",
-                &w1,
-                "b",
-                LEASE_TTL_MS + 2,
-                LeaseHeartbeat::unconditional(),
-            )
-            .await
-            .expect("heartbeat")
-            .into_receipt()
-            .expect("hb")
-            .lease_extended
-        );
-        assert!(
-            q.claim("env_a", "c", LEASE_TTL_MS + 3)
+            q.heartbeat("env_a", &w1, "b", LeaseHeartbeat::unconditional())
                 .await
-                .expect("claim")
-                .is_none(),
+                .expect("heartbeat")
+                .into_receipt()
+                .expect("hb")
+                .lease_extended
+        );
+        clock.set(LEASE_TTL_MS + 3);
+        assert!(
+            q.claim("env_a", "c").await.expect("claim").is_none(),
             "the heartbeat kept the lease live"
         );
     }
@@ -1205,30 +1207,29 @@ mod tests {
     /// at now=0, so its lease expires at exactly `LEASE_TTL_MS`.
     #[tokio::test]
     async fn lease_reclaim_is_exact_at_the_ttl_boundary() {
-        let q = q();
+        let (q, clock) = clocked();
         let w1 = q
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         assert_eq!(
-            q.claim("env_a", "a", 0)
+            q.claim("env_a", "a")
                 .await
                 .expect("claim query")
                 .expect("lease")
                 .id,
             w1
         );
+        clock.set(LEASE_TTL_MS - 1);
         // One ms BEFORE expiry: still held (C3 = not-yet-expired → E2 env busy).
         assert!(
-            q.claim("env_a", "b", LEASE_TTL_MS - 1)
-                .await
-                .expect("claim")
-                .is_none(),
+            q.claim("env_a", "b").await.expect("claim").is_none(),
             "held until the last ms before expiry"
         );
+        clock.set(LEASE_TTL_MS);
         // At the EXACT expiry instant: reclaimable (C3 = expired → E1 reclaim + re-lease).
         let reclaimed = q
-            .claim("env_a", "b", LEASE_TTL_MS)
+            .claim("env_a", "b")
             .await
             .expect("claim query")
             .expect("reclaimed at the exact TTL boundary");
@@ -1247,7 +1248,7 @@ mod tests {
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
-        q.claim("env_a", "worker-a", 0)
+        q.claim("env_a", "worker-a")
             .await
             .expect("claim query")
             .expect("claim");
@@ -1270,16 +1271,17 @@ mod tests {
         // R1 old owner + epoch 1 expires; R2 worker-b reclaims under epoch 2.
         // Delayed acknowledgement/stop calls from worker-a must both stutter,
         // leaving the replacement claim active and unacknowledged.
-        let q = q();
+        let (q, clock) = clocked();
         let id = q
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
-        q.claim("env_a", "worker-a", 0)
+        q.claim("env_a", "worker-a")
             .await
             .expect("first claim")
             .expect("first work");
-        q.claim("env_a", "worker-b", LEASE_TTL_MS)
+        clock.set(LEASE_TTL_MS);
+        q.claim("env_a", "worker-b")
             .await
             .expect("replacement claim")
             .expect("replacement work");
@@ -1304,12 +1306,12 @@ mod tests {
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
-        q.claim("env_a", "worker", 0)
+        q.claim("env_a", "worker")
             .await
             .expect("claim query")
             .expect("claim");
         let hb = q
-            .heartbeat("env_a", &id, "worker", 0, LeaseHeartbeat::unconditional())
+            .heartbeat("env_a", &id, "worker", LeaseHeartbeat::unconditional())
             .await
             .expect("heartbeat")
             .into_receipt()
@@ -1336,7 +1338,7 @@ mod tests {
                 .is_not_found()
         );
         assert!(
-            q.heartbeat("env_b", &id, "worker", 0, LeaseHeartbeat::unconditional())
+            q.heartbeat("env_b", &id, "worker", LeaseHeartbeat::unconditional())
                 .await
                 .expect("heartbeat")
                 .is_not_found()
@@ -1358,14 +1360,14 @@ mod tests {
             .await
             .expect("enqueue");
         // Two queued, no poll yet.
-        let st = q.stats("env_a", 0).await.expect("stats");
+        let st = q.stats("env_a").await.expect("stats");
         assert_eq!(st.depth, 2);
         assert_eq!(st.pending, 0);
         assert_eq!(st.workers_polling, 0);
         assert!(st.oldest_queued_at.is_some());
         // Claim one → depth drops, pending rises, the poller is counted.
-        q.claim("env_a", "w1", 0).await.expect("claim");
-        let st = q.stats("env_a", 0).await.expect("stats");
+        q.claim("env_a", "w1").await.expect("claim");
+        let st = q.stats("env_a").await.expect("stats");
         assert_eq!(st.depth, 1);
         assert_eq!(st.pending, 1);
         assert_eq!(st.workers_polling, 1);
@@ -1375,24 +1377,22 @@ mod tests {
 
     #[tokio::test]
     async fn workers_polling_counts_distinct_workers_within_the_window() {
-        let q = q();
+        let (q, clock) = clocked();
         q.enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
             .await
             .expect("enqueue");
         // Two distinct workers poll; the same worker polling twice is not double-counted.
-        q.claim("env_a", "w1", 0).await.expect("claim");
-        q.claim("env_a", "w2", 100).await.expect("claim");
-        q.claim("env_a", "w1", 200).await.expect("claim");
-        assert_eq!(
-            q.stats("env_a", 300).await.expect("stats").workers_polling,
-            2
-        );
+        q.claim("env_a", "w1").await.expect("claim");
+        clock.set(100);
+        q.claim("env_a", "w2").await.expect("claim");
+        clock.set(200);
+        q.claim("env_a", "w1").await.expect("claim");
+        clock.set(300);
+        assert_eq!(q.stats("env_a").await.expect("stats").workers_polling, 2);
+        clock.set(200 + POLLER_WINDOW_MS + 1);
         // Past the liveness window (w1 last polled at 200), only w2 (100) is stale too.
         assert_eq!(
-            q.stats("env_a", 200 + POLLER_WINDOW_MS + 1)
-                .await
-                .expect("stats")
-                .workers_polling,
+            q.stats("env_a").await.expect("stats").workers_polling,
             0,
             "pollers age out of the window"
         );
@@ -1407,7 +1407,7 @@ mod tests {
             .expect("enqueue");
         // Queued: oldest_queued_at is set.
         assert!(
-            q.stats("env_a", 0)
+            q.stats("env_a")
                 .await
                 .expect("stats")
                 .oldest_queued_at
@@ -1415,11 +1415,11 @@ mod tests {
         );
         // Claim the ONLY queued item → depth 0 but it is still being processed, so
         // oldest_queued_at stays set (queued OR processing), not null.
-        q.claim("env_a", "w", 0)
+        q.claim("env_a", "w")
             .await
             .expect("claim query")
             .expect("claim");
-        let st = q.stats("env_a", 0).await.expect("stats");
+        let st = q.stats("env_a").await.expect("stats");
         assert_eq!(st.depth, 0, "nothing queued");
         assert_eq!(st.pending, 1, "one processing");
         assert!(
@@ -1433,7 +1433,7 @@ mod tests {
             .into_item()
             .expect("stop");
         assert!(
-            q.stats("env_a", 0)
+            q.stats("env_a")
                 .await
                 .expect("stats")
                 .oldest_queued_at
@@ -1481,7 +1481,7 @@ mod tests {
         // a secret verifier and cannot supply independent lease authority.
         // Decision rows I1=C1+C2(current)->E1, I2=C2(wrong)->E2,
         // I3=C3->E3, I4=C4->PreconditionFailed and epoch two stays live.
-        let q = q();
+        let (q, clock) = clocked();
         let id = q
             .enqueue_session("env", &awaken_session_types::SessionId::from("sesn_1"))
             .await
@@ -1491,7 +1491,6 @@ mod tests {
                 "env",
                 "owner-a",
                 "poller",
-                0,
                 None,
                 &test_session_access_digest(1),
             )
@@ -1499,8 +1498,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let first_token = first.session_access.expect("I1 token");
+        clock.set(1);
         let first_access = q
-            .authenticate_session_access(&first_token, 1)
+            .authenticate_session_access(&first_token)
             .await
             .unwrap()
             .expect("I1 current");
@@ -1508,18 +1508,18 @@ mod tests {
         assert_eq!(first_access.session_id, "sesn_1");
         assert_eq!(first_access.lease_owner, "owner-a");
         assert!(
-            q.authenticate_session_access(&test_session_access_digest(u64::MAX), 1,)
+            q.authenticate_session_access(&test_session_access_digest(u64::MAX))
                 .await
                 .unwrap()
                 .is_none(),
             "I2"
         );
+        clock.set(LEASE_TTL_MS);
         let second = q
             .claim_with_session_access(
                 "env",
                 "owner-b",
                 "poller-b",
-                LEASE_TTL_MS,
                 None,
                 &test_session_access_digest(2),
             )
@@ -1528,14 +1528,14 @@ mod tests {
             .unwrap();
         let second_token = second.session_access.expect("I3 token");
         assert!(
-            q.authenticate_session_access(&first_token, LEASE_TTL_MS)
+            q.authenticate_session_access(&first_token)
                 .await
                 .unwrap()
                 .is_none(),
             "I3 stale"
         );
         let second_access = q
-            .authenticate_session_access(&second_token, LEASE_TTL_MS)
+            .authenticate_session_access(&second_token)
             .await
             .unwrap()
             .expect("I3 replacement");
@@ -1547,16 +1547,13 @@ mod tests {
             ),
             "I4 stale epoch"
         );
+        clock.set(LEASE_TTL_MS + 1);
         assert!(
-            q.heartbeat_with_session_access(
-                &second_access,
-                LEASE_TTL_MS + 1,
-                LeaseHeartbeat::unconditional(),
-            )
-            .await
-            .unwrap()
-            .into_receipt()
-            .is_some(),
+            q.heartbeat_with_session_access(&second_access, LeaseHeartbeat::unconditional())
+                .await
+                .unwrap()
+                .into_receipt()
+                .is_some(),
             "I4 current epoch remains live"
         );
     }

@@ -231,8 +231,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority.rs",
-        "line": 3137,
-        "file_sha256": "cd13f233c3939e0870a2cbb89cfbb2279c9d32523081eb14782435ae3bf753f1"
+        "line": 3132,
+        "file_sha256": "ad0b7c574da0edb8656fa64b049031b5c2f762c2d17168578250aad6a1c16dc2"
       }
     ],
     "execution_witnesses": [
@@ -343,8 +343,8 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/src/schema/identity_upgrade_tests.rs",
-        "line": 101,
-        "file_sha256": "7fd345be3818b4d03ef0ac117b0ebbded94c3f39b05600f546666456ea70b98d"
+        "line": 103,
+        "file_sha256": "0ae9f1a13429886e1c6156b6b5fd853cce3b5f1c9f21fc7d8588038325f91456"
       }
     ],
     "execution_witnesses": [
@@ -595,8 +595,8 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_identity.rs",
-        "line": 280,
-        "file_sha256": "21879f9f14d8704a8f1c0103308f008c3e74ed21963cb56cbd334a1056d76535"
+        "line": 279,
+        "file_sha256": "0e2a1559ed44fce02a6c570c1658325616703174b58cc2bee6ff174fe6627a9c"
       }
     ],
     "execution_witnesses": [

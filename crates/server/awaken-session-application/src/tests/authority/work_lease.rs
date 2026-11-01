@@ -18,9 +18,10 @@ async fn session_work_authority_bridges_the_complete_transfer_for_acquisition_an
         (11, SessionWorkAcquisition::ClaimedRun),
         (23, SessionWorkAcquisition::RealizationRenewal),
     ] {
+        environments.work_clock.set(now_ms);
         let SessionWorkOwnership::Leased(lease) = app
             .work_assignments
-            .acquire_session_work(&session, "worker:incarnation", now_ms, acquisition)
+            .acquire_session_work(&session, "worker:incarnation", acquisition)
             .await
             .unwrap()
         else {

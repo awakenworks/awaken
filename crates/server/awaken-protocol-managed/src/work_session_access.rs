@@ -10,7 +10,6 @@
 //! maps that lease to the exact Managed HTTP resources the leased Session needs;
 //! it owns no token ledger, resource catalog, or Memory synchronization loop.
 
-use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
@@ -153,8 +152,9 @@ pub async fn work_session_guard(
     let token = RedactedString::from(presented.to_owned());
     let access = match state
         .authentication
-        // The token's expiry is judged on the Session application's clock.
-        .authenticate(&token, state.sessions.roles.clock.now_ms())
+        // The token's expiry is judged on the Work store's own clock, the one
+        // that granted and renewed it; the guard supplies no time.
+        .authenticate(&token)
         .await
     {
         Ok(Some(access)) => access,
@@ -289,22 +289,22 @@ mod tests {
     #[derive(Default)]
     struct AuthenticationOnly {
         attempts: std::sync::atomic::AtomicUsize,
-        times: std::sync::Mutex<Vec<u64>>,
         unavailable: std::sync::atomic::AtomicBool,
         current_lease: std::sync::atomic::AtomicBool,
     }
+
+    /// The live deadline this fake store reports, on its own clock.
+    const CURRENT_LEASE_EXPIRY_MS: u64 = 61_000;
 
     #[async_trait::async_trait]
     impl awaken_executable_environment_contract::SessionAccessAuthenticator for AuthenticationOnly {
         async fn authenticate_session_access(
             &self,
             _presented: &awaken_executable_environment_contract::SessionAccessDigest,
-            now_ms: u64,
         ) -> Result<Option<WorkSessionAccess>, awaken_executable_environment_contract::WorkQueueError>
         {
             use std::sync::atomic::Ordering;
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            self.times.lock().unwrap().push(now_ms);
             if self.unavailable.load(Ordering::SeqCst) {
                 Err(
                     awaken_executable_environment_contract::WorkQueueError::Storage(
@@ -313,7 +313,7 @@ mod tests {
                 )
             } else if self.current_lease.load(Ordering::SeqCst) {
                 let mut lease = access();
-                lease.expires_at_unix_ms = now_ms.checked_add(60_000).unwrap();
+                lease.expires_at_unix_ms = CURRENT_LEASE_EXPIRY_MS;
                 Ok(Some(lease))
             } else {
                 Ok(None)
@@ -474,10 +474,6 @@ mod tests {
             )
             .await;
             assert_eq!(selected.attempts.load(Ordering::SeqCst), attempts);
-            assert_eq!(
-                selected.times.lock().unwrap().as_slice(),
-                vec![1_000; attempts]
-            );
             assert_eq!(
                 handler_calls.load(Ordering::SeqCst),
                 0,

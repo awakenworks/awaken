@@ -64,7 +64,6 @@ async fn executor_environment_roles_use_the_selected_work_queue_and_clock() {
         &environment_id,
         &session,
         "scenario-worker",
-        now_ms,
     )
     .await
     .unwrap()

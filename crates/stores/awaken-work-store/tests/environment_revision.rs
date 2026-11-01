@@ -37,12 +37,12 @@ async fn sqlite_registration_watermark_and_queue_rollback_together() {
             .await
             .unwrap();
         let digest = test_session_access_digest(709);
-        q.claim_with_session_access("rollback", "owner", "poller", 0, None, &digest)
+        q.claim_with_session_access("rollback", "owner", "poller", None, &digest)
             .await
             .unwrap()
             .unwrap();
         let proof = q
-            .authenticate_session_access(&digest, 0)
+            .authenticate_session_access(&digest)
             .await
             .unwrap()
             .unwrap();
@@ -100,7 +100,7 @@ async fn sqlite_registration_watermark_and_queue_rollback_together() {
             "{row} queue rollback"
         );
         assert_eq!(
-            q.authenticate_session_access(&digest, 0).await.unwrap(),
+            q.authenticate_session_access(&digest).await.unwrap(),
             Some(proof.clone()),
             "{row} bearer rollback"
         );
@@ -144,7 +144,7 @@ async fn sqlite_registration_watermark_and_queue_rollback_together() {
                     [session.as_str()]
                 );
                 assert_eq!(
-                    q.authenticate_session_access(&digest, 0).await.unwrap(),
+                    q.authenticate_session_access(&digest).await.unwrap(),
                     Some(proof)
                 );
             }
@@ -179,12 +179,12 @@ async fn postgres_registration_watermark_and_queue_rollback_together() {
             .await
             .unwrap();
         let digest = test_session_access_digest(709);
-        q.claim_with_session_access("rollback", "owner", "poller", 0, None, &digest)
+        q.claim_with_session_access("rollback", "owner", "poller", None, &digest)
             .await
             .unwrap()
             .unwrap();
         let proof = q
-            .authenticate_session_access(&digest, 0)
+            .authenticate_session_access(&digest)
             .await
             .unwrap()
             .unwrap();
@@ -250,7 +250,7 @@ async fn postgres_registration_watermark_and_queue_rollback_together() {
             "{row} queue rollback"
         );
         assert_eq!(
-            q.authenticate_session_access(&digest, 0).await.unwrap(),
+            q.authenticate_session_access(&digest).await.unwrap(),
             Some(proof.clone()),
             "{row} bearer rollback"
         );
@@ -295,7 +295,7 @@ async fn postgres_registration_watermark_and_queue_rollback_together() {
                     [session.as_str()]
                 );
                 assert_eq!(
-                    q.authenticate_session_access(&digest, 0).await.unwrap(),
+                    q.authenticate_session_access(&digest).await.unwrap(),
                     Some(proof)
                 );
             }

@@ -4,18 +4,18 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 360,
-        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
+        "line": 343,
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 361
+        "line": 344
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 372
+        "line": 354
       }
     ],
     "execution_witnesses": [
@@ -49,22 +49,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 396,
-        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
+        "line": 374,
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
-        "line": 1571
+        "line": 1779
       },
       {
         "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
-        "line": 1593
+        "line": 1802
       },
       {
         "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
-        "line": 1633
+        "line": 1842
       }
     ],
     "execution_witnesses": [
@@ -198,22 +198,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 132,
-        "file_sha256": "0df4a5d39dd8dae3ad2a0fbc8660d33df35f44d3e8013bc176ceab0798953b21"
+        "line": 131,
+        "file_sha256": "86e2b633ab6ff2a62d622cf583b3ff8e592984f8bf46d8d414a77888b33c8bac"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 165
+        "line": 164
       },
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 170
+        "line": 169
       },
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 175
+        "line": 174
       }
     ],
     "execution_witnesses": [
@@ -249,22 +249,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 617,
-        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
+        "line": 609,
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 557
+        "line": 547
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 558
+        "line": 548
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 587
+        "line": 579
       }
     ],
     "execution_witnesses": [
@@ -298,26 +298,26 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 612,
-        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
+        "line": 604,
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 462
+        "line": 448
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 463
+        "line": 449
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 498
+        "line": 486
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 523
+        "line": 512
       }
     ],
     "execution_witnesses": [
@@ -393,22 +393,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 606,
-        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
+        "line": 598,
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 289
+        "line": 281
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 293
+        "line": 285
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 434
+        "line": 418
       }
     ],
     "execution_witnesses": [
@@ -444,26 +444,26 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 622,
-        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
+        "line": 614,
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 289
+        "line": 281
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 293
+        "line": 285
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 462
+        "line": 448
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 558
+        "line": 548
       }
     ],
     "execution_witnesses": [

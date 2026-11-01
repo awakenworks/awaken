@@ -33,7 +33,7 @@ async fn sqlite_authority_waiter_keeps_a_current_thread_runtime_schedulable() {
     let held = queue.pool.acquire().await.expect("Q1 connection held");
     let waiter = tokio::spawn({
         let queue = Arc::clone(&queue);
-        async move { queue.acquire_session("env", &session(), "owner", 0).await }
+        async move { queue.acquire_session("env", &session(), "owner").await }
     });
     tokio::task::yield_now().await;
 
@@ -79,7 +79,7 @@ async fn closing_the_pool_ends_a_queued_authority_waiter_and_peers_progress() {
     let held = queue.pool.acquire().await.expect("C1");
     let waiter = tokio::spawn({
         let queue = Arc::clone(&queue);
-        async move { queue.acquire_session("env", &session(), "owner", 0).await }
+        async move { queue.acquire_session("env", &session(), "owner").await }
     });
     tokio::task::yield_now().await;
     let closing = tokio::spawn({
@@ -104,7 +104,7 @@ async fn closing_the_pool_ends_a_queued_authority_waiter_and_peers_progress() {
 
     let peer = q().await;
     let peer_lease = peer
-        .acquire_session("env", &session(), "peer-owner", 0)
+        .acquire_session("env", &session(), "peer-owner")
         .await
         .expect("E3 peer acquire")
         .expect("E3 peer lease");
@@ -120,7 +120,7 @@ async fn a_wedged_connection_fails_authority_waiters_within_one_lease_ttl() {
     let _wedged = queue.pool.acquire().await.expect("wedged connection");
     let waiter = tokio::spawn({
         let queue = Arc::clone(&queue);
-        async move { queue.acquire_session("env", &session(), "owner", 0).await }
+        async move { queue.acquire_session("env", &session(), "owner").await }
     });
     let bounded = tokio::time::timeout(Duration::from_millis(LEASE_TTL_MS + 5_000), waiter).await;
     let outcome = bounded.expect("the waiter itself reaches its deadline");

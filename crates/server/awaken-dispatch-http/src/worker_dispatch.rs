@@ -558,7 +558,6 @@ async fn verify_session_realization_authority(
         service,
         session_id,
         &identity.lease_owner(),
-        authority.now_ms,
         awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
     )
     .await?;
@@ -945,7 +944,6 @@ async fn bind_claimed_session_work_authority(
         work.as_ref(),
         &awaken_session_types::SessionId::from(session_id),
         &authority.owner,
-        authority.now_ms,
         awaken_session_application_contract::SessionWorkAcquisition::ClaimedRun,
     )
     .await;
@@ -1073,7 +1071,6 @@ async fn recovery_snapshot(
                     .acquire_session_work(
                         &awaken_session_types::SessionId::from(&session.0),
                         &authority.owner,
-                        authority.now_ms,
                         awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
                     )
                     .await
@@ -1501,7 +1498,6 @@ async fn settle(
                 .acquire_session_work(
                     &awaken_session_types::SessionId::from(session_thread_id.0),
                     &claim.owner,
-                    authority.now_ms,
                     awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
                 )
                 .await
