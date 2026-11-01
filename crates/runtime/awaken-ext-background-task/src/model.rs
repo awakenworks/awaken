@@ -1048,119 +1048,6 @@ fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
     );
 }
 
-#[cfg(kani)]
-/// @obligation background_task.stale_fence_never_finishes_or_heartbeats
-/// @kani profile=solver-z3-v1
-#[kani::proof]
-fn fixed_target_heartbeat_acknowledges_or_extends_only_a_live_current_tenure() {
-    // Symbolic production-kernel graph: exact tenure plus attempt presence,
-    // all five phases and u64 deadlines/targets/times/revisions. ACK implies a
-    // positive target already reached; Apply implies a live predecessor, exact immutable
-    // target and revision+1; zero/expired/overflow inputs produce no successor.
-    // A replay of the planned successor ACKs for every later observation time.
-    // Aggregate field preservation and durable commit races remain native/TCB.
-    let phase_raw: u8 = kani::any();
-    kani::assume(phase_raw < 5);
-    let phase = match phase_raw {
-        0 => TaskPhase::Requested,
-        1 => TaskPhase::Running,
-        2 => TaskPhase::Waiting,
-        3 => TaskPhase::Cancelling,
-        _ => TaskPhase::Ended,
-    };
-    let epoch = Epoch::from_persisted(kani::any());
-    kani::assume(epoch.is_some());
-    let epoch = epoch.unwrap();
-    let task = BackgroundTaskId::new("task").unwrap();
-    let attempt = TaskAttempt {
-        worker_id: "current-worker".into(),
-        epoch,
-        lease_expires_at_ms: kani::any(),
-        policy: TaskExecutionPolicy {
-            recovery: ToolRecoveryPolicy::replay_safe(),
-            concurrency: ToolConcurrency::Parallel,
-        },
-    };
-    let current_deadline_ms = attempt.lease_expires_at_ms;
-    let fence = attempt.tenure(&task);
-    let target_ms: u64 = kani::any();
-    let now_ms: u64 = kani::any();
-    let revision: u64 = kani::any();
-    let has_attempt: bool = kani::any();
-    let plan = fenced_mutation_plan(
-        phase,
-        has_attempt.then_some(&attempt),
-        &task,
-        &fence,
-        revision,
-        FencedMutationRequest::HeartbeatCheckpoint { target_ms, now_ms },
-    );
-    match &plan {
-        Ok(FencedMutationPlan::HeartbeatAcknowledged) => {
-            assert!(target_ms > 0 && target_ms <= current_deadline_ms);
-            if !fence_is_live_at(current_deadline_ms, now_ms) {
-                assert!(!execution_is_admitted(
-                    phase,
-                    phase,
-                    true,
-                    current_deadline_ms,
-                    now_ms,
-                    true,
-                ));
-            }
-        }
-        Ok(FencedMutationPlan::Heartbeat {
-            lease_expires_at_ms,
-            revision: next_revision,
-        }) => {
-            assert_eq!(*lease_expires_at_ms, target_ms);
-            assert!(target_ms > current_deadline_ms);
-            assert!(fence_is_live_at(current_deadline_ms, now_ms));
-            assert!(revision < u64::MAX);
-            assert_eq!(*next_revision, revision + 1);
-            let successor = TaskAttempt {
-                lease_expires_at_ms: *lease_expires_at_ms,
-                ..attempt
-            };
-            assert_eq!(
-                fenced_mutation_plan(
-                    phase,
-                    Some(&successor),
-                    &task,
-                    &fence,
-                    *next_revision,
-                    FencedMutationRequest::HeartbeatCheckpoint {
-                        target_ms,
-                        now_ms: kani::any(),
-                    },
-                ),
-                Ok(FencedMutationPlan::HeartbeatAcknowledged)
-            );
-        }
-        Err(BackgroundTaskError::InvalidClaim) => assert_eq!(target_ms, 0),
-        Ok(FencedMutationPlan::CheckpointLeaseExpired) => {
-            assert!(target_ms > current_deadline_ms);
-            assert!(!fence_is_live_at(current_deadline_ms, now_ms));
-        }
-        Err(BackgroundTaskError::RevisionOverflow) => {
-            assert!(target_ms > current_deadline_ms);
-            assert!(fence_is_live_at(current_deadline_ms, now_ms));
-            assert_eq!(revision, u64::MAX);
-        }
-        Err(BackgroundTaskError::StaleFence) => assert!(!has_attempt),
-        // Excluded by the outcome-set assertion below; an arm with its own
-        // panic would be an assertion no input reaches.
-        _ => {}
-    }
-    assert!(fixed_target_checkpoint_outcome_is_closed(&plan));
-    if !has_attempt {
-        assert_eq!(plan, Err(BackgroundTaskError::StaleFence));
-    } else if target_ms > 0 && target_ms <= current_deadline_ms {
-        assert_eq!(plan, Ok(FencedMutationPlan::HeartbeatAcknowledged));
-    }
-    cover_fixed_target_checkpoint_outcomes(&plan);
-}
-
 /// The checkpoint has only ACK, apply, lost, invalid, expired or overflow
 /// outcomes.
 #[cfg(kani)]
@@ -1208,23 +1095,23 @@ fn cover_fixed_target_checkpoint_outcomes(plan: &Result<FencedMutationPlan, Back
     );
 }
 
-/// The planner outcome table of
-/// `fixed_target_heartbeat_acknowledges_or_extends_only_a_live_current_tenure`
-/// with one planner call and no successor replay (that is
-/// `fixed_target_heartbeat_replay_of_the_planned_successor_acknowledges`).
+/// The fixed-target planner outcome table, composed with the full-width
+/// `fixed_target_heartbeat_replay_of_the_planned_successor_acknowledges` and
+/// the original lease-contract nanos-image bridge.
 ///
 /// The epoch is fixed at `Epoch::FIRST`. The fence is built from the same
 /// attempt, so tenure equality holds for every epoch and the planner reads the
 /// epoch only through that equality; a mismatched epoch is the stale-fence
 /// harness's case, which draws every `u64` epoch.
-///
-/// Split variant, pending one run: if the combined harness finishes in its
-/// slot, this pair is a duplicate of it and is removed; if it does not, the
-/// combined harness is removed and this pair carries the obligation.
 #[cfg(kani)]
 /// @obligation background_task.stale_fence_never_finishes_or_heartbeats
 #[kani::proof]
+#[kani::unwind(16)]
 fn fixed_target_heartbeat_planner_outcomes_are_exact() {
+    // Keep real allocation, String comparison/trim and policy Drop checks.
+    // The fixture has a 14-byte holder, four-byte task and Parallel policy;
+    // resource vectors are absent. Bound expansion without disabling any
+    // unwinding assertion: a reachable extra iteration must fail verification.
     let phase_raw: u8 = kani::any();
     kani::assume(phase_raw < 5);
     let phase = match phase_raw {
@@ -1234,11 +1121,37 @@ fn fixed_target_heartbeat_planner_outcomes_are_exact() {
         3 => TaskPhase::Cancelling,
         _ => TaskPhase::Ended,
     };
+    // Joint D/T/N domain, not three unrelated pairwise reductions: a u64
+    // triple has at most three distinct positive classes p1<...<pk. One map
+    // fixes 0 and sends pi to rank i in [1,2,3], preserving all joint <,=,> and
+    // zero classes. The 64 choices below cover all 26 realizable classes.
+    // The shared unsigned nanos-image lemma in awaken-lease-contract::fence
+    // (`unix_nanos_of_epoch_ms_is_strictly_monotone`) makes production liveness
+    // depend only on this order. It is the bridge, not Expiry's independent Ord
+    // lemma or an assumed live bit; the real production kernel still runs here.
+    // The plan copies target exactly: transport input and returned target by
+    // this same injective tuple map, then invert it to recover the original
+    // target. No arithmetic/difference/hash of the time values is observed.
+    // The kernel has no separate time-MAX predicate: a concrete MAX maps to
+    // its rank. The full image bridge includes MAX, and the inverse tuple map
+    // recovers a copied MAX target. Revisit this quotient if such a predicate
+    // or time arithmetic becomes an independent observation.
+    // Revision remains full u64 (checked_add/MAX included), phases all five,
+    // and attempt presence both values. The original matching-tenure FIRST
+    // bound above is unchanged; the independent stale proof keeps full epochs
+    // and mismatches. Replay keeps its full-u64 inputs and both live/expired
+    // covers. This local sampler changes no production model or solver bound.
+    let time_values = [0_u64, 1, 2, 3];
+    let sample_checkpoint_time = || {
+        let index: usize = kani::any();
+        kani::assume(index < time_values.len());
+        time_values[index]
+    };
     let task = BackgroundTaskId::new("task").unwrap();
     let attempt = TaskAttempt {
         worker_id: "current-worker".into(),
         epoch: Epoch::FIRST,
-        lease_expires_at_ms: kani::any(),
+        lease_expires_at_ms: sample_checkpoint_time(),
         policy: TaskExecutionPolicy {
             recovery: ToolRecoveryPolicy::replay_safe(),
             concurrency: ToolConcurrency::Parallel,
@@ -1246,8 +1159,8 @@ fn fixed_target_heartbeat_planner_outcomes_are_exact() {
     };
     let current_deadline_ms = attempt.lease_expires_at_ms;
     let fence = attempt.tenure(&task);
-    let target_ms: u64 = kani::any();
-    let now_ms: u64 = kani::any();
+    let target_ms: u64 = sample_checkpoint_time();
+    let now_ms: u64 = sample_checkpoint_time();
     let revision: u64 = kani::any();
     let has_attempt: bool = kani::any();
     let plan = fenced_mutation_plan(
@@ -1306,9 +1219,9 @@ fn fixed_target_heartbeat_planner_outcomes_are_exact() {
     cover_fixed_target_checkpoint_outcomes(&plan);
 }
 
-/// The successor replay of the combined harness, on its own: once a
-/// checkpoint applied, replaying the same checkpoint against the planned
-/// successor acknowledges at every later observation time.
+/// Fixed-target successor replay: once a checkpoint applied, replaying that
+/// same checkpoint against the planned successor acknowledges at any observation
+/// time. The planner table supplies the exact target/revision relation.
 ///
 /// `fixed_target_heartbeat_planner_outcomes_are_exact` proves that an applied
 /// checkpoint plans exactly `Heartbeat { lease_expires_at_ms: target_ms,

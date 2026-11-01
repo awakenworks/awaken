@@ -588,7 +588,7 @@ mod material_input_proofs {
         source
     }
 
-    fn check_case(slots: [u8; 4], has_before: bool, has_attempt: bool) {
+    fn check_case(slots: [u8; 4], has_before: bool, has_attempt: bool) -> (bool, bool) {
         // Causes: independent primary/auxiliary slots on both rows, absent
         // predecessor, absent attempt, retained/moved/duplicate references,
         // bound/foreign/prefix-only suffix. Effects: new-write and exact-bound
@@ -598,8 +598,17 @@ mod material_input_proofs {
         // never calls BTreeSet, material_refs, strip_suffix or ends_with from production.
         // R4 candidate order and repeated new aliases survive filtering; Ready
         // recovery must retain its missing-then-unavailable observation order.
-        let before = has_before.then(|| source_with_slots([slots[0], slots[1]]));
-        let after = source_with_slots([slots[2], slots[3]]);
+        // Destructure the fixed coordinates before the predecessor split.
+        // This avoids proof-only indexed reads in skipped Some/retention
+        // branches without changing slot values or lazy construction.
+        let [
+            before_primary,
+            before_auxiliary,
+            after_primary,
+            after_auxiliary,
+        ] = slots;
+        let before = has_before.then(|| source_with_slots([before_primary, before_auxiliary]));
+        let after = source_with_slots([after_primary, after_auxiliary]);
         let fence = CredentialMaterialMutationFence {
             attempt_id: if has_attempt {
                 "a".into()
@@ -612,8 +621,9 @@ mod material_input_proofs {
         let mut expected_bound = has_attempt;
         #[cfg(test)]
         let mut expected_delta = Vec::new();
-        for index in [slots[2], slots[3]] {
-            let is_new = index != 0 && (!has_before || (index != slots[0] && index != slots[1]));
+        for index in [after_primary, after_auxiliary] {
+            let is_new = index != 0
+                && (!has_before || (index != before_primary && index != before_auxiliary));
             expected_new |= is_new;
             #[cfg(test)]
             if is_new {
@@ -631,10 +641,9 @@ mod material_input_proofs {
             expected_delta,
             "R4: exact ordered candidate delta"
         );
-        assert_eq!(
-            fence.material_input_facts(before.as_ref(), &after),
-            (expected_new, expected_bound)
-        );
+        let actual = fence.material_input_facts(before.as_ref(), &after);
+        assert_eq!(actual, (expected_new, expected_bound));
+        actual
     }
 
     #[test]
@@ -704,7 +713,7 @@ mod material_input_proofs {
     }
 
     #[cfg(kani)]
-    fn check_partition<const HAS_BEFORE: bool>() {
+    fn check_partition<const HAS_BEFORE: bool>() -> (bool, bool) {
         // The no-predecessor proof retains all six classes in both candidate
         // slots and both attempt states. The shared executable table also
         // covers predecessor presence; that heap proof remains outstanding.
@@ -717,7 +726,7 @@ mod material_input_proofs {
         // Direct tuple constraints avoid increasing every collection loop's
         // bound merely to iterate over the four independent input indices.
         kani::assume(slots[0] < 6 && slots[1] < 6 && slots[2] < 6 && slots[3] < 6);
-        check_case(slots, HAS_BEFORE, kani::any());
+        check_case(slots, HAS_BEFORE, kani::any())
     }
 
     #[cfg(kani)]
@@ -727,7 +736,27 @@ mod material_input_proofs {
     #[kani::proof]
     #[kani::unwind(3)]
     fn credential_material_input_facts_without_predecessor() {
-        check_partition::<false>();
+        let actual = check_partition::<false>();
+        // R5: the shared native/proof checker returns the one production
+        // result after comparing it with the independent indexed oracle.
+        // These four covers observe that actual result, not a free symbol
+        // or a cfg(kani) branch inside the shared checker.
+        kani::cover!(
+            !actual.0 && !actual.1,
+            "empty delta without an attempt is unbound"
+        );
+        kani::cover!(
+            !actual.0 && actual.1,
+            "empty delta with an attempt is bound"
+        );
+        kani::cover!(
+            actual.0 && actual.1,
+            "every new reference can bind to the attempt"
+        );
+        kani::cover!(
+            actual.0 && !actual.1,
+            "new material can fail attempt binding"
+        );
     }
 }
 
@@ -1069,24 +1098,29 @@ mod phase_proofs {
         // non-Writing phase. Effects: no claim and zero token calls. The lease
         // kernel and executable boundary table own the full time domain;
         // these rows isolate the state/side-effect precedence.
+        // T1a any phase + live => Ok(None), no factory invocation.
+        // T1b non-Writing + expired => Ok(None), no factory invocation.
+        // A persistent flag observes any unexpected invocation without adding
+        // overflow arithmetic to a branch required never to execute. It stays
+        // false iff the original zero-call assertion holds across both calls.
         use CredentialMaterialMutationPhase::*;
         let phase = phase();
         let input = takeover_fence(phase, 2, None);
-        let mut calls = 0u8;
+        let mut token_called = false;
         let result = input.claim_after_expiry_with_token(1, 2, || {
-            calls += 1;
+            token_called = true;
             String::new()
         });
         assert!(matches!(result, Ok(None)), "T1 no claim");
-        assert_eq!(calls, 0, "T1 no entropy");
+        assert!(!token_called, "T1 no entropy");
         if phase != Writing {
             let expired = takeover_fence(phase, 1, None);
             let result = expired.claim_after_expiry_with_token(1, 2, || {
-                calls += 1;
+                token_called = true;
                 String::new()
             });
             assert!(matches!(result, Ok(None)), "T1 expired non-Writing");
-            assert_eq!(calls, 0, "T1 expired non-Writing has no entropy");
+            assert!(!token_called, "T1 expired non-Writing has no entropy");
         }
     }
 
@@ -1096,16 +1130,19 @@ mod phase_proofs {
         // T2 causes: Writing expires at now; the successor is equal to or
         // earlier than now. Effects: error before token generation or mutation.
         // The executable boundary table owns zero/MAX time cases.
+        // T2a now=deadline=1 and T2b now=2/deadline=1 both reject before
+        // the factory. The flag spans both rows: any invocation makes the
+        // independent no-entropy observation fail, even if the result is Err.
         use CredentialMaterialMutationPhase::*;
         let input = takeover_fence(Writing, 1, None);
-        let mut calls = 0u8;
+        let mut token_called = false;
         for (now, deadline) in [(1, 1), (2, 1)] {
             let result = input.claim_after_expiry_with_token(now, deadline, || {
-                calls += 1;
+                token_called = true;
                 String::new()
             });
             assert!(result.is_err(), "T2 invalid successor");
-            assert_eq!(calls, 0, "T2 no entropy");
+            assert!(!token_called, "T2 no entropy");
         }
     }
 

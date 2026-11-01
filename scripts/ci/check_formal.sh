@@ -8,7 +8,7 @@ readonly z3_version="Z3 version 4.8.9 - 64 bit"
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
-source scripts/ci/_deadline.sh
+source scripts/ci/_rust_test_execution.sh
 # TLAPS bundles the pinned Z3 outside a non-login PATH. Without this the Z3
 # profiles below ran only when the caller's shell happened to carry it.
 source scripts/ci/_provider_environment.sh
@@ -203,58 +203,64 @@ python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 
+# Every Rust witness below uses the existing required executor: the SAME
+# authored Cargo argv is listed and run, an empty whole-call selection fails,
+# and all named outcomes must pass without a skipped/ignored selected case.
+# Empty individual targets do not fail a nonempty complete Cargo invocation.
+# Critical moved-owner calls declare their existing cases here: a matching
+# neighbor must not hide a missing semantic witness in a broad filter.
 # Bind the abstract one-owner/waiting-follower theorem to the production
 # TaskRegistry phase across timeout, cooperative, and caller-cancellation rows.
 # The successful row requires two independent followers; the cancellation row
 # proves dropping the initiating Future cannot drop the unique drain owner.
-cargo test -p awaken-service-lifecycle --test service_lifecycle \
+run_required_rust_tests -p awaken-service-lifecycle --test service_lifecycle \
   concurrent_shutdown_cannot_return_before_the_active_drain_finishes -- --exact
-cargo test -p awaken-service-lifecycle --test service_lifecycle \
+run_required_rust_tests -p awaken-service-lifecycle --test service_lifecycle \
   concurrent_shutdown_followers_wait_for_successful_active_drain -- --exact
-cargo test -p awaken-service-lifecycle --test service_lifecycle \
+run_required_rust_tests -p awaken-service-lifecycle --test service_lifecycle \
   cancelled_shutdown_caller_cannot_orphan_the_active_drain -- --exact
 
 # The abstract network algebra is not Rust String/Vec refinement. Exercise the
 # actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
-cargo test -p awaken-protocol-managed --lib projection_publish_decision_covers_cache_and_source_fences
-cargo test -p awaken-session-configuration-contract --lib network_policy::tests
-cargo test -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
-cargo test -p awaken-session-application --lib realization::publication::collection_tests
+run_required_rust_tests -p awaken-protocol-managed --lib projection_publish_decision_covers_cache_and_source_fences
+run_required_rust_tests -p awaken-session-configuration-contract --lib network_policy::tests
+run_required_rust_tests -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
+run_required_rust_tests -p awaken-session-application --lib realization::publication::collection_tests
 # The executable-refresh theorem abstracts async trait dispatch and application
 # side effects. Inject failure at independent production consumers and require
 # every downstream handler, mutation and launch counter to remain untouched.
-cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
-cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
-cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
-cargo test -p awaken-session-application-contract --lib \
+run_required_rust_tests -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
+run_required_rust_tests -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
+run_required_rust_tests -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
+run_required_rust_tests -p awaken-session-application-contract --lib \
   executable_projection::tests::paired_refresh_capability_covers_every_domain_outcome
 # ManagementAuditIntent abstracts the repository and Axum middleware boundary.
 # Require the canonical protected router to attempt durable intent persistence
 # and leave its observable business handler untouched on repository failure.
-cargo test -p awaken-control --lib \
+run_required_rust_tests -p awaken-control --lib \
   durable_audit_failure_blocks_business_through_canonical_management_router
 # Bind successful completion and its failure window to the same public router,
 # canonical repository port, and real SQLite durable audit owner.
-cargo test -p awaken-control --lib management_audit_completion_
-cargo test -p awaken-durable-projection --lib install_reconciliation_covers_cursor_and_authority_outcomes
-cargo test -p awaken-durable-projection --lib refresh_domain_permit_is_exclusive
-cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
-cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
-cargo test -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
-cargo test -p awaken-executable-environment-catalog --lib install_error_precedes_environment_target_publication
+run_required_rust_tests -p awaken-control --lib management_audit_completion_
+run_required_rust_tests -p awaken-durable-projection --lib install_reconciliation_covers_cursor_and_authority_outcomes
+run_required_rust_tests -p awaken-durable-projection --lib refresh_domain_permit_is_exclusive
+run_required_rust_tests -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
+run_required_rust_tests -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
+run_required_rust_tests -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
+run_required_rust_tests -p awaken-executable-environment-catalog --lib install_error_precedes_environment_target_publication
 # Bind the theorem's per-domain lock owner to both production registrar types.
 # Each test blocks the first source read after two refresh tasks have attempted
 # the same registrar, then requires one entered read and one exact installation.
-cargo test -p awaken-executable-agent-catalog --lib \
+run_required_rust_tests -p awaken-executable-agent-catalog --lib \
   concurrent_agent_refreshes_are_serialized_by_the_domain_registrar
-cargo test -p awaken-executable-environment-catalog --lib \
+run_required_rust_tests -p awaken-executable-environment-catalog --lib \
   concurrent_environment_refreshes_are_serialized_by_the_domain_registrar
 # Cross-check the theorem's installed <= authority invariant at the stable-range
 # boundary in both production registrar types. A command committed above the
 # captured high-water must wait for the next refresh rather than enter this one.
-cargo test -p awaken-executable-agent-catalog --lib \
+run_required_rust_tests -p awaken-executable-agent-catalog --lib \
   agent_command_above_captured_high_water_waits_for_next_refresh
-cargo test -p awaken-executable-environment-catalog --lib \
+run_required_rust_tests -p awaken-executable-environment-catalog --lib \
   environment_command_above_captured_high_water_waits_for_next_refresh
 # Cross the application reaction with the canonical SQLite transaction owner.
 # C1 two real schedulers calculate one occurrence: the losing stale cache removes
@@ -264,128 +270,144 @@ cargo test -p awaken-executable-environment-catalog --lib \
 # store table proves the rejected capacity transactions leave no row/outbox fact,
 # then reuses a rejected stale claim id from a current replica. Configured
 # PostgreSQL executes that same store table in the required database gate.
-cargo test -p awaken-deployment-application --lib durable_replicas_claim_one_exact_occurrence
-cargo test -p awaken-deployment-application --lib \
+run_required_rust_tests -p awaken-deployment-application --lib durable_replicas_claim_one_exact_occurrence
+run_required_rust_tests -p awaken-deployment-application --lib \
   scheduled_capacity_is_linearizable_across_replicas
-cargo test -p awaken-session-store --features test-support \
+run_required_rust_tests -p awaken-session-store --features test-support \
   --test session_repo_conformance sqlite_backend_conforms -- --exact
 # The WebhookOutbox model treats a committed fact as recoverable across crash.
 # Bind that premise to a real post-commit process kill and fresh SQLite reopen;
 # delivery/settlement remains covered by the separate notifier kernel below.
-cargo test -p awaken-session-store --test process_crash_outbox \
+run_required_rust_tests -p awaken-session-store --test process_crash_outbox \
   session_commit_survives_process_kill_before_notification
 # The atomic-commit claim also requires the opposite terminal outcome: a real
 # outbox INSERT failure must roll back create, replace and delete root writes,
 # their receipts, and the outbox itself through the production SQLite adapter.
 # Live PostgreSQL executes the same table in the required database gate.
-cargo test -p awaken-session-store --features test-support \
+run_required_rust_tests -p awaken-session-store --features test-support \
   --test session_repo_conformance \
   sqlite_lifecycle_outbox_insert_failure_rolls_back_every_root_path -- --exact
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
 # kernel and directory methods remain the production code.
-cargo test -p awaken-worker-registry --features loom --lib loom_tests
+run_required_rust_tests -p awaken-worker-registry --features loom --lib loom_tests
 # Explore complete reference WorkQueue commands and its existing LeaseBook.
 # Work rows, token digests and lease snapshots use the actual implementation;
 # only their mutexes are substituted for the bounded Loom schedules.
-cargo test -p awaken-work-store --features loom --lib loom_tests
+run_required_rust_tests -p awaken-work-store --features loom --lib loom_tests
 # The actual ACP batch constructor, admission and publication share the same
 # native/Loom case table. Only its mutex is instrumented; a later accepted
 # same-revision status update may replace an earlier accepted value.
-cargo test -p awaken-run-executor-acp --features loom --lib binding_batch_tests
-cargo test -p awaken-acp-application --lib binding_batch_
+run_required_rust_tests -p awaken-run-executor-acp --features loom --lib binding_batch_tests \
+  --require-case=host::binding_batch_tests::complete_writers_and_reader_are_linearizable \
+  --require-case=host::binding_batch_tests::malformed_batches_never_publish_a_prefix
+# Source-to-host translation remains an independent CLI boundary over the
+# same resolver; its original rejection/retry case is not a second batch kernel.
+run_required_rust_tests -p awaken-cli --lib binding_batch_rejection_preserves_every_existing_and_absent_entry \
+  --require-case=acp_local_credentials::registration_tests::binding_batch_rejection_preserves_every_existing_and_absent_entry
 # Exercise the real A2A executor across both commit/send crash-window tables.
-cargo test -p awaken-run-executor-a2a --lib send_windows
+run_required_rust_tests -p awaken-run-executor-a2a --lib send_windows
 # Cross the delegation model's stable identity and durable-cancellation actions
 # through the one production registry, restart recovery, and the A2A adapter's
 # lost-response retry against the same committed remote task.
-cargo test -p awaken-agent-contract --lib \
+run_required_rust_tests -p awaken-agent-contract --lib \
   agent::delegation::tests::relationship_identity_and_cancel_redelivery_share_exact_durable_binding -- --exact
-cargo test -p awaken-agent-contract --lib \
+run_required_rust_tests -p awaken-agent-contract --lib \
   agent::delegation::tests::child_invocation_admission_consumes_the_exact_open_relationship -- --exact
-cargo test -p awaken-runtime --test formal_refinement \
+run_required_rust_tests -p awaken-runtime --test formal_refinement \
   closed_delegation_relationship_never_reenters_the_child_executor -- --exact
-cargo test -p awaken-runtime --test delegation \
+run_required_rust_tests -p awaken-runtime --test delegation \
   cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent -- --exact
-cargo test -p awaken-run-executor-a2a --lib \
+run_required_rust_tests -p awaken-run-executor-a2a --lib \
   tests::failed_remote_cancel_is_retryable_against_the_same_committed_task -- --exact
 # Exercise the production BackgroundTask projection under callback/replacement
 # races. Only its single mutex is instrumented; durable commits remain outside
 # this bounded lock-interleaving claim.
-cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_tests
+run_required_rust_tests -p awaken-ext-background-task --features loom --lib supervisor::loom_tests
 # The Kani predicate below is not sufficient evidence of the async wiring.
 # Exercise its aggregate projection and real post-concurrency-admission check.
-cargo test -p awaken-ext-background-task --test state_machine execution_admission
-cargo test -p awaken-runtime --test background_task_state \
+run_required_rust_tests -p awaken-ext-background-task --test state_machine execution_admission
+run_required_rust_tests -p awaken-runtime --test background_task_state \
   terminal_reclaim_rejects_then_recovers_from_committed_thread_truth -- --exact
-cargo test -p awaken-session-executor --lib background_task::ownership::tests
+run_required_rust_tests -p awaken-session-executor --lib background_task::ownership::tests
 # The model's CommittedAuthority observation source is an async query policy,
 # not the process projection. Hold that projection stale while the production
 # terminal observer consumes an exact scripted authoritative state command.
-cargo test -p awaken-session-executor --lib \
+run_required_rust_tests -p awaken-session-executor --lib \
   committed_claim_launches_once_and_records_completion_without_a_second_store
 # Async return/cleanup is not covered by the scalar physical-slot proof.
-cargo test -p awaken-dispatch --features test-support --test pool_memory
-cargo test -p awaken-dispatch --features test-support --test lease_semantics
+run_required_rust_tests -p awaken-dispatch --features test-support --test pool_memory
+run_required_rust_tests -p awaken-dispatch --features test-support --test lease_semantics
 # Settlement fencing and pending input have one shared cross-adapter table:
 # stale Awaiting/Done settlements preserve dispatch, pending input, completion
 # and wake eligibility, while current settlements publish every exact effect.
 # Run the Memory and SQLite bindings here; the live PostgreSQL gate owns the
 # same third binding, while check-reliability retains its normalized history.
-cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \
+run_required_rust_tests -p awaken-dispatch --features test-support --test dispatch_conformance \
   memory_dispatch_conforms -- --exact
-cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \
+run_required_rust_tests -p awaken-dispatch --features test-support --test dispatch_conformance \
   sqlite_dispatch_conforms -- --exact
 # Cross the abstract crash action with a real child-process kill and two fresh
 # opens of the production file-backed SQLite adapter.
-cargo test -p awaken-dispatch --features test-support --test crash_before_settle \
+run_required_rust_tests -p awaken-dispatch --features test-support --test crash_before_settle \
   sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once -- --exact
-cargo test -p awaken-session-executor --lib durable_interrupt_returns_after_intent
+run_required_rust_tests -p awaken-session-executor --lib durable_interrupt_returns_after_intent
 # The epoch kernel assumes the failure CAS actually expires every recoverable
 # assignment; cover Idle hot replacement as well as initial retry at that owner.
-cargo test -p awaken-session-application --lib failed_nonterminal_realization
-cargo test -p awaken-run-executor-acp --lib terminal_business_outcome
-cargo test -p awaken-protocol-acp --features real-acp --lib
-cargo test -p awaken-sandbox-kubernetes --lib remote_completion_requires_explicit_process_exit_evidence
+run_required_rust_tests -p awaken-session-application --lib failed_nonterminal_realization
+run_required_rust_tests -p awaken-run-executor-acp --lib terminal_business_outcome
+run_required_rust_tests -p awaken-protocol-acp --features real-acp --lib
+run_required_rust_tests -p awaken-sandbox-kubernetes --lib remote_completion_requires_explicit_process_exit_evidence
 # Exercise the production Hand control branch and real Bash cancellation.
 # Neither a control reply nor cancellation acceptance is physical stop proof;
 # the same Dispatch CAS still requires its exact contained-process evidence.
-cargo test -p awaken-tool-relay --features test-support
-cargo test -p awaken-session-environment --lib terminal_
-cargo test -p awaken-worker --lib relay_hand::tests::resident_request_recovery_cancels_real_bash_without_replaying_or_claiming_stop
-cargo test -p awaken-process-startup --features container-k8s --lib lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires_the_same_slot
-cargo test -p awaken-worker --lib lifecycle::tests
-cargo test -p awaken-protocol-managed --features test-support --lib rollout
+run_required_rust_tests -p awaken-tool-relay --features test-support
+run_required_rust_tests -p awaken-session-environment --lib terminal_
+run_required_rust_tests -p awaken-worker --lib relay_hand::tests::resident_request_recovery_cancels_real_bash_without_replaying_or_claiming_stop
+run_required_rust_tests -p awaken-process-startup --features container-k8s --lib lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires_the_same_slot
+run_required_rust_tests -p awaken-worker --lib lifecycle::tests
+# Session credential adoption and private rollout delivery now belong to the
+# Coordinator; the Managed adapter no longer contains these libtest cases.
+run_required_rust_tests -p awaken-coordinator --lib rollout \
+  --require-case=session_credential_rollout_tests::current_published_credential_replay_does_not_park_an_already_running_session \
+  --require-case=session_credential_rollout_tests::vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roots \
+  --require-case=session_credential_rollout_tests::vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_event \
+  --require-case=session_credential_rollout_tests::vault_rollout_graph_releases_each_credential_return_edge \
+  --require-case=session_credential_rollout_tests::preparation_tests::worker_rollout_waits_for_actual_adoption_and_keeps_draining_sources_discoverable \
+  --require-case=session_credential_rollout_tests::preparation_tests::unattempted_preparation_rotates_credentials_without_losing_reserved_activity \
+  --require-case=credential_rollout_delivery::tests::private_rollout_requires_service_authentication_before_delivery \
+  --require-case=credential_rollout_delivery::tests::http_rollout_acknowledges_only_exact_convergence_status \
+  --require-case=credential_rollout_delivery::tests::an_unresolvable_service_token_is_the_service_token_cause
 
 # Credential cleanup depends on complete envelope/pair projections.
 # Exercise SQLite and the canonical in-memory fixture without
 # making this SQLite-only formal stage silently skip an optional PostgreSQL.
-cargo test -p awaken-credential-vault --lib
-cargo test -p awaken-credential-store --features test-support,sqlite --test repo_conformance
+run_required_rust_tests -p awaken-credential-vault --lib
+run_required_rust_tests -p awaken-credential-store --features test-support,sqlite --test repo_conformance
 # The audit scalar proof assumes exact SQL tuple selection and record equality.
 # Keep the production projection and SQLite conformance/migration tests beside it;
 # live PostgreSQL parity belongs to the existing required database gate.
-cargo test -p awaken-agent-config --lib audit_admission_tests
-cargo test -p awaken-agent-config --lib effect_receipt_tests
-cargo test -p awaken-control --lib management_effect
-cargo test -p awaken-config-store --features test-support --test integration management_effect
-cargo test -p awaken-config-store --features test-support --lib audit_identity
-cargo test -p awaken-config-store --features test-support --test integration audit_identity
+run_required_rust_tests -p awaken-agent-config --lib audit_admission_tests
+run_required_rust_tests -p awaken-agent-config --lib effect_receipt_tests
+run_required_rust_tests -p awaken-control --lib management_effect
+run_required_rust_tests -p awaken-config-store --features test-support --test integration management_effect
+run_required_rust_tests -p awaken-config-store --features test-support --lib audit_identity
+run_required_rust_tests -p awaken-config-store --features test-support --test integration audit_identity
 # The source-fenced store has no independent expected-revision input. Cross its
 # typed durable receipt with the sole ConfigService effect gate and require both
 # a stale conflict and a malformed commit receipt to stop before the registrar.
-cargo test -p awaken-config-service --lib \
+run_required_rust_tests -p awaken-config-service --lib \
   publish_never_installs_an_artifact_from_a_stale_source_revision
 # The scalar admission proofs below rely on the actual adapters and reclaimer
 # calling the shared kernels at their transaction and pre-purge boundaries.
-cargo test -p awaken-resource-store --lib reclamation_acquisition_has_one_fail_closed_decision_table
-cargo test -p awaken-resource-store --lib sqlite_acquire_rechecks_references_added_by_the_fence_transaction
-cargo test -p awaken-resource-reclaimer --lib physical_purge_admission_requires_every_safety_fact
-cargo test -p awaken-resource-reclaimer --lib a_late_guard_blocker_releases_the_physical_fence_before_deferring
+run_required_rust_tests -p awaken-resource-store --lib reclamation_acquisition_has_one_fail_closed_decision_table
+run_required_rust_tests -p awaken-resource-store --lib sqlite_acquire_rechecks_references_added_by_the_fence_transaction
+run_required_rust_tests -p awaken-resource-reclaimer --lib physical_purge_admission_requires_every_safety_fact
+run_required_rust_tests -p awaken-resource-reclaimer --lib a_late_guard_blocker_releases_the_physical_fence_before_deferring
 
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
-  cargo test -p awaken-runtime --test formal_refinement
+  run_required_rust_tests -p awaken-runtime --test formal_refinement
 python3 scripts/ci/render_runtime_refinement_traces.py \
   "$rust_trace_dir" "$rendered_trace_dir" \
   --require-complete-transition-coverage
@@ -778,7 +800,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/eval-evidence" \
     -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla
   python3 scripts/ci/check_formal_mutations.py --eval-evidence-model-mutants "$tla_jar"
-  cargo test -p awaken-eval --lib \
+  run_required_rust_tests -p awaken-eval --lib \
     outcome_judge::tests::eval_evidence_decision_table_cross_checks_frozen_complete_model --locked -- --exact
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/webhook-outbox" \

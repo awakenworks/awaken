@@ -386,25 +386,29 @@ fn agent_input_revision_decision_is_exact_non_wrapping_and_replay_first() {
     };
     // Inspect the closed result directly; formatting the Storage(String) error
     // in assert_eq! would pull unrelated unbounded formatting into the solver.
-    match decision {
-        Ok(write) => {
-            assert!(attempted > 0);
-            assert!(if write { successor && !replay } else { replay });
-        }
+    // R1-R4 retain every outcome and payload condition. R5 unsupported scalar
+    // errors are false in the same total relation, asserted at one common point
+    // rather than hiding an assertion in an impossible error arm.
+    let exact = match decision {
+        Ok(write) => attempted > 0 && if write { successor && !replay } else { replay },
         Err(AgentInputRepositoryError::InvalidRevision(value)) => {
-            assert!(attempted <= 0 && value == attempted);
+            attempted <= 0 && value == attempted
         }
         Err(AgentInputRepositoryError::RevisionConflict {
             current: value,
             attempted: next,
         }) => {
-            assert!(attempted > 0 && !replay && !successor);
-            assert!(value == current.unwrap_or(0) && next == attempted);
+            attempted > 0
+                && !replay
+                && !successor
+                && value == current.unwrap_or(0)
+                && next == attempted
         }
         Err(AgentInputRepositoryError::Storage(_) | AgentInputRepositoryError::InvalidIdentity) => {
-            assert!(false)
+            false
         }
-    }
+    };
+    assert!(exact);
 }
 
 #[async_trait::async_trait]

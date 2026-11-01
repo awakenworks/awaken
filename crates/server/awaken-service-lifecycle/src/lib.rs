@@ -820,6 +820,8 @@ mod verification {
         // R4=!C1+register+C3 -> E4; R5=C4+C2 -> E5.
         // Three symbolic positions exhaust every first-shutdown placement; the
         // forced shutdown, late registration, waiting and finish calls close all rows.
+        // R5 updates the independent model after finish, then reuses the same
+        // step to exercise Complete and check the empty task prefix and phase.
         let closes: [bool; 3] = kani::any();
         let mut registry = TaskRegistry::<u8>::new();
         let mut expected = ExpectedRegistry {
@@ -850,7 +852,9 @@ mod verification {
         assert!(!late_builder_called.get());
         assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
         registry.finish_shutdown(());
-        assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Complete(()));
+        expected.phase = RegistryPhase::Complete(());
+        expected.len = 0;
+        exercise_registry_step(&mut registry, &mut expected, true, 0);
     }
 
     /// @obligation service_lifecycle.concurrent_shutdown_waits_for_active_drain
