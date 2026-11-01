@@ -21,7 +21,9 @@ per-harness results and refuses two shapes:
 Input. ``check`` reads the per-harness files Kani writes with
 ``-Z unstable-options --output-into-files`` (regular format, one file per
 harness under ``result_output_dir/``; the formal gate passes the flag) or any
-regular-format transcript. A terse transcript carries only each harness's
+regular-format transcript. Empty or incomplete regular Check records are
+unjudgeable and refused; a complete fragment does not establish proof completion.
+A terse transcript carries only each harness's
 cover summary (``** k of m cover properties satisfied``); ``cover_shortfall``
 reads that, and ``formal_inventory`` uses it to class a run with an
 unsatisfied cover as not passed::
@@ -51,12 +53,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 CHECK = re.compile(
-    r"^Check \d+: (?P<name>\S+)\n"
+    r"^Check \d+: (?P<name>[^\n]+)\n"
     r"\t - Status: (?P<status>[A-Z]+)\n"
-    r"\t - Description: \"(?P<description>.*)\"\n"
-    r"(?:\t - Location: (?P<location>.*)\n)?",
-    re.M,
+    r"\t - Description: \"(?P<description>(?:(?!^Check ).)*?)\"\n"
+    r"(?:\t - Location: (?P<location>[^\n]*)\n)?(?=\n|^Check |\Z)",
+    re.M | re.S,
 )
+CHECK_HEADER = re.compile(r"^Check [^\n]*(?:\n|$)", re.M)
 LOCATION = re.compile(r"^(?P<path>\S+?):(?P<line>\d+)(?::\d+)?(?: in function .*)?$")
 COVER_SUMMARY = re.compile(r"\*\* (\d+) of (\d+) cover properties satisfied")
 # `unreachable!()` and `unreachable!("...")`: the arm is unreachable on purpose.
@@ -86,9 +89,17 @@ class Check:
 
 def checks(text: str) -> list[Check]:
     text = ANSI.sub("", text)
+    matches = list(CHECK.finditer(text))
+    parsed = {match.start() for match in matches}
+    for header in CHECK_HEADER.finditer(text):
+        if header.start() not in parsed:
+            line = text.count("\n", 0, header.start()) + 1
+            raise ValueError(f"incomplete or unparseable Kani Check at line {line}")
+    if not matches:
+        raise ValueError("no complete Kani Check record to judge")
     return [
         Check(match["name"], match["status"], match["description"], match["location"] or "")
-        for match in CHECK.finditer(text)
+        for match in matches
     ]
 
 
@@ -175,7 +186,10 @@ def check(paths: list[Path], keep: Path | None, root: Path = ROOT) -> int:
         return 1
     refused = 0
     for path in files:
-        problems = findings(path.read_text(errors="replace"), proof_code)
+        try:
+            problems = findings(path.read_text(errors="replace"), proof_code)
+        except ValueError as error:
+            problems = [str(error)]
         if not problems:
             continue
         refused += 1
@@ -184,7 +198,7 @@ def check(paths: list[Path], keep: Path | None, root: Path = ROOT) -> int:
         if keep is not None:
             keep.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, keep / path.name)
-    print(f"formal vacuity: {len(files)} harness result(s), {refused} with a vacuous property")
+    print(f"formal vacuity: {len(files)} harness result(s), {refused} with a vacuous or unjudgeable property")
     return 1 if refused else 0
 
 
@@ -200,6 +214,14 @@ def self_test() -> None:
     terse summary with every cover satisfied / one short; V11 colour codes.
     Effects: V2, V3, V4 => one finding each; V1, V5, V6, V7, V8, V9 => none;
     V10 => None / the shortfall; V11 parsed as without them.
+    V12 Kani prints a multiline Description or a Rust qualified name with
+    spaces: parse the same full property and preserve its exact description,
+    status, location and original V1-V9 classification. V13 adjacent Checks
+    cannot lend their status/description/location to an incomplete predecessor.
+    V14 empty, terse-only, malformed or unfinished Check input (including a
+    partial Location) => refuse and keep its raw
+    file; a complete Check in a partial transcript may be inspected but is not
+    evidence that the interrupted proof or full formal gate completed.
     """
 
     import tempfile  # noqa: PLC0415 - only the self-test builds fixtures
@@ -249,8 +271,45 @@ def self_test() -> None:
             "V8": (entry(1, "harness.assertion.1", "SUCCESS", "assertion failed: x < 3", 13), 0),
             "V9": (entry(1, "core.assertion.1", "UNREACHABLE", "x", 3, "../library/core/x.rs"), 0),
         }
+        # V12 uses the actual wrapped Check85 Description shape. SUCCESS is
+        # the observed status, not a counterexample; replacing only its status
+        # with UNREACHABLE must expose the proof assertion rather than skip it.
+        multiline = "assertion failed: observed ==\n(expected_new, expected_bound)"
+        cases.update({
+            "V12 success": (entry(85, "harness.assertion.7", "SUCCESS", multiline, 13), 0),
+            "V12 unreachable": (entry(85, "harness.assertion.7", "UNREACHABLE", multiline, 13), 1),
+            "V12 cover": (entry(85, "harness.cover.7", "UNSATISFIABLE", "before ==\nfalse", 14), 1),
+            "V12 undetermined": (entry(85, "harness.cover.7", "UNDETERMINED", "before ==\nfalse", 14), 1),
+            "V12 deliberate": (entry(85, "harness.assertion.7", "UNREACHABLE", DELIBERATE + "\narm", 13), 0),
+            "V12 production": (entry(85, "production.assertion.7", "UNREACHABLE", multiline, 2), 0),
+            "V12 spaced name": (entry(85, "helper::<u8, u8>.assertion.7", "UNREACHABLE", multiline, 7), 1),
+        })
         for label, (text, count) in cases.items():
             assert len(findings(text, code)) == count, (label, findings(text, code))
+        adjacent = cases["V12 success"][0] + cases["V3"][0]
+        parsed = checks(adjacent)
+        assert [(item.name, item.description, item.location) for item in parsed] == [
+            ("harness.assertion.7", multiline, "crates/a/src/lib.rs:13:5 in function harness"),
+            ("harness.assertion.1", "} brace in a literal", "crates/a/src/lib.rs:13:5 in function harness"),
+        ], "V13 exact Check boundaries and locations"
+        assert len(findings(adjacent, code)) == 1, "V13 later unreachable property remains visible"
+        unlocated = entry(1, "harness.assertion.1", "SUCCESS", "first", None)
+        assert [item.location for item in checks(unlocated + cases["V3"][0])] == [
+            "", "crates/a/src/lib.rs:13:5 in function harness",
+        ], "V13 optional location cannot borrow the following Check's location"
+        incomplete = 'Check 85: harness.assertion.7\n\t - Status: UNREACHABLE\n\t - Description: "unfinished\n'
+        for text in ("", "Checking harness harness...\n", incomplete,
+                     incomplete + cases["V8"][0], "Check bad header\n" + cases["V8"][0],
+                     cases["V3"][0].rstrip("\n"),
+                     "VERIFICATION:- SUCCESSFUL\n ** 2 of 2 cover properties satisfied\n",
+                     "VERIFICATION:- SUCCESSFUL\n ** 1 of 2 cover properties satisfied\n"):
+            try:
+                checks(text)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("V14 incomplete input cannot become a vacuity pass")
+        assert checks(cases["V12 success"][0])[0].status == "SUCCESS", "V14 inspect only the completed property"
         coloured = entry(1, "harness.cover.1", "\x1b[33mUNSATISFIABLE\x1b[0m", "x == 1", 14)
         assert len(findings(coloured, code)) == 1, "V11"
         assert cover_shortfall(" ** 2 of 2 cover properties satisfied\n") is None, "V10"
@@ -258,12 +317,17 @@ def self_test() -> None:
             "1 of 2 cover properties satisfied", "V10"
         results = root / "result_output_dir"
         results.mkdir()
-        (results / "a::harness").write_text(cases["V1"][0] + cases["V6"][0])
+        (results / "a__harness").write_text(cases["V1"][0] + cases["V6"][0])
         assert check([results], None, root) == 0, "a clean result directory passes"
-        (results / "a::vacuous").write_text(cases["V3"][0])
+        (results / "a__vacuous").write_text(cases["V3"][0])
         kept = root / "kept"
         assert check([results], kept, root) == 1, "one vacuous harness refuses the run"
-        assert sorted(path.name for path in kept.iterdir()) == ["a::vacuous"], "--keep holds the evidence"
+        assert sorted(path.name for path in kept.iterdir()) == ["a__vacuous"], "--keep holds the evidence"
+        assert (kept / "a__vacuous").read_bytes() == (results / "a__vacuous").read_bytes(), "retained evidence preserves exact native bytes"
+        unfinished = root / "unfinished"
+        unfinished.write_text(incomplete + cases["V8"][0])
+        assert check([unfinished], kept, root) == 1, "V14 incomplete Check refuses even beside a valid Check"
+        assert (kept / "unfinished").read_text() == unfinished.read_text(), "V14 keep exact unjudgeable raw"
         (root / "empty").mkdir()
         assert check([root / "empty"], None, root) == 1, "no results at all is not a pass"
 

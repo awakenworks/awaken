@@ -24,6 +24,189 @@ writing: `sha256:9e07b7d7…e5ee` (`formal_plan.py kani --tier full --digest`).
 No proof was run for phase 2; every changed or new harness is class d (or b)
 until its slot below has run.
 
+## Current nanos-image proof (2026-11-02)
+
+The phase-2 inventory below is historical. Derive the current selections with
+`python3 scripts/ci/formal_plan.py kani --tier full`; source classification or a
+focused result does not replace the strict full formal gate.
+
+The existing `unix_nanos_of_epoch_ms_is_strictly_monotone` harness now checks
+the complete image of one production conversion over every `u64`, including
+zero and `MAX`. Its unit oracle is
+`(wire / 1000) * 1_000_000_000 + (wire % 1000) * 1_000_000`, with both terms
+promoted to `u128` before multiplication. Euclidean division makes this exactly
+`u128::from(wire) * 1_000_000`; the largest image is below 2^84. This stronger
+equality implies the original strict-order bridge. The oracle resembles the
+standard library's unit decomposition; it is not another independent
+implementation. The native conversion test retains its linear oracle.
+
+Production time code and the wire domain are unchanged. Expiry `Ord` has the
+independent compositional check described below. The two successor covers still require `wire < u64::MAX`,
+because `MAX` has no successor; separate zero/MAX covers exercise the full
+image's endpoints. The harness selects the existing `solver-z3-v1` profile,
+with all checks and the original 1,800-second ceiling retained.
+
+The short Z3 comparison on frozen staged-source hash `5365f2f9c7cc` completed
+succession and this nanos harness, satisfying all four nanos covers and the
+vacuity check of the two completed results. The three-harness invocation
+reached its requested 300-second limit in the independent Expiry lemma; that
+is neither a complete batch PASS nor evidence of a 1,800-second failure.
+The source-derived nanos batch and final-source full formal qualification
+retain their separate receipts; the obligation rerun markers are unchanged.
+
+## Current Expiry ordering formulation
+
+The existing `expiry_from_epoch_ms_is_strictly_monotone` harness checks two
+links rather than constructing two adjacent millisecond conversions. First,
+every `u64` wire, including zero and `MAX`, must construct the same complete
+Expiry as `Expiry::at(UtcTime::from_epoch_ms(wire))`. Second, the real Expiry
+comparison over two independent canonical `Duration` coordinate pairs must
+equal their integer lexicographic comparison. Both seconds inputs range over
+all `u64`; only the `u32` nanos inputs are bounded below 1,000,000,000, the
+valid representation of every Duration. No wire or seconds bound is added.
+The two explicit nanos assumptions define only that canonical representation;
+they do not assume an ordering or exclude any valid Duration. They replace
+surjective modulo generators over precisely the same legal domain.
+
+The composition uses the actual single-field Expiry/UtcTime wrappers,
+`Duration::new` preserving canonical inputs, and the actual `as_nanos`
+projection `P(s,n) = u128(s) * 1_000_000_000 + u128(n)`. This projection is an
+order embedding: equal seconds compare their nanos, and a one-second increase
+exceeds the largest possible reversed nanos difference by at least one.
+Its largest value is below 2^94. The full-width nanos-image harness already
+checks `P(from_epoch_ms(w)) = u128(w) * 1_000_000`; together these links prove
+the original strict successor law and the order of every millisecond pair.
+The image harness carries the same two obligation anchors, without a second
+formula or proof owner. A changed wrapper or canonical representation requires
+this composition to be reviewed again; an opaque image equality alone would
+not prove the actual Ord implementation.
+
+The original default two-harness run on clean `a191b5ee` reached its requested
+300-second diagnostic limit with succession complete and Expiry unfinished.
+That is not a failure of the original 1,800-second ceiling. The compositional
+candidate still requires its own source-derived complete batches and vacuity
+check; neither this argument nor a focused PASS qualifies the full formal gate.
+The modulo-generator diagnostic was deliberately stopped at 311.4888s/raw143
+with two of three results complete; it did not exhaust the 1,800-second budget.
+The direct canonical-bound diagnostic was stopped at 346.601s/raw143 for the
+solver comparison, again without exhausting that budget. The existing Ord
+harness now reuses `solver-z3-v1`, joining the nanos harness in its derived
+Z3 batch; succession stays in the default batch. Inputs, checks, covers and
+the 1,800-second ceiling are unchanged by that profile selection.
+
+## Current fixed-target checkpoint formulation
+
+The retained scalar formulation is the planner table plus its full-width
+successor replay and the independent stale-fence harness. The table draws
+`deadline`, `target` and `now` independently from `{0, 1, 2, 3}`.
+A single per-triple map fixes zero and maps its at most three positive
+classes to their ranks `1, 2, 3`; this covers all 26 realizable
+joint zero/weak-order classes, not merely separate pairwise comparisons.
+The production plan copies the target, so input and output use that same
+injective map and its inverse. Revision, phase, attempt presence and the
+original matching-tenure epoch bound are unchanged; replay keeps its
+full-width inputs and both live/expired covers, and stale-fence keeps its
+foreign-coordinate/full-epoch domain and four covers.
+
+The only time-image dependency is the existing
+`unix_nanos_of_epoch_ms_is_strictly_monotone` at its lease-contract owner,
+now also linked to the BackgroundTask obligation by its original anchor.
+The independent Expiry `Ord` lemma is not a precondition for this checkpoint
+correspondence. No proof or formula is duplicated and no domain or solver
+change is made to the retained replay or stale harness.
+
+The table retains real allocation, String trim/comparison and policy Drop
+with the existing per-harness `#[kani::unwind(16)]`; unwinding assertions
+stay enabled. Its fixed holder/task are 14/4 bytes and Parallel constructs
+no resource vector. The original complete default eight-harness run on
+staged source `8c0cffae65b90763e1bed19795475433c454bf9c` / model
+`bb1a6a8aa1437645b4b5448f7a069da5267de808` completed in 22.91109016s,
+raw0 with original vacuity0 and table6/replay2/stale4 covers. Its short300s
+ceiling is inside the original 1,800s limit. This establishes the retirement
+precondition, not a full-formal PASS or a diagnosis of one particular loop.
+The earlier MAX-basis run was deliberately cancelled at 789.2708s/raw143
+with 4/8 completed and vacuity0; it did not reach the1,800s budget and must
+not be labeled its timeout. Earlier short diagnostics likewise do not
+establish a 1,800s failure. The historical raw packets remain unchanged.
+The existing `run_evidence = "needs_rerun"` marker is not promoted here;
+the new source-derived nanos singleton must be revalidated after its added link.
+The earlier combined CaDiCaL/Z3 resource-bound runs and the historical
+inventory below remain history, not counterexamples or current passes.
+
+## Current required Rust witnesses and property parsing
+
+All 74 Rust witness calls, including the late Eval witness, use the existing
+`_rust_test_execution.sh` / `check_rust_test_execution.py` authority. It builds,
+lists and executes the same authored graph, rejects an empty whole selection,
+and requires every listed named outcome without ignored or skipped cases.
+The Host Loom, CLI source-conversion and Coordinator rollout callers own their
+2/1/9 required-case floors. The obsolete App selector and the former Managed
+rollout selector each selected zero tests on clean `015acb1c`; the original
+required executor rejected both empty selections before execution. No second
+runner, case inventory or dependency graph is introduced.
+
+The interrupted strict full run on that source retained 33 completed Kani
+results and is Not-passed. Its original vacuity check found four unreachable
+array-bounds assertions in the material-input proof helper's absent-predecessor
+branches; the target production-equality assertion itself was SUCCESS. Fixed
+array destructuring removes those proof-only indexed reads while preserving
+the four-slot domain, partition helper and original assertions. The same helper
+returns its single production-call result; four covers at the existing harness
+witness those actual output partitions. New source must still be compiled and proved.
+
+The original property parser also skipped real multiline descriptions and
+qualified names with spaces: it read 7,361 of 19,934 Check records in those
+33 files. The same parser now reads complete record boundaries and rejects
+empty, malformed or incomplete regular input. Its assertion/cover rules and
+deliberate-unreachable/production exceptions remain unchanged. Pure replay
+parses all 19,934 records and retains the same four findings; this does not
+qualify the changed Vault proof or replace a new complete formal run.
+
+## Current shared proof-helper postconditions
+
+The strict run on clean `2a2eae7a` is Not-passed. Its 55 retained completed
+results contain nine deleted-admission literal partitions whose shared oracle
+has unreachable branch-local assertions. The two oracles now check total
+postconditions at a common assertion: exact outcome fields and valid first
+index, plus the complete borrowed input frame. The original resolver, 35
+harnesses, 32 literal domains, 3174/96-row Native tables and replay/Drop remain;
+three Native negative controls corrupt single fields and require rejection.
+
+An independent original batch confirms one additional unreachable Complete
+assertion in the service-lifecycle helper. Its original harness now updates the
+independent expected model after finish and exercises that same helper, retaining
+the completion condition plus phase and empty-task checks. The Catalog risk's
+original batch and vacuity passed and its source is unchanged. Candidate source
+checks and static reviews do not replace new complete affected batches or the
+final strict full run; no vacuity exception, new domain bound or budget is added.
+
+## Current total outcomes and lazy-entropy observations
+
+The strict full run on clean `3d1795c3` stopped with raw75 after 7,412.93s:
+the next session-configuration batch was not admitted when available memory
+fell below the existing 8GiB Cargo floor. It is Not-passed. All 450 completed
+regular results and the verified failed artifact bundle are retained outside
+the Cargo target. The original checker reports four harnesses with unreachable
+proof-code assertions, separately from that resource refusal.
+
+The Dispatch proof now compares the complete exact-claim outcome with its
+independent expected DeadLetter before inspecting the payload. Its cancellation
+preservation, non-requeue and non-claim assertions remain. The adjacent equality
+of an execution-admission call with itself is removed: the existing physical-slot
+and thread-peer proofs already own those execution-admission rules. Production
+reducers, wire types and admission rules are unchanged.
+
+The two Vault no-entropy proofs use a persistent invocation flag instead of
+incrementing a counter in a factory that must never execute. Any invocation
+still fails; the separate exactly-once proofs retain their counters. The
+config-resolver proof combines every original outcome and payload condition
+into one total relation; unsupported error variants still make it false.
+These corrections retain the existing input domains and production decision
+owners. All three
+complete source-derived affected batches and their original vacuity checks,
+plus the owning Native tests, must pass before normal commit. This focused
+qualification cannot replace a fresh strict full run or the all13 gates.
+
 ## Phase 2: what changed
 
 | Change | Harnesses | Argument |

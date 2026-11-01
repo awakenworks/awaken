@@ -205,40 +205,106 @@ mod verification {
         (subject, holder, epoch, expiry, lease)
     }
 
-    /// Lemma for every succession harness that draws expiries from
-    /// representatives: `Expiry::from_epoch_ms` is strictly monotone on
-    /// consecutive wire values, for every `u64` (one symbolic value).
+    /// The Expiry wire-order bridge, checked in this same lemma by two
+    /// independent duties: the complete millisecond wrapper value, and actual
+    /// Expiry Ord over every canonical Duration pair (full u64 seconds).
     ///
-    /// Consequence: `x < y` implies `from(x) < from(x + 1) < ... < from(y)`
-    /// by transitivity of the total order on `Expiry`, so the map is an order
-    /// embedding: `from(x).cmp(&from(y)) == x.cmp(&y)` for every pair. The
-    /// unsigned wire value is not clamped on the way in (only
-    /// `Expiry::to_persisted_ms` clamps to the signed SQL domain, and no
-    /// succession judgement reads it), so there is no saturation point at
-    /// which two distinct wire values could compare equal.
+    /// UtcTime/Expiry are direct single-field wrappers. Duration::new retains
+    /// (seconds, nanos) when nanos < 1_000_000_000; these inputs cover every
+    /// valid Duration, and as_nanos observes seconds*1_000_000_000+nanos.
+    /// On canonical pairs that positional value has exactly lexicographic
+    /// order: a one-second advance exceeds every subsecond difference.
+    ///
+    /// The independently checked full-u64 image in
+    /// [`unix_nanos_of_epoch_ms_is_strictly_monotone`] is wire*1_000_000.
+    /// Combining that image with the actual Ord duty below gives
+    /// from(x).cmp(&from(y)) == x.cmp(&y) for every u64 pair, including MAX;
+    /// hence every adjacent x < MAX is strictly below x+1. Image equality
+    /// alone is not used as a substitute for the separate Ord assertion.
+    /// Only the persisted SQL projection clamps; this path never reads it.
     /// @obligation sandbox.effect_fence_succession_is_renewal_or_epoch_advance
     /// @obligation session_realization.generation_authority_requires_every_immutable_axis
+    /// @kani profile=solver-z3-v1
     #[kani::proof]
     fn expiry_from_epoch_ms_is_strictly_monotone() {
+        // C/E table: C1 any wire, including zero/MAX; C2 independent full-u64
+        // seconds; C3 independent canonical nanos. R1 checks the complete
+        // wire wrapper. R2 checks all three Ord results against input tuple
+        // order, including equal seconds and opposing subsecond orders.
+        // R3 retains valid successor carry/noncarry classes; MAX has no
+        // successor but remains in R1. R4 witnesses both full Duration edges.
         let wire: u64 = kani::any();
-        kani::assume(wire < u64::MAX);
-        let here = Expiry::from_epoch_ms(wire);
-        let next = Expiry::from_epoch_ms(wire + 1);
-        assert!(here < next);
+        assert_eq!(
+            Expiry::from_epoch_ms(wire),
+            Expiry::at(UtcTime::from_epoch_ms(wire))
+        );
+
+        let seconds_a: u64 = kani::any();
+        let seconds_b: u64 = kani::any();
+        // These independent nanos inputs cover every canonical Duration
+        // representation. The two bounds exclude no valid Duration and do
+        // not constrain wire/seconds or assume the target Ord relationship.
+        let nanos_a: u32 = kani::any();
+        let nanos_b: u32 = kani::any();
+        kani::assume(nanos_a < 1_000_000_000);
+        kani::assume(nanos_b < 1_000_000_000);
+        let a = Expiry::at(UtcTime::from_duration_since_epoch(
+            std::time::Duration::new(seconds_a, nanos_a),
+        ));
+        let b = Expiry::at(UtcTime::from_duration_since_epoch(
+            std::time::Duration::new(seconds_b, nanos_b),
+        ));
+        assert_eq!(a.cmp(&b), (seconds_a, nanos_a).cmp(&(seconds_b, nanos_b)));
+
         kani::cover!(
-            wire % 1000 == 999,
+            wire < u64::MAX && wire % 1000 == 999,
             "the successor carries into the next second"
         );
-        kani::cover!(wire % 1000 != 999, "the successor stays within the second");
+        kani::cover!(
+            wire < u64::MAX && wire % 1000 != 999,
+            "the successor stays within the second"
+        );
+        kani::cover!(wire == 0, "the epoch keeps its complete wrapper value");
+        kani::cover!(
+            wire == u64::MAX,
+            "the maximum wire keeps its complete wrapper value"
+        );
+        kani::cover!(
+            seconds_a == seconds_b && nanos_a == nanos_b,
+            "equal canonical coordinates compare equal"
+        );
+        kani::cover!(
+            seconds_a == seconds_b && nanos_a < nanos_b,
+            "within a second a smaller nanos coordinate is earlier"
+        );
+        kani::cover!(
+            seconds_a == seconds_b && nanos_a > nanos_b,
+            "within a second a larger nanos coordinate is later"
+        );
+        kani::cover!(
+            seconds_a < seconds_b && nanos_a > nanos_b,
+            "a lower second is earlier despite a larger nanos coordinate"
+        );
+        kani::cover!(
+            seconds_a > seconds_b && nanos_a < nanos_b,
+            "a higher second is later despite a smaller nanos coordinate"
+        );
+        kani::cover!(
+            seconds_a == 0 && nanos_a == 0 && seconds_b == u64::MAX && nanos_b == 999_999_999,
+            "both complete canonical Duration endpoints are represented"
+        );
     }
 
     /// Lemma for every liveness harness that draws times from
     /// representatives: the Unix-nanosecond image that [`fence_is_live_at`]
     /// (and `Expiry::is_live_at` / `is_expired_at` on epoch milliseconds)
-    /// compares is strictly monotone on consecutive wire milliseconds, for
-    /// every `u64` (one symbolic value).
+    /// compares has the exact image `wire * 1_000_000` for every `u64`,
+    /// including its maximum (one symbolic value and one production conversion).
     ///
-    /// Consequence: by transitivity the image is an order embedding of `u64`,
+    /// The multiplication first promotes to `u128`; even the largest image is
+    /// below 2^84, so it cannot wrap. This stronger equality implies strict
+    /// monotonicity without constructing both adjacent production readings.
+    /// Consequence: the image is an order embedding of `u64`,
     /// so `fence_is_live_at(expiry, now) == (now < expiry)` for every pair, and
     /// a liveness predicate depends on its times only through their order. The
     /// realization-lease and dispatch-deadline harnesses rely on this to draw
@@ -246,20 +312,40 @@ mod verification {
     /// goes through a `u64` division and a `u128` multiplication, which made
     /// two free full-width times expensive enough that those harnesses were
     /// narrowed to `u16` without a stated reason.
+    /// @obligation sandbox.effect_fence_succession_is_renewal_or_epoch_advance
+    /// @obligation session_realization.generation_authority_requires_every_immutable_axis
     /// @obligation run_ingress.a_deadline_passes_once_it_is_reached
     /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+    /// @obligation background_task.stale_fence_never_finishes_or_heartbeats
+    /// @kani profile=solver-z3-v1
     #[kani::proof]
     fn unix_nanos_of_epoch_ms_is_strictly_monotone() {
+        // C/E table: C1 every unsigned wire, including zero/MAX; C2 an ordinary
+        // second carry or noncarry. R1 the actual unsigned production image is
+        // exactly wire*1_000_000, with no signed SQL clamp. R2 applying R1 to
+        // each of w and w+1 proves the original strict order for every w<MAX.
+        // The image assertion has no domain assumption. Successor covers keep
+        // w<MAX because MAX has no successor; separate zero/MAX covers witness
+        // both endpoints. Expiry's derived Ord keeps its independent lemma.
+        // Normalize only the unit oracle: for q=w/1000 and r=w%1000,
+        // w=1000*q+r, hence q*1_000_000_000+r*1_000_000=w*1_000_000.
+        // All terms are promoted before multiplication and fit u128. The
+        // oracle reads only w; native E4 retains the independent linear form.
         let wire: u64 = kani::any();
-        kani::assume(wire < u64::MAX);
-        let here = UtcTime::from_epoch_ms(wire).as_unix_nanos();
-        let next = UtcTime::from_epoch_ms(wire + 1).as_unix_nanos();
-        assert!(here < next);
+        let image = UtcTime::from_epoch_ms(wire).as_unix_nanos();
+        let expected =
+            u128::from(wire / 1_000) * 1_000_000_000 + u128::from(wire % 1_000) * 1_000_000;
+        assert_eq!(image, expected);
         kani::cover!(
-            wire % 1000 == 999,
+            wire < u64::MAX && wire % 1000 == 999,
             "the successor carries into the next second"
         );
-        kani::cover!(wire % 1000 != 999, "the successor stays within the second");
+        kani::cover!(
+            wire < u64::MAX && wire % 1000 != 999,
+            "the successor stays within the second"
+        );
+        kani::cover!(wire == 0, "the epoch has its exact image");
+        kani::cover!(wire == u64::MAX, "the maximum wire has its exact image");
     }
 
     /// The succession law as production derives its inputs: `Lease::succession`
