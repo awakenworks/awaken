@@ -24,6 +24,36 @@ writing: `sha256:9e07b7d7…e5ee` (`formal_plan.py kani --tier full --digest`).
 No proof was run for phase 2; every changed or new harness is class d (or b)
 until its slot below has run.
 
+## Current nanos-image proof (2026-11-02)
+
+The phase-2 inventory below is historical. Derive the current selections with
+`python3 scripts/ci/formal_plan.py kani --tier full`; source classification or a
+focused result does not replace the strict full formal gate.
+
+The existing `unix_nanos_of_epoch_ms_is_strictly_monotone` harness now checks
+the complete image of one production conversion over every `u64`, including
+zero and `MAX`. Its unit oracle is
+`(wire / 1000) * 1_000_000_000 + (wire % 1000) * 1_000_000`, with both terms
+promoted to `u128` before multiplication. Euclidean division makes this exactly
+`u128::from(wire) * 1_000_000`; the largest image is below 2^84. This stronger
+equality implies the original strict-order bridge. The oracle resembles the
+standard library's unit decomposition; it is not another independent
+implementation. The native conversion test retains its linear oracle.
+
+Production time code, the wire domain and the independent Expiry `Ord` lemma
+are unchanged. The two successor covers still require `wire < u64::MAX`,
+because `MAX` has no successor; separate zero/MAX covers exercise the full
+image's endpoints. The harness selects the existing `solver-z3-v1` profile,
+with all checks and the original 1,800-second ceiling retained.
+
+The short Z3 comparison on frozen staged-source hash `5365f2f9c7cc` completed
+succession and this nanos harness, satisfying all four nanos covers and the
+vacuity check of the two completed results. The three-harness invocation
+reached its requested 300-second limit in the independent Expiry lemma; that
+is neither a complete batch PASS nor evidence of a 1,800-second failure.
+The source-derived nanos batch and final-source full formal qualification
+retain their separate receipts; the obligation rerun markers are unchanged.
+
 ## Phase 2: what changed
 
 | Change | Harnesses | Argument |

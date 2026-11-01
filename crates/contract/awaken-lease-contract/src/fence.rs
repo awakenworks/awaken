@@ -235,10 +235,13 @@ mod verification {
     /// Lemma for every liveness harness that draws times from
     /// representatives: the Unix-nanosecond image that [`fence_is_live_at`]
     /// (and `Expiry::is_live_at` / `is_expired_at` on epoch milliseconds)
-    /// compares is strictly monotone on consecutive wire milliseconds, for
-    /// every `u64` (one symbolic value).
+    /// compares has the exact image `wire * 1_000_000` for every `u64`,
+    /// including its maximum (one symbolic value and one production conversion).
     ///
-    /// Consequence: by transitivity the image is an order embedding of `u64`,
+    /// The multiplication first promotes to `u128`; even the largest image is
+    /// below 2^84, so it cannot wrap. This stronger equality implies strict
+    /// monotonicity without constructing both adjacent production readings.
+    /// Consequence: the image is an order embedding of `u64`,
     /// so `fence_is_live_at(expiry, now) == (now < expiry)` for every pair, and
     /// a liveness predicate depends on its times only through their order. The
     /// realization-lease and dispatch-deadline harnesses rely on this to draw
@@ -248,18 +251,35 @@ mod verification {
     /// narrowed to `u16` without a stated reason.
     /// @obligation run_ingress.a_deadline_passes_once_it_is_reached
     /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+    /// @kani profile=solver-z3-v1
     #[kani::proof]
     fn unix_nanos_of_epoch_ms_is_strictly_monotone() {
+        // C/E table: C1 every unsigned wire, including zero/MAX; C2 an ordinary
+        // second carry or noncarry. R1 the actual unsigned production image is
+        // exactly wire*1_000_000, with no signed SQL clamp. R2 applying R1 to
+        // each of w and w+1 proves the original strict order for every w<MAX.
+        // The image assertion has no domain assumption. Successor covers keep
+        // w<MAX because MAX has no successor; separate zero/MAX covers witness
+        // both endpoints. Expiry's derived Ord keeps its independent lemma.
+        // Normalize only the unit oracle: for q=w/1000 and r=w%1000,
+        // w=1000*q+r, hence q*1_000_000_000+r*1_000_000=w*1_000_000.
+        // All terms are promoted before multiplication and fit u128. The
+        // oracle reads only w; native E4 retains the independent linear form.
         let wire: u64 = kani::any();
-        kani::assume(wire < u64::MAX);
-        let here = UtcTime::from_epoch_ms(wire).as_unix_nanos();
-        let next = UtcTime::from_epoch_ms(wire + 1).as_unix_nanos();
-        assert!(here < next);
+        let image = UtcTime::from_epoch_ms(wire).as_unix_nanos();
+        let expected =
+            u128::from(wire / 1_000) * 1_000_000_000 + u128::from(wire % 1_000) * 1_000_000;
+        assert_eq!(image, expected);
         kani::cover!(
-            wire % 1000 == 999,
+            wire < u64::MAX && wire % 1000 == 999,
             "the successor carries into the next second"
         );
-        kani::cover!(wire % 1000 != 999, "the successor stays within the second");
+        kani::cover!(
+            wire < u64::MAX && wire % 1000 != 999,
+            "the successor stays within the second"
+        );
+        kani::cover!(wire == 0, "the epoch has its exact image");
+        kani::cover!(wire == u64::MAX, "the maximum wire has its exact image");
     }
 
     /// The succession law as production derives its inputs: `Lease::succession`
