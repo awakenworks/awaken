@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::live_inbox::{
     EditError, LiveInbox, LiveInboxMessageId, MessageOrigin, Offer,
 };
-use awaken_session_execution_contract::{LiveInboxEntry, LiveInboxError, LiveInboxSnapshot};
+use awaken_session_application_contract::{LiveInboxEntry, LiveInboxError, LiveInboxSnapshot};
 
 use crate::managed_input_projection::user_message;
 

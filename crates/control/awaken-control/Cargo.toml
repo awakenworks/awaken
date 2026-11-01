@@ -43,7 +43,6 @@ awaken-protocol-managed = { workspace = true }
 awaken-protocol-a2a.workspace = true
 awaken-resource-contract.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 # The MCP client the live credential probe connects through.
 awaken-ext-mcp.workspace = true
@@ -89,6 +88,7 @@ schemars = { version = "1", optional = true }
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+awaken-session-application-contract.workspace = true
 awaken-ext-builtin-tools.workspace = true
 # The webhook plane test drives lifecycle delivery through the Session outbox relay.
 awaken-session-application.workspace = true

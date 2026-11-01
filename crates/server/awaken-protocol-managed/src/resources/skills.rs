@@ -44,7 +44,7 @@ use axum::{Json, Router};
 use super::managed_resource_error as err;
 
 fn timestamp(nanos: u64) -> String {
-    awaken_session_application_contract::epoch_millis_to_rfc3339(nanos / 1_000_000)
+    awaken_time::utc::epoch_millis_to_rfc3339(nanos / 1_000_000)
 }
 
 fn project_definition(

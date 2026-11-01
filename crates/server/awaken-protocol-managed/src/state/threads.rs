@@ -437,9 +437,10 @@ impl ManagedState {
                 .map(|event| {
                     if time_v2 {
                         let mut event = event.into_owned();
-                        event.processed_at = record.event_times.get(&event.id).map(|time| {
-                            awaken_session_application_contract::epoch_millis_to_rfc3339(*time)
-                        });
+                        event.processed_at = record
+                            .event_times
+                            .get(&event.id)
+                            .map(|time| awaken_time::utc::epoch_millis_to_rfc3339(*time));
                         std::borrow::Cow::Owned(event)
                     } else {
                         event

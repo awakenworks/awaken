@@ -1,8 +1,11 @@
 // @formal entrypoint session_event_batch.final_non_admission_excludes_late_acceptance
-//! Minimal retained admission evidence. No message, tool input or execution log.
+//! The outcome of one Session Event batch admission, including the replay of
+//! minimal retained admission evidence after deletion. No message, tool input
+//! or execution log.
 #[cfg(any(test, kani))]
 use crate::RetainedEventAdmission;
-use crate::{DeletedSessionEventAdmissions, SessionEventBatch, SessionRevision};
+use crate::{DeletedSessionEventAdmissions, SessionEventBatch};
+use awaken_session_types::{RunError, RunErrorKind, SessionRevision};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEventAdmission {
@@ -38,9 +41,9 @@ pub fn resolve_deleted_event_admission(
     proof: &DeletedSessionEventAdmissions,
     key: &str,
     fingerprint: &str,
-) -> Result<SessionEventAdmission, crate::RunError> {
+) -> Result<SessionEventAdmission, RunError> {
     let admissions = proof.admissions.as_ref().ok_or_else(|| {
-        crate::RunError::unavailable("Legacy Session deletion has no retained admission proof")
+        RunError::unavailable("Legacy Session deletion has no retained admission proof")
     })?;
     let receipt = admissions.iter().find(|receipt| receipt.key == key);
     // Retention owns lookup/payloads; the same canonical admission class
@@ -70,18 +73,18 @@ pub fn resolve_deleted_event_admission(
     }
 }
 
-pub fn event_admission_conflict() -> crate::RunError {
-    crate::RunError {
+pub fn event_admission_conflict() -> RunError {
+    RunError {
         message: "Idempotency-Key was already used for another Session Event batch".into(),
-        kind: crate::RunErrorKind::BadRequest,
+        kind: RunErrorKind::BadRequest,
         code: "idempotency_conflict".into(),
     }
 }
 
-pub fn event_admission_closed() -> crate::RunError {
-    crate::RunError {
+pub fn event_admission_closed() -> RunError {
+    RunError {
         message: "Session Event batch admission was permanently closed".into(),
-        kind: crate::RunErrorKind::BadRequest,
+        kind: RunErrorKind::BadRequest,
         code: "event_admission_closed".into(),
     }
 }
@@ -97,14 +100,14 @@ mod verification {
         proof: &DeletedSessionEventAdmissions,
         first: Option<usize>,
         fingerprint: &str,
-        result: &Result<SessionEventAdmission, crate::RunError>,
+        result: &Result<SessionEventAdmission, RunError>,
     ) {
         let selected = first.map(|index| &proof.admissions.as_ref().unwrap()[index]);
         match result {
             Err(error) => {
                 if proof.admissions.is_none() {
                     assert!(
-                        error.kind == crate::RunErrorKind::Unavailable,
+                        error.kind == RunErrorKind::Unavailable,
                         "exact retained admission field"
                     );
                     assert!(
@@ -120,7 +123,7 @@ mod verification {
                         selected.expect("complete inventory errors require a matching key");
                     assert!(receipt.request_fingerprint != fingerprint);
                     assert!(
-                        error.kind == crate::RunErrorKind::BadRequest,
+                        error.kind == RunErrorKind::BadRequest,
                         "exact retained admission field"
                     );
                     assert!(
@@ -233,7 +236,7 @@ mod verification {
         fingerprint: &str,
         first: Option<usize>,
         check_frame: &impl Fn(&DeletedSessionEventAdmissions),
-    ) -> Result<SessionEventAdmission, crate::RunError> {
+    ) -> Result<SessionEventAdmission, RunError> {
         check_frame(proof);
         let result = resolve_deleted_event_admission(proof, key, fingerprint);
         check_frame(proof);

@@ -53,9 +53,10 @@ pub use budget::{
     SessionModelUsage, SessionUsage,
 };
 pub use event::{
-    DeletedSessionEventAdmissions, MAX_SESSION_INITIAL_EVENTS, ManagedLifecycleFact,
-    OUTCOME_BUSY_CODE, RetainedEventAdmission, SESSION_TERMINATED, SessionAgentRunBoundary,
-    SessionEventBatch, SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
+    CompositeLifecycleFactDelivery, DeletedSessionEventAdmissions, LifecycleFactDelivery,
+    MAX_SESSION_INITIAL_EVENTS, ManagedLifecycleFact, OUTCOME_BUSY_CODE, RetainedEventAdmission,
+    SESSION_TERMINATED, SessionAgentRunBoundary, SessionEventAdmission, SessionEventBatch,
+    SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
     SessionEventBatchAdmissionPlan, SessionEventBatchError, SessionEventBatchOperation,
     SessionEventCommand, SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
     SessionEventEntry, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
@@ -65,6 +66,7 @@ pub use event::{
     SessionThreadToolReplyActivity, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
     SessionThreadToolReplyFence, SessionUserRunCommand, SessionUserRunSystemInput,
     classify_session_event_batch_admission, decode_session_event_batch_operation,
+    event_admission_closed, event_admission_conflict, resolve_deleted_event_admission,
     resolve_session_event_batch_admission, session_event_batch_id, session_event_batch_operation,
     session_event_dispatch_settlement_plan, session_event_execution_may_close,
     session_event_outcome_id, session_event_user_run_id, session_inputs_allow_idle,

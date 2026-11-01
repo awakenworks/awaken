@@ -135,7 +135,7 @@ pub async fn deleted_event_admission_decision_table<
 >(
     repo: &R,
 ) {
-    use awaken_session_application_contract::SessionEventAdmission;
+    use awaken_session_contract::SessionEventAdmission;
     use awaken_session_contract::{SessionEventBatch, SessionEventInput};
     // Delete CAS is the sole proof writer. D1 accepted key=>same Accepted;
     // D2 closed key=>same Closed; D3 absent key=>Deleted fence; D4 changed
@@ -256,11 +256,7 @@ pub async fn deleted_event_admission_decision_table<
             deleted_revision: SessionRevision(value.revision.0 + 1),
         };
         let resolve = |key, fingerprint| {
-            awaken_session_application_contract::resolve_deleted_event_admission(
-                &proof,
-                key,
-                fingerprint,
-            )
+            awaken_session_contract::resolve_deleted_event_admission(&proof, key, fingerprint)
         };
         assert_eq!(resolve("unseen", "fp").unwrap(), deleted, "D3");
         if kind == "empty" {

@@ -377,8 +377,7 @@ mod acp_context_tests {
         // Rules A1 C1+C2=>E1+E2; A2 C3+same=>E3; A3 C3+new=>E4; A4 C5=>E5.
         use awaken_session_configuration_contract as sc;
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(
-            awaken_session_application_contract::rfc3339_to_epoch_millis("2026-09-29T15:59:59Z")
-                .unwrap(),
+            awaken_time::utc::rfc3339_to_epoch_millis("2026-09-29T15:59:59Z").unwrap(),
         ));
         let seed = sc::SessionContextSeed::from_metadata(
             sc::SessionTrigger::Interactive {},

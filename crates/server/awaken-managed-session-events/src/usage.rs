@@ -18,9 +18,9 @@ use crate::ProjectionError;
 #[must_use]
 pub fn committed_thread_usage(snapshot: Option<&RunRecoverySnapshot>) -> SessionUsage {
     snapshot.map_or_else(SessionUsage::default, |snapshot| {
-        awaken_session_application_contract::session_usage_from_thread_usage(
-            ThreadUsage::from_committed_state(&snapshot.state),
-        )
+        awaken_session_contract::SessionUsage::from_thread_usage(ThreadUsage::from_committed_state(
+            &snapshot.state,
+        ))
     })
 }
 
@@ -46,8 +46,7 @@ pub fn session_usage_as_of(
     ) {
         attributed.merge(&thread_usage_as_of(snapshot, source_commit_cursor)?);
     }
-    let mut usage =
-        awaken_session_application_contract::session_usage_from_thread_usage(attributed);
+    let mut usage = awaken_session_contract::SessionUsage::from_thread_usage(attributed);
     let active_millis = closed_intervals
         .iter()
         .filter(|interval| {

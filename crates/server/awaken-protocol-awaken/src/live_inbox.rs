@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::common::{ExtensionRejection, RequiredWorkspaceScope, extension_rejection};
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_execution_contract::{
+use awaken_session_application_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot,
 };

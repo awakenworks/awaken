@@ -273,7 +273,7 @@ fn committed_session_usage(
                     .map(|(_, snapshot)| snapshot),
             )
             .map(|snapshot| {
-                awaken_session_application_contract::session_usage_from_thread_usage(
+                awaken_session_contract::SessionUsage::from_thread_usage(
                     awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(
                         &snapshot.state,
                     ),

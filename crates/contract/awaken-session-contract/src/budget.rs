@@ -27,6 +27,42 @@ pub struct SessionModelUsage {
     pub cache_creation_tokens: u64,
 }
 
+impl SessionUsage {
+    /// The Session usage of a thread's committed per-model token attribution.
+    /// Active time and server-tool requests are not thread facts, so they
+    /// start at zero.
+    #[must_use]
+    pub fn from_thread_usage(
+        attributed: awaken_agent_contract::thread::usage::ThreadUsage,
+    ) -> Self {
+        let total = attributed.total();
+        Self {
+            input_tokens: total.prompt_tokens,
+            output_tokens: total.completion_tokens,
+            cache_read_tokens: total.cache_read_tokens,
+            cache_creation_tokens: total.cache_creation_tokens,
+            by_model: attributed
+                .by_model
+                .into_iter()
+                .map(|(model, usage)| {
+                    (
+                        model,
+                        SessionModelUsage {
+                            input_tokens: usage.prompt_tokens,
+                            output_tokens: usage.completion_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            cache_creation_tokens: usage.cache_creation_tokens,
+                        },
+                    )
+                })
+                .collect(),
+            active_seconds: 0,
+            web_fetch_requests: 0,
+            web_search_requests: 0,
+        }
+    }
+}
+
 /// USD list-price rate in micro-dollars per one million tokens.
 ///
 /// Multiplying this value by a token count yields a numerator whose fixed
@@ -614,6 +650,68 @@ fn public_list_cost_minor(numerator: u128) -> Result<u64, ManagedListPriceError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_usage_has_one_lossless_session_projection() {
+        // Cause/effect graph: C1 no model has committed usage; C2 one model has
+        // committed usage; C3 several models have committed usage. Effects: E1
+        // the projection is empty; E2 each model retains exact attribution; E3
+        // totals are the saturating sum; E4 non-token counters remain zero
+        // because ThreadUsage does not own them. Decision rules:
+        // R1=C1=>E1,E4; R2=C2=>E2,E3,E4; R3=C3=>E2,E3,E4.
+        let empty = SessionUsage::from_thread_usage(Default::default());
+        assert_eq!(empty, SessionUsage::default(), "R1/E1,E4");
+
+        let attributed = awaken_agent_contract::thread::usage::ThreadUsage {
+            by_model: std::collections::BTreeMap::from([
+                (
+                    "model-a".into(),
+                    awaken_agent_contract::audit::model_request::TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 5,
+                        cache_read_tokens: 7,
+                        cache_creation_tokens: 11,
+                    },
+                ),
+                (
+                    "model-b".into(),
+                    awaken_agent_contract::audit::model_request::TokenUsage {
+                        prompt_tokens: 13,
+                        completion_tokens: 17,
+                        cache_read_tokens: 19,
+                        cache_creation_tokens: 23,
+                    },
+                ),
+            ]),
+        };
+
+        let one_model =
+            SessionUsage::from_thread_usage(awaken_agent_contract::thread::usage::ThreadUsage {
+                by_model: std::collections::BTreeMap::from([(
+                    "model-a".into(),
+                    awaken_agent_contract::audit::model_request::TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 5,
+                        cache_read_tokens: 7,
+                        cache_creation_tokens: 11,
+                    },
+                )]),
+            });
+        assert_eq!(one_model.input_tokens, 3, "R2/E3");
+        assert_eq!(one_model.by_model["model-a"].output_tokens, 5, "R2/E2");
+        assert_eq!(one_model.active_seconds, 0, "R2/E4");
+
+        let projected = SessionUsage::from_thread_usage(attributed);
+        assert_eq!(projected.input_tokens, 16, "R3/E3");
+        assert_eq!(projected.output_tokens, 22, "R3/E3");
+        assert_eq!(projected.cache_read_tokens, 26, "R3/E3");
+        assert_eq!(projected.cache_creation_tokens, 34, "R3/E3");
+        assert_eq!(projected.by_model["model-a"].input_tokens, 3, "R3/E2");
+        assert_eq!(projected.by_model["model-b"].output_tokens, 17, "R3/E2");
+        assert_eq!(projected.active_seconds, 0, "R3/E4");
+        assert_eq!(projected.web_fetch_requests, 0, "R3/E4");
+        assert_eq!(projected.web_search_requests, 0, "R3/E4");
+    }
 
     fn snapshot() -> ManagedListPriceSnapshot {
         ManagedListPriceSnapshot {

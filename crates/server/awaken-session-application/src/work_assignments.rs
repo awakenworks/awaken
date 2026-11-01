@@ -14,15 +14,15 @@ use std::sync::Arc;
 
 use awaken_session_application_contract::{
     SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership, SessionWorkerAssignment,
-    SessionWorkerLeases, WorkDispatchFailure, WorkDispatchReconciliation,
+    SessionWorkerLeases,
 };
 use awaken_session_contract::SessionRepository;
 use awaken_session_contract::{PersistedSession, SessionRepositoryError};
 use awaken_session_types::{RunError, SessionId};
 use awaken_time::WallClockExt as _;
 
-use crate::SessionPreparationError;
 use crate::recovery_scan::scan_recovery_candidates;
+use crate::{SessionPreparationError, WorkDispatchFailure, WorkDispatchReconciliation};
 
 pub struct SessionWorkAssignments {
     repository: Arc<dyn SessionRepository>,

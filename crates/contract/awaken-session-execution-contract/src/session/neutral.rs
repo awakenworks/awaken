@@ -931,8 +931,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn live_inbox_snapshot(
                 &self,
                 _thread: &str,
-            ) -> Result<$crate::LiveInboxSnapshot, $crate::LiveInboxError> {
-                Ok($crate::LiveInboxSnapshot::inactive())
+            ) -> Result<::awaken_session_application_contract::LiveInboxSnapshot, ::awaken_session_application_contract::LiveInboxError> {
+                Ok(::awaken_session_application_contract::LiveInboxSnapshot::inactive())
             }
 
             /// Queue a message onto `thread`'s in-flight Run; it is folded into the
@@ -944,8 +944,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 _content: Vec<
                     $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
                 >,
-            ) -> Result<u64, $crate::LiveInboxError> {
-                Err($crate::LiveInboxError::Inactive)
+            ) -> Result<u64, ::awaken_session_application_contract::LiveInboxError> {
+                Err(::awaken_session_application_contract::LiveInboxError::Inactive)
             }
 
             /// Delete one queued (not yet consumed) message.
@@ -953,8 +953,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _id: u64,
-            ) -> Result<(), $crate::LiveInboxError> {
-                Err($crate::LiveInboxError::Inactive)
+            ) -> Result<(), ::awaken_session_application_contract::LiveInboxError> {
+                Err(::awaken_session_application_contract::LiveInboxError::Inactive)
             }
 
             /// Replace one queued message's content, keeping its id and position.
@@ -965,8 +965,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 _content: Vec<
                     $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
                 >,
-            ) -> Result<(), $crate::LiveInboxError> {
-                Err($crate::LiveInboxError::Inactive)
+            ) -> Result<(), ::awaken_session_application_contract::LiveInboxError> {
+                Err(::awaken_session_application_contract::LiveInboxError::Inactive)
             }
 
             /// Reorder the queue to exactly `order` (a full permutation of current ids).
@@ -974,8 +974,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _order: Vec<u64>,
-            ) -> Result<(), $crate::LiveInboxError> {
-                Err($crate::LiveInboxError::Inactive)
+            ) -> Result<(), ::awaken_session_application_contract::LiveInboxError> {
+                Err(::awaken_session_application_contract::LiveInboxError::Inactive)
             }
         }
     };

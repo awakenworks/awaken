@@ -518,7 +518,7 @@ impl SessionEventBatchCommands {
         };
         batch
             .require_accepted()
-            .map_err(|_| awaken_session_application_contract::event_admission_closed())?;
+            .map_err(|_| awaken_session_contract::event_admission_closed())?;
         Ok(Some(batch))
     }
 
@@ -575,7 +575,7 @@ impl SessionEventBatchCommands {
         };
         batch
             .require_accepted()
-            .map_err(|_| awaken_session_application_contract::event_admission_closed())?;
+            .map_err(|_| awaken_session_contract::event_admission_closed())?;
         let drive_error = self
             .drive_session_event_batches(session_id, Some(&batch.batch_id))
             .await
@@ -596,7 +596,7 @@ impl SessionEventBatchCommands {
         session_id: &awaken_session_types::SessionId,
         key: String,
         request_fingerprint: String,
-    ) -> Result<awaken_session_application_contract::SessionEventAdmission, RunError> {
+    ) -> Result<awaken_session_contract::SessionEventAdmission, RunError> {
         if let Some(deleted) = self
             .mutations
             .repository()
@@ -604,7 +604,7 @@ impl SessionEventBatchCommands {
             .await
             .map_err(repository_run_error)?
         {
-            return awaken_session_application_contract::resolve_deleted_event_admission(
+            return awaken_session_contract::resolve_deleted_event_admission(
                 &deleted,
                 &key,
                 &request_fingerprint,
@@ -638,13 +638,11 @@ impl SessionEventBatchCommands {
                     .await
                     .map_err(repository_run_error)?
                 {
-                    Some(deleted) => {
-                        awaken_session_application_contract::resolve_deleted_event_admission(
-                            &deleted,
-                            &key,
-                            &request_fingerprint,
-                        )
-                    }
+                    Some(deleted) => awaken_session_contract::resolve_deleted_event_admission(
+                        &deleted,
+                        &key,
+                        &request_fingerprint,
+                    ),
                     None => Err(error),
                 }
             }
@@ -700,10 +698,10 @@ impl SessionEventBatchCommands {
                     ));
                 }
                 SessionEventBatchAdmissionPlan::RejectClosed => {
-                    return Err(awaken_session_application_contract::event_admission_closed());
+                    return Err(awaken_session_contract::event_admission_closed());
                 }
                 SessionEventBatchAdmissionPlan::Conflict => {
-                    return Err(awaken_session_application_contract::event_admission_conflict());
+                    return Err(awaken_session_contract::event_admission_conflict());
                 }
                 SessionEventBatchAdmissionPlan::AppendAccepted
                 | SessionEventBatchAdmissionPlan::AppendClosed => {}
@@ -1739,7 +1737,7 @@ impl crate::SessionEventBatches for SessionEventBatchCommands {
         session_id: &awaken_session_types::SessionId,
         key: String,
         request_fingerprint: String,
-    ) -> Result<awaken_session_application_contract::SessionEventAdmission, RunError> {
+    ) -> Result<awaken_session_contract::SessionEventAdmission, RunError> {
         SessionEventBatchCommands::close_session_event_admission(
             self,
             owner_scope,

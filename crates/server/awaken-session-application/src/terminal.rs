@@ -147,7 +147,7 @@ pub(crate) fn session_terminated_record(
     observed_at_ms: u64,
 ) -> (String, ManagedLifecycleFact) {
     (
-        awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at_ms),
+        awaken_time::utc::epoch_millis_to_rfc3339(observed_at_ms),
         ManagedLifecycleFact {
             id: awaken_session_contract::session_terminated_fact_id(session_id),
             object_id: session_id.to_string(),

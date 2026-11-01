@@ -181,11 +181,9 @@ impl CommittedReads {
             .committed_state_view(thread_id)
             .await
             .map_err(RunError::internal)?;
-        Ok(
-            awaken_session_application_contract::session_usage_from_thread_usage(
-                awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(&state),
-            ),
-        )
+        Ok(awaken_session_contract::SessionUsage::from_thread_usage(
+            awaken_agent_contract::thread::usage::ThreadUsage::from_committed_state(&state),
+        ))
     }
 
     pub async fn session_thread_disposition(

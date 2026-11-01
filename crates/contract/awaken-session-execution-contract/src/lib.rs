@@ -1,6 +1,13 @@
 //! The Session ↔ execution boundary: the Session roles execution calls, coordination
 //! and Run admission, and the one late binding from execution back to the Session
 //! application.
+//!
+//! Protocol adapters drive the live inbox through the application contract,
+//! not through execution:
+//!
+//! ```compile_fail
+//! use awaken_session_execution_contract::LiveInboxApplication;
+//! ```
 
 mod application_binding;
 mod claimed_coordination;
@@ -12,8 +19,6 @@ mod session;
 #[cfg(test)]
 pub(crate) use awaken_agent_contract::McpTarget;
 pub(crate) use awaken_agent_contract::stable_fingerprint;
-#[cfg(test)]
-pub(crate) use awaken_session_application_contract::session_usage_from_thread_usage;
 pub(crate) use awaken_session_application_contract::{
     DelegatedRun, DelegatedRunSnapshot, Pending, SessionBudgetResumeDelivery,
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket, StepOutcome,
@@ -95,21 +100,19 @@ pub use session::{
     BudgetAccounting, CapabilityRuntime, ChildRunCoordination, ColocatedRealizationRoles,
     CommittedEvidenceError, CommittedOutcomeProjection, CommittedSessionFacts,
     CommittedSessionProjection, CompleteSessionRuntime, EnvironmentRuntime, LiveInboxAccess,
-    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpAttachmentRealizer, NO_COLOCATED_WORKER, NeutralRuntime, OutcomeDrive,
-    OutcomeFailure, OutcomeIteration, OutcomeReport, Outcomes, ProjectionThreadSnapshots,
-    RealizationEffects, RealizationRuntime, SessionCoordinationReads,
-    SessionEnvironmentBindingSink, SessionExecutionClosureReference,
-    SessionExecutionEvidenceSelection, SessionExecutionObservation,
-    SessionExecutionOperationFootprint, SessionExecutionOperationInventory,
-    SessionExecutionRecoveryGap, SessionExecutionRecoveryObservation, SessionExecutionRoles,
-    SessionExecutionToolOperation, SessionExecutor, SessionInputAdmission,
-    SessionModelRequestObservation, SessionPlacementRoles, SessionProjectionReadTimings,
-    SessionProjectionSource, SessionRecoveryPreparationReference, SessionRunExecutionObservation,
-    SessionRuns, SessionSourceDispatchObservation, SessionThreadLiveSubscription,
-    SessionToolUseObservation, StreamingRuns, TerminalCleanup, ThreadReads, ToolPermissionDecision,
-    committed_lifecycle_prefix, drain_mcp_generation_receipt, outcome_terminal_commit_cursor,
-    publish_mcp_generation_receipt, select_recovery_snapshot_run,
+    McpAttachmentRealizer, NO_COLOCATED_WORKER, NeutralRuntime, OutcomeDrive, OutcomeFailure,
+    OutcomeIteration, OutcomeReport, Outcomes, ProjectionThreadSnapshots, RealizationEffects,
+    RealizationRuntime, SessionCoordinationReads, SessionEnvironmentBindingSink,
+    SessionExecutionClosureReference, SessionExecutionEvidenceSelection,
+    SessionExecutionObservation, SessionExecutionOperationFootprint,
+    SessionExecutionOperationInventory, SessionExecutionRecoveryGap,
+    SessionExecutionRecoveryObservation, SessionExecutionRoles, SessionExecutionToolOperation,
+    SessionExecutor, SessionInputAdmission, SessionModelRequestObservation, SessionPlacementRoles,
+    SessionProjectionReadTimings, SessionProjectionSource, SessionRecoveryPreparationReference,
+    SessionRunExecutionObservation, SessionRuns, SessionSourceDispatchObservation,
+    SessionThreadLiveSubscription, SessionToolUseObservation, StreamingRuns, TerminalCleanup,
+    ThreadReads, ToolPermissionDecision, committed_lifecycle_prefix, drain_mcp_generation_receipt,
+    outcome_terminal_commit_cursor, publish_mcp_generation_receipt, select_recovery_snapshot_run,
 };
 
 #[doc(hidden)]

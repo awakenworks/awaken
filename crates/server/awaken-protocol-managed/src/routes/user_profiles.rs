@@ -310,9 +310,9 @@ fn external_user_details_to_wire(details: ExternalUserDetails) -> WireExternalUs
             ExternalEntityType::Government => EntityType::Government,
         }),
         name_hash: details.name_hash,
-        onboarded_at: details.onboarded_at.map(|value| {
-            awaken_session_application_contract::epoch_millis_to_rfc3339(value.max(0) as u64)
-        }),
+        onboarded_at: details
+            .onboarded_at
+            .map(|value| awaken_time::utc::epoch_millis_to_rfc3339(value.max(0) as u64)),
         reference_id: details.reference_id,
     }
 }
@@ -404,12 +404,8 @@ fn project(record: UserProfileRecord, projection: UserProfileProjection) -> User
     let access_type = record.access_type.map(access_type_to_wire);
     let core = UserProfileCore {
         id: record.id,
-        created_at: awaken_session_application_contract::epoch_millis_to_rfc3339(
-            record.created_at.max(0) as u64,
-        ),
-        updated_at: awaken_session_application_contract::epoch_millis_to_rfc3339(
-            record.updated_at.max(0) as u64,
-        ),
+        created_at: awaken_time::utc::epoch_millis_to_rfc3339(record.created_at.max(0) as u64),
+        updated_at: awaken_time::utc::epoch_millis_to_rfc3339(record.updated_at.max(0) as u64),
         metadata: record.metadata,
         trust_grants: record
             .trust_grants
@@ -427,17 +423,17 @@ fn project(record: UserProfileRecord, projection: UserProfileProjection) -> User
         UserProfileProjection::Current => UserProfile::Current(CurrentUserProfile {
             core,
             access_type,
-            external_user_onboarded_at: record.external_user_onboarded_at.map(|value| {
-                awaken_session_application_contract::epoch_millis_to_rfc3339(value.max(0) as u64)
-            }),
+            external_user_onboarded_at: record
+                .external_user_onboarded_at
+                .map(|value| awaken_time::utc::epoch_millis_to_rfc3339(value.max(0) as u64)),
             external_user_details: None,
         }),
         UserProfileProjection::External => UserProfile::Current(CurrentUserProfile {
             core,
             access_type,
-            external_user_onboarded_at: record.external_user_onboarded_at.map(|value| {
-                awaken_session_application_contract::epoch_millis_to_rfc3339(value.max(0) as u64)
-            }),
+            external_user_onboarded_at: record
+                .external_user_onboarded_at
+                .map(|value| awaken_time::utc::epoch_millis_to_rfc3339(value.max(0) as u64)),
             // The platform's record is always presented under this selector,
             // every field `null` until stated, so a reader sees one shape.
             external_user_details: Some(external_user_details_to_wire(
@@ -683,9 +679,7 @@ async fn enrollment_url(
             Json(EnrollmentUrl {
                 object_type: "enrollment_url",
                 url,
-                expires_at: awaken_session_application_contract::epoch_millis_to_rfc3339(
-                    expires_at.max(0) as u64,
-                ),
+                expires_at: awaken_time::utc::epoch_millis_to_rfc3339(expires_at.max(0) as u64),
             })
         })
         .map_err(error_response)

@@ -41,7 +41,7 @@ use scheduler::{MAX_JITTER_BOUND_MS, execution_jitter_ms};
 const DEFAULT_SCHEDULED_LIMIT: usize = 1_000;
 
 fn timestamp(milliseconds: u64) -> String {
-    awaken_session_application_contract::epoch_millis_to_rfc3339(milliseconds)
+    awaken_time::utc::epoch_millis_to_rfc3339(milliseconds)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -26,6 +26,14 @@ pub use lifecycle::{
 };
 pub use retention::{DeletedSessionEventAdmissions, RetainedEventAdmission};
 
+mod admission_outcome;
+pub use admission_outcome::{
+    SessionEventAdmission, event_admission_closed, event_admission_conflict,
+    resolve_deleted_event_admission,
+};
+mod lifecycle_delivery;
+pub use lifecycle_delivery::{CompositeLifecycleFactDelivery, LifecycleFactDelivery};
+
 mod identity;
 pub use identity::*;
 

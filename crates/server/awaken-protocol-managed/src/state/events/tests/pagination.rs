@@ -283,7 +283,7 @@ async fn new_archive_projects_one_typed_time_to_session_and_primary_thread() {
         crate::types::session::history_time_v2(&root, &[("archived_at", time.archived_at_unix_ms)]);
     assert_eq!(
         v2["archived_at"],
-        awaken_session_application_contract::epoch_millis_to_rfc3339(archived_at),
+        awaken_time::utc::epoch_millis_to_rfc3339(archived_at),
         "P1 v2"
     );
     let primary_id = crate::state::public_thread_id(&id, &id);

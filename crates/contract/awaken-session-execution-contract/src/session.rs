@@ -29,19 +29,20 @@ pub use projection_source::{
 pub use roles::*;
 use std::sync::Arc;
 
+#[cfg(test)]
+use crate::RunErrorKind;
 use crate::{
     AgentCapabilities, DelegatedRun, DelegatedRunSnapshot, Pending, RunError,
     SessionBudgetResumeDelivery, SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
     StepOutcome,
 };
-#[cfg(test)]
-use crate::{RunErrorKind, session_usage_from_thread_usage};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 #[cfg(test)]
 use awaken_agent_contract::agent::run::{EndCause, Failure};
+use awaken_session_application_contract::{LiveInboxError, LiveInboxSnapshot};
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
 pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermissionDecision;
@@ -95,10 +96,6 @@ pub enum OutcomeDrive {
     Awaiting,
     Completed(OutcomeReport),
 }
-
-// Keep the live-inbox names' public defining path at `session::…` while their
-// implementation remains physically split below the repository file limit.
-include!("session/live_inbox.rs");
 
 /// Public exact-generation realization port owned by the Session application
 /// boundary. Local Host relay/connection code and downstream platform gateways
@@ -297,68 +294,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind, RunErrorKind::Unavailable);
-    }
-
-    #[test]
-    fn thread_usage_has_one_lossless_session_projection() {
-        // Cause/effect graph: C1 no model has committed usage; C2 one model has
-        // committed usage; C3 several models have committed usage. Effects: E1
-        // the projection is empty; E2 each model retains exact attribution; E3
-        // totals are the saturating sum; E4 non-token counters remain zero
-        // because ThreadUsage does not own them. Decision rules:
-        // R1=C1=>E1,E4; R2=C2=>E2,E3,E4; R3=C3=>E2,E3,E4.
-        let empty = session_usage_from_thread_usage(Default::default());
-        assert_eq!(empty, SessionUsage::default(), "R1/E1,E4");
-
-        let attributed = awaken_agent_contract::thread::usage::ThreadUsage {
-            by_model: std::collections::BTreeMap::from([
-                (
-                    "model-a".into(),
-                    awaken_agent_contract::audit::model_request::TokenUsage {
-                        prompt_tokens: 3,
-                        completion_tokens: 5,
-                        cache_read_tokens: 7,
-                        cache_creation_tokens: 11,
-                    },
-                ),
-                (
-                    "model-b".into(),
-                    awaken_agent_contract::audit::model_request::TokenUsage {
-                        prompt_tokens: 13,
-                        completion_tokens: 17,
-                        cache_read_tokens: 19,
-                        cache_creation_tokens: 23,
-                    },
-                ),
-            ]),
-        };
-
-        let one_model =
-            session_usage_from_thread_usage(awaken_agent_contract::thread::usage::ThreadUsage {
-                by_model: std::collections::BTreeMap::from([(
-                    "model-a".into(),
-                    awaken_agent_contract::audit::model_request::TokenUsage {
-                        prompt_tokens: 3,
-                        completion_tokens: 5,
-                        cache_read_tokens: 7,
-                        cache_creation_tokens: 11,
-                    },
-                )]),
-            });
-        assert_eq!(one_model.input_tokens, 3, "R2/E3");
-        assert_eq!(one_model.by_model["model-a"].output_tokens, 5, "R2/E2");
-        assert_eq!(one_model.active_seconds, 0, "R2/E4");
-
-        let projected = session_usage_from_thread_usage(attributed);
-        assert_eq!(projected.input_tokens, 16, "R3/E3");
-        assert_eq!(projected.output_tokens, 22, "R3/E3");
-        assert_eq!(projected.cache_read_tokens, 26, "R3/E3");
-        assert_eq!(projected.cache_creation_tokens, 34, "R3/E3");
-        assert_eq!(projected.by_model["model-a"].input_tokens, 3, "R3/E2");
-        assert_eq!(projected.by_model["model-b"].output_tokens, 17, "R3/E2");
-        assert_eq!(projected.active_seconds, 0, "R3/E4");
-        assert_eq!(projected.web_fetch_requests, 0, "R3/E4");
-        assert_eq!(projected.web_search_requests, 0, "R3/E4");
     }
 
     /// A minimal double that overrides ONLY [`SessionRuns::run`] (plus the trait's
@@ -616,50 +551,6 @@ mod tests {
 
     // Item 1: `run_streaming`'s default delegates to `run` — the committed outcome is
     // identical (the sink only mirrors in-flight events, which the default ignores).
-    // Item 4: `LiveInboxError` Display messages are stable, distinct wire text.
-    #[test]
-    fn live_inbox_error_display_messages_are_pinned() {
-        // Test design — Causes: each closed LiveInbox failure variant is rendered.
-        // Effects: it produces its exact distinct operator-facing text.
-        // Constraints/invariants: display text is a pinned wire/debug boundary;
-        // variants never alias. Decision rule L1: enumerate all variants=>five
-        // exact, pairwise-distinct messages.
-        assert_eq!(
-            LiveInboxError::Inactive.to_string(),
-            "no Run is in flight; send the message as a normal event",
-        );
-        assert_eq!(
-            LiveInboxError::UnknownMessage.to_string(),
-            "no queued message with that id",
-        );
-        assert_eq!(
-            LiveInboxError::StaleOrder.to_string(),
-            "proposed order does not match the current queue",
-        );
-        assert_eq!(
-            LiveInboxError::Unavailable.to_string(),
-            "the live-inbox owner registry is unreadable",
-        );
-        assert_eq!(
-            LiveInboxError::Full.to_string(),
-            "the live inbox is full; retry after the Run drains it",
-        );
-    }
-
-    // Item 5: `LiveInboxSnapshot::inactive()` invariants.
-    #[test]
-    fn inactive_snapshot_is_empty_versionless_and_inactive() {
-        // Test design — Cause: no Run is in flight, so the canonical inactive
-        // constructor is selected. Effects: active=false, version=0, and no
-        // queued messages. Constraints/invariants: absence carries neither a
-        // resumable version nor latent inbox state. Decision rule I1: inactive
-        // constructor=>assert the complete three-field boundary tuple.
-        let snap = LiveInboxSnapshot::inactive();
-        assert!(!snap.active);
-        assert_eq!(snap.version, 0);
-        assert!(snap.messages.is_empty());
-    }
-
     #[test]
     fn committed_resume_ticket_has_one_pending_projection_decision_table() {
         use awaken_agent_contract::agent::awaiting::{
