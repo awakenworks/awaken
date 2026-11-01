@@ -146,7 +146,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 // attempt this recovery re-claim spent, within the bounded
                 // window of `awaken_dispatch_contract::BLOCKED_RECLAIM_LIMIT`,
                 // so a predecessor whose closure is progressing does not burn
-                // the retry budget, and one that never closes still exhausts.
+                // the retry budget, while one that never closes spends it; the
+                // budget never ends a Run over an occupied slot, only the
+                // slot's process-end evidence or operator quarantine does.
                 let retry_after_ms =
                     crate::pool::claim_failure_backoff(claim.epoch).as_millis() as u64;
                 crate::pool::defer_failed_claim(self.store.as_ref(), &claim, retry_after_ms)

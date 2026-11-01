@@ -384,10 +384,14 @@ pub const BLOCKED_RECLAIM_LIMIT: u64 = 20;
 /// A recovery re-claim spends one attempt when it is claimed. If it then only
 /// finds the predecessor still closing (Blocked admission, deferred as
 /// `Unspent`), it did no work: the re-claim's attempt is refunded. The refund
-/// is bounded by claims, not by closure evidence, so a predecessor that never
-/// closes still ends: past [`BLOCKED_RECLAIM_LIMIT`] re-claims since its own
-/// epoch every blocked re-claim spends again, the budget exhausts, and retry
-/// exhaustion ends the Run `Indeterminate`. `reclaims_since_predecessor` is
+/// is bounded by claims, not by closure evidence: past [`BLOCKED_RECLAIM_LIMIT`]
+/// re-claims since its own epoch every blocked re-claim spends again, so the
+/// budget is already spent when the slot finally closes and retry exhaustion
+/// then ends the Run `Indeterminate` at once. The budget never overrides an
+/// occupied slot (ADR-0078): retry exhaustion refuses a Run whose physical
+/// slot is still occupied. A predecessor whose slot never closes is resolved
+/// only by its process-end evidence (exact exit, Superseded) or operator
+/// quarantine. `reclaims_since_predecessor` is
 /// the releasing claim's epoch minus the slot owner's epoch, `None` when the
 /// slot owner is absent or not older.
 ///
@@ -1001,7 +1005,8 @@ mod tests {
         // window edges, plus the relinquish integration: an exact recovery
         // claim deferred behind another claim's occupied slot stays Leased
         // (Recovering) and writes the refunded count. Past the window it
-        // spends again, so a predecessor that never closes still exhausts.
+        // spends again, so a predecessor that never closes spends the budget
+        // (retry exhaustion still waits for its slot to close).
         let failed = ReleasedAttempt::Failed { max_attempts: 5 };
         for (row, attempt, reclaims, count, expected) in [
             ("B1 first re-claim", ReleasedAttempt::Unspent, Some(1), 1, 0),

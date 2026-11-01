@@ -13,8 +13,12 @@ use super::*;
 /// |---|---|---|
 /// | S1 | re-claim `k <= BLOCKED_RECLAIM_LIMIT` after the predecessor's epoch is Blocked and defers | `attempt_count` returns to its value before the re-claim; the row stays Leased and recovered |
 /// | S2 | re-claim `k > BLOCKED_RECLAIM_LIMIT` is Blocked and defers | the re-claim's attempt stays spent |
-/// | S3 | S2 repeats until the budget is spent | the retry-exhaustion claim takes the Run: a predecessor that never closes still ends |
+/// | S3 | S2 repeats until the budget is spent; the predecessor's slot is still occupied | the retry-exhaustion claim is refused: the budget never overrides an occupied slot (ADR-0078), the row stays Leased |
 /// | S4 | throughout | the predecessor's slot is never cleared by a successor |
+/// | S5 | the predecessor's own claim then closes its slot (`finish_attempt`) | the retry-exhaustion claim takes the Run at once, with no fresh budget |
+///
+/// A predecessor whose slot never closes is resolved only by its process-end
+/// evidence (exact exit, Superseded) or operator quarantine.
 pub async fn assert_blocked_reclaims_spend_no_budget_within_the_window<
     S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
 >(
@@ -105,12 +109,32 @@ pub async fn assert_blocked_reclaims_spend_no_budget_within_the_window<
         }
     }
     assert_eq!(round, BLOCKED_RECLAIM_LIMIT + MAX_ATTEMPTS, "S1+S2 window");
-    let exhausted = store
-        .claim_retry_exhausted("terminalizer", LEASE_MS, MAX_ATTEMPTS)
-        .await
-        .expect("exhaustion query");
     assert!(
-        exhausted.is_some(),
-        "S3 a predecessor that never closes still ends through retry exhaustion"
+        store
+            .claim_retry_exhausted("terminalizer", LEASE_MS, MAX_ATTEMPTS)
+            .await
+            .expect("exhaustion query")
+            .is_none(),
+        "S3 a spent budget never terminalizes over an occupied slot"
+    );
+    let row = store.list_dispatches().await.expect("rows")[0].clone();
+    assert_eq!(row.state, DispatchState::Leased, "S3 still recovering");
+    assert!(row.physical_attempt_active, "S3/S4 slot still occupied");
+    assert_eq!(row.attempt_count, MAX_ATTEMPTS, "S3 budget spent");
+    assert_eq!(
+        store
+            .finish_attempt(&predecessor_claim, None)
+            .await
+            .expect("predecessor closes its own slot"),
+        SettleOutcome::Applied,
+        "S5 the predecessor's exact claim closes its slot"
+    );
+    assert!(
+        store
+            .claim_retry_exhausted("terminalizer", LEASE_MS, MAX_ATTEMPTS)
+            .await
+            .expect("exhaustion query")
+            .is_some(),
+        "S5 once the slot closes, retry exhaustion takes the Run"
     );
 }
