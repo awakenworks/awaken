@@ -921,9 +921,11 @@ impl MemoryFuse {
     }
 
     fn rename_path(&self, old_path: &str, new_path: &str) -> Result<Memory, FuseError> {
-        let memory = self
-            .runtime
-            .block_on(self.fs.rename(&self.store_id, old_path, new_path))?;
+        // This mount has no authenticated MemoryActor, like its create/update
+        // paths. An OS uid is not a Resources principal: retain explicit None.
+        let memory =
+            self.runtime
+                .block_on(self.fs.rename_as(&self.store_id, old_path, new_path, None))?;
         let generation = memory.generation();
         self.cache_remove_path(old_path);
         self.cache_put(memory.clone());

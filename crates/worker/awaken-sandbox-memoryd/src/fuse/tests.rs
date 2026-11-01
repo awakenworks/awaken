@@ -1256,7 +1256,7 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
     rt.block_on(
         ports
             .memory_filesystem()
-            .rename(store, "/moved.md", "/renamed.md"),
+            .rename_as(store, "/moved.md", "/renamed.md", None),
     )
     .unwrap();
     assert_eq!(observer.try_recv().unwrap(), (store.into(), "/".into()));

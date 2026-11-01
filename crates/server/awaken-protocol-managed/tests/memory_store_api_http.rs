@@ -1268,7 +1268,7 @@ forward_memory_role!(MemoryFilesystem {
     fn get_by_path(store: &str, path: &str) -> Result<Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr>;
     fn create_as(store: &str, path: &str, content: &str, actor: Option<&MemoryActor>) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
     fn update_head_as(store: &str, base: &awaken_resource_contract::MemoryGeneration, content: &str, target_path: Option<&str>, actor: Option<&MemoryActor>) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
-    fn rename(store: &str, from: &str, to: &str) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
+    fn rename_as(store: &str, from: &str, to: &str, actor: Option<&MemoryActor>) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>;
     fn delete_by_path_as(store: &str, path: &str, actor: Option<&MemoryActor>) -> Result<(), awaken_resource_contract::MemErr>;
 });
 forward_memory_role!(MemoryCopyWriteback {

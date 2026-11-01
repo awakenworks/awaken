@@ -1103,7 +1103,16 @@ pub trait MemoryFilesystem: Send + Sync {
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr>;
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
+    /// Atomically move/replace, recording this caller on both moved and
+    /// displaced history rows. None explicitly denotes an unattributed system
+    /// operation; implementations never inherit the original creation author.
+    async fn rename_as(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr>;
     async fn delete_by_path_as(
         &self,
         store: &str,

@@ -75,11 +75,12 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
                     .await
                     .unwrap();
             }
-            awaken_resource_contract::MemoryFilesystem::rename(
+            awaken_resource_contract::MemoryFilesystem::rename_as(
                 repository.as_ref(),
                 "s",
                 "/note.md",
                 "/moved.md",
+                None,
             )
             .await
             .unwrap();
