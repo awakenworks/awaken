@@ -185,7 +185,7 @@ async fn ordinary_attempt_acknowledgement_releases_source_without_claiming_globa
         .await
         .unwrap()
         .unwrap();
-    let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+    let claim = awaken_worker_contract::RunClaim::from(&claimed.lease);
     assert_eq!(
         store.begin_attempt(&claim, None).await.unwrap(),
         awaken_dispatch_contract::AttemptAdmission::Applied

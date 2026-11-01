@@ -3,8 +3,9 @@ use super::*;
 use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, ClaimedRunCommit,
     ContinuationAdmission, DispatchCursor, DispatchError, DispatchOperationalFeed, DispatchPage,
-    PendingInput, RunClaim, RunDispatch, SessionContinuationOutbox, SettleOutcome,
+    PendingInput, RunDispatch, SessionContinuationOutbox, SettleOutcome,
 };
+use awaken_worker_contract::RunClaim;
 
 #[async_trait::async_trait]
 impl SessionContinuationOutbox for FlakyDispatchStore {

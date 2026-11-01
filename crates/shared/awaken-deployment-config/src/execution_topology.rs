@@ -47,7 +47,7 @@ impl RunIngress {
 /// the Session executor's Worker constructor.
 ///
 /// [`Registered`]: DispatchPoolSizing::Registered
-/// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
+/// [`RegisteredCapacity`]: awaken_worker_contract::RegisteredCapacity
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchPoolSizing {
     /// No Worker registration in this topology (a direct or coordinator-embedded

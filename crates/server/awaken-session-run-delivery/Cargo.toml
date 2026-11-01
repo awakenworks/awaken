@@ -31,7 +31,6 @@ awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime.workspace = true
 awaken-observability.workspace = true
-awaken-tenancy.workspace = true
 awaken-time.workspace = true
 awaken-ext-goal.workspace = true
 awaken-ext-builtin-tools.workspace = true

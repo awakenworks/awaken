@@ -9,10 +9,10 @@
 //! `config_service`.
 
 use awaken_agent_config::{AgentConfig, AgentConfigRevision};
+use awaken_agent_contract::ScopeId;
 use awaken_config_resolver::AgentInputConfig;
 use awaken_executable_agent_contract::ExecutableAgentRegistration;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 use crate::agent_projection::registered_session_profile;
 use crate::config_service::ConfigService;

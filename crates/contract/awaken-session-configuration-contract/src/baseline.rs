@@ -46,10 +46,9 @@ mod kani_proofs {
     }
 }
 
-pub use awaken_provisioning_contract::{
-    SandboxIdleRetentionMode as EnvironmentIdleRetentionMode,
-    SandboxIdleRetentionPolicy as EnvironmentIdleRetentionPolicy, SandboxProvisioning,
-};
+#[cfg(test)]
+use awaken_provisioning_contract::SandboxIdleRetentionMode;
+use awaken_provisioning_contract::{SandboxIdleRetentionPolicy, SandboxProvisioning};
 
 use awaken_session_types::SessionRuntimePlacement;
 
@@ -106,7 +105,7 @@ pub struct EnvironmentSnapshot {
     /// Frozen creation timing from the exact Environment-bound execution policy.
     pub sandbox_provisioning: SandboxProvisioning,
     /// Frozen whole-Environment idle continuation policy.
-    pub idle_retention: EnvironmentIdleRetentionPolicy,
+    pub idle_retention: SandboxIdleRetentionPolicy,
     /// Exact package inputs frozen with this Environment revision. Providers
     /// provision them before workload launch or reject the spec fail-closed.
     pub packages: EnvironmentPackages,
@@ -477,7 +476,7 @@ impl SessionBaseline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::{PlaintextBoundary, PlaintextHolder};
+    use awaken_agent_contract::{credential::PlaintextBoundary, credential::PlaintextHolder};
     use awaken_provisioning_contract::{
         EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
         SandboxCheckpointExpiryBehavior,
@@ -534,11 +533,11 @@ mod tests {
         // C2 retention > idle delay, C3 positive size/time bounds and C4 an exact
         // format. R1 Resident => E1 valid; R2 all C1..C4 => E1 valid; R3..R7 each
         // violate one constraint => E2 reject before a Session can freeze it.
-        let resident = EnvironmentIdleRetentionPolicy::default();
+        let resident = SandboxIdleRetentionPolicy::default();
         assert_eq!(resident.validate(), Ok(()), "R1");
 
-        let valid = EnvironmentIdleRetentionPolicy {
-            mode: EnvironmentIdleRetentionMode::CheckpointAndRelease,
+        let valid = SandboxIdleRetentionPolicy {
+            mode: SandboxIdleRetentionMode::CheckpointAndRelease,
             checkpoint_after_secs: 60,
             retention_secs: 3_600,
             expiry_behavior: SandboxCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
@@ -550,35 +549,35 @@ mod tests {
         for (rule, invalid) in [
             (
                 "R3",
-                EnvironmentIdleRetentionPolicy {
+                SandboxIdleRetentionPolicy {
                     checkpoint_after_secs: 0,
                     ..valid.clone()
                 },
             ),
             (
                 "R4",
-                EnvironmentIdleRetentionPolicy {
+                SandboxIdleRetentionPolicy {
                     retention_secs: 60,
                     ..valid.clone()
                 },
             ),
             (
                 "R5",
-                EnvironmentIdleRetentionPolicy {
+                SandboxIdleRetentionPolicy {
                     max_checkpoint_bytes: 0,
                     ..valid.clone()
                 },
             ),
             (
                 "R6",
-                EnvironmentIdleRetentionPolicy {
+                SandboxIdleRetentionPolicy {
                     max_checkpoint_duration_secs: 0,
                     ..valid.clone()
                 },
             ),
             (
                 "R7",
-                EnvironmentIdleRetentionPolicy {
+                SandboxIdleRetentionPolicy {
                     checkpoint_format: "  ".into(),
                     ..valid.clone()
                 },

@@ -13,8 +13,8 @@
 //! protocol-as-projection: "the tools for this scope" is a function of the opaque
 //! [`ScopeId`], resolved at the edge, leaving the neutral core untouched.
 
+use awaken_agent_contract::ScopeId;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 /// The reserved scope the management assistant lives in (ADR-0052 D2). It is a
 /// distinct owner from [`awaken_agent_config::DEFAULT_SCOPE`] so, in a multi-tenant

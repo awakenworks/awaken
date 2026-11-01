@@ -387,13 +387,13 @@ fn inspection_source_admitted(
     let audience = awaken_agent_contract::McpTarget::identity(url)
         .map_err(|e| CredentialError::InvalidSource(e.to_string()))?
         .canonical_url();
-    let target = awaken_credential_contract::CredentialTarget::new(
-        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+    let target = awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
         audience,
     );
     source.validate_access_target(
         Some(&target),
-        &awaken_credential_contract::CredentialUsage::HttpHeader {
+        &awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
         },
@@ -403,7 +403,7 @@ fn inspection_source_admitted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::{CredentialPurpose, CredentialUsage};
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialUsage};
     #[test]
     fn inspection_admission_requires_every_source_authority_condition() {
         // Graph: Workspace AND active AND positive revision AND executable

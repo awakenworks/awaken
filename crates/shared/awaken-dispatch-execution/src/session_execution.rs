@@ -18,7 +18,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_dispatch_contract::{Claimed, RunClaim, RunDispatch};
+use awaken_dispatch_contract::{Claimed, RunDispatch};
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_runtime_contract::{
     ExecutableAgentSnapshot, RuntimeRunContext, StaticPublishedAgentSnapshots,
@@ -28,6 +28,7 @@ use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
 use awaken_session_execution_contract::SessionRealizationPermit;
+use awaken_worker_contract::RunClaim;
 
 use crate::{AdmissionError, DispatchWorker, Error};
 
@@ -117,7 +118,7 @@ pub trait ClaimedSessionInstallation: Send + Sync {
         encoded: Option<&str>,
         run_id: &RunId,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-        recovery: awaken_dispatch_contract::WorkerRecoveryMode,
+        recovery: awaken_worker_contract::WorkerRecoveryMode,
     ) -> Result<(), Error>;
     /// The immutable Agent publication retained by the Session.
     fn published_snapshot(

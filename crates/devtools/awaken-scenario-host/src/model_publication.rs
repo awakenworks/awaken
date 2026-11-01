@@ -73,7 +73,7 @@ impl ScenarioHostModelResolver {
 impl awaken_config_service::ModelPublicationResolver for ScenarioHostModelResolver {
     async fn resolve_models(
         &self,
-        _workspace: &awaken_tenancy::ScopeId,
+        _workspace: &awaken_agent_contract::ScopeId,
         selection: &awaken_agent_config::ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<
@@ -135,7 +135,7 @@ impl DistributedProviderPublicationResolver {
 impl awaken_config_service::ModelPublicationResolver for DistributedProviderPublicationResolver {
     async fn resolve_models(
         &self,
-        workspace: &awaken_tenancy::ScopeId,
+        workspace: &awaken_agent_contract::ScopeId,
         selection: &awaken_agent_config::ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<
@@ -212,7 +212,7 @@ mod tests {
         // the authored binding; M2 Auto with one offering -> select that exact
         // offering; M3 Auto with an empty catalog -> fail closed as missing
         // primary. Both adapters reuse this one catalog selection implementation.
-        let workspace = awaken_tenancy::ScopeId::from("workspace-a");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace-a");
         let resolver = ScenarioHostModelResolver::new(scenario_model_catalog("echo").await);
         let explicit = ModelBinding::new("default", "echo", "default");
         let resolved = resolver
@@ -248,7 +248,7 @@ mod tests {
         // Provider route; P2 ControlPlaneReference credential -> sealed Worker
         // envelope with no plaintext; P3 unavailable Auto selection -> the
         // canonical catalog resolver fails closed rather than a Host fallback.
-        let workspace = awaken_tenancy::ScopeId::from("workspace-a");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace-a");
         let resolver =
             DistributedProviderPublicationResolver::new(scenario_model_catalog("echo").await);
         let resolved = resolver

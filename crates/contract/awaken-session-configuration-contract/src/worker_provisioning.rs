@@ -1,7 +1,7 @@
 // @formal surface requirement=runtime.executable_snapshots.immutable_snapshot
 // @formal reason: Validates the existing frozen Environment provisioning/runtime compatibility before Session effects.
 //! Session runtime compatibility with frozen Environment provisioning.
-use crate::SandboxProvisioning;
+use awaken_provisioning_contract::SandboxProvisioning;
 use awaken_session_types::RunError;
 pub fn is_native_session_runtime(runtime: Option<&str>) -> bool {
     runtime.is_none_or(|backend_ref| {

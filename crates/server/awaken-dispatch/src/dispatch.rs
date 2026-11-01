@@ -15,6 +15,8 @@
 pub use awaken_dispatch_contract::dispatch::*;
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 use awaken_dispatch_contract::{PhysicalAttemptSlot, PhysicalAttemptTransition};
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+use awaken_worker_contract::RunClaim;
 
 /// Compile entry inventory from the same locked dispatch row as admission.
 /// This retains the original identity and adds no execution/closure authority.
@@ -1146,7 +1148,7 @@ mod codec_rollout_tests {
                 .build(),
             Vec::new(),
         ))
-        .with_placement(awaken_dispatch_contract::PlacementRequirements::remote_preferred());
+        .with_placement(awaken_worker_contract::PlacementRequirements::remote_preferred());
         let fingerprint =
             awaken_session_types::SessionRunCommandFingerprint::from_sha256_hex(&"a".repeat(64))
                 .unwrap();

@@ -2,9 +2,8 @@
 // @formal entrypoint worker_credential.dynamic_observation_requires_exact_fact_and_half_open_lease
 // @formal entrypoint worker_credential.expired_observation_never_executes
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
-use awaken_credential_contract::{
-    CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
-};
+use awaken_agent_contract::credential::CredentialRef as WorkerCredentialRevision;
+use awaken_credential_contract::CredentialObservationState as WorkerCredentialState;
 use serde::{Deserialize, Serialize};
 
 use crate::capability_agreement::{CapabilityEvidenceAgreement, merge_capability_evidence};

@@ -298,14 +298,14 @@ mod tests {
                 ["password", "username"],
             ),
             [awaken_credential_contract::CredentialTargetContract::new(
-                awaken_credential_contract::CredentialTarget::new(
-                    awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+                awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport,
                     awaken_credential_contract::repository_transport_audience(
                         "https://github.com/awaken/example.git",
                     )
                     .expect("described target"),
                 ),
-                awaken_credential_contract::CredentialUsage::HttpBasicAuth,
+                awaken_agent_contract::credential::CredentialUsage::HttpBasicAuth,
             )],
         ));
         let mut zero_revision = source(

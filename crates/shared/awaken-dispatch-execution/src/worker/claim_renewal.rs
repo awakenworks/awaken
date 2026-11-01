@@ -14,7 +14,8 @@ use awaken_runtime_contract::cancellation::{AttemptCancellation, CancellationCau
 use awaken_time::mono;
 use tokio_util::sync::CancellationToken;
 
-use crate::dispatch::{LeaseRenewalOutcome, RunClaim};
+use crate::dispatch::LeaseRenewalOutcome;
+use awaken_worker_contract::RunClaim;
 
 /// Why one claim's renewal loop fired the attempt's cancellation.
 ///

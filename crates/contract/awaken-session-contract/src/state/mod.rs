@@ -34,6 +34,9 @@ pub(crate) use crate::event::{
     session_inputs_allow_idle,
 };
 pub(crate) use awaken_agent_contract::stable_fingerprint;
+pub(crate) use awaken_provisioning_contract::{
+    SandboxIdleRetentionMode, SandboxIdleRetentionPolicy,
+};
 pub(crate) use awaken_session_configuration_contract::mcp::{
     McpGenerationRef, SessionMcpAttachmentSet,
 };
@@ -48,8 +51,7 @@ pub(crate) use awaken_session_configuration_contract::resource::{
     repository_transport_credential_usage,
 };
 pub(crate) use awaken_session_configuration_contract::{
-    EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy, SessionBaseline,
-    SessionBaselineState, SessionToolConfiguration,
+    SessionBaseline, SessionBaselineState, SessionToolConfiguration,
 };
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
 #[cfg(test)]

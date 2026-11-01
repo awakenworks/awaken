@@ -14,7 +14,8 @@
 
 use std::collections::BTreeMap;
 
-use awaken_credential_contract::{CredentialSourceId, TokenEndpointAuth};
+use awaken_agent_contract::credential::TokenEndpointAuth;
+use awaken_credential_contract::CredentialSourceId;
 
 use crate::CredentialError;
 

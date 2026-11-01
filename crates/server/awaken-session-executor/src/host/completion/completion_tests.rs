@@ -269,7 +269,7 @@ fn environment_and_backend_compile_one_worker_sandbox_requirement_vector() {
     assert!(!trusted.sandbox.enforced_readonly, "R3 advisory access");
     assert_eq!(
         trusted.sandbox_backend.as_deref(),
-        Some(awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND),
+        Some(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND),
         "R3 exact Worker backend"
     );
 
@@ -524,7 +524,7 @@ fn coordinator_admission_pins_protocol_and_every_materialization_capability() {
     assert_eq!(placement.dispatch_contract_version, 1);
     assert_eq!(
         placement.runtime_protocol_version,
-        awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION
+        awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION
     );
     assert!(placement.required_capabilities.contains("native-runtime"));
     assert!(
@@ -621,21 +621,21 @@ fn worker_local_candidates_pin_every_exact_credential_for_claim_admission() {
     let placement = remote_worker_placement(&models, None, None, false);
     assert_eq!(
         placement.location,
-        awaken_dispatch_contract::ExecutionLocation::RemoteRequired
+        awaken_worker_contract::ExecutionLocation::RemoteRequired
     );
     assert!(
         placement
             .required_capabilities
-            .contains(awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
     );
     assert_eq!(
         placement.required_credentials,
         std::collections::BTreeSet::from([
-            awaken_dispatch_contract::WorkerCredentialRevision {
+            awaken_worker_contract::WorkerCredentialRevision {
                 id: "cred:fallback".into(),
                 revision: 5,
             },
-            awaken_dispatch_contract::WorkerCredentialRevision {
+            awaken_worker_contract::WorkerCredentialRevision {
                 id: "cred:primary".into(),
                 revision: 2,
             },
@@ -668,16 +668,16 @@ fn backend_owned_candidate_uses_the_same_exact_worker_placement_fence() {
     let placement = remote_worker_placement(&models, None, None, false);
     assert_eq!(
         placement.location,
-        awaken_dispatch_contract::ExecutionLocation::RemoteRequired
+        awaken_worker_contract::ExecutionLocation::RemoteRequired
     );
     assert!(
         placement
             .required_capabilities
-            .contains(awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
     );
     assert_eq!(
         placement.required_credentials,
-        std::collections::BTreeSet::from([awaken_dispatch_contract::WorkerCredentialRevision {
+        std::collections::BTreeSet::from([awaken_worker_contract::WorkerCredentialRevision {
             id: "cred:local".into(),
             revision: 7,
         },])
@@ -685,7 +685,7 @@ fn backend_owned_candidate_uses_the_same_exact_worker_placement_fence() {
     assert_eq!(
         placement.required_acp_capabilities,
         std::collections::BTreeSet::from([
-            awaken_dispatch_contract::WorkerAcpCapabilityRequirement {
+            awaken_worker_contract::WorkerAcpCapabilityRequirement {
                 backend_ref: "acp:codex".into(),
                 fingerprint: "sha256:test-capability".into(),
             },
@@ -705,12 +705,12 @@ fn resource_placement_requires_resource_and_repository_credential_capabilities()
     assert!(
         placement
             .required_capabilities
-            .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY)
+            .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY)
     );
     assert!(
         placement
             .required_capabilities
-            .contains(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
+            .contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
     assert!(placement.sandbox.enforced_readonly);
 }
@@ -725,12 +725,12 @@ fn explicit_empty_manifest_still_requires_the_revocation_capability() {
     assert!(
         placement
             .required_capabilities
-            .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
+            .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
         "an empty successor manifest may need to remove prior sandbox material"
     );
     assert!(
         !placement
             .required_capabilities
-            .contains(awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
+            .contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
 }

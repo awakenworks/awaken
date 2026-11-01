@@ -6,8 +6,8 @@
 use std::collections::BTreeSet;
 
 use awaken_agent_config::{AgentLifecycle, ScopedConfigRegistry};
+use awaken_agent_contract::ScopeId;
 use awaken_executable_agent_contract::{ExecutableAgentRegistration, ExecutableAgentWithdrawal};
-use awaken_tenancy::ScopeId;
 
 use crate::ConfigService;
 use crate::agent_projection::{historical_session_profile, registered_session_profile};

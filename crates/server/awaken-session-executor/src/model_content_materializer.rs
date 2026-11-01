@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use crate::ResourceOperationFence;
 use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
-use awaken_dispatch_contract::RunClaim;
 use awaken_resource_contract::{
     FileContentSource, FileReadPurpose, ResolvedFileContent, content_id,
 };
 use awaken_runtime_contract::llm::{ChatRequest, Error, ModelContentMaterializer};
+use awaken_worker_contract::RunClaim;
 use base64::Engine as _;
 
 pub(crate) struct ResourceModelContentMaterializer {

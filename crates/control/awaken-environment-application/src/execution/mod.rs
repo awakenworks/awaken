@@ -528,7 +528,7 @@ async fn snapshot_from_registration(
         ),
         None => (
             Default::default(),
-            awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            awaken_provisioning_contract::SandboxProvisioning::Eager,
             Default::default(),
         ),
     };
@@ -620,7 +620,7 @@ impl awaken_session_configuration_contract::EnvironmentWarmupSource
 fn session_network_policy(
     config: &EnvironmentConfig,
     mcp_targets: &[awaken_agent_contract::McpTarget],
-    mcp_holder: awaken_credential_contract::PlaintextBoundary,
+    mcp_holder: awaken_agent_contract::credential::PlaintextBoundary,
 ) -> awaken_session_configuration_contract::SessionNetworkPolicy {
     use awaken_session_configuration_contract::SessionNetworkPolicy;
 
@@ -639,7 +639,9 @@ fn session_network_policy(
     // Only a Workload-held MCP credential authorizes the Sandbox to dial its
     // upstream host. Worker/Platform custody must use their mediated route;
     // adding the upstream here would mint a signed direct CONNECT bypass.
-    if *allow_mcp_servers && mcp_holder == awaken_credential_contract::PlaintextBoundary::Workload {
+    if *allow_mcp_servers
+        && mcp_holder == awaken_agent_contract::credential::PlaintextBoundary::Workload
+    {
         hosts.extend(mcp_targets.iter().filter_map(|target| {
             target.http_url().and_then(|url| {
                 awaken_agent_contract::McpTarget::identity(url)
@@ -986,8 +988,8 @@ mod tests {
             .unwrap();
 
         let platform_profile = awaken_credential_contract::CredentialRealizationProfile {
-            inference_holder: awaken_credential_contract::PlaintextHolder::new(
-                awaken_credential_contract::PlaintextBoundary::Platform,
+            inference_holder: awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Platform,
                 "hosted.example.gateway",
             ),
             ..awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
@@ -1173,7 +1175,7 @@ mod tests {
         let eager = application.snapshot("policy", None).await.unwrap().unwrap();
         assert_eq!(
             eager.sandbox_provisioning,
-            awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            awaken_provisioning_contract::SandboxProvisioning::Eager,
             "P1"
         );
 
@@ -1184,7 +1186,7 @@ mod tests {
                 isolation: Some(IsolationClass::Namespace),
                 ..Default::default()
             },
-            provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+            provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
             idle_retention: Default::default(),
             disabled: false,
         };
@@ -1196,7 +1198,7 @@ mod tests {
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace), "P2");
         assert_eq!(
             lazy.sandbox_provisioning,
-            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+            awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
             "P2"
         );
         assert_ne!(eager.config_fingerprint, lazy.config_fingerprint, "P2");
@@ -1207,7 +1209,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .sandbox_provisioning,
-            awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            awaken_provisioning_contract::SandboxProvisioning::Eager,
             "P3"
         );
 
@@ -1215,7 +1217,7 @@ mod tests {
             id: SandboxExecutionPolicyId("policy-a".into()),
             version: SandboxExecutionPolicyVersion(2),
             config: SandboxOverride::default(),
-            provisioning: awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            provisioning: awaken_provisioning_contract::SandboxProvisioning::Eager,
             idle_retention: Default::default(),
             disabled: true,
         };
@@ -1982,7 +1984,7 @@ mod tests {
             session_network_policy(
                 &config,
                 &[target],
-                awaken_credential_contract::PlaintextBoundary::Workload
+                awaken_agent_contract::credential::PlaintextBoundary::Workload
             ),
             awaken_session_configuration_contract::SessionNetworkPolicy::None,
             "RN1-RN2"

@@ -26,11 +26,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::credential::TokenEndpointAuth;
 use awaken_config_resolver::resolve_inference;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::ManagedCredentialAdoptionProgress;
 use awaken_credential_contract::SessionCredentialSource;
-use awaken_credential_contract::TokenEndpointAuth;
 use awaken_credential_vault::catalog::ManagedVaultDeletionPhase;
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, reconcile_managed_vault_deletions};
 use awaken_credential_vault::{CredentialBinding, CredentialSource, InMemorySecretStore};
@@ -82,7 +82,7 @@ struct FakeExchange {
     seen: Mutex<
         Vec<(
             CredentialSourceId,
-            awaken_credential_contract::CredentialRefreshAccess,
+            awaken_agent_contract::credential::CredentialRefreshAccess,
         )>,
     >,
 }
@@ -92,7 +92,7 @@ impl CredentialRefreshExchange for FakeExchange {
     async fn exchange(
         &self,
         credential_id: CredentialSourceId,
-        access: awaken_credential_contract::CredentialRefreshAccess,
+        access: awaken_agent_contract::credential::CredentialRefreshAccess,
     ) -> RefreshExchangeOutcome {
         self.seen
             .lock()
@@ -422,7 +422,7 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
     );
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
-    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+    let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
         name: "authorization".into(),
         scheme: Some("Bearer".into()),
     };
@@ -2258,7 +2258,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     );
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
-    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+    let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
         name: "authorization".into(),
         scheme: Some("Bearer".into()),
     };
@@ -2319,15 +2319,15 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1);
 
-    let platform_holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Platform,
+    let platform_holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Platform,
         "awaken.platform.egress-gateway",
     );
-    let platform_usage = awaken_credential_contract::CredentialUsage::HttpEffect {
+    let platform_usage = awaken_agent_contract::credential::CredentialUsage::HttpEffect {
         fields: std::collections::BTreeMap::from([(
             "token".into(),
             std::collections::BTreeSet::from([
-                awaken_credential_contract::HttpEffectPlacement::Header {
+                awaken_agent_contract::credential::HttpEffectPlacement::Header {
                     name: "authorization".into(),
                 },
             ]),
@@ -2345,14 +2345,14 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             &source_id,
             &source_workspace,
             awaken_credential_contract::SessionCredentialAccessRequest {
-                target: awaken_credential_contract::CredentialTarget::new(
-                    awaken_credential_contract::CredentialPurpose::HttpEffect,
+                target: awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::HttpEffect,
                     "https://mcp.example.com/sse",
                 ),
                 usage: platform_usage,
-                policy: awaken_credential_contract::CredentialExecutionPolicy::exact(
+                policy: awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                     platform_holder.clone(),
-                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                    awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                 ),
                 selected_holder: platform_holder,
                 binding: platform_binding,
@@ -2388,8 +2388,8 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1);
 
-    let unauthorized_holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Platform,
+    let unauthorized_holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Platform,
         "untrusted-platform",
     );
     assert!(
@@ -2499,7 +2499,7 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
     );
     let holder =
         awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
-    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+    let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
         name: "authorization".into(),
         scheme: Some("Bearer".into()),
     };
@@ -2561,11 +2561,11 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
     use awaken_credential_vault::repo::CredentialRepo;
     let workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let custodian = Arc::new(SelectiveCustodian {
-        holder: awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Platform,
+        holder: awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Platform,
             "external-provider-custody",
         ),
-        usage: awaken_credential_contract::CredentialUsage::ProviderAdapter,
+        usage: awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
         published: Mutex::new(0),
     });
     let state = VaultState::new(
@@ -2579,7 +2579,7 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         ),
     );
     let profile = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native();
-    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+    let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
         name: "authorization".into(),
         scheme: Some("Bearer".into()),
     };
@@ -3512,7 +3512,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         .expect("exact MCP access compiles");
     assert_eq!(
         access.policy.model_exposure,
-        awaken_credential_contract::ModelExposurePolicy::VirtualOnly,
+        awaken_agent_contract::credential::ModelExposurePolicy::VirtualOnly,
         "the sole MCP compiler explicitly authorizes only a synthetic relay capability"
     );
     let binding = access.refresh.expect("public-client refresh is pinned");

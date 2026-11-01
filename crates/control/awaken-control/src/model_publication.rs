@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use awaken_acp_contract::AcpPublicationCapability;
 use awaken_agent_config::ModelSelection;
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::credential::CredentialExecutionPolicy;
 use awaken_agent_contract::credential::CredentialRef;
 use awaken_config_resolver::{
@@ -30,7 +31,6 @@ use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
 };
 use awaken_sync::LeafLock;
-use awaken_tenancy::ScopeId;
 
 mod a2a_remote;
 mod acp_configuration;
@@ -362,12 +362,12 @@ mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::credential::{CredentialMaterialSource, CredentialUsage};
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
     use awaken_config_resolver::InferenceProfile;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
-        CredentialTarget, CredentialTargetContract, HTTP_BASIC_MATERIAL_TYPE,
-        repository_transport_audience,
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialSourceId,
+        CredentialTargetContract, HTTP_BASIC_MATERIAL_TYPE, repository_transport_audience,
     };
     use awaken_credential_vault::repo::{
         InMemoryCredentialRepo, ensure_worker_local, enter_credential, enter_credential_idempotent,
@@ -546,7 +546,7 @@ mod tests {
         let policy = CredentialExecutionPolicy::self_hosted_provider();
         let holder = awaken_agent_contract::credential::PlaintextHolder::new(
             awaken_agent_contract::credential::PlaintextBoundary::Worker,
-            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         CatalogModelPublicationResolver::new(catalog, credentials, test_clock())
             .with_direct_provider_credential_execution(

@@ -188,12 +188,12 @@ async fn fixture(kind: CredentialRealizationKind) -> Fixture {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
-            awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
+            awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
         ),
         CredentialRealizationKind::WorkerProviderAdapter => (
             "anthropic",
             CredentialUsage::ProviderAdapter,
-            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
         ),
         _ => unreachable!("the table selects exactly the two claimed adapters"),
     };
@@ -224,7 +224,7 @@ async fn fixture(kind: CredentialRealizationKind) -> Fixture {
         usage,
         CredentialExecutionPolicy::self_hosted_provider(),
     )
-    .with_target(awaken_credential_contract::CredentialTarget::new(
+    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
         purpose, provider,
     ));
     let candidate = match kind {

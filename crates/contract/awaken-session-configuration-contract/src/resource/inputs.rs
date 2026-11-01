@@ -70,16 +70,17 @@ pub struct SessionInputAttachment {
 /// Runtime or Git side effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedRepositoryCredential {
-    pub access: awaken_credential_contract::CredentialAccess,
-    pub selected_plaintext_holder: awaken_credential_contract::PlaintextHolder,
+    pub access: awaken_agent_contract::credential::CredentialAccess,
+    pub selected_plaintext_holder: awaken_agent_contract::credential::PlaintextHolder,
 }
 
 /// Canonical consumption contract for a host-mediated HTTPS Git operation. The
 /// Worker adapter performs the Basic transformation from typed username/password
 /// material; no preformatted header or token convention crosses this boundary.
 #[must_use]
-pub fn repository_transport_credential_usage() -> awaken_credential_contract::CredentialUsage {
-    awaken_credential_contract::CredentialUsage::HttpBasicAuth
+pub fn repository_transport_credential_usage() -> awaken_agent_contract::credential::CredentialUsage
+{
+    awaken_agent_contract::credential::CredentialUsage::HttpBasicAuth
 }
 
 /// Derive the one exact material binding shared by Session credential pinning
@@ -107,11 +108,11 @@ pub fn repository_transport_material_binding(
 pub fn repository_transport_credential_target(
     remote_url: &str,
 ) -> Result<
-    awaken_credential_contract::CredentialTarget,
+    awaken_agent_contract::credential::CredentialTarget,
     awaken_credential_contract::CredentialDescriptorError,
 > {
-    Ok(awaken_credential_contract::CredentialTarget::new(
-        awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+    Ok(awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport,
         awaken_credential_contract::repository_transport_audience(remote_url)?,
     ))
 }
@@ -153,7 +154,7 @@ impl ResolvedRepositoryCredential {
             ));
         }
         if self.access.policy.model_exposure
-            != awaken_credential_contract::ModelExposurePolicy::Forbidden
+            != awaken_agent_contract::credential::ModelExposurePolicy::Forbidden
         {
             return Err(SessionInputError::InvalidCredentialPin(
                 "Repository credential must remain model-invisible".into(),
@@ -1011,23 +1012,23 @@ mod tests {
     /// | P6 | T | T | T | T | F | E2 |
     #[test]
     fn repository_credential_pin_is_bound_to_one_https_origin() {
-        let holder = awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Workload,
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Workload,
             "spiffe://example.test/sandbox",
         );
         let exact_target =
             repository_transport_credential_target("https://github.com/awaken/first.git")
                 .expect("P1 target");
-        let access = awaken_credential_contract::CredentialAccess::new(
-            awaken_credential_contract::CredentialRef {
+        let access = awaken_agent_contract::credential::CredentialAccess::new(
+            awaken_agent_contract::credential::CredentialRef {
                 id: "credential-1".into(),
                 revision: 1,
             },
-            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
             repository_transport_credential_usage(),
-            awaken_credential_contract::CredentialExecutionPolicy::exact(
+            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                 holder.clone(),
-                awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
             ),
         )
         .with_target(exact_target.clone());
@@ -1074,7 +1075,7 @@ mod tests {
         );
 
         let mut wrong_usage = exact.clone();
-        wrong_usage.access.usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        wrong_usage.access.usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
         };
@@ -1086,10 +1087,11 @@ mod tests {
         );
 
         let mut wrong_holder = exact.clone();
-        wrong_holder.selected_plaintext_holder = awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            "spiffe://example.test/other-worker",
-        );
+        wrong_holder.selected_plaintext_holder =
+            awaken_agent_contract::credential::PlaintextHolder::new(
+                awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                "spiffe://example.test/other-worker",
+            );
         assert!(
             wrong_holder
                 .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
@@ -1099,7 +1101,7 @@ mod tests {
 
         let mut exposed = exact;
         exposed.access.policy.model_exposure =
-            awaken_credential_contract::ModelExposurePolicy::VirtualOnly;
+            awaken_agent_contract::credential::ModelExposurePolicy::VirtualOnly;
         assert!(
             exposed
                 .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
@@ -1107,15 +1109,16 @@ mod tests {
             "P6/E2"
         );
 
-        let worker = awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
+        let worker = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
             "spiffe://example.test/runtime-host",
         );
         let mut host_held = exposed;
-        host_held.access.policy = awaken_credential_contract::CredentialExecutionPolicy::exact(
-            worker.clone(),
-            awaken_credential_contract::ModelExposurePolicy::Forbidden,
-        );
+        host_held.access.policy =
+            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+                worker.clone(),
+                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+            );
         host_held.selected_plaintext_holder = worker;
         assert!(
             host_held

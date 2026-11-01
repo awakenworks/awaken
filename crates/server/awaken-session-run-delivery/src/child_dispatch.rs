@@ -80,8 +80,8 @@ pub fn child_dispatch_request(
             ))
         })?;
         request = request
-            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
+            .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                awaken_agent_contract::ScopeId::from(resources.workspace_id.clone()),
             ))
             .with_session_resources(envelope);
     }

@@ -16,11 +16,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use awaken_agent_config::ModelSelection;
+use awaken_agent_contract::ScopeId;
 use awaken_config_service::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_tenancy::ScopeId;
 
 pub(super) fn brokered_inference_client(
     cloud_models_enabled: bool,

@@ -145,7 +145,7 @@ pub struct SessionRepositoryResourceInput {
     pub description: String,
     pub remote_url: String,
     pub credential_material: Option<CredentialMaterialInput>,
-    pub credential: Option<awaken_credential_contract::CredentialRef>,
+    pub credential: Option<awaken_agent_contract::credential::CredentialRef>,
     pub mount_path: String,
     pub initial_branch: Option<String>,
     pub initial_commit: Option<String>,
@@ -787,7 +787,7 @@ impl SessionRepositoryParticipants {
         owner_scope: &str,
         owner: &SessionRepositoryOwner,
         repository_id: &str,
-        credential: Option<&awaken_credential_contract::CredentialRef>,
+        credential: Option<&awaken_agent_contract::credential::CredentialRef>,
         fence_unadopted: bool,
     ) -> OwnedRepositoryRetirement {
         let Some(catalog) = self.registry.as_deref() else {

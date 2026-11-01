@@ -17,7 +17,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct IdleEvidence {
-        released: std::sync::Mutex<Vec<awaken_dispatch_contract::WorkerIdentity>>,
+        released: std::sync::Mutex<Vec<awaken_worker_contract::WorkerIdentity>>,
         fail_first: std::sync::atomic::AtomicBool,
         stops: std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::AttemptExecutionBinding>>,
         attempts: std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::PhysicalAttempt>>,
@@ -26,12 +26,12 @@ mod tests {
 
     #[async_trait]
     impl awaken_dispatch::WorkerExecutionStopSource for IdleEvidence {
-        fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
+        fn owns_worker_evidence(&self, _: &awaken_worker_contract::WorkerIdentity) -> bool {
             true
         }
         async fn observe_closed_idle_worker(
             &self,
-            identity: &awaken_dispatch_contract::WorkerIdentity,
+            identity: &awaken_worker_contract::WorkerIdentity,
             _: bool,
             _: Option<&awaken_dispatch::WorkerCreateLedger>,
         ) -> Result<
@@ -49,8 +49,8 @@ mod tests {
         }
         async fn release_closed_idle_worker_evidence(
             &self,
-            identity: &awaken_dispatch_contract::WorkerIdentity,
-            _original_create_ledger: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
+            identity: &awaken_worker_contract::WorkerIdentity,
+            _original_create_ledger: Option<&awaken_worker_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             if self.fail_first.swap(false, Ordering::SeqCst) {
                 return Err(
@@ -113,14 +113,14 @@ mod tests {
         // | M2   | Y  | Y  | Y  | N  | Y  | N  | E1+E3  |
         // | M3   | Y  | Y  | Y  | N  | -  | Y  | E4     |
         // The cursor is scheduling only; Registry and Dispatch are re-read.
-        use awaken_dispatch_contract::WorkerDirectory as _;
+        use awaken_worker_contract::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let mut identities = Vec::new();
         for id in ["retention-a", "retention-b"] {
             identities.push(
                 directory
                     .register(
-                        awaken_dispatch_contract::WorkerRegistration {
+                        awaken_worker_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
                             manifest: Default::default(),
@@ -206,7 +206,7 @@ mod tests {
             let record = directory.incarnation(&identity).await.unwrap().unwrap();
             assert_eq!(
                 record.snapshot.state,
-                awaken_dispatch_contract::WorkerState::Dead
+                awaken_worker_contract::WorkerState::Dead
             );
             assert_eq!(
                 record.process_exit.unwrap().provider_id(),
@@ -225,7 +225,7 @@ mod tests {
     impl awaken_dispatch::WorkerExecutionStopSource for LeaseDeadlineEvidence {
         async fn observe_closed_idle_worker(
             &self,
-            identity: &awaken_dispatch_contract::WorkerIdentity,
+            identity: &awaken_worker_contract::WorkerIdentity,
             may_stop_active: bool,
             _: Option<&awaken_dispatch::WorkerCreateLedger>,
         ) -> Result<
@@ -244,8 +244,8 @@ mod tests {
         }
         async fn release_closed_idle_worker_evidence(
             &self,
-            _: &awaken_dispatch_contract::WorkerIdentity,
-            _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
+            _: &awaken_worker_contract::WorkerIdentity,
+            _: Option<&awaken_worker_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             self.released.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -277,11 +277,11 @@ mod tests {
         // | G1   | Y  | future   | Y  | -  | E1     |
         // | G2   | Y  | equal    | Y  | Y  | E2     |
         // | G3   | Y  | past     | Y  | -  | E3     |
-        use awaken_dispatch_contract::WorkerDirectory as _;
+        use awaken_worker_contract::WorkerDirectory as _;
         let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
         let identity = directory
             .register(
-                awaken_dispatch_contract::WorkerRegistration {
+                awaken_worker_contract::WorkerRegistration {
                     worker_id: "graceful-idle".into(),
                     incarnation_id: "boot".into(),
                     manifest: Default::default(),
@@ -361,13 +361,13 @@ mod tests {
 
     #[async_trait]
     impl awaken_dispatch::WorkerExecutionStopSource for UnknownIdleEvidence {
-        fn owns_worker_evidence(&self, _: &awaken_dispatch_contract::WorkerIdentity) -> bool {
+        fn owns_worker_evidence(&self, _: &awaken_worker_contract::WorkerIdentity) -> bool {
             true
         }
         async fn release_closed_idle_worker_evidence(
             &self,
-            _: &awaken_dispatch_contract::WorkerIdentity,
-            _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
+            _: &awaken_worker_contract::WorkerIdentity,
+            _: Option<&awaken_worker_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             panic!("Unknown physical exit cannot release provider evidence")
         }
@@ -391,11 +391,11 @@ mod tests {
         // empty Dispatch alone cannot become a physical proof.
         // C0 select this exact local queue before the canonical Host build;
         // the construction migration must preserve U1 and its zero-release panic.
-        use awaken_dispatch_contract::WorkerDirectory as _;
+        use awaken_worker_contract::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let identity = directory
             .register(
-                awaken_dispatch_contract::WorkerRegistration {
+                awaken_worker_contract::WorkerRegistration {
                     worker_id: "unknown-idle".into(),
                     incarnation_id: "boot".into(),
                     manifest: Default::default(),
@@ -439,7 +439,7 @@ mod tests {
         let record = directory.incarnation(&identity).await.unwrap().unwrap();
         assert_eq!(
             record.snapshot.state,
-            awaken_dispatch_contract::WorkerState::Dead,
+            awaken_worker_contract::WorkerState::Dead,
             "U1/E1"
         );
         assert!(
@@ -454,8 +454,8 @@ mod tests {
     impl awaken_dispatch::WorkerExecutionStopSource for UnownedEvidence {
         async fn release_closed_idle_worker_evidence(
             &self,
-            _: &awaken_dispatch_contract::WorkerIdentity,
-            _: Option<&awaken_dispatch_contract::WorkerCreateLedger>,
+            _: &awaken_worker_contract::WorkerIdentity,
+            _: Option<&awaken_worker_contract::WorkerCreateLedger>,
         ) -> Result<(), awaken_session_execution_contract::ApplicationError> {
             panic!("an unowned domain cannot release provider evidence")
         }
@@ -489,7 +489,7 @@ mod tests {
             identities.push(
                 directory
                     .register(
-                        awaken_dispatch_contract::WorkerRegistration {
+                        awaken_worker_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
                             manifest: Default::default(),
@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(
             dispatch
                 .begin_attempt(
-                    &awaken_dispatch_contract::RunClaim::from(&claimed.lease),
+                    &awaken_worker_contract::RunClaim::from(&claimed.lease),
                     None
                 )
                 .await
@@ -569,7 +569,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             expired.snapshot.state,
-            awaken_dispatch_contract::WorkerState::Dead,
+            awaken_worker_contract::WorkerState::Dead,
             "UE1/E1"
         );
         assert!(expired.process_exit.is_none(), "UE1/E3");
@@ -580,7 +580,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             live.snapshot.state,
-            awaken_dispatch_contract::WorkerState::Starting,
+            awaken_worker_contract::WorkerState::Starting,
             "UE2/E2"
         );
         assert!(live.process_exit.is_none(), "UE2/E3");
@@ -630,8 +630,8 @@ mod tests {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
         use awaken_dispatch_contract::{
             DispatchAdministration as _, DispatchEnqueue as _, DispatchMaintenance as _,
-            WorkerDirectory as _,
         };
+        use awaken_worker_contract::WorkerDirectory as _;
         // Keep the large owned test workflow at the same boxed async boundary
         // used by other Host fixture tests; default thread stack stays unchanged.
         Box::pin(async {
@@ -662,7 +662,7 @@ mod tests {
                 let registry_ttl = if rule == "live" { u64::MAX } else { 1 };
                 let identity = directory
                     .register(
-                        awaken_dispatch_contract::WorkerRegistration {
+                        awaken_worker_contract::WorkerRegistration {
                             worker_id: "orphan-original".into(),
                             incarnation_id: "old-boot".into(),
                             manifest,
@@ -679,7 +679,7 @@ mod tests {
                     directory
                         .heartbeat(
                             &identity,
-                            awaken_dispatch_contract::WorkerHeartbeat {
+                            awaken_worker_contract::WorkerHeartbeat {
                                 sequence: 1,
                                 ready: true,
                                 in_flight: 0,
@@ -693,7 +693,7 @@ mod tests {
                         )
                         .await
                         .unwrap(),
-                    awaken_dispatch_contract::RegistryMutation::Applied
+                    awaken_worker_contract::RegistryMutation::Applied
                 );
                 let worker = directory
                     .incarnation(&identity)
@@ -709,7 +709,7 @@ mod tests {
                             &run_id.0,
                         ))
                         .with_placement(
-                            awaken_dispatch_contract::PlacementRequirements::remote_required(),
+                            awaken_worker_contract::PlacementRequirements::remote_required(),
                         )
                         .with_worker_codec_requirements(),
                     )
@@ -725,7 +725,7 @@ mod tests {
                     identity,
                     "C2 exact registered assignment"
                 );
-                let old = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+                let old = awaken_worker_contract::RunClaim::from(&claimed.lease);
                 let binding = awaken_dispatch_contract::dispatch::AttemptExecutionBinding::new(
                     identity,
                     "fixture-process",
@@ -1379,9 +1379,7 @@ mod tests {
         );
         assert!(
             store
-                .lock_commit_epoch(&awaken_dispatch_contract::RunClaim::from(
-                    &replacement.lease
-                ))
+                .lock_commit_epoch(&awaken_worker_contract::RunClaim::from(&replacement.lease))
                 .await
                 .expect("current replacement fence read")
                 .is_some(),

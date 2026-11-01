@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::ScopeId;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_tenancy::ScopeId;
 use serde::{Deserialize, Serialize};
 
 use crate::AgentInputConfig;

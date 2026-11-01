@@ -9,15 +9,14 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
-use awaken_dispatch_contract::{
-    DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
-};
+use awaken_dispatch_contract::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
 use awaken_ext_memory::{
     MemoryExtractionCommitScope, MemoryExtractionDriver, MemoryExtractionExecution,
     MemoryExtractorSnapshot, MemoryTerminalExtraction, MemoryTerminalExtractionRequest,
     MemoryTerminalObserver,
 };
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, RunTerminalObserver};
+use awaken_worker_contract::RunClaim;
 
 use super::super::WorkerPlacement;
 use super::DispatchedMemory;

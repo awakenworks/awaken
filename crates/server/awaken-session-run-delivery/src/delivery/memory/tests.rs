@@ -378,10 +378,10 @@ fn worker_memory_original_request_requires_exact_activation_scope_and_partition(
         crate::memory_extraction_input(&intent),
     );
     let exact = RunDispatch::new(activation.clone())
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
             intent.workspace_id.clone().into(),
         ))
-        .with_placement(awaken_dispatch_contract::PlacementRequirements::remote_required());
+        .with_placement(awaken_worker_contract::PlacementRequirements::remote_required());
     assert!(
         DispatchedMemory::original_request_matches(&intent, activation.clone(), &exact),
         "M1"
@@ -426,9 +426,7 @@ fn worker_memory_original_request_requires_exact_activation_scope_and_partition(
                 changed.session_runtime =
                     Some(awaken_dispatch_contract::SessionRuntimeEnvelope::new("{}"))
             }
-            _ => {
-                changed.placement.location = awaken_dispatch_contract::ExecutionLocation::LocalOnly
-            }
+            _ => changed.placement.location = awaken_worker_contract::ExecutionLocation::LocalOnly,
         }
         assert!(
             !DispatchedMemory::original_request_matches(&intent, activation.clone(), &changed),
@@ -440,7 +438,7 @@ fn worker_memory_original_request_requires_exact_activation_scope_and_partition(
 fn parent_request(
     enabled: bool,
     writable: bool,
-) -> (RunDispatch, awaken_dispatch_contract::RunClaim) {
+) -> (RunDispatch, awaken_worker_contract::RunClaim) {
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
         .model(
             awaken_runtime_contract::resolved::ModelBinding::parse("provider", "model", "native")
@@ -477,11 +475,11 @@ fn parent_request(
     );
     let request = RunDispatch::new(activation)
         .for_session(ThreadId("session".into()))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef("workspace".into()))
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef("workspace".into()))
         .with_session_resources(
             awaken_dispatch_execution::session_envelope::resource_envelope(&manifest).unwrap(),
         );
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: request.run_id().clone(),
         owner: "worker".into(),
         epoch: 1,

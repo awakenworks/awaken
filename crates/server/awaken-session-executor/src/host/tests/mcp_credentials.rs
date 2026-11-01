@@ -86,8 +86,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
         ),
         [awaken_credential_contract::CredentialTargetContract::new(
-            awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+            awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                 mcp_audience.clone(),
             ),
             CredentialUsage::HttpHeader {
@@ -128,7 +128,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
                 )
                 .with_target(
                     awaken_agent_contract::credential::CredentialTarget::new(
-                        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                        awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                         mcp_audience.clone(),
                     ),
                 ),
@@ -714,7 +714,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     let workload_holder = PlaintextHolder::new(
         PlaintextBoundary::Workload,
-        awaken_credential_contract::SELF_HOSTED_ACP_TRUST_DOMAIN,
+        awaken_agent_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
     );
     let basic_client = acp_host.clone();
     let mut basic_client_request = request("mcp-acp-client-basic", "workspace-a", 1);
@@ -1608,7 +1608,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
     )
     .with_target(awaken_agent_contract::credential::CredentialTarget::new(
-        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+        awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
         awaken_agent_contract::McpTarget::identity(target.http_url().unwrap())
             .unwrap()
             .canonical_url(),

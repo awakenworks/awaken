@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub struct TerminalReconciliationState {
     terminal_scan: crate::TerminalReconciliationScan,
     worker_evidence: std::sync::OnceLock<(
-        Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
+        Arc<dyn awaken_worker_contract::WorkerDirectory>,
         Arc<dyn crate::WorkerTerminalReconciliation>,
     )>,
     worker_evidence_after: tokio::sync::Mutex<Option<String>>,
@@ -30,7 +30,7 @@ pub struct TerminalReconciliationState {
 impl TerminalReconciliationState {
     pub fn bind_worker_evidence(
         &self,
-        directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
+        directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
         source: Arc<dyn crate::WorkerTerminalReconciliation>,
     ) -> Result<(), crate::AdmissionError> {
         self.worker_evidence

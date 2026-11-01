@@ -36,6 +36,7 @@ awaken-session-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-time.workspace = true
 awaken-tool-contract.workspace = true
+awaken-worker-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

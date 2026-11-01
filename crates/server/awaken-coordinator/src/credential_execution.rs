@@ -6,11 +6,12 @@ use awaken_credential_contract::{
     CredentialExecutionAuthority, CredentialExecutionBinding, CredentialMaterialError,
 };
 use awaken_dispatch_contract::{
-    DispatchClaimOwnership, DispatchControlReads, RunClaim, SessionRunAdmissionObservation,
+    DispatchClaimOwnership, DispatchControlReads, SessionRunAdmissionObservation,
     SessionRunAdmissionReads,
 };
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_session_contract::SessionRepository;
+use awaken_worker_contract::RunClaim;
 use std::sync::Arc;
 
 pub struct SessionCredentialExecutionAuthority {

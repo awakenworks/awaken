@@ -82,7 +82,7 @@ impl ArtifactHarvester {
     pub fn current_claim(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_dispatch_contract::RunClaim>, RealizationError> {
+    ) -> Result<Option<awaken_worker_contract::RunClaim>, RealizationError> {
         self.sessions.dispatch_claim(thread)
     }
 
@@ -100,7 +100,7 @@ impl ArtifactHarvester {
     pub async fn harvest_with_claim(
         &self,
         thread: &str,
-        claim: Option<awaken_dispatch_contract::RunClaim>,
+        claim: Option<awaken_worker_contract::RunClaim>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence(thread, claim.map(ResourceOperationFence::Run))
             .await

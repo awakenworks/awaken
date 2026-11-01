@@ -84,25 +84,12 @@ pub use application::{
     record_occupied_worker_ends, release_closed_idle_worker_evidence,
     stop_committed_terminal_attempt, stop_expired_predecessor,
 };
+pub use awaken_agent_contract::ExecutionScopeRef;
+pub use awaken_credential_contract::{AttemptCredentialBinding, CredentialRealizationReceipt};
 pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
-};
-pub use awaken_dispatch_contract::{
-    AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ClaimedCommitCommand, ExecutionLocation,
-    ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
-    PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext,
-    PlacementError, PlacementPolicy, PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY,
-    RankedWorker, RegisteredWorker, RegistryError, RegistryMutation, RunDispatch,
-    SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope, SessionRuntimeEnvelope,
-    TRUSTED_HOST_SANDBOX_BACKEND, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerAssignment,
-    WorkerCreateLedger, WorkerCredentialObservation, WorkerCredentialRevision,
-    WorkerCredentialState, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerObservationSource, WorkerProcessExit, WorkerRecoveryMode, WorkerRegistration,
-    WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
-    retry_exhaustion_eligible, worker_credential_realization_capabilities,
 };
 pub use awaken_dispatch_contract::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
@@ -111,6 +98,10 @@ pub use awaken_dispatch_contract::{
     RecoveryRequest, RegisterWorkerRequest, RelinquishRequest, RenewRequest,
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
+};
+pub use awaken_dispatch_contract::{
+    ClaimedCommitCommand, RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
+    retry_exhaustion_eligible, worker_credential_realization_capabilities,
 };
 pub use awaken_dispatch_contract::{
     ClaimedStreamPublisher, CompletionSink, SessionContinuationOutbox,
@@ -124,15 +115,28 @@ pub use awaken_dispatch_execution::{
     RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
     claim_bound_ownership_verifier, publish_dispatch_hint,
 };
+pub use awaken_worker_contract::RunClaim;
+pub use awaken_worker_contract::{
+    AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,
+    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
+    PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker,
+    RegistryError, RegistryMutation, SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
+    WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCreateLedger,
+    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerProcessExit,
+    WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
+    can_claim_locally, place_assignment,
+};
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,
-    AttemptClosureRecord, AttemptCredentialBinding, AttemptExecutionBinding, AttemptPhysicalFact,
-    AttemptReturnCause, CasOutcome, Claimed, ClaimedCheckpointTransport,
-    ClaimedCredentialDeliveryTransport, CommitEpochGuard, ContinuationAdmission,
-    CredentialRealizationReceipt, DispatchCompletion, DispatchDepths, DispatchError, DispatchLease,
-    DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver, DispatchState,
-    DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
-    PhysicalAttempt, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    AttemptClosureRecord, AttemptExecutionBinding, AttemptPhysicalFact, AttemptReturnCause,
+    CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
+    CommitEpochGuard, ContinuationAdmission, DispatchCompletion, DispatchDepths, DispatchError,
+    DispatchLease, DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver,
+    DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
+    PendingRecord, PhysicalAttempt, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;

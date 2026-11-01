@@ -1,8 +1,7 @@
 use super::*;
 
-/// The Coordinator↔Worker claim lives in `awaken-worker-contract`; dispatch
-/// mints it from a [`DispatchLease`] and keeps this path for its callers.
-pub use awaken_worker_contract::RunClaim;
+// The Coordinator↔Worker claim lives in `awaken-worker-contract`; dispatch
+// mints it from a [`DispatchLease`].
 
 impl From<&DispatchLease> for RunClaim {
     fn from(lease: &DispatchLease) -> Self {

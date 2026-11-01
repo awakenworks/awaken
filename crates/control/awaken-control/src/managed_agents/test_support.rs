@@ -36,7 +36,7 @@ pub(super) struct RejectModelResolver;
 impl ModelPublicationResolver for TestModelResolver {
     async fn resolve_models(
         &self,
-        workspace: &awaken_tenancy::ScopeId,
+        workspace: &awaken_agent_contract::ScopeId,
         selection: &ModelSelection,
         candidates: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError> {
@@ -90,7 +90,7 @@ impl ModelPublicationResolver for TestModelResolver {
 impl ModelPublicationResolver for RejectModelResolver {
     async fn resolve_models(
         &self,
-        _workspace: &awaken_tenancy::ScopeId,
+        _workspace: &awaken_agent_contract::ScopeId,
         _selection: &ModelSelection,
         _candidates: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError> {

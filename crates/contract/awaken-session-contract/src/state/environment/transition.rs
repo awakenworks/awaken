@@ -815,8 +815,7 @@ impl SessionEnvironmentFacts {
                     .map(|baseline| &baseline.environment.idle_retention);
                 let due = match (generation, idle_since_unix_ms, policy) {
                     (Some(_), Some(idle_since), Some(policy)) => {
-                        policy.mode
-                            == crate::state::EnvironmentIdleRetentionMode::CheckpointAndRelease
+                        policy.mode == crate::state::SandboxIdleRetentionMode::CheckpointAndRelease
                             && now_unix_ms
                                 >= idle_since.saturating_add(
                                     policy.checkpoint_after_secs.saturating_mul(1_000),

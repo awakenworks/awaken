@@ -20,21 +20,19 @@ use awaken_agent_contract::credential::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
+use awaken_credential_contract::CredentialRealizationReceipt;
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
-use awaken_dispatch_contract::dispatch::{
-    AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt,
-    DispatchError, DispatchOutcome, DispatchState, Inbox, Outbox, PendingInput, RunClaim,
-    SessionChildAdmission, SessionContinuationOutbox, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
-};
 use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
 use awaken_dispatch_contract::{DispatchAdmissionShape, RunDispatch, SessionRuntimeEnvelope};
 use awaken_dispatch_contract::{
-    LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
-    WorkerSnapshot, WorkerState,
+    dispatch::AttemptAdmission, dispatch::CasOutcome, dispatch::ContinuationAdmission,
+    dispatch::DispatchError, dispatch::DispatchOutcome, dispatch::DispatchState, dispatch::Inbox,
+    dispatch::Outbox, dispatch::PendingInput, dispatch::SessionChildAdmission,
+    dispatch::SessionContinuationOutbox, dispatch::SessionRunReservationActivation,
+    dispatch::SessionRunReservationOutcome, dispatch::SessionRunReservationResolution,
+    dispatch::SettleOutcome, dispatch::SubmitOptions,
 };
 use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
@@ -45,6 +43,12 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
+use awaken_worker_contract::RunClaim;
+use awaken_worker_contract::{
+    LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
+    WorkerSnapshot, WorkerState,
+};
 
 /// Minimum live lease used by cross-backend conformance journeys. A live
 /// database clock keeps moving while an in-process logical clock does not, so
@@ -58,15 +62,15 @@ pub const LEASE_MS: u64 = 1_000;
 pub mod worker_http {
     use std::sync::Arc;
 
-    use awaken_dispatch_contract::{
-        RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-        WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration,
-        WorkerSnapshot, WorkerState,
-    };
     use awaken_runtime_contract::activation::RunActivation;
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+    use awaken_worker_contract::{
+        RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
+        WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration,
+        WorkerSnapshot, WorkerState,
     };
 
     pub async fn serve(app: axum::Router) -> std::net::SocketAddr {
@@ -131,7 +135,7 @@ pub mod worker_http {
     pub fn current_dispatch_codec_manifest() -> WorkerManifest {
         let mut manifest = WorkerManifest::default();
         manifest.runtime_protocol.min = 1;
-        manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        manifest.runtime_protocol.max = awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
         manifest.capabilities.extend([
             awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY.to_owned(),
             awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_owned(),
@@ -205,8 +209,7 @@ pub mod worker_http {
         async fn lock_incarnation(
             &self,
             _identity: &WorkerIdentity,
-        ) -> Result<Option<awaken_dispatch_contract::WorkerIncarnationGuard>, RegistryError>
-        {
+        ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
             Err(RegistryError::Persistence(
                 "fixture forbids physical admission".into(),
             ))
@@ -264,7 +267,7 @@ pub mod worker_http {
         async fn record_process_exit(
             &self,
             _identity: &WorkerIdentity,
-            _receipt: awaken_dispatch_contract::WorkerProcessExit,
+            _receipt: awaken_worker_contract::WorkerProcessExit,
         ) -> Result<RegistryMutation, RegistryError> {
             Err(RegistryError::Persistence(
                 "process-exit persistence is outside this read-oriented fixture".into(),

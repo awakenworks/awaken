@@ -147,7 +147,7 @@ mod tests {
                     && claimed.request.session_resources.is_some(),
                 "C1/C2 ordinary authority with complete carried Runtime/Resources"
             );
-            let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+            let claim = awaken_worker_contract::RunClaim::from(&claimed.lease);
             assert!(
                 host.run_assembly
                     .installed_sessions
@@ -532,7 +532,7 @@ mod tests {
     {
         async fn resume_frozen(
             &self,
-            _claim: &awaken_dispatch_contract::RunClaim,
+            _claim: &awaken_worker_contract::RunClaim,
             _session_id: &str,
             _session_work_authority: Option<
                 &awaken_session_application_contract::SessionWorkAuthorityReceipt,

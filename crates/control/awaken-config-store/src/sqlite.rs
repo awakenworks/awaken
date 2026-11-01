@@ -27,7 +27,7 @@ use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
 use sqlx::sqlite::SqliteConnection;
 
-use awaken_tenancy::ScopeId;
+use awaken_agent_contract::ScopeId;
 
 use crate::codec::{attach_publication_row, decode_publication};
 use crate::management_effect_retirement_is_admitted;
@@ -864,7 +864,7 @@ impl ConfigRegistry for SqliteConfigStore {
 mod scope_tests {
     use super::*;
     use awaken_agent_config::ScopedConfigRegistry;
-    use awaken_tenancy::ScopeId;
+    use awaken_agent_contract::ScopeId;
 
     fn agent(id: &str) -> AgentConfig {
         // A valid authoring aggregate; only the id matters for isolation.

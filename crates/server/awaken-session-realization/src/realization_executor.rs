@@ -155,7 +155,7 @@ impl RealizationExecutor {
         &self,
         thread: &str,
         transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<
             &awaken_session_configuration_contract::resource::SessionRealizationLease,
         >,
@@ -196,7 +196,7 @@ impl RealizationExecutor {
         &self,
         thread: &str,
         manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
     ) -> Result<(), awaken_session_types::RunError> {
         self.staging
             .install_dispatched_resources(self.peers(), thread, manifest, claim)

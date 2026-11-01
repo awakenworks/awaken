@@ -216,8 +216,8 @@ impl<'a> DispatchPreparation<'a> {
             )
         });
         let mut request = RunDispatch::new(activation)
-            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from(resources.as_ref().map_or_else(
+            .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                awaken_agent_contract::ScopeId::from(resources.as_ref().map_or_else(
                     || workspace.clone(),
                     |manifest| manifest.workspace_id.clone(),
                 )),
@@ -235,7 +235,8 @@ impl<'a> DispatchPreparation<'a> {
                     "Dispatch resource Workspace conflicts with its Thread",
                 ));
             }
-            request = request.with_execution_scope(awaken_tenancy::ExecutionScopeRef(scope.into()));
+            request = request
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(scope.into()));
         }
         if associate_prepared_session && is_session_dispatch {
             request = request.for_session(ThreadId(thread.clone()));

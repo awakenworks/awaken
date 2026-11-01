@@ -8,14 +8,14 @@
 //! carries no live handles (G3/G4), so any worker can rebuild the Run after a
 //! crash. Live worker dependencies stay in the `awaken-dispatch` host.
 
+use awaken_agent_contract::ExecutionScopeRef;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::credential::PlaintextHolder;
 use awaken_provisioning_contract::SandboxCapacityShapeId;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
-pub use awaken_tenancy::ExecutionScopeRef;
-pub use awaken_worker_contract::PlacementRequirements;
+use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
 
 /// Dispatch-neutral envelope for a frozen Session resource manifest.
@@ -1076,9 +1076,9 @@ mod tests {
         let mut reprojected = original.clone();
         reprojected.activation.snapshot.resolved_spec.instructions = "current publication".into();
         reprojected.activation.model_ref_override = Some("current-route".into());
-        reprojected.execution_scope = Some(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
-            "current-workspace",
-        )));
+        reprojected.execution_scope = Some(ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("current-workspace"),
+        ));
         reprojected.session_resources = Some(SessionResourceEnvelope::at_revision(
             "current-workspace",
             9,
@@ -1429,7 +1429,7 @@ mod tests {
         let resources =
             SessionResourceEnvelope::at_revision("workspace-a", 4, r#"{"inputs":[],"skills":[]}"#);
         let request = RunDispatch::new(activation())
-            .with_execution_scope(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
+            .with_execution_scope(ExecutionScopeRef(awaken_agent_contract::ScopeId::from(
                 "workspace-a",
             )))
             .with_session_resources(resources.clone());
@@ -1439,7 +1439,7 @@ mod tests {
         assert_eq!(recovered.session_resources, Some(resources));
         assert_eq!(
             recovered.execution_scope,
-            Some(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
+            Some(ExecutionScopeRef(awaken_agent_contract::ScopeId::from(
                 "workspace-a"
             )))
         );
@@ -1594,9 +1594,10 @@ mod tests {
         // R1=C1+C4=>E1+E2; R2=C2+C4=>E1+E2; R3=C1+C2+C3+C4=>E3+E4.
         // Constraint: this claim covers credential plaintext represented by
         // RedactedString/CredentialMaterial, not arbitrary user message text.
-        let authority =
-            awaken_tenancy::Authority::bound(awaken_tenancy::ScopeId("workspace-a".to_string()));
-        let claimed = ExecutionScopeRef(awaken_tenancy::ScopeId("workspace-a".to_string()));
+        let authority = awaken_tenancy::Authority::bound(awaken_agent_contract::ScopeId(
+            "workspace-a".to_string(),
+        ));
+        let claimed = ExecutionScopeRef(awaken_agent_contract::ScopeId("workspace-a".to_string()));
         let verified = authority
             .verify_execution_scope(&claimed)
             .expect("scope belongs to authority");

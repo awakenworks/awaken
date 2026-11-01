@@ -95,7 +95,7 @@ impl ArtifactHarvestAttemptExecutor {
     async fn finish<T>(
         harvester: &crate::artifact_harvest::ArtifactHarvester,
         thread: &str,
-        claim: Option<awaken_dispatch_contract::RunClaim>,
+        claim: Option<awaken_worker_contract::RunClaim>,
         result: ExecutionResult<T>,
     ) -> ExecutionResult<T> {
         match result {
@@ -680,7 +680,7 @@ pub(crate) mod tests {
 
     struct RecordingArtifactPublisher {
         inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
-        claims: Arc<std::sync::Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>>,
+        claims: Arc<std::sync::Mutex<Vec<Option<awaken_worker_contract::RunClaim>>>>,
         dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     }
 
@@ -731,7 +731,7 @@ pub(crate) mod tests {
     struct ReplacingClaimExecutor {
         installed_sessions: Arc<crate::installed_session::InstalledSessions>,
         thread: String,
-        replacement: awaken_dispatch_contract::RunClaim,
+        replacement: awaken_worker_contract::RunClaim,
         failure: Option<&'static str>,
     }
 
@@ -739,7 +739,7 @@ pub(crate) mod tests {
         fn succeeding(
             installed_sessions: Arc<crate::installed_session::InstalledSessions>,
             thread: &str,
-            replacement: awaken_dispatch_contract::RunClaim,
+            replacement: awaken_worker_contract::RunClaim,
         ) -> Self {
             Self {
                 installed_sessions,
@@ -752,7 +752,7 @@ pub(crate) mod tests {
         fn failing(
             installed_sessions: Arc<crate::installed_session::InstalledSessions>,
             thread: &str,
-            replacement: awaken_dispatch_contract::RunClaim,
+            replacement: awaken_worker_contract::RunClaim,
             failure: &'static str,
         ) -> Self {
             Self {
@@ -765,9 +765,9 @@ pub(crate) mod tests {
     }
 
     fn assert_recorded_claims_since(
-        claims: &std::sync::Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>,
+        claims: &std::sync::Mutex<Vec<Option<awaken_worker_contract::RunClaim>>>,
         from: usize,
-        expected: Option<&awaken_dispatch_contract::RunClaim>,
+        expected: Option<&awaken_worker_contract::RunClaim>,
         rule: &str,
     ) {
         let claims = claims.lock().expect("recorded claims mutex poisoned");
@@ -1013,7 +1013,7 @@ pub(crate) mod tests {
             .await
             .expect("claim artifact attempt")
             .expect("artifact attempt available");
-        let expected_claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+        let expected_claim = awaken_worker_contract::RunClaim::from(&claimed.lease);
         let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_ephemeral_dispatch(dispatch.clone());
@@ -1126,7 +1126,7 @@ pub(crate) mod tests {
             .expect("R4");
         assert_eq!(inner.cancels.load(Ordering::SeqCst), 1, "R4");
 
-        let replacement = awaken_dispatch_contract::RunClaim {
+        let replacement = awaken_worker_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-new".into(),
             epoch: expected_claim.epoch + 1,
@@ -1162,7 +1162,7 @@ pub(crate) mod tests {
                 run.dispatch_claim = Some(expected_claim.clone());
             });
 
-        let replacement = awaken_dispatch_contract::RunClaim {
+        let replacement = awaken_worker_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-resume-new".into(),
             epoch: expected_claim.epoch + 1,
@@ -1202,7 +1202,7 @@ pub(crate) mod tests {
             .install_run(thread, |run| {
                 run.dispatch_claim = Some(expected_claim.clone());
             });
-        let replacement = awaken_dispatch_contract::RunClaim {
+        let replacement = awaken_worker_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-failing-new".into(),
             epoch: expected_claim.epoch + 1,
@@ -1244,7 +1244,7 @@ pub(crate) mod tests {
         host.run_assembly
             .installed_sessions
             .install_run(thread, |run| run.dispatch_claim = None);
-        let replacement = awaken_dispatch_contract::RunClaim {
+        let replacement = awaken_worker_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-late".into(),
             epoch: expected_claim.epoch + 1,

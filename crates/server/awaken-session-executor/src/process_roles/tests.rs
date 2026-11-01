@@ -229,9 +229,9 @@ async fn worker_host(
     coordination_control: bool,
 ) -> Arc<crate::ExecutorComponents> {
     let clock = awaken_time::system_clock();
-    let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
+    let mut manifest = awaken_worker_contract::WorkerManifest::default();
     manifest.capacity.max_concurrent = 1;
-    let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap();
+    let registered = awaken_worker_contract::RegisteredCapacity::of(&manifest).unwrap();
     let memory = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
         clock.clone(),
     ));

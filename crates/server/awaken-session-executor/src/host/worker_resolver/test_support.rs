@@ -108,7 +108,7 @@ pub(crate) fn deferred_environment() -> awaken_session_configuration_contract::E
             "lazy-env-v1".into(),
         ),
         sandbox: Default::default(),
-        sandbox_provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+        sandbox_provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
@@ -431,8 +431,8 @@ pub(crate) fn with_empty_session_resources(
         crate::session_resource::ResolvedSessionResources::default(),
     );
     request
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(workspace_id),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(workspace_id),
         ))
         .with_session_resources(
             awaken_dispatch_execution::session_envelope::resource_envelope(&manifest)

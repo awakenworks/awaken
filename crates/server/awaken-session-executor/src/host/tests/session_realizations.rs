@@ -213,7 +213,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         .ctx_for(thread, None)
         .await
         .expect("context");
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: RunId("realizations-view-run".into()),
         owner: "worker".into(),
         epoch: 3,

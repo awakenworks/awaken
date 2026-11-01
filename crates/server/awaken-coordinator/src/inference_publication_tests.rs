@@ -8,8 +8,8 @@ mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
     use awaken_config_service::{ModelPublicationResolver, ResolvedPublicationModels};
-    use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
     use awaken_credential_materializer::CredentialInferenceMaterializer;
     use awaken_credential_vault::SecretStore;
     use awaken_credential_vault::repo::CredentialRepo;
@@ -537,7 +537,7 @@ mod tests {
         };
         resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("ws"),
+                &awaken_agent_contract::ScopeId::from("ws"),
                 &ModelSelection::Pinned(primary),
                 &fallbacks,
             )
@@ -709,7 +709,7 @@ mod tests {
         let resolved = p
             .resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("workspace-b"),
+                &awaken_agent_contract::ScopeId::from("workspace-b"),
                 &ModelSelection::Pinned(model),
                 &[],
             )
@@ -757,7 +757,7 @@ mod tests {
         let resolved = p
             .resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("ws"),
+                &awaken_agent_contract::ScopeId::from("ws"),
                 &ModelSelection::Pinned(ModelBinding::new("anthropic", "claude-x", "genai")),
                 &[],
             )

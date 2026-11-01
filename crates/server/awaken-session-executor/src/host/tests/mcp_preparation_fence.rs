@@ -332,9 +332,11 @@ impl awaken_credential_materializer::PlatformMcpEgressAllocation for GatedMediat
 }
 
 fn platform_request(session: &str) -> crate::session_mcp::StageMcpAttachment {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
+        credential::PlaintextBoundary, credential::PlaintextHolder,
     };
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Platform,
@@ -378,7 +380,7 @@ fn platform_request(session: &str) -> crate::session_mcp::StageMcpAttachment {
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
             )
             .with_target(awaken_agent_contract::credential::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                 audience,
             )),
         ),

@@ -15,8 +15,8 @@ use std::sync::Arc;
 /// authority; the open Vault compiler remains the sole admission owner.
 #[derive(Clone)]
 pub struct HostedProviderCredentialExecution {
-    pub policy: awaken_credential_contract::CredentialExecutionPolicy,
-    pub holder: awaken_credential_contract::PlaintextHolder,
+    pub policy: awaken_agent_contract::credential::CredentialExecutionPolicy,
+    pub holder: awaken_agent_contract::credential::PlaintextHolder,
 }
 
 #[async_trait::async_trait]
@@ -151,8 +151,8 @@ impl ManagedServiceAdapters {
     #[must_use]
     pub fn with_provider_credential_execution(
         mut self,
-        policy: awaken_credential_contract::CredentialExecutionPolicy,
-        holder: awaken_credential_contract::PlaintextHolder,
+        policy: awaken_agent_contract::credential::CredentialExecutionPolicy,
+        holder: awaken_agent_contract::credential::PlaintextHolder,
     ) -> Self {
         self.provider_credential_execution =
             Some(HostedProviderCredentialExecution { policy, holder });

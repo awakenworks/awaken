@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_dispatch_contract::RunClaim;
 use awaken_sync::{LeafLock, LeafRwLock};
 use awaken_time::{NotBefore, UtcTime, WallClock, WallClockExt};
+use awaken_worker_contract::RunClaim;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState};
 use axum::Json;
 use axum::extract::{Request, State};

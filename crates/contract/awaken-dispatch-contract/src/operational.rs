@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};
 
-use crate::dispatch::{DispatchError, DispatchOutcome, RunClaim};
+use crate::{dispatch::DispatchError, dispatch::DispatchOutcome};
+use awaken_worker_contract::RunClaim;
 
 /// Exclusive cursor in one dispatch-store operational partition.
 #[derive(

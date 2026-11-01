@@ -392,8 +392,8 @@ pub(super) async fn assemble(
         .read_run(thread, |run| run.dispatch_claim.clone())?
         .flatten();
     let mut run_context = awaken_runtime_contract::RuntimeRunContext::new()
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(workspace_id.as_str()),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(workspace_id.as_str()),
         ))
         .with_tool_execution_admission(
             host.resources

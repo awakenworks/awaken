@@ -2,7 +2,8 @@
 // @formal reason: The hosted credential request projects canonical typed material into the write-only
 // @formal reason: Vault boundary and rejects OAuth downgrade; this is product-boundary classification, not
 // @formal reason: a direct formal-proof claim.
-use awaken_credential_contract::{CredentialDescriptor, CredentialMaterial, CredentialRef};
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_credential_contract::{CredentialDescriptor, CredentialMaterial};
 use awaken_credential_vault::{CredentialError, CredentialKind};
 
 use super::{CredentialMaterialInput, EnterCredentialRequest, validate_hosted_credential_identity};
@@ -130,10 +131,12 @@ fn hosted_material_input(
 #[cfg(test)]
 mod tests {
     use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::{
+        credential::CredentialPurpose, credential::CredentialTarget, credential::CredentialUsage,
+    };
     use awaken_credential_contract::{
-        CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
-        CredentialTargetContract, CredentialUsage, HTTP_BASIC_MATERIAL_TYPE, http_basic_material,
-        repository_transport_audience,
+        CredentialMaterialDescriptor, CredentialTargetContract, HTTP_BASIC_MATERIAL_TYPE,
+        http_basic_material, repository_transport_audience,
     };
 
     use super::*;

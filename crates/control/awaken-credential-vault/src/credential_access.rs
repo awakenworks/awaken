@@ -12,12 +12,15 @@
 //! selected source; the publication entrypoint optionally delivers that exact
 //! material through the deployment-owned custody port after authorization.
 
+use awaken_agent_contract::{
+    credential::CredentialAccess, credential::CredentialExecutionPolicy,
+    credential::CredentialMaterialSource, credential::CredentialPurpose, credential::CredentialRef,
+    credential::CredentialTarget, credential::CredentialUsage, credential::PlaintextHolder,
+};
 use awaken_credential_contract::CredentialEnvelopeValidation;
 use awaken_credential_contract::{
-    CredentialAccess, CredentialDescriptor, CredentialExecutionPolicy, CredentialMaterialBinding,
-    CredentialMaterialDescriptor, CredentialMaterialSource, CredentialPurpose, CredentialRef,
-    CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
-    PlaintextHolder,
+    CredentialDescriptor, CredentialMaterialBinding, CredentialMaterialDescriptor,
+    CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
 };
 
 use crate::{CredentialError, CredentialMaterialOrigin, CredentialSource, CredentialStatus};
@@ -125,9 +128,9 @@ pub async fn publish_exact_credential_access(
         &awaken_credential_contract::CredentialMaterialDelivery,
     )>,
 ) -> Result<CredentialAccess, CredentialError> {
+    use awaken_agent_contract::credential::PlaintextBoundary;
     use awaken_credential_contract::{
         CredentialCustodyPublication, CredentialEnvelopeIssuance, CredentialMaterialDelivery,
-        PlaintextBoundary,
     };
     let now_unix_ms = request.now_unix_ms;
     let selected_holder = request.selected_holder;
@@ -216,11 +219,15 @@ pub fn mcp_bearer_descriptor(audience: &str) -> CredentialDescriptor {
 pub(crate) mod tests {
     use std::collections::BTreeMap;
 
+    use awaken_agent_contract::{
+        credential::CredentialExecutionPolicy, credential::CredentialPurpose,
+        credential::CredentialTarget, credential::CredentialUsage, credential::ModelExposurePolicy,
+        credential::PlaintextBoundary, credential::PlaintextHolder,
+    };
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId, CredentialTarget,
-        CredentialTargetContract, CredentialUsage, HTTP_BASIC_MATERIAL_TYPE, ModelExposurePolicy,
-        PlaintextBoundary, PlaintextHolder, repository_transport_audience,
+        CredentialDescriptor, CredentialMaterialBinding, CredentialMaterialDescriptor,
+        CredentialSourceId, CredentialTargetContract, HTTP_BASIC_MATERIAL_TYPE,
+        repository_transport_audience,
     };
 
     use super::*;
@@ -708,7 +715,7 @@ pub(crate) mod tests {
         async fn issue(
             &self,
             _: awaken_credential_contract::CredentialEnvelopeIssuance,
-        ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+        ) -> Result<awaken_agent_contract::credential::CredentialEnvelope, String> {
             self.deliveries
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(awaken_credential_contract::CredentialMaterialError::Unavailable.to_string())

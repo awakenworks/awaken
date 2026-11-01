@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::ScopeId;
 use awaken_session_configuration_contract::{
     SessionModelPublication, SessionModelPublicationResolver, SessionModelResolutionError,
 };
-use awaken_tenancy::ScopeId;
 
 use crate::{ModelPublicationResolver, PublicationResolutionError, parse_managed_model_id};
 

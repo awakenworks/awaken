@@ -70,7 +70,7 @@ impl crate::peers::StagingPeer for ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         ResourceStaging::apply_session_inputs_under_lifecycle(

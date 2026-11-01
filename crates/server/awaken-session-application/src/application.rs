@@ -38,7 +38,7 @@ pub(crate) fn validate_session_sandbox_layout(
 /// ([`awaken_session_contract::SessionPlacementClass::supports_idle_retention`]).
 fn validate_environment_continuation_topology(
     placement: awaken_session_contract::SessionPlacementClass,
-    idle_retention: &awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: &awaken_provisioning_contract::SandboxIdleRetentionPolicy,
 ) -> Result<(), RunError> {
     if !placement.supports_idle_retention(idle_retention) {
         return Err(RunError::bad_request(

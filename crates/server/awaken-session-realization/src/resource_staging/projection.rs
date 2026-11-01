@@ -21,7 +21,7 @@ pub(super) use repository_error::repository_binding_run_error;
 
 fn resource_requirement_effect_key(
     transition: &session_resource::SessionResourceTransition,
-    claim: Option<&awaken_dispatch_contract::RunClaim>,
+    claim: Option<&awaken_worker_contract::RunClaim>,
     realization_lease: Option<&session_resource::SessionRealizationLease>,
 ) -> String {
     let authority = if let Some(claim) = claim {
@@ -48,7 +48,7 @@ impl crate::resource_staging::ResourceStaging {
         workspace: &str,
         resource_revision: u64,
         resources: &session_resource::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
     ) -> Result<(), RunError> {
         // Full-manifest preflight must precede even process-local Workspace or
         // Skill projection writes. Per-item validation below remains the final
@@ -86,7 +86,7 @@ impl crate::resource_staging::ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
@@ -214,7 +214,7 @@ impl crate::resource_staging::ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let realizations = self.sessions.clone();
@@ -241,7 +241,7 @@ impl crate::resource_staging::ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         debug_assert_eq!(
@@ -267,7 +267,7 @@ impl crate::resource_staging::ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let environments = peers.environments;
@@ -710,7 +710,7 @@ impl crate::resource_staging::ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
     ) -> Result<(), RunError> {
         let realization_view = self.sessions.clone();
         // Installing a claim's dispatched Resources is the install path.

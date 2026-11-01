@@ -50,7 +50,7 @@ async fn cancellation_resolution_keeps_execution_capabilities_on_the_claiming_wo
                         "a2a:http://remote.invalid",
                     )
                     .expect("valid literal remote binding"),
-                    awaken_tenancy::ScopeId::from("default"),
+                    awaken_agent_contract::ScopeId::from("default"),
                     None,
                     "sha256:cancellation",
                 )
@@ -695,8 +695,8 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         assert_eq!(carried, expected, "{rule} exact generation and payload");
         assert_eq!(
             dispatch.execution_scope,
-            Some(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from("workspace-a")
+            Some(awaken_agent_contract::ExecutionScopeRef(
+                awaken_agent_contract::ScopeId::from("workspace-a")
             )),
             "{rule} scope",
         );
@@ -704,7 +704,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             dispatch
                 .placement
                 .required_capabilities
-                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
+                .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
             "{rule} selected manifest requires an eligible Worker",
         );
         assert_eq!(
@@ -1010,7 +1010,7 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
             "",
             "a2a:https://agent.example",
         ),
-        awaken_tenancy::ScopeId::from("workspace-a"),
+        awaken_agent_contract::ScopeId::from("workspace-a"),
         Some(awaken_agent_contract::credential::CredentialAccess::new(
             awaken_agent_contract::credential::CredentialRef {
                 id: "credential-remote".into(),

@@ -374,18 +374,20 @@ pub(crate) mod tests {
                         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization:
                         awaken_credential_contract::CredentialRealizationProfile {
-                            inference_holder: awaken_credential_contract::PlaintextHolder::new(
-                                awaken_credential_contract::PlaintextBoundary::Workload,
-                                "awaken.workload.acp",
-                            ),
-                            mcp_holder: awaken_credential_contract::PlaintextHolder::new(
-                                awaken_credential_contract::PlaintextBoundary::Worker,
+                            inference_holder:
+                                awaken_agent_contract::credential::PlaintextHolder::new(
+                                    awaken_agent_contract::credential::PlaintextBoundary::Workload,
+                                    "awaken.workload.acp",
+                                ),
+                            mcp_holder: awaken_agent_contract::credential::PlaintextHolder::new(
+                                awaken_agent_contract::credential::PlaintextBoundary::Worker,
                                 "awaken.worker",
                             ),
-                            resource_holder: awaken_credential_contract::PlaintextHolder::new(
-                                awaken_credential_contract::PlaintextBoundary::Worker,
-                                "awaken.worker",
-                            ),
+                            resource_holder:
+                                awaken_agent_contract::credential::PlaintextHolder::new(
+                                    awaken_agent_contract::credential::PlaintextBoundary::Worker,
+                                    "awaken.worker",
+                                ),
                         },
                 },
                 runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,

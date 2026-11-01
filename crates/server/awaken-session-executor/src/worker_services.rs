@@ -6,8 +6,8 @@ use std::sync::Arc;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_dispatch_contract::CompletionSink;
-use awaken_dispatch_contract::RunClaim;
 use awaken_dispatch_contract::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
+use awaken_worker_contract::RunClaim;
 
 use crate::{ExecutorComponents, FileContentSource};
 

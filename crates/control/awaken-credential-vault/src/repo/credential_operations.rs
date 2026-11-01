@@ -201,7 +201,7 @@ pub async fn enter_credential_idempotent_described(
     reason = "one replacement command needs explicit predecessor, descriptor and owner clock; no existing context owns all three"
 )]
 pub async fn enter_credential_replacement_idempotent_described(
-    replacement_of: &awaken_credential_contract::CredentialRef,
+    replacement_of: &awaken_agent_contract::credential::CredentialRef,
     replacement_id: CredentialSourceId,
     params: CredentialCreateParams,
     protocol_endpoint_id: Option<String>,

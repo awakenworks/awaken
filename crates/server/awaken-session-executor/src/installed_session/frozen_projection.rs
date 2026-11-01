@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use awaken_dispatch_contract::RunClaim;
 use awaken_session_configuration_contract::environment_projection;
 use awaken_session_execution_contract::{
     CanonicalSessionProjection, FrozenProjectionReceipt, FrozenSessionProjection,
@@ -18,6 +17,7 @@ use awaken_session_mcp::McpSessions;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_realization::realization_error::{AuthorityLoss, RealizationError};
 use awaken_session_types::SessionRuntimePlacement;
+use awaken_worker_contract::RunClaim;
 
 use crate::realization_executor::RealizationExecutor;
 use crate::resource_staging::ResourcePreparation;
