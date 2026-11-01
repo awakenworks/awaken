@@ -10,6 +10,9 @@
 //! State: where the slot lives, and which holder its current attempt names.
 //! This module carries exactly those, so the Coordinator never depends on the
 //! extension.
+//! This is an ownership projection, not the complete aggregate decoder or an
+//! execution permit. The Task owner validates the complete namespace at
+//! StepStart; a decoding failure stops that attempt before model/tool work.
 
 use serde::Deserialize;
 
@@ -36,6 +39,7 @@ pub fn committed_task_slot(commands: &[Command], task_id: &str) -> Option<serde_
 #[derive(Deserialize)]
 struct SlotView {
     id: String,
+    origin: OriginView,
     lifecycle: LifecycleView,
 }
 
@@ -50,8 +54,15 @@ enum LifecycleView {
 }
 
 #[derive(Deserialize)]
+struct OriginView {
+    thread_id: String,
+    run_id: String,
+}
+
+#[derive(Deserialize)]
 struct AttemptView {
     worker_id: String,
+    epoch: std::num::NonZeroU64,
 }
 
 /// The holder named by the current attempt of the committed slot of the Task
@@ -63,10 +74,12 @@ struct AttemptView {
 /// | T1 | Running, Waiting or Cancelling | `Some(holder)` of its attempt |
 /// | T2 | Requested or Ended | `None`: no attempt holds the Task |
 /// | T3 | names another Task, an unknown state, or a phase without its attempt | refused |
-pub fn committed_task_holder(
+pub fn committed_task_attempt(
     task_id: &str,
+    thread_id: &str,
+    origin_run_id: &str,
     slot: &serde_json::Value,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, std::num::NonZeroU64)>, String> {
     let view = SlotView::deserialize(slot)
         .map_err(|error| format!("committed Task slot does not decode: {error}"))?;
     if view.id != task_id {
@@ -75,11 +88,19 @@ pub fn committed_task_holder(
             view.id
         ));
     }
+    if view.origin.thread_id != thread_id || view.origin.run_id != origin_run_id {
+        return Err("committed Task origin does not match the addressed Thread and Run".into());
+    }
     Ok(match view.lifecycle {
         LifecycleView::Requested {} | LifecycleView::Ended {} => None,
         LifecycleView::Running { attempt }
         | LifecycleView::Waiting { attempt }
-        | LifecycleView::Cancelling { attempt } => Some(attempt.worker_id),
+        | LifecycleView::Cancelling { attempt } => {
+            if attempt.worker_id.trim().is_empty() {
+                return Err("committed Task holder is empty".into());
+            }
+            Some((attempt.worker_id, attempt.epoch))
+        }
     })
 }
 
@@ -145,8 +166,11 @@ mod tests {
                 json!({"state": state, "attempt": attempt(), "wait": {"reason": "resource"}}),
             );
             assert_eq!(
-                committed_task_holder("task-1", &value),
-                Ok(Some("holder-a".to_owned())),
+                committed_task_attempt("task-1", "thread", "run", &value),
+                Ok(Some((
+                    "holder-a".to_owned(),
+                    std::num::NonZeroU64::new(4).unwrap()
+                ))),
                 "T1 {state}"
             );
         }
@@ -156,7 +180,7 @@ mod tests {
             json!({"state": "ended", "end": {"outcome": "cancelled"}}),
         ] {
             assert_eq!(
-                committed_task_holder("task-1", &slot("task-1", lifecycle)),
+                committed_task_attempt("task-1", "thread", "run", &slot("task-1", lifecycle)),
                 Ok(None),
                 "T2"
             );
@@ -170,7 +194,7 @@ mod tests {
             json!("task-1"),
         ] {
             assert!(
-                committed_task_holder("task-1", &value).is_err(),
+                committed_task_attempt("task-1", "thread", "run", &value).is_err(),
                 "T3 {value}"
             );
         }

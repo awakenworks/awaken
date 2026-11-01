@@ -32,7 +32,8 @@ use awaken_worker_transport_security::{
 };
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
+    SessionWorkerEffectAdmission, SessionWorkerEffectTemporalRule, clock_ms,
+    verify_session_worker_effect,
 };
 
 const MEMORY_PATH: &str = "/v1/worker/resources/memory/operation";
@@ -657,17 +658,17 @@ async fn memory_operation(
             ) {
                 return StatusCode::FORBIDDEN.into_response();
             }
-            if awaken_worker_transport_security::verify_claim_owner(
-                service.directory.as_ref(),
-                &worker,
-                request.identity.as_ref(),
-                &reference.claim,
-                now_unix_ms,
-            )
-            .await
-            .is_err()
-            {
-                return StatusCode::FORBIDDEN.into_response();
+            if let Some(status) = SessionWorkerEffectAdmission::claim_rejection_status(
+                awaken_worker_transport_security::verify_claim_owner(
+                    service.directory.as_ref(),
+                    &worker,
+                    request.identity.as_ref(),
+                    &reference.claim,
+                    now_unix_ms,
+                )
+                .await,
+            ) {
+                return status.into_response();
             }
             let guard = match service.dispatch.lock_commit_epoch(&reference.claim).await {
                 Ok(Some(guard)) if guard.is_live_at(now_unix_ms) => guard,
@@ -691,17 +692,17 @@ async fn memory_operation(
                 return StatusCode::FORBIDDEN.into_response();
             };
             let effect = intent.effect();
-            if let Some(status) = verify_session_worker_effect(
-                service.directory.as_ref(),
-                &worker,
-                identity,
-                &effect.lease,
-                now_unix_ms,
-                SessionWorkerEffectTemporalRule::SessionRoot,
-            )
-            .await
-            .rejection_status()
-            {
+            if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+                verify_session_worker_effect(
+                    service.directory.as_ref(),
+                    &worker,
+                    identity,
+                    &effect.lease,
+                    now_unix_ms,
+                    SessionWorkerEffectTemporalRule::SessionRoot,
+                )
+                .await,
+            ) {
                 return status.into_response();
             }
             let Some(control) = service.terminal_memory_control.as_deref() else {
@@ -736,17 +737,17 @@ async fn memory_operation(
             if request.operation.writes() {
                 return StatusCode::FORBIDDEN.into_response();
             }
-            if let Some(status) = verify_session_worker_effect(
-                service.directory.as_ref(),
-                &worker,
-                identity,
-                intent.lease(),
-                now_unix_ms,
-                SessionWorkerEffectTemporalRule::SessionRoot,
-            )
-            .await
-            .rejection_status()
-            {
+            if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+                verify_session_worker_effect(
+                    service.directory.as_ref(),
+                    &worker,
+                    identity,
+                    intent.lease(),
+                    now_unix_ms,
+                    SessionWorkerEffectTemporalRule::SessionRoot,
+                )
+                .await,
+            ) {
                 return status.into_response();
             }
             let Some(control) = service.materialization_control.as_deref() else {

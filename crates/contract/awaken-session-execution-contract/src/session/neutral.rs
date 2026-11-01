@@ -419,6 +419,49 @@ impl $crate::SessionCoordinationReads for $ty {
                 Default::default()
             }
 
+            async fn session_run_command_receipt(
+                &self,
+                _command: &$crate::AdmitSessionRun,
+            ) -> Result<Option<$crate::SessionRunReservation>, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
+                    "exact Session Run command receipt is unavailable",
+                ))
+            }
+
+            async fn task_callback_source(
+                &self,
+                _session_id: &::awaken_session_types::SessionId,
+                _thread_id: &::awaken_agent_contract::ThreadId,
+                _root_agent_id: &str,
+            ) -> Result<
+                Option<(
+                    String,
+                    ::awaken_agent_contract::agent::delegation::DelegationOrigin,
+                )>,
+                ::awaken_session_types::RunError,
+            > {
+                Err(::awaken_session_types::RunError::unavailable(
+                    "Task callback membership is unavailable",
+                ))
+            }
+
+            async fn task_origin_execution(
+                &self,
+                _session_id: &::awaken_session_types::SessionId,
+                _thread_id: &::awaken_agent_contract::ThreadId,
+                _origin_run_id: &::awaken_agent_contract::RunId,
+            ) -> Result<
+                Box<(
+                    ::awaken_runtime_contract::RunActivation,
+                    Vec<::awaken_runtime_contract::ExecutableAgentSnapshot>,
+                )>,
+                ::awaken_session_types::RunError,
+            > {
+                Err(::awaken_session_types::RunError::unavailable(
+                    "original Task execution source is unavailable",
+                ))
+            }
+
             async fn coordinated_admission_receipt(
                 &self,
                 _command: $crate::CoordinatedAdmissionRef<'_>,

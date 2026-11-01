@@ -122,7 +122,7 @@ pub use session_projections::{DispatchProjection, SessionProjections};
 pub use session_run_activation::{activate_session_run_reservation, read_settled_phase};
 pub use session_run_reservation::{
     SESSION_RUN_RESERVATION_TTL_MS, SessionRunInputs, reserve_session_run,
-    validate_session_run_command,
+    select_session_run_origin, validate_session_run_command,
 };
 pub use session_skills::{
     SKILLS_REQUIRE_FILESYSTEM, SkillSnapshot, delivered_skill_file, managed_skill_registry,

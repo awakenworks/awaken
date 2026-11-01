@@ -25,7 +25,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
+    SessionWorkerEffectAdmission, SessionWorkerEffectTemporalRule, clock_ms,
+    verify_session_worker_effect,
 };
 
 const FILE_CONTENT_PATH: &str = "/v1/worker/resources/files/content";
@@ -263,17 +264,17 @@ async fn read_file_content(
     let mut run_guard = None;
     match &request.authority {
         ResourceOperationFence::Run(claim) => {
-            if verify_claim_owner(
-                service.directory.as_ref(),
-                &worker,
-                request.identity.as_ref(),
-                claim,
-                now_ms,
-            )
-            .await
-            .is_err()
-            {
-                return StatusCode::FORBIDDEN.into_response();
+            if let Some(status) = SessionWorkerEffectAdmission::claim_rejection_status(
+                verify_claim_owner(
+                    service.directory.as_ref(),
+                    &worker,
+                    request.identity.as_ref(),
+                    claim,
+                    now_ms,
+                )
+                .await,
+            ) {
+                return status.into_response();
             }
             let guard = service.dispatch.lock_commit_epoch(claim).await;
             // The lock wait can outlive the lease; judge the guard, and the
@@ -329,17 +330,17 @@ async fn read_file_content(
             ) else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };
-            if let Some(status) = verify_session_worker_effect(
-                service.directory.as_ref(),
-                &worker,
-                identity,
-                intent.lease(),
-                now_ms,
-                SessionWorkerEffectTemporalRule::SessionRoot,
-            )
-            .await
-            .rejection_status()
-            {
+            if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+                verify_session_worker_effect(
+                    service.directory.as_ref(),
+                    &worker,
+                    identity,
+                    intent.lease(),
+                    now_ms,
+                    SessionWorkerEffectTemporalRule::SessionRoot,
+                )
+                .await,
+            ) {
                 return status.into_response();
             }
             let workspace = match control
@@ -435,16 +436,17 @@ async fn expired_after_read(
             let Some(identity) = request.identity.as_ref() else {
                 return Some(StatusCode::SERVICE_UNAVAILABLE);
             };
-            verify_session_worker_effect(
-                service.directory.as_ref(),
-                worker,
-                identity,
-                intent.lease(),
-                now_ms,
-                SessionWorkerEffectTemporalRule::SessionRoot,
+            SessionWorkerEffectAdmission::rejection_status(
+                verify_session_worker_effect(
+                    service.directory.as_ref(),
+                    worker,
+                    identity,
+                    intent.lease(),
+                    now_ms,
+                    SessionWorkerEffectTemporalRule::SessionRoot,
+                )
+                .await,
             )
-            .await
-            .rejection_status()
         }
         _ => Some(StatusCode::FORBIDDEN),
     }

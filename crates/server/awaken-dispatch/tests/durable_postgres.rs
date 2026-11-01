@@ -16,6 +16,7 @@
 //! reachable.
 
 use awaken_dispatch::DispatchAttemptRecordReads as _;
+use awaken_worker_contract::WorkerCurrentSource as _;
 
 mod harness;
 

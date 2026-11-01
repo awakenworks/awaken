@@ -991,6 +991,62 @@ impl awaken_session_execution_contract::SessionCoordinationReads for ScriptFake 
             .validate_session_agent_message_source(command)
             .await
     }
+
+    async fn session_run_command_receipt(
+        &self,
+        command: &awaken_session_execution_contract::AdmitSessionRun,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionRunReservation>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::session_run_command_receipt(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+        )
+        .await
+    }
+
+    async fn task_callback_source(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &awaken_agent_contract::ThreadId,
+        root_agent_id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            awaken_agent_contract::agent::delegation::DelegationOrigin,
+        )>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::task_callback_source(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+            root_agent_id,
+        )
+        .await
+    }
+
+    async fn task_origin_execution(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &awaken_agent_contract::ThreadId,
+        origin_run_id: &awaken_agent_contract::RunId,
+    ) -> Result<
+        Box<(
+            awaken_runtime_contract::RunActivation,
+            Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        )>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::task_origin_execution(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+            origin_run_id,
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]

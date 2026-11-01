@@ -112,13 +112,10 @@ impl TaskCommittedReads {
             } => {
                 // P1/P2: the read addresses the partition the Task's Thread
                 // is committed in, as the Run's own committed reads do.
-                let read = TaskTenureRead {
-                    thread: expected.origin.thread_id.0.clone(),
-                    partition: TaskReadPartition::of(&expected.origin.thread_id.0, session_thread),
-                    run: expected.origin.run_id.0.clone(),
-                    task: expected.id.as_str().to_owned(),
-                    holder: control.holder().to_owned(),
-                };
+                let read = task_tenure_read(expected, session_thread);
+                if read.holder != control.holder() {
+                    return Err("Task attempt belongs to another Worker holder".into());
+                }
                 let Some(record) = control
                     .read_tenure(read)
                     .await
@@ -133,6 +130,20 @@ impl TaskCommittedReads {
                     })
             }
         }
+    }
+}
+
+/// The same exact coordinate projection is used by effect ownership reads
+/// and attention; it grants no authority without the Coordinator's check.
+pub(super) fn task_tenure_read(expected: &BackgroundTask, session_thread: &str) -> TaskTenureRead {
+    let tenure = expected.tenure().expect("a launched Task has an attempt");
+    TaskTenureRead {
+        thread: expected.origin.thread_id.0.clone(),
+        partition: TaskReadPartition::of(&expected.origin.thread_id.0, session_thread),
+        run: expected.origin.run_id.0.clone(),
+        task: expected.id.as_str().to_owned(),
+        holder: tenure.holder().clone(),
+        epoch: tenure.epoch(),
     }
 }
 
@@ -304,7 +315,9 @@ mod tests {
     fn route_selection_reads_the_bound_application_and_the_installed_delivery() {
         let application: Arc<dyn SessionRunBackgroundApplication> =
             crate::test_application_bindings::fresh();
-        let bound = crate::test_application_bindings::background_binding(application);
+        // W1 needs a live application: this binding borrows it weakly;
+        // retain the original strong owner through every route assertion.
+        let bound = crate::test_application_bindings::background_binding(application.clone());
         let unbound = SessionApplicationBinding::default();
         let delivery: Arc<dyn RegisteredTaskControl> = Arc::new(UnusedDelivery);
         assert!(
@@ -335,7 +348,9 @@ mod tests {
     fn the_plan_admits_background_tasks_where_a_route_and_committed_reads_exist() {
         let application: Arc<dyn SessionRunBackgroundApplication> =
             crate::test_application_bindings::fresh();
-        let bound = crate::test_application_bindings::background_binding(application);
+        // W1 needs a live application: this binding borrows it weakly;
+        // retain the original strong owner through every route assertion.
+        let bound = crate::test_application_bindings::background_binding(application.clone());
         let unbound = SessionApplicationBinding::default();
         let delivery: Arc<dyn RegisteredTaskControl> = Arc::new(UnusedDelivery);
         for registered in [None, Some(&delivery)] {
@@ -470,7 +485,8 @@ mod tests {
 
     fn held_task(thread: &str) -> BackgroundTask {
         let mut task = BackgroundTask::requested(
-            awaken_ext_background_task::BackgroundTaskId::new("held-task").expect("task id"),
+            awaken_tool_contract::tool::background_task::BackgroundTaskId::new("held-task")
+                .expect("task id"),
             awaken_ext_background_task::BackgroundTaskOrigin {
                 thread_id: ThreadId(thread.into()),
                 run_id: RunId("origin-run".into()),
@@ -544,6 +560,8 @@ mod tests {
                     run: "origin-run".into(),
                     task: "held-task".into(),
                     holder: "registered-holder".into(),
+                    epoch: awaken_lease_contract::fence::Epoch::from_persisted(1)
+                        .expect("nonzero Task epoch"),
                 }],
                 "{rule} one read with this incarnation's holder"
             );

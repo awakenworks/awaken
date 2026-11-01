@@ -1,6 +1,6 @@
 # Remote Task Control and the Queue-Only Session Application
 
-Status: designed. Implemented: the Task observation codec and delivered
+Status: source implementation candidate; integrated compilation, real regressions and API generation are pending. Implemented: the Task observation codec and delivered
 candidates (`awaken-ext-background-task`), the private Run input and the codec
 demand (`awaken-session-application-contract`, `awaken-dispatch-contract`),
 Task attention admission with its acknowledgement
@@ -131,7 +131,7 @@ Removal condition for `SessionApplicationBinding`: Q2 no longer exists.
   Worker manifest.
 - `PrivateTaskInput { version: 1, observations: [TaskObservationRecord] }`.
 - Route `/v1/worker/task/tenure`: request `{identity, read: TaskTenureRead
-  {thread, partition, run, task, holder}}` with `partition` either
+  {thread, partition, run, task, holder, epoch}}` with `partition` either
   `{"kind": "thread"}` or `{"kind": "session", "session_thread"}` (required), response `{tenure: TaskTenureRecord
   {version: 1, slot} | null}`. Both shapes refuse unknown fields; a record of
   any other version is refused.
@@ -197,7 +197,7 @@ admits attention (A2/A3).
 | H4 | the holder is not this incarnation's | refused before any read (A3) |
 | H5 | transport failure or Coordinator unavailable | `Unavailable`; the effect does not run |
 
-The Worker sends `TaskTenureRead {thread, partition, run, task, holder}` with
+The Worker sends `TaskTenureRead {thread, partition, run, task, holder, epoch}` with
 its own holder, the Task's origin Run and the Session partition the Task's
 Thread is committed in, over the authenticated route `/v1/worker/task/tenure`.
 No claim exists at that point and the holder names only the incarnation, so
@@ -215,10 +215,14 @@ when its current attempt names that holder.
 | P4 | the origin Run is not committed in the answered partition | refused (`BadRequest`), never read as an absent slot |
  It decodes
 the holder through `awaken_agent_contract::thread::background_task`
-(`committed_task_slot`, `committed_task_holder`), so the Coordinator closure
+(`committed_task_slot`, `committed_task_attempt`), so the Coordinator closure
 never depends on the extension: the extension keeps the aggregate, its
 decisions and its codec, and the Worker decodes the returned slot with that
-codec before the existing admission. A slot that does not decode fails closed as H5.
+codec before the existing admission. An ownership projection that does not decode
+fails closed as H5; it is not a second complete aggregate validator. A carrying
+Run's ACK proves durable admission only: its Task owner validates the complete
+namespace at StepStart, and a decoding error stops that attempt before model or
+tool work.
 
 ### Holder and attention route selection
 
@@ -261,3 +265,61 @@ The client maps the Coordinator's single refusal classification
    and `test_application_bindings`. Executor unit tests that build a local
    application move to the in-process Worker fixture. This follows V8
    acceptance (user decision 2026-11-01).
+
+
+## Authenticated attention and exact replay
+
+TaskAttention carries one TaskTenureRead (Task, logical Thread, original Run,
+Session partition, holder and nonzero epoch). The original PrivateTaskInput v1
+wire remains readable without tenure, but no unbound input grants current Worker
+execution. Current attention binds complete tenure into the same private command
+input even for an input-required wake with no observation. Ordinary empty input
+construction remains refused. Every observation decodes through the sole codec
+at `awaken_tool_contract::tool::background_task` and must match all tenure axes;
+HTTP and the actual claimed dispatch check the complete batch before admission or
+offer, respectively. The Task aggregate/decisions remain in the extension.
+
+The authenticated HTTP boundary first checks Worker incarnation and the complete
+immutable command receipt. The existing Session application constructs the same
+command fingerprint, and its original coordination read reaches the one
+SessionRunAdmissionReads source. An exact accepted Live/Completed fact recovers
+its original ACK even after Task holder/phase changes; missing evidence permits
+only the subsequent actual committed held-Task check, never a guessed ACK. A
+changed subject or payload conflicts. The root reservation port stays root-only;
+Task children use the original bounded child admission with their complete
+SessionCommand identity. Ordinary children remain FullDispatch. Completion has
+no Task-child legacy-fingerprint fallback or second receipt ledger.
+
+The original successful-response classifier treats HTTP2xx body/JSON decode
+failures as Unknown/Unavailable. A malformed successful ACK is not a definitive
+rejection: the same operation and input retry the original Run. Explicit4xx
+refusals keep their original classification. The child assembly installs its own
+BackgroundTask observer and shares one ClaimedTerminalReads with its actual
+DispatchWorker; it never inherits the parent's BackgroundTask observer or reads
+its cached recovery prefix as committed authority.
+
+
+### Existing child identity and frozen execution source
+
+A callback targets an existing logical Thread in the original physical Session.
+The callback read reuses committed Native delegation registries and accepted
+coordination ToolBatch results; it writes no relationship registry and does not
+claim a cross-Thread atomic snapshot. The original creation origin preserves
+Native depth and lineage when another callback Run carries a result on the same
+Thread. The public observed-root coordination query keeps its original fence.
+
+For queued execution, the existing Done transaction retains its ORIGINAL
+RunDispatch only when the same Task-control predicate used by codec eligibility
+requires it. The operational completion feed keeps its original DTO and bytes;
+no second source ledger or copied Task model is created. The coherent original
+admission observation carries the receipt independently from the optional source
+result: an unreadable source is Unknown for fresh execution, while a valid exact
+receipt still recovers its accepted ACK. Historical NULL source is not guessed.
+
+Fresh callbacks read their origin snapshot and frozen publication bundle from
+that original authority, so ordinary `version: None` selection continues with
+the same original bundle after a later publication. The same compilation kernel
+validates that bundle with `exact_source`; it never chooses today's catalog or
+the first publication sharing an Agent id. The immutable input fingerprint stays
+at its original command owner. Source retention grants neither Task tenure nor a
+Run claim, and changes no direct, nonqueued SDK execution semantics.

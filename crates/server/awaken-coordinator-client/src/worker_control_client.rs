@@ -51,7 +51,9 @@ impl WorkerControlRequestError {
     fn response(status: reqwest::StatusCode, error: reqwest::Error) -> Self {
         Self {
             message: format!("worker control response decode ({status}): {error}"),
-            retryable: status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+            retryable: status.is_success()
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error(),
         }
     }
 }

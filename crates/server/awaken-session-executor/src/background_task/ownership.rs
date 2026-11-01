@@ -64,7 +64,7 @@ impl BackgroundTaskTerminalObserver {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::{collections::BTreeSet, sync::atomic::Ordering, time::Duration};
 
@@ -74,12 +74,14 @@ mod tests {
         staged::{RunDisposition, ThreadCommit},
     };
     use awaken_ext_background_task::{
-        BackgroundInvocation, BackgroundTaskConfig, BackgroundTaskEnd, BackgroundTaskId,
-        BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskPlugin, BackgroundWait,
-        TaskExecutionPolicy, task_state_cell,
+        BackgroundInvocation, BackgroundTaskConfig, BackgroundTaskLifecycle, BackgroundTaskOrigin,
+        BackgroundTaskPlugin, TaskExecutionPolicy, task_state_cell,
     };
     use awaken_lease_testkit::ManualClock;
     use awaken_runtime::{PreparedToolExecutor, Runtime};
+    use awaken_tool_contract::tool::background_task::{
+        BackgroundTaskEnd, BackgroundTaskId, BackgroundWait,
+    };
     use awaken_tool_contract::tool::{ToolCall, ToolError, ToolRecoveryPolicy};
     use awaken_tool_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
 
@@ -169,11 +171,16 @@ mod tests {
                 None,
             );
             let task = task(boundary, &supervisor);
-            persist(&commit, &task, "initial").await;
+            // The observed terminal is the SAME Ended Run written by persist;
+            // the Task keeps its distinct original creator Run ("origin").
+            // launch_remote here polls a remote tool under LOCAL committed
+            // authority, not a fabricated registered-Worker delivering claim.
+            let observed = RunId("initial".into());
+            persist(&commit, &task, &observed.0).await;
             if boundary == 0 {
-                observer.launch(task.clone()).await;
+                observer.launch(task.clone(), &observed).await;
             } else {
-                observer.launch_remote(task.clone()).await;
+                observer.launch_remote(task.clone(), &observed).await;
             }
             assert!(background.drain(Duration::from_secs(2)).await);
             let completion = supervisor.completion(&task.id).expect("terminal candidate");
@@ -187,9 +194,9 @@ mod tests {
                 "U1..U4 no wait"
             );
             if boundary == 0 {
-                observer.launch(task.clone()).await;
+                observer.launch(task.clone(), &observed).await;
             } else {
-                observer.launch_remote(task.clone()).await;
+                observer.launch_remote(task.clone(), &observed).await;
             }
             assert!(background.drain(Duration::from_secs(2)).await);
             assert_eq!(
@@ -244,7 +251,7 @@ mod tests {
         task
     }
 
-    async fn persist(commit: &SessionCommit, task: &BackgroundTask, run: &str) {
+    pub(crate) async fn persist(commit: &SessionCommit, task: &BackgroundTask, run: &str) {
         commit
             .commit(ThreadCommit::assemble(
                 task.origin.thread_id.clone(),
@@ -456,7 +463,9 @@ mod tests {
                         task.reclaim("replacement", expiry, BackgroundTaskSupervisor::lease_ms())
                             .unwrap();
                     }
-                    2 => task.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap(),
+                    2 => task
+                        .finish(&fence, BackgroundTaskEnd::Cancelled {})
+                        .unwrap(),
                     3 => match &mut task.lifecycle {
                         BackgroundTaskLifecycle::Running { attempt }
                         | BackgroundTaskLifecycle::Waiting { attempt, .. }
@@ -601,7 +610,7 @@ mod tests {
                     .unwrap();
                 if terminal {
                     current
-                        .finish(&fence, BackgroundTaskEnd::Cancelled)
+                        .finish(&fence, BackgroundTaskEnd::Cancelled {})
                         .unwrap();
                 } else {
                     current
@@ -618,7 +627,7 @@ mod tests {
                 let before_fold = current.clone();
                 assert!(
                     current
-                        .finish(&fence, BackgroundTaskEnd::Cancelled)
+                        .finish(&fence, BackgroundTaskEnd::Cancelled {})
                         .is_err(),
                     "B3"
                 );

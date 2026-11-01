@@ -27,6 +27,10 @@ impl crate::RunAssembly {
     /// keeps one concrete attempt driver while retaining the Worker for pool-routed claims.
     /// Runtime, commit, executor, observers, credentials, and recovery wiring are
     /// therefore configured once regardless of delivery durability.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one Session Worker uses the selected runtime, executor, commit, checkpoint, context and model gate; its terminal observer must share the same claim-read handle"
+    )]
     pub(super) async fn build_dispatch_worker(
         &self,
         claimed_model_gate: Option<awaken_dispatch_execution::ClaimedModelRequestGateFactory>,

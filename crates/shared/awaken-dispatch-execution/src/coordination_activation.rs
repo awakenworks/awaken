@@ -18,12 +18,38 @@ fn coordinated_origin_id(
     ))
 }
 
+/// The original coordinated Thread creation metadata, shared with committed
+/// callback recovery. This derives no permission and creates no relationship.
+pub fn coordinated_run_origin(
+    session: &str,
+    operation: &str,
+    parent_run_id: awaken_agent_contract::RunId,
+    parent_call_id: String,
+    ancestor_agent: String,
+) -> awaken_agent_contract::agent::delegation::DelegationOrigin {
+    awaken_agent_contract::agent::delegation::DelegationOrigin {
+        delegation_id: coordinated_origin_id(session, operation),
+        parent_run_id,
+        parent_call_id,
+        depth: 1,
+        agent_lineage: vec![ancestor_agent],
+    }
+}
+
 /// Freeze the same existing activation after its Session-owned projection.
 pub fn coordinated_run_activation(
     command: CoordinatedRunCommand,
     ancestor_agent: String,
     caller_toolsets: Vec<awaken_agent_contract::toolset::ToolsetPolicy>,
 ) -> awaken_runtime_contract::activation::RunActivation {
+    if let (Some(source), Some(task)) = (command.task_attention_execution, &command.task_attention)
+    {
+        let mut activation = source.0;
+        activation.run_id = command.run_id;
+        activation.thread_id = command.thread_id;
+        activation.input = task.messages.clone();
+        return activation;
+    }
     let input = coordinated_activation_input(
         command.session_id.as_str(),
         &command.thread_id,
@@ -31,13 +57,13 @@ pub fn coordinated_run_activation(
         &command.operation_id,
         command.message,
     );
-    let origin = awaken_agent_contract::agent::delegation::DelegationOrigin {
-        delegation_id: coordinated_origin_id(command.session_id.as_str(), &command.operation_id),
-        parent_run_id: command.parent_run_id,
-        parent_call_id: command.parent_call_id,
-        depth: 1,
-        agent_lineage: vec![ancestor_agent],
-    };
+    let origin = coordinated_run_origin(
+        command.session_id.as_str(),
+        &command.operation_id,
+        command.parent_run_id,
+        command.parent_call_id,
+        ancestor_agent,
+    );
     awaken_runtime_contract::activation::RunActivation::new(
         command.run_id,
         command.thread_id,
@@ -58,6 +84,35 @@ pub fn coordinated_activation_matches(
     if a.run_id != command.run_id() || a.thread_id != command.thread_id() {
         return false;
     }
+    if let CoordinatedAdmissionRef::Child(c) = command
+        && let Some(task) = &c.task_attention
+    {
+        let Some(source) = &c.task_attention_execution else {
+            return false;
+        };
+        let mut expected = source.0.clone();
+        expected.run_id = c.run_id.clone();
+        expected.thread_id = c.thread_id.clone();
+        expected.input = task.messages.clone();
+        let Ok(expected) =
+            expected.narrow_tools(task.execution_requirements.tool_capability_narrowing)
+        else {
+            return false;
+        };
+        return task
+            .private_task_input
+            .as_ref()
+            .and_then(|input| input.tenure())
+            .is_some_and(|tenure| {
+                tenure.thread == c.thread_id.0
+                    && tenure.session_thread() == c.session_id.as_str()
+                    && task.session_id == c.session_id
+                    && task.run_id == c.run_id
+                    && task.agent_id == a.snapshot.root_agent_id.0
+                    && &expected == a
+            });
+    }
+
     match command {
         CoordinatedAdmissionRef::Child(c) => {
             c.thread_id.0 != c.session_id.as_str()

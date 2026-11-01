@@ -29,7 +29,7 @@ impl crate::SessionRuns {
     ) -> Result<CommittedStepReceipt, SessionExecutionError> {
         let ctx = self
             .run_assembly
-            .ctx_for_session_coordination(session_id, None)
+            .ctx_for_session_coordination(session_id, None, None)
             .await?;
         let messages_before = self
             .authoritative_step_snapshot(&ctx, &run_id)
@@ -76,7 +76,7 @@ impl crate::SessionRuns {
         let run_id = admission.run_id().clone();
         let ctx = self
             .run_assembly
-            .ctx_for_session_coordination(&session_id, None)
+            .ctx_for_session_coordination(&session_id, None, None)
             .await?;
         let state = activate_and_await_session_run(
             &self.completion,

@@ -644,7 +644,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
 
     let provisional = host
         .run_assembly
-        .ctx_for_session_coordination("deferred-managed-filesystem-skill", Some("assistant"))
+        .ctx_for_session_coordination("deferred-managed-filesystem-skill", Some("assistant"), None)
         .await
         .expect("L9 provisional reservation context");
     assert!(

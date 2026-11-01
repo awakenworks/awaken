@@ -29,7 +29,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
         let thread = ThreadId(format!("outcome-pure-query-cached-{cached}"));
         if cached {
             host.run_assembly
-                .ctx_for_session_coordination(&thread.0, None)
+                .ctx_for_session_coordination(&thread.0, None, None)
                 .await
                 .expect("cache a coordination envelope only");
         }

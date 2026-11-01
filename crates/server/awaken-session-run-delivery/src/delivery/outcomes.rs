@@ -67,9 +67,11 @@ fn run_settlement(
     live_cancellation: Option<bool>,
 ) -> RunSettlement {
     match (observation, live_cancellation) {
-        (SessionRunAdmissionObservation::Completed(completion), _) => RunSettlement::Settled {
-            cancellation_requested: completion.cancellation_requested,
-        },
+        (SessionRunAdmissionObservation::Completed { completion, .. }, _) => {
+            RunSettlement::Settled {
+                cancellation_requested: completion.cancellation_requested,
+            }
+        }
         (SessionRunAdmissionObservation::Live(_), Some(cancellation_requested)) => {
             RunSettlement::Settled {
                 cancellation_requested,
@@ -380,14 +382,17 @@ mod admission_adapter_tests {
     }
 
     fn completion(cancellation_requested: bool) -> SessionRunAdmissionObservation {
-        Completed(awaken_dispatch_contract::DispatchCompletion {
-            sequence: 1,
-            run_id: awaken_agent_contract::agent::run::Id("outcome/settled/worker/0".into()),
-            thread_id: None,
-            session_thread_id: None,
-            request_fingerprint: None,
-            cancellation_requested,
-        })
+        Completed {
+            completion: awaken_dispatch_contract::DispatchCompletion {
+                sequence: 1,
+                run_id: awaken_agent_contract::agent::run::Id("outcome/settled/worker/0".into()),
+                thread_id: None,
+                session_thread_id: None,
+                request_fingerprint: None,
+                cancellation_requested,
+            },
+            retained_request: Ok(None),
+        }
     }
 
     #[test]

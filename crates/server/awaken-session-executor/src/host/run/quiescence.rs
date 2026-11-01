@@ -71,6 +71,7 @@ mod terminal_scope_tests {
     use awaken_dispatch_contract::{
         DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _,
     };
+    use awaken_worker_contract::WorkerIncarnationSource as _;
 
     #[tokio::test]
     async fn committed_terminal_run_freezes_scope_without_retiring_unknown_physical_execution() {

@@ -12,7 +12,6 @@ use std::time::Duration;
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_contract::PendingInput;
 use awaken_dispatch_erasure::DispatchBinding;
@@ -121,7 +120,7 @@ pub(crate) struct RunScheduler {
     /// Unfenced session commit authority. The child worker binds its own
     /// `RunClaim`; inheriting the parent's already-fenced coordinator would nest
     /// two claim guards and deadlock the shared dispatch authority.
-    pub(crate) commit: Arc<dyn CommitCoordinator>,
+    pub(crate) commit: Arc<awaken_session_run_delivery::SessionCommit>,
     /// Read side of the same committed authority. Kept separately after trait
     /// erasure so cancellation/recovery can make idempotency decisions from
     /// committed child state after a process restart.
@@ -252,7 +251,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     resume: Option<ResumeResult>,
     mut context: RuntimeRunContext,
     run_delegation: Option<Arc<dyn RunDelegationService>>,
-    parent_thread_id: ThreadId,
+    _parent_thread_id: ThreadId,
     scheduler: Option<RunScheduler>,
     adapters: ChildExecutionAdapters,
 ) -> Result<AgentRunBoundary, AgentRunError> {
@@ -310,6 +309,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
         env,
         &authorization,
         adapters.background_supervisor.clone(),
+        &adapters.admin_tools,
     );
     let mut runtime = configure_child_native_runtime(
         runtime,
@@ -337,7 +337,30 @@ pub(crate) async fn run_configured_agent_until_boundary(
         .and_then(RunScheduler::local_child_reader)
         .unwrap_or(parent_reader);
     let thread_id = ThreadId(thread.clone());
+    let runtime = Arc::new(runtime);
+    let background_commit = scheduler
+        .as_ref()
+        .map(|scheduler| &scheduler.commit)
+        .or(adapters.background_commit.as_ref());
+    let (context, terminal_reads) = super::ChildWorkerFactory::background_context(
+        runtime.clone(),
+        &config,
+        background_commit,
+        context,
+        &adapters,
+    )?;
+
     if let Some(state @ RunState::Ended(_)) = reader.run_state(&child_run_id) {
+        if scheduler.is_none() {
+            super::ChildWorkerFactory::deliver_local_terminal(
+                &context,
+                adapters.background_commit.as_ref(),
+                &thread_id,
+                &child_run_id,
+            )
+            .await?;
+        }
+
         return settled_agent_boundary(reader.as_ref(), &thread_id, state);
     }
     let operation = match (seed, resume) {
@@ -390,7 +413,6 @@ pub(crate) async fn run_configured_agent_until_boundary(
             // retain this one edge clock. The Worker never substitutes another time
             // source after the queue grants the claim.
             let clock: Arc<dyn WallClock> = scheduler.clock.clone();
-            let runtime = Arc::new(runtime);
             let attempt_executor = child_attempt_executor(
                 runtime.clone(),
                 &config,
@@ -407,6 +429,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 context.clone(),
                 adapters.credential_capabilities.clone(),
                 attempt_executor,
+                terminal_reads,
             );
             boundary_reader = worker_reader.clone();
             Ok::<_, AgentRunError>(match operation {
@@ -418,10 +441,14 @@ pub(crate) async fn run_configured_agent_until_boundary(
                         _ => {
                             let request = child_dispatch_request(
                                 activation,
-                                parent_thread_id.clone(),
+                                adapters.session_thread_id.clone().ok_or_else(|| {
+                                    AgentRunError::Configuration(
+                                        "durable child requires the selected physical Session identity".into(),
+                                    )
+                                })?,
                                 scheduler.session_resources.clone(),
                                 scheduler.publication_source.as_deref(),
-                            )?;
+                             None,)?;
                             match worker.start_run(request, clock.clone()).await.map_err(
                                 |error| {
                                     AgentRunError::Runtime(
@@ -489,10 +516,10 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 _ => unreachable!("operation construction is exhaustive"),
             })
         } else {
-            let runtime = Arc::new(runtime);
             let attempt_executor =
                 child_attempt_executor(runtime, &config, &adapters, authorization.policy.clone())?;
-            match operation {
+            let terminal_context = context.clone();
+            let outcome = match operation {
                 (Some(activation), None) => {
                     let context = bind_direct_child_credentials(&activation, context, &adapters)?;
                     attempt_executor
@@ -508,7 +535,20 @@ pub(crate) async fn run_configured_agent_until_boundary(
                         .map_err(AgentRunError::Runtime)
                 }
                 _ => unreachable!("operation construction is exhaustive"),
+            };
+            if outcome
+                .as_ref()
+                .is_ok_and(|state| matches!(state, RunState::Ended(_)))
+            {
+                super::ChildWorkerFactory::deliver_local_terminal(
+                    &terminal_context,
+                    adapters.background_commit.as_ref(),
+                    &thread_id,
+                    &child_run_id,
+                )
+                .await?;
             }
+            outcome
         }?;
         settled_agent_boundary(boundary_reader.as_ref(), &thread_id, state)
     })
@@ -1186,7 +1226,9 @@ mod tests {
                             .await
                             .unwrap(),
                     )),
-                    commit: commit.clone(),
+                    commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
+                        crate::LocalCommitAdapter::projected_shared(commit.clone()),
+                    ))),
                     reader: commit.clone(),
                     owner: "child-worker".into(),
                     session_resources: None,
@@ -1312,7 +1354,9 @@ mod tests {
                     .await
                     .expect("child dispatch store"),
             )),
-            commit: commit.clone(),
+            commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
+                crate::LocalCommitAdapter::projected_shared(commit.clone()),
+            ))),
             reader: commit.clone(),
             owner: "replacement-worker".to_string(),
             session_resources: None,
@@ -1380,7 +1424,9 @@ mod tests {
                     .await
                     .expect("reopen child dispatch"),
             )),
-            commit: commit.clone(),
+            commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
+                crate::LocalCommitAdapter::projected_shared(commit.clone()),
+            ))),
             reader: commit.clone(),
             owner: "replacement-worker-2".to_string(),
             session_resources: None,
@@ -1449,7 +1495,9 @@ mod tests {
                         .await
                         .expect("reopen terminal child dispatch"),
                 )),
-                commit: commit.clone(),
+                commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
+                    crate::LocalCommitAdapter::projected_shared(commit.clone()),
+                ))),
                 reader: commit.clone(),
                 owner: "replacement-worker-3".to_string(),
                 session_resources: None,

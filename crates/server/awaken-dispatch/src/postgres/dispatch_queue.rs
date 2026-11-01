@@ -934,8 +934,8 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
         if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
             sqlx::query(&format!(
                 "INSERT INTO {p}_dispatch_completion \
-                 (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested) \
-                 VALUES ($1, $2, $3, $4, $5) \
+                 (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested, retained_request) \
+                 VALUES ($1, $2, $3, $4, $5, $6) \
                  ON CONFLICT (run_id) DO NOTHING"
             ))
             .bind(&run_id.0)
@@ -948,6 +948,7 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
                     .map(|thread| thread.0.as_str()),
             )
             .bind(i64::from(cancellation_requested != 0))
+            .bind(request.needs_background_task_control().then_some(sqlx::types::Json(&request)))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1517,9 +1518,20 @@ impl awaken_dispatch_contract::SessionRunAdmissionReads for PostgresDispatchStor
             return Ok(SessionRunAdmissionObservation::Live(Box::new(request)));
         }
         if decode_completed_identity(&row)?.is_some() {
-            return Ok(SessionRunAdmissionObservation::Completed(
-                decode_dispatch_completion(&row)?,
-            ));
+            let completion = decode_dispatch_completion(&row)?;
+            let retained_request = row
+                .try_get::<Option<String>, _>("retained_request_json")
+                .map_err(store_error)
+                .and_then(|json| {
+                    crate::dispatch::decode_retained_completion_request(
+                        &completion,
+                        json.as_deref(),
+                    )
+                });
+            return Ok(SessionRunAdmissionObservation::Completed {
+                completion,
+                retained_request,
+            });
         }
         Ok(SessionRunAdmissionObservation::Missing)
     }

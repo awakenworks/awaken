@@ -6,6 +6,7 @@
 
 mod harness;
 
+use awaken_worker_contract::WorkerCurrentSource as _;
 use std::time::Instant;
 
 use awaken_dispatch::{PlacementRequirements, PostgresDispatchStore, RunDispatch};

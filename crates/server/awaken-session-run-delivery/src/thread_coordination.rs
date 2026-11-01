@@ -496,6 +496,11 @@ impl CoordinatedThreads {
         thread_id: &ThreadId,
         intent: CoordinatedRunIntent,
         max_unarchived_threads: usize,
+        task_callback: Option<(
+            &awaken_session_execution_contract::AdmitSessionRun,
+            &awaken_agent_contract::agent::delegation::DelegationOrigin,
+        )>,
+        root_agent_id: &str,
     ) -> Result<awaken_dispatch_contract::SessionChildAdmission, RunError> {
         if max_unarchived_threads == 0 {
             return Err(RunError::bad_request(
@@ -504,16 +509,54 @@ impl CoordinatedThreads {
         }
         let links = self.reads.coordinated_threads(session_id, None).await?;
         if intent == CoordinatedRunIntent::FollowUp {
-            let Some(link) = links.iter().find(|link| {
-                link.thread_id == *thread_id
-                    && matches!(link.target, CoordinatedThreadTarget::Agent { .. })
-            }) else {
-                return Err(RunError::bad_request(
-                    "follow-up target is not an ordinary coordinated Agent Thread",
-                ));
+            let kind = if let Some((task, origin)) = task_callback {
+                // This callback addresses an existing Native or coordinated
+                // Thread. It is not permission to create another child, and it
+                // retains the same archive/failed-Run fences below and after enqueue.
+                let Some((agent, recorded_origin)) = self
+                    .reads
+                    .task_callback_source(
+                        &awaken_session_types::SessionId::from(session_id),
+                        thread_id,
+                        root_agent_id,
+                    )
+                    .await?
+                else {
+                    return Err(RunError::unavailable(
+                        "Task callback creation identity is unavailable",
+                    ));
+                };
+                if agent != task.agent_id || &recorded_origin != origin {
+                    return Err(RunError::bad_request(
+                        "Task callback target differs from committed creation identity",
+                    ));
+                }
+                if self
+                    .reads
+                    .session_thread_disposition(session_id, thread_id)
+                    .await?
+                    == awaken_agent_contract::ThreadDisposition::Archived
+                {
+                    return Err(RunError::bad_request("Task callback Thread is archived"));
+                }
+                CoordinatedThreadKind::Agent
+            } else {
+                links
+                    .iter()
+                    .find(|link| {
+                        link.thread_id == *thread_id
+                            && matches!(link.target, CoordinatedThreadTarget::Agent { .. })
+                    })
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "follow-up target is not an ordinary coordinated Agent Thread",
+                        )
+                    })?
+                    .target
+                    .kind()
             };
             if self
-                .coordinated_thread_is_closed(session_id, thread_id, link.target.kind())
+                .coordinated_thread_is_closed(session_id, thread_id, kind)
                 .await?
             {
                 return Err(RunError::bad_request(
@@ -552,6 +595,50 @@ impl CoordinatedThreads {
         command: CoordinatedRunCommand,
     ) -> Result<SessionAgentMessageReceipt, RunError> {
         let mut command = command;
+        let task_attention = command.task_attention.clone();
+        let task_execution = command.task_attention_execution.clone();
+        let task_origin = task_execution
+            .as_ref()
+            .and_then(|source| source.0.delegation_origin.clone());
+        if task_attention.is_some() != task_origin.is_some()
+            || task_attention.is_some() != task_execution.is_some()
+        {
+            return Err(RunError::bad_request(
+                "Task callback requires its original Thread creation origin",
+            ));
+        }
+        if let Some(task) = &task_attention {
+            let tenure = task
+                .private_task_input
+                .as_ref()
+                .and_then(|input| input.tenure())
+                .ok_or_else(|| RunError::bad_request("Task child command has no bound tenure"))?;
+            if task.session_id != command.session_id
+                || task.run_id != command.run_id
+                || task.agent_id != command.snapshot.root_agent_id.0
+                || tenure.thread != command.thread_id.0
+                || tenure.session_thread() != command.session_id.as_str()
+                || command.intent != CoordinatedRunIntent::FollowUp
+            {
+                return Err(RunError::bad_request(
+                    "Task child command coordinates differ",
+                ));
+            }
+        }
+        if let (Some(task), Some(source)) =
+            (&task_attention, command.task_attention_execution.as_mut())
+        {
+            if source.0.snapshot != command.snapshot || source.0.thread_id != command.thread_id {
+                return Err(RunError::unavailable(
+                    "Task callback execution differs from its original source",
+                ));
+            }
+            source.0 = source
+                .0
+                .clone()
+                .narrow_tools(task.execution_requirements.tool_capability_narrowing)
+                .map_err(RunError::bad_request)?;
+        }
         let intent = command.intent;
         let max_unarchived_threads = command.max_unarchived_threads;
         let session_id = command.session_id.clone();
@@ -577,7 +664,8 @@ impl CoordinatedThreads {
         }
 
         let mut snapshot = command.snapshot;
-        let inherit_session_overrides = snapshot.root_agent_id.0 == baseline.agent_id;
+        let inherit_session_overrides =
+            task_attention.is_none() && snapshot.root_agent_id.0 == baseline.agent_id;
         if inherit_session_overrides {
             snapshot = awaken_session_execution_contract::project_effective_agent_publication(
                 baseline.model_override.as_ref(),
@@ -595,13 +683,17 @@ impl CoordinatedThreads {
                 );
             }
         }
-        crate::project_managed_coordination_surface(
-            &mut snapshot,
-            crate::ManagedCoordinationRole::Child,
-        );
-        snapshot.recompute_fingerprint().map_err(|error| {
-            RunError::internal(format!("fingerprint coordinated child snapshot: {error}"))
-        })?;
+        if task_attention.is_none() {
+            crate::project_managed_coordination_surface(
+                &mut snapshot,
+                crate::ManagedCoordinationRole::Child,
+            );
+        }
+        if task_attention.is_none() {
+            snapshot.recompute_fingerprint().map_err(|error| {
+                RunError::internal(format!("fingerprint coordinated child snapshot: {error}"))
+            })?;
+        }
 
         // `send_message` is an Agent/Thread command, not server message
         // ingress.  The source Thread's ActiveToolBatch is the durable request
@@ -625,22 +717,45 @@ impl CoordinatedThreads {
                 RunError::bad_request("coordinated Run has no exact coordinator tool configuration")
             })?;
         command.snapshot = snapshot;
+        let root_agent_id = baseline.agent_id;
         let activation =
-            coordinated_run_activation(command, baseline.agent_id, coordinator_toolsets);
-        let request = crate::child_dispatch_request(
+            coordinated_run_activation(command, root_agent_id.clone(), coordinator_toolsets);
+        let mut request = crate::child_dispatch_request(
             activation,
             ThreadId(session_id.to_string()),
             Some(resources),
             self.publications.as_deref(),
+            task_execution.as_ref().map(|source| source.1.as_slice()),
         )
-        .map_err(|error| RunError::bad_request(error.to_string()))?
+        .map_err(|error| {
+            if task_attention.is_some() {
+                RunError::unavailable(error.to_string())
+            } else {
+                RunError::bad_request(error.to_string())
+            }
+        })?
         .with_session_activity_epoch(session_activity_epoch);
+        if let Some(task) = task_attention.as_ref() {
+            request.private_task_input = task.private_task_input.clone();
+            request = request
+                .with_session_command_fingerprint(task.command_fingerprint())
+                .with_session_command_identity();
+            if !request.is_task_child_command() {
+                return Err(RunError::bad_request("Task child identity is incomplete"));
+            }
+            request
+                .placement
+                .required_capabilities
+                .insert(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY.to_owned());
+        }
         let admission = self
             .coordinated_child_admission(
                 session_id.as_str(),
                 &thread_id,
                 intent,
                 max_unarchived_threads,
+                task_attention.as_ref().zip(task_origin.as_ref()),
+                &root_agent_id,
             )
             .await?;
         let store = self.owner()?.clone();
@@ -1077,6 +1192,123 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
             session,
         )
         .await
+    }
+
+    async fn task_callback_source(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &ThreadId,
+        root_agent_id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            awaken_agent_contract::agent::delegation::DelegationOrigin,
+        )>,
+        RunError,
+    > {
+        self.reads
+            .task_callback_source(session_id, thread_id, root_agent_id)
+            .await
+    }
+
+    async fn task_origin_execution(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &ThreadId,
+        origin_run_id: &awaken_agent_contract::RunId,
+    ) -> Result<
+        Box<(
+            awaken_runtime_contract::RunActivation,
+            Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        )>,
+        RunError,
+    > {
+        crate::session_run_reservation::task_origin_execution(
+            self.owner()?.as_ref(),
+            session_id,
+            thread_id,
+            origin_run_id,
+        )
+        .await
+    }
+
+    async fn session_run_command_receipt(
+        &self,
+        command: &awaken_session_execution_contract::AdmitSessionRun,
+    ) -> Result<Option<awaken_session_execution_contract::SessionRunReservation>, RunError> {
+        use awaken_dispatch_contract::{
+            SessionRunAdmissionObservation, SessionRunAdmissionReads as _,
+        };
+        let source = self
+            .owner()
+            .map_err(|error| RunError::unavailable(error.message))?;
+        let observed = source
+            .observe_session_run_admission(&command.run_id)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let fingerprint = command.command_fingerprint();
+        let thread = command
+            .private_task_input
+            .as_ref()
+            .and_then(|input| input.tenure())
+            .map_or(command.session_id.as_str(), |tenure| tenure.thread.as_str());
+        match observed {
+            SessionRunAdmissionObservation::Missing => Ok(None),
+            SessionRunAdmissionObservation::Live(request) => {
+                let Some(stored) = request
+                    .session_command_fingerprint
+                    .as_ref()
+                    .filter(|fp| fp.is_current())
+                else {
+                    return Err(RunError::unavailable(
+                        "original Task command identity is unavailable",
+                    ));
+                };
+                if stored != &fingerprint
+                    || request.thread_id().0 != thread
+                    || request.session_thread_id().0 != command.session_id.as_str()
+                {
+                    return Err(RunError::conflict(
+                        "Task attention Run id was reused with different immutable input",
+                    ));
+                }
+                if let Some(epoch) = request.session_activity_epoch.filter(|epoch| *epoch > 0) {
+                    Ok(Some(awaken_session_execution_contract::SessionRunReservation::AlreadyActivated { session_activity_epoch: epoch }))
+                } else {
+                    Err(RunError::unavailable(
+                        "exact Task attention is reserved but not activated",
+                    ))
+                }
+            }
+            SessionRunAdmissionObservation::Completed { completion, .. } => {
+                if completion.request_fingerprint.is_none()
+                    || completion.thread_id.is_none()
+                    || completion.session_thread_id.is_none()
+                {
+                    return Err(RunError::unavailable(
+                        "original Task completion identity is unavailable",
+                    ));
+                }
+                if completion
+                    .thread_id
+                    .as_ref()
+                    .is_some_and(|id| id.0 == thread)
+                    && completion
+                        .session_thread_id
+                        .as_ref()
+                        .is_some_and(|id| id.0 == command.session_id.as_str())
+                    && completion.request_fingerprint.as_deref() == Some(fingerprint.as_str())
+                {
+                    Ok(Some(
+                        awaken_session_execution_contract::SessionRunReservation::Completed,
+                    ))
+                } else {
+                    Err(RunError::conflict(
+                        "Task attention completion belongs to different immutable input",
+                    ))
+                }
+            }
+        }
     }
 
     async fn coordinated_admission_receipt(

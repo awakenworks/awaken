@@ -142,6 +142,8 @@ mod tests {
             message: "original message".into(),
             session_activity_epoch: Some(1),
             max_unarchived_threads: 24,
+            task_attention: None,
+            task_attention_execution: None,
         };
         assert_eq!(
             managed
@@ -269,8 +271,11 @@ mod tests {
         let after = dispatch.events_after(cursor, 16, None).await.unwrap();
         assert!(after.events.is_empty(), "R2/R4 no claim or settlement");
         assert_eq!(after.next_cursor, cursor, "R2/R4 cursor stutter");
-        // R6: a SessionCommand row is not an ordinary child/report admission.
-        // Same original read role sees the row but cannot grant its ACK.
+        // R6: a lawful bound Task-child SessionCommand row is not an ordinary
+        // child/report admission. Same Session/Thread/Run/message and canonical
+        // activation match, but this identity kind/FPR cannot grant its ACK.
+        // The storage precondition uses the original tenure/FPR/codec owners;
+        // it does not claim a complete Task-authentication or origin-run flow.
         let mut scoped = command.clone();
         scoped.operation_id = "reserved-root-operation".into();
         scoped.thread_id = awaken_session_execution_contract::coordinated_thread_id(
@@ -284,12 +289,54 @@ mod tests {
             &scoped.parent_run_id,
             &scoped.operation_id,
         );
-        let scoped_request = awaken_dispatch_contract::RunDispatch::new(
-            coordinated_run_activation(scoped.clone(), "coord-root".into(), Vec::new()),
-        )
-        .for_session(ThreadId(session.to_string()))
-        .with_session_activity_epoch(1)
-        .with_session_command_identity();
+        let scoped_activation =
+            coordinated_run_activation(scoped.clone(), "coord-root".into(), Vec::new());
+        let scoped_task = awaken_session_execution_contract::AdmitSessionRun {
+            session_id: scoped.session_id.clone(),
+            agent_id: scoped.snapshot.root_agent_id.0.clone(),
+            operation_id: scoped.operation_id.clone(),
+            run_id: scoped.run_id.clone(),
+            messages: scoped_activation.input.clone(),
+            data_subject_id: None,
+            traceparent: None,
+            execution_requirements: Default::default(),
+            replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+            private_task_input: Some(
+                awaken_session_application_contract::PrivateTaskInput::with_tenure(
+                    awaken_session_application_contract::TaskTenureRead {
+                        thread: scoped.thread_id.0.clone(),
+                        partition: awaken_session_application_contract::TaskReadPartition::of(
+                            &scoped.thread_id.0,
+                            scoped.session_id.as_str(),
+                        ),
+                        run: scoped.run_id.0.clone(),
+                        task: "certainty-task".into(),
+                        holder: "certainty-holder".into(),
+                        epoch: awaken_lease_contract::fence::Epoch::FIRST,
+                    },
+                    Vec::new(),
+                )
+                .unwrap(),
+            ),
+        };
+        let mut scoped_request = awaken_dispatch_contract::RunDispatch::new(scoped_activation)
+            .for_session(ThreadId(session.to_string()))
+            .with_session_activity_epoch(1)
+            .with_session_command_fingerprint(scoped_task.command_fingerprint())
+            .with_session_command_identity();
+        scoped_request.private_task_input = scoped_task.private_task_input;
+        let scoped_request = scoped_request.with_worker_codec_requirements();
+        assert!(
+            scoped_request.is_task_child_command(),
+            "R6 lawful stored kind"
+        );
+        assert!(
+            awaken_dispatch_execution::coordinated_activation_matches(
+                &CoordinatedAdmissionRef::Child(&scoped),
+                &scoped_request.activation,
+            ),
+            "R6 original child activation still matches"
+        );
         dispatch.enqueue(scoped_request).await.unwrap();
         assert!(
             managed
@@ -510,6 +557,8 @@ mod tests {
                     message: format!("coordinate Resource rule {rule}"),
                     session_activity_epoch: Some(1),
                     max_unarchived_threads: 24,
+                    task_attention: None,
+                    task_attention_execution: None,
                 })
                 .await
                 .unwrap_or_else(|error| panic!("{rule} production child admission: {error}"));
@@ -619,6 +668,8 @@ mod tests {
                     message: "next turn".into(),
                     session_activity_epoch: Some(1),
                     max_unarchived_threads: 24,
+                    task_attention: None,
+                    task_attention_execution: None,
                 })
                 .await
                 .unwrap();

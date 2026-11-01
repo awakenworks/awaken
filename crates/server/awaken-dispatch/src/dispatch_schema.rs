@@ -400,6 +400,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0009__dispatch_completion_cancellation.sql",
                 include_str!("migrations/V0009__dispatch_completion_cancellation.sql"),
             )?,
+            portable_migration(
+                10,
+                "V0010__dispatch_completion_task_source.sql",
+                include_str!("migrations/V0010__dispatch_completion_task_source.sql"),
+            )?,
         ],
     )
 }
@@ -460,7 +465,8 @@ mod tests {
 
         // Migration decision table I1-I3. Causes: C1 compact/expanded published
         // history; C2 converged V6 already applied; C3 one original operation;
-        // C4 repeated upgrade. I1=C1+C2+C3 => V7 closure and V8 index apply, preserving exact
+        // C4 repeated upgrade. I1=C1+C2+C3 => V7 closure, V8 index, V9 cancellation,
+        // and V10 retained Task source apply, preserving exact
         // sequence, payload and time. I2=I1+exact Run query => composite index
         // supplies ordered replay. I3=C4 => no new migration or fact mutation.
         // This asserts access to the one log, never another replay projection.
@@ -488,7 +494,7 @@ mod tests {
             let applied = runner.run_bundle(&full).await.unwrap();
             assert_eq!(
                 applied.iter().map(|row| row.version).collect::<Vec<_>>(),
-                [7, 8, 9],
+                [7, 8, 9, 10],
                 "I1"
             );
             let observed: (i64, String, i64) = sqlx::query_as(
@@ -618,7 +624,8 @@ mod tests {
         use awaken_sqlite_pool::EmbeddedSqlite;
 
         /* Real-storage cause/effect table:
-         * E1 exact expanded V1..V24 ledger -> append V25..V29 and convergence;
+         * E1 exact expanded V1..V24 ledger -> append V25..V29 and converged
+         * V1..V10 (including nullable retained Task source);
          * E2 completed expanded ledger -> reopen with zero writes;
          * E3 missing later columns/triggers before cutover -> one final schema
          * containing completion identity/affinity, reservation claim, pending
@@ -655,7 +662,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             "S1/E1"
         );
         for (table, column) in [
@@ -1125,5 +1132,114 @@ mod tests {
             );
             assert!(!sql.contains("CREATE TABLE"), "R1-R2/E2: {sql}");
         }
+    }
+
+    #[tokio::test]
+    async fn task_source_upgrade_preserves_both_published_sqlite_histories_and_legacy_receipts() {
+        use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+        use awaken_sqlite_pool::EmbeddedSqlite;
+        // U1 compact/expanded already-published stream + converged V9 => only
+        // V10 appends its nullable source column. U2 old receipt/old checksums
+        // remain byte-identical and source stays NULL, never fabricated. U3
+        // reopen/full replay is empty. V7/V8 identities are original inputs.
+        for history in [
+            dispatch_bundle().unwrap(),
+            expanded_dispatch_bundle().unwrap(),
+        ] {
+            let conn = EmbeddedSqlite::memory().open().await.unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
+            runner.run_bundle(&history).await.unwrap();
+            let full = converged_dispatch_bundle().unwrap();
+            let v9 =
+                MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..9].to_vec()).unwrap();
+            runner.run_bundle(&v9).await.unwrap();
+            sqlx::query("INSERT INTO runtime_dispatch_completion (run_id,request_fingerprint,thread_id,session_thread_id,cancel_requested) VALUES ('legacy-task-source','old-fingerprint','old-thread','old-session',1)").execute(&conn).await.unwrap();
+            let before: Vec<(String,i64,String)> = sqlx::query_as("SELECT bundle_id,version,checksum FROM runtime_schema_migrations ORDER BY bundle_id,version").fetch_all(&conn).await.unwrap();
+            assert_eq!(
+                runner.run_bundle(&full).await.unwrap().len(),
+                1,
+                "U1 exactly appendV10"
+            );
+            let after: Vec<(String,i64,String)> = sqlx::query_as("SELECT bundle_id,version,checksum FROM runtime_schema_migrations ORDER BY bundle_id,version").fetch_all(&conn).await.unwrap();
+            assert!(
+                before.iter().all(|row| after.contains(row)),
+                "U2 no historical checksum rewrite"
+            );
+            let row: (String,String,String,i64,Option<String>) = sqlx::query_as("SELECT request_fingerprint,thread_id,session_thread_id,cancel_requested,retained_request FROM runtime_dispatch_completion WHERE run_id='legacy-task-source'").fetch_one(&conn).await.unwrap();
+            assert_eq!(
+                row,
+                (
+                    "old-fingerprint".into(),
+                    "old-thread".into(),
+                    "old-session".into(),
+                    1,
+                    None
+                ),
+                "U2 no source backfill/receipt mutation"
+            );
+            assert!(
+                runner.run_bundle(&full).await.unwrap().is_empty(),
+                "U3 reopen is stable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn task_source_upgrade_preserves_both_published_postgres_histories_and_legacy_receipts() {
+        use awaken_scoped_migration::postgres::PostgresMigrationRunner;
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
+        };
+        let pool = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
+        // Same U1-U3 table as SQLite, on the admitted real PG fixture. Only
+        // these exact per-test table prefixes are created/dropped; the original
+        // published streams and their private migration ledgers are unchanged.
+        for (prefix, history) in [
+            ("tasksrc_compact", dispatch_bundle().unwrap()),
+            ("tasksrc_expanded", expanded_dispatch_bundle().unwrap()),
+        ] {
+            let runner = PostgresMigrationRunner::with_prefix(pool.clone(), prefix).unwrap();
+            runner.run_bundle(&history).await.unwrap();
+            let full = converged_dispatch_bundle().unwrap();
+            let v9 =
+                MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..9].to_vec()).unwrap();
+            runner.run_bundle(&v9).await.unwrap();
+            sqlx::query(&format!("INSERT INTO {prefix}_dispatch_completion (run_id,request_fingerprint,thread_id,session_thread_id,cancel_requested) VALUES ('legacy-task-source','old-fingerprint','old-thread','old-session',1)")).execute(&pool).await.unwrap();
+            let before: Vec<(String,i64,String)> = sqlx::query_as(&format!("SELECT bundle_id,version,checksum FROM {prefix}_schema_migrations ORDER BY bundle_id,version")).fetch_all(&pool).await.unwrap();
+            assert_eq!(
+                runner.run_bundle(&full).await.unwrap().len(),
+                1,
+                "U1 append onlyV10"
+            );
+            let after: Vec<(String,i64,String)> = sqlx::query_as(&format!("SELECT bundle_id,version,checksum FROM {prefix}_schema_migrations ORDER BY bundle_id,version")).fetch_all(&pool).await.unwrap();
+            assert!(
+                before.iter().all(|row| after.contains(row)),
+                "U2 published checksums intact"
+            );
+            let row: (String,String,String,i64,Option<String>) = sqlx::query_as(&format!("SELECT request_fingerprint,thread_id,session_thread_id,cancel_requested,retained_request::TEXT FROM {prefix}_dispatch_completion WHERE run_id='legacy-task-source'")).fetch_one(&pool).await.unwrap();
+            assert_eq!(
+                row,
+                (
+                    "old-fingerprint".into(),
+                    "old-thread".into(),
+                    "old-session".into(),
+                    1,
+                    None
+                ),
+                "U2 receipt intact/NULL source"
+            );
+            assert!(
+                runner.run_bundle(&full).await.unwrap().is_empty(),
+                "U3 stable reopen"
+            );
+            let owned: Vec<String> = sqlx::query_scalar("SELECT tablename FROM pg_tables WHERE schemaname=current_schema() AND left(tablename, length($1))=$1").bind(format!("{prefix}_")).fetch_all(&pool).await.unwrap();
+            for table in owned {
+                sqlx::query(&format!("DROP TABLE {table} CASCADE"))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        }
+        pool.close().await;
     }
 }

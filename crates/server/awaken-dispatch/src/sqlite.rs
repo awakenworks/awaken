@@ -134,7 +134,7 @@ async fn load_run_identity_evidence(
     sqlx::query(&format!(
         "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
          d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
-         c.thread_id, c.session_thread_id, c.cancel_requested FROM (SELECT ?1 AS run_id) k \
+         c.thread_id, c.session_thread_id, c.cancel_requested, c.retained_request AS retained_request_json FROM (SELECT ?1 AS run_id) k \
          LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
          LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
     ))
@@ -568,7 +568,9 @@ mod migration_history_tests {
         // index; C2 restart after applying V8. Effects: E1 retain exact V7
         // checksum; E2 both effects exist once; E3 reopen creates no receipts.
         // R1=C1 closure -> append index@8; R2=C1 index -> append closure@8;
-        // R3=R1/R2+C2 -> same 9 receipts (V9 completion cancel fact appends). Unknown V7 is tested separately.
+        // R3=R1/R2+C2 -> same 10 receipts: V9 records completion cancellation,
+        // V10 adds nullable retained Task source. The task-source upgrade tests
+        // own legacy-row/checksum preservation. Unknown V7 is tested separately.
         for index_first in [false, true] {
             let pool = EmbeddedSqlite::memory().open().await.unwrap();
             let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
@@ -617,7 +619,7 @@ mod migration_history_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-            assert_eq!(receipts, 9, "E3 exact replay");
+            assert_eq!(receipts, 10, "E3 exact replay");
             let closed_columns: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('runtime_dispatch') WHERE name='active_attempt_closing'",
             )
@@ -674,8 +676,9 @@ mod migration_history_tests {
     async fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
-         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V7;
-         * Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
+         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V10;
+         * Q3 reopen Q2 -> no duplicate columns/triggers or receipts, including
+         * V9 completion cancellation and V10 nullable retained Task source.
          * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
          */
         let directory = tempfile::tempdir().expect("migration database directory");
@@ -718,7 +721,7 @@ mod migration_history_tests {
         .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 9,
+            converged_count, 10,
             "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure, completion cancel fact"
         );
     }

@@ -166,6 +166,12 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
    new counts; equality is silent. The number does not block code admission.
    Required review reasons and registered crate presence remain hard, as do
    dependency direction, cycles, purity and actual production-use checks.
+   Contract-graph depth is likewise a diagnostic count: changed depth warns,
+   equality is silent, and canonical domain primitives remain in their owning
+   contract instead of being duplicated to shorten a dependency chain. The DAG,
+   interface kinds, backend vocabulary, typed-error and capability-default rules
+   remain hard independently of depth. Tighten never adds or raises a depth
+   record, including when another rule shrinks.
    Default/check stays read-only; tighten only lowers records; explicitly raising
    a recorded count still requires the four-field review record below.
 

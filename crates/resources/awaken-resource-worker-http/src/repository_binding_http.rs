@@ -23,7 +23,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
+    SessionWorkerEffectAdmission, SessionWorkerEffectTemporalRule, clock_ms,
+    verify_session_worker_effect,
 };
 
 const REPOSITORY_BINDING_PATH: &str = "/v1/worker/resources/repositories/verify";
@@ -415,17 +416,17 @@ async fn verify_run_repository_binding(
     request: RepositoryBindingRequest,
     claim: RunClaim,
 ) -> Response {
-    if verify_claim_owner(
-        service.directory.as_ref(),
-        worker,
-        request.identity.as_ref(),
-        &claim,
-        clock_ms(service.clock.as_ref()),
-    )
-    .await
-    .is_err()
-    {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Some(status) = SessionWorkerEffectAdmission::claim_rejection_status(
+        verify_claim_owner(
+            service.directory.as_ref(),
+            worker,
+            request.identity.as_ref(),
+            &claim,
+            clock_ms(service.clock.as_ref()),
+        )
+        .await,
+    ) {
+        return status.into_response();
     }
     let guard = match service.dispatch.lock_commit_epoch(&claim).await {
         Ok(Some(guard))
@@ -542,17 +543,17 @@ async fn verify_session_repository_binding(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now_ms = clock_ms(service.clock.as_ref());
-    if let Some(status) = verify_session_worker_effect(
-        directory,
-        worker,
-        identity,
-        intent.lease(),
-        now_ms,
-        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
-    )
-    .await
-    .rejection_status()
-    {
+    if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+        verify_session_worker_effect(
+            directory,
+            worker,
+            identity,
+            intent.lease(),
+            now_ms,
+            SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+        )
+        .await,
+    ) {
         return status.into_response();
     }
     let awaken_session_execution_contract::SessionResourceMaterializationTarget::Input(input) =
@@ -624,17 +625,17 @@ async fn verify_session_repository_binding(
     {
         return StatusCode::CONFLICT.into_response();
     }
-    if let Some(status) = verify_session_worker_effect(
-        directory,
-        worker,
-        identity,
-        intent.lease(),
-        latest_now_ms,
-        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
-    )
-    .await
-    .rejection_status()
-    {
+    if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+        verify_session_worker_effect(
+            directory,
+            worker,
+            identity,
+            intent.lease(),
+            latest_now_ms,
+            SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+        )
+        .await,
+    ) {
         return status.into_response();
     }
     if !transport_expiry_is_admitted(
@@ -665,17 +666,17 @@ async fn verify_terminal_repository_binding(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now_ms = clock_ms(service.clock.as_ref());
-    if let Some(status) = verify_session_worker_effect(
-        directory,
-        worker,
-        identity,
-        &lease,
-        now_ms,
-        SessionWorkerEffectTemporalRule::SessionRoot,
-    )
-    .await
-    .rejection_status()
-    {
+    if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+        verify_session_worker_effect(
+            directory,
+            worker,
+            identity,
+            &lease,
+            now_ms,
+            SessionWorkerEffectTemporalRule::SessionRoot,
+        )
+        .await,
+    ) {
         return status.into_response();
     }
     let projection = match control
@@ -698,17 +699,17 @@ async fn verify_terminal_repository_binding(
     ) {
         return StatusCode::CONFLICT.into_response();
     }
-    if let Some(status) = verify_session_worker_effect(
-        directory,
-        worker,
-        identity,
-        &projection.current_lease,
-        now_ms,
-        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
-    )
-    .await
-    .rejection_status()
-    {
+    if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+        verify_session_worker_effect(
+            directory,
+            worker,
+            identity,
+            &projection.current_lease,
+            now_ms,
+            SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+        )
+        .await,
+    ) {
         return status.into_response();
     }
     if projection.workspace_id != request.workspace_id {
@@ -772,17 +773,17 @@ async fn verify_terminal_repository_binding(
     {
         return StatusCode::CONFLICT.into_response();
     }
-    if let Some(status) = verify_session_worker_effect(
-        directory,
-        worker,
-        identity,
-        &latest.current_lease,
-        latest_now_ms,
-        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
-    )
-    .await
-    .rejection_status()
-    {
+    if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+        verify_session_worker_effect(
+            directory,
+            worker,
+            identity,
+            &latest.current_lease,
+            latest_now_ms,
+            SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+        )
+        .await,
+    ) {
         return status.into_response();
     }
     if !transport_expiry_is_admitted(

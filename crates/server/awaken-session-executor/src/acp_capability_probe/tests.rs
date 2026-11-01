@@ -381,7 +381,7 @@ async fn retained_acp_probe_releases_unrelated_session_owners() {
     let host = probe_composition(base.path()).await;
     let context = host
         .run_assembly
-        .ctx_for_session_coordination("acp-owner-idle", None)
+        .ctx_for_session_coordination("acp-owner-idle", None, None)
         .await
         .unwrap();
     assert!(context.env.is_none() && !context.has_active_run());

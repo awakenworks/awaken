@@ -224,7 +224,7 @@ async fn retained_configured_mcp_effects_release_unrelated_session_owners() {
     .unwrap();
     let context = host
         .run_assembly
-        .ctx_for_session_coordination("configured-mcp-idle", None)
+        .ctx_for_session_coordination("configured-mcp-idle", None, None)
         .await
         .unwrap();
     let effects = RunMcpEffects::new(host.run_assembly.clone());

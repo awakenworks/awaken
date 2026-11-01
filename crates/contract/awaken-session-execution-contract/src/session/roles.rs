@@ -283,6 +283,8 @@ pub trait ChildRunCoordination: Send + Sync {
 
 /// Read-only coordination facts used by Session projection, admission and tool replies.
 /// This role grants no Run execution, claim or mutation authority.
+/// Task receipt, membership and origin-source capabilities are required;
+/// unsupported fixtures explicitly select the existing neutral role behaviour.
 ///
 /// ```compile_fail,E0599
 /// use awaken_session_execution_contract::{AdmitSessionRun, SessionCoordinationReads};
@@ -309,6 +311,48 @@ pub trait SessionCoordinationReads: Send + Sync {
             reason: crate::SessionExecutionRecoveryGap::HistoryUnavailable,
         }
     }
+
+    /// Exact immutable Task command receipt from the existing dispatch row or
+    /// retained completion. This read never reserves, claims or reconstructs a
+    /// command from current mutable configuration.
+    async fn session_run_command_receipt(
+        &self,
+        _command: &crate::AdmitSessionRun,
+    ) -> Result<Option<crate::SessionRunReservation>, RunError>;
+
+    /// Select the immutable Agent and creation origin of an already-existing
+    /// callback Thread from
+    /// committed Session relationships (including Native recursive children).
+    /// This is not fresh delegation permission or a cross-Thread snapshot: each
+    /// edge is read through the same selected physical Session authority.
+    async fn task_callback_source(
+        &self,
+        _session_id: &awaken_session_types::SessionId,
+        _thread_id: &awaken_agent_contract::ThreadId,
+        _root_agent_id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            awaken_agent_contract::agent::delegation::DelegationOrigin,
+        )>,
+        RunError,
+    >;
+
+    /// Original Task origin snapshot and its already-frozen publication bundle.
+    /// Missing/corrupt source is uncertainty; this does not authorize a callback
+    /// or invalidate a separately accepted immutable command receipt.
+    async fn task_origin_execution(
+        &self,
+        _session_id: &awaken_session_types::SessionId,
+        _thread_id: &awaken_agent_contract::ThreadId,
+        _origin_run_id: &awaken_agent_contract::RunId,
+    ) -> Result<
+        Box<(
+            awaken_runtime_contract::RunActivation,
+            Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        )>,
+        RunError,
+    >;
 
     /// Project an exact already-accepted original business receipt. Some grants
     /// no execution; None is ONLY original dispatch Missing and the caller must

@@ -48,7 +48,7 @@ async fn authority_repository(
     )
 }
 
-fn coordinated_session(id: &str) -> PersistedSession {
+pub(crate) fn coordinated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
     let environment = session
         .frozen_baseline()

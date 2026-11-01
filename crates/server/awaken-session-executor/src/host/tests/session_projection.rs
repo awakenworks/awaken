@@ -1211,7 +1211,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .expect("R4 project optional unpublished Agent baseline");
     let fallback = fallback_host
         .run_assembly
-        .ctx_for_session_coordination("cold-built-in", None)
+        .ctx_for_session_coordination("cold-built-in", None, None)
         .await
         .expect("R4 build the generated fallback snapshot");
     assert_eq!(fallback.config.root_agent_id.0, "built-in-agent", "R4/E4");

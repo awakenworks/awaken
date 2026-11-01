@@ -93,6 +93,8 @@ impl SessionAgentMessageCommand {
             message: self.message,
             session_activity_epoch,
             max_unarchived_threads,
+            task_attention: None,
+            task_attention_execution: None,
         }
     }
 }
@@ -452,6 +454,17 @@ pub struct CoordinatedRunCommand {
     /// data-only recovery input; a fresh admission requires Some(nonzero).
     pub session_activity_epoch: Option<u64>,
     pub max_unarchived_threads: usize,
+    /// A Task-authorized follow-up retains the existing complete Session command
+    /// identity and private input. Ordinary Agent messages leave this absent.
+    pub task_attention: Option<crate::AdmitSessionRun>,
+    /// Original retained execution and publication bundle for a Task callback.
+    /// It is data from the original admission authority, not caller permission.
+    pub task_attention_execution: Option<
+        Box<(
+            awaken_runtime_contract::RunActivation,
+            Vec<ExecutableAgentSnapshot>,
+        )>,
+    >,
 }
 
 /// Stable coordinated Run identity; moved from the original Session caller.

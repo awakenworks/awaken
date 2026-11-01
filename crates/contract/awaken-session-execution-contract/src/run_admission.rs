@@ -434,6 +434,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn neutral_task_coordination_reads_refuse_without_source_authority() {
+        // Causes: C1 the caller explicitly selects the existing neutral read role;
+        // C2 it requests exact receipt, callback membership or original execution.
+        // R1/R2/R3 each C2 choice with C1 => typed Unavailable and its original
+        // diagnostic, never an accepted receipt, membership or source. This is
+        // neutral-role behaviour, not a business admission/physical-execution test.
+        // Separate source-bound compiler controls remove each one canonical
+        // neutral implementation: the old trait default fills it, while the
+        // required contract must reject that same omission with E0046.
+        let command = command();
+        let thread_id = awaken_agent_contract::ThreadId(command.session_id.to_string());
+        let receipt = crate::SessionCoordinationReads::session_run_command_receipt(
+            &crate::NeutralRuntime,
+            &command,
+        )
+        .await
+        .unwrap_err();
+        let membership = crate::SessionCoordinationReads::task_callback_source(
+            &crate::NeutralRuntime,
+            &command.session_id,
+            &thread_id,
+            &command.agent_id,
+        )
+        .await
+        .unwrap_err();
+        let source = crate::SessionCoordinationReads::task_origin_execution(
+            &crate::NeutralRuntime,
+            &command.session_id,
+            &thread_id,
+            &command.run_id,
+        )
+        .await
+        .unwrap_err();
+        for (rule, error, diagnostic) in [
+            (
+                "R1",
+                receipt,
+                "exact Session Run command receipt is unavailable",
+            ),
+            ("R2", membership, "Task callback membership is unavailable"),
+            (
+                "R3",
+                source,
+                "original Task execution source is unavailable",
+            ),
+        ] {
+            assert_eq!(
+                error.kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "{rule}"
+            );
+            assert_eq!(error.message, diagnostic, "{rule}");
+        }
+    }
+
     #[test]
     fn prepared_identity_preserves_all_activation_fields_without_changing_ordinary_identity() {
         use super::AdmitPreparedSessionRun;

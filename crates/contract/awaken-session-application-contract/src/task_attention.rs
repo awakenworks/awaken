@@ -34,6 +34,8 @@ pub const PRIVATE_TASK_INPUT_VERSION: u32 = 1;
 pub struct PrivateTaskInput {
     version: u32,
     observations: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tenure: Option<TaskTenureRead>,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +43,8 @@ pub struct PrivateTaskInput {
 struct PrivateTaskInputWire {
     version: u32,
     observations: Vec<Value>,
+    #[serde(default)]
+    tenure: Option<TaskTenureRead>,
 }
 
 /// Why a private Task input was refused.
@@ -50,6 +54,8 @@ pub enum PrivateTaskInputError {
     Version(u32),
     #[error("private Task input carries no observation")]
     Empty,
+    #[error("private Task input tenure is invalid: {0}")]
+    Tenure(String),
 }
 
 impl TryFrom<PrivateTaskInputWire> for PrivateTaskInput {
@@ -59,7 +65,10 @@ impl TryFrom<PrivateTaskInputWire> for PrivateTaskInput {
         if wire.version != PRIVATE_TASK_INPUT_VERSION {
             return Err(PrivateTaskInputError::Version(wire.version));
         }
-        Self::new(wire.observations)
+        match wire.tenure {
+            Some(tenure) => Self::with_tenure(tenure, wire.observations),
+            None => Self::new(wire.observations),
+        }
     }
 }
 
@@ -72,7 +81,28 @@ impl PrivateTaskInput {
         Ok(Self {
             version: PRIVATE_TASK_INPUT_VERSION,
             observations,
+            tenure: None,
         })
+    }
+
+    /// Bind the complete authenticated Task subject into the ordinary command
+    /// fingerprint. An explicitly addressed input-required attention may carry
+    /// no observation; the ordinary unbound `new(empty)` remains forbidden.
+    pub fn with_tenure(
+        tenure: TaskTenureRead,
+        observations: Vec<Value>,
+    ) -> Result<Self, PrivateTaskInputError> {
+        tenure.validate().map_err(PrivateTaskInputError::Tenure)?;
+        Ok(Self {
+            version: PRIVATE_TASK_INPUT_VERSION,
+            observations,
+            tenure: Some(tenure),
+        })
+    }
+
+    #[must_use]
+    pub fn tenure(&self) -> Option<&TaskTenureRead> {
+        self.tenure.as_ref()
     }
 
     /// The encoded records, for the Task owner's codec.
@@ -89,10 +119,9 @@ pub struct TaskAttention {
     /// Deterministic over Thread, Task, tenure and observation kind: a retry
     /// after a lost acknowledgement reaches the same Run.
     pub operation_id: String,
-    /// The Session's primary Thread.
-    pub thread: String,
-    /// The holder in the observation's Task tenure.
-    pub holder: String,
+    /// The exact Task, logical Thread, Session partition, origin Run and
+    /// attempt held by the authenticated sender. Required even without input.
+    pub tenure: TaskTenureRead,
     /// The model-visible notice the background Run starts from.
     pub message: Message,
     /// The observation, carried privately to the Run that folds it. `None`
@@ -102,7 +131,35 @@ pub struct TaskAttention {
     pub input: Option<PrivateTaskInput>,
 }
 
+impl TaskAttention {
+    /// One canonical lowering into immutable private command input. Authority is
+    /// checked by the authenticated boundary; this method alone grants nothing.
+    pub fn bind_input(mut self) -> Result<Self, PrivateTaskInputError> {
+        if self
+            .input
+            .as_ref()
+            .and_then(PrivateTaskInput::tenure)
+            .is_some_and(|tenure| tenure != &self.tenure)
+        {
+            return Err(PrivateTaskInputError::Tenure(
+                "attention and input name different Tasks".into(),
+            ));
+        }
+        let observations = self
+            .input
+            .take()
+            .map_or_else(Vec::new, |input| input.observations);
+        self.input = Some(PrivateTaskInput::with_tenure(
+            self.tenure.clone(),
+            observations,
+        )?);
+        Ok(self)
+    }
+}
+
 /// The application durably admitted the Run carrying the observation.
+/// This receipt does not certify the complete Task aggregate or grant tool
+/// execution; those remain the Task owner's StepStart/admission checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAttentionAck {
@@ -130,6 +187,32 @@ pub struct TaskTenureRead {
     pub run: String,
     pub task: String,
     pub holder: String,
+    pub epoch: awaken_lease_contract::fence::Epoch,
+}
+
+impl TaskTenureRead {
+    pub fn validate(&self) -> Result<(), String> {
+        if [&self.thread, &self.run, &self.task, &self.holder]
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            return Err("Task tenure coordinates must not be empty".into());
+        }
+        if let TaskReadPartition::Session { session_thread } = &self.partition
+            && (session_thread.trim().is_empty() || session_thread == &self.thread)
+        {
+            return Err("a child Task must name a distinct nonempty Session partition".into());
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn session_thread(&self) -> &str {
+        match &self.partition {
+            TaskReadPartition::Thread {} => &self.thread,
+            TaskReadPartition::Session { session_thread } => session_thread,
+        }
+    }
 }
 
 /// The Session partition a Task's Thread is committed in. It is required on
@@ -324,6 +407,49 @@ mod tests {
     }
 
     #[test]
+    fn meta_only_attention_requires_exact_nonzero_task_coordinates() {
+        // I1 original new(empty) remains forbidden; I2 explicit complete tenure
+        // permits an input-required attention and round-trips v1; I3 every
+        // subject axis is serialized and a conflicting prebound input refuses.
+        let tenure = TaskTenureRead {
+            thread: "root".into(),
+            partition: TaskReadPartition::Thread {},
+            run: "origin".into(),
+            task: "task".into(),
+            holder: "worker".into(),
+            epoch: awaken_lease_contract::fence::Epoch::from_persisted(2).unwrap(),
+        };
+        assert_eq!(
+            PrivateTaskInput::new(Vec::new()),
+            Err(PrivateTaskInputError::Empty),
+            "I1"
+        );
+        let input = PrivateTaskInput::with_tenure(tenure.clone(), Vec::new()).unwrap();
+        let wire = serde_json::to_value(&input).unwrap();
+        assert_eq!(wire["tenure"]["epoch"], json!(2));
+        assert_eq!(wire["tenure"]["task"], json!("task"));
+        assert_eq!(
+            serde_json::from_value::<PrivateTaskInput>(wire.clone()).unwrap(),
+            input,
+            "I2"
+        );
+        for field in ["thread", "run", "task", "holder"] {
+            let mut invalid = wire.clone();
+            invalid["tenure"][field] = json!("");
+            assert!(
+                serde_json::from_value::<PrivateTaskInput>(invalid).is_err(),
+                "I3 {field}"
+            );
+        }
+        let mut zero = wire;
+        zero["tenure"]["epoch"] = json!(0);
+        assert!(
+            serde_json::from_value::<PrivateTaskInput>(zero).is_err(),
+            "I3 zero epoch"
+        );
+    }
+
+    #[test]
     fn task_tenure_records_admit_only_their_current_version() {
         // V1 round trip; V2 every other version; V3 unknown field or no slot.
         let record = TaskTenureRecord::new(json!({"id": "task-1"}));
@@ -361,14 +487,20 @@ mod tests {
         assert!(serde_json::from_value::<TaskTenureRecord>(json!({"id": "task-1"})).is_err());
         // The read admits only its current fields.
         let read = json!({
-            "thread": "t", "partition": {"kind": "thread"}, "run": "r", "task": "k", "holder": "h"
+            "thread": "t", "partition": {"kind": "thread"}, "run": "r", "task": "k", "holder": "h", "epoch":3
         });
         assert!(serde_json::from_value::<TaskTenureRead>(read.clone()).is_ok());
         let mut extra = read.clone();
-        extra["epoch"] = json!(1);
+        extra["legacy_epoch"] = json!(1);
         assert!(serde_json::from_value::<TaskTenureRead>(extra).is_err());
         // A read from before the partition existed is refused, not read as a
         // root Thread; so is an unknown partition or a partition field.
+        let mut no_epoch = read.clone();
+        no_epoch.as_object_mut().unwrap().remove("epoch");
+        assert!(
+            serde_json::from_value::<TaskTenureRead>(no_epoch).is_err(),
+            "no default Task epoch"
+        );
         let mut historical = read.clone();
         historical.as_object_mut().unwrap().remove("partition");
         assert!(serde_json::from_value::<TaskTenureRead>(historical).is_err());

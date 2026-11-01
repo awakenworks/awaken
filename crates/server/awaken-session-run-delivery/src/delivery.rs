@@ -47,7 +47,7 @@ use awaken_session_types::RunError;
 
 use crate::session_run_activation::{activate_session_run_reservation, read_settled_phase};
 use crate::session_run_reservation::{
-    SessionRunInputs, reserve_session_run, validate_session_run_command,
+    SessionRunInputs, reserve_session_run, select_session_run_origin, validate_session_run_command,
 };
 use crate::{
     CommittedReads, CompletionRegistry, DeliveryLock, SessionProjections, StepCommitExpectation,
@@ -247,6 +247,7 @@ impl WorkerPlacedSessions {
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
         validate_session_run_command(&command)?;
+        let origin = select_session_run_origin(&command, self.ports.owner.as_ref()).await?;
         let projection = self
             .ports
             .projections
@@ -257,6 +258,15 @@ impl WorkerPlacedSessions {
             self.ports.resource_bindings.repositories.as_deref(),
         )
         .await?;
+        if let Some(source) = origin {
+            return reserve_session_run(
+                command,
+                SessionRunInputs::Task(source),
+                |activation| SessionLowering::prepare(self.ports.projections.as_ref(), activation),
+                self.ports.owner.as_ref(),
+            )
+            .await;
+        }
         let publication = projection.publication().cloned().ok_or_else(|| {
             RunError::bad_request("a Worker-placed Session requires a pinned Agent publication")
         })?;
@@ -273,7 +283,7 @@ impl WorkerPlacedSessions {
         let snapshot = session_activation_snapshot(publication, Some(projection.tools()), true)?;
         reserve_session_run(
             command,
-            SessionRunInputs {
+            SessionRunInputs::Session {
                 snapshot: &snapshot,
                 skills: skills.as_deref(),
                 model_ref_override: Some(projection.baseline().execution_model_ref.clone()),
@@ -367,12 +377,14 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_dispatch_contract::{
-        DispatchReads as _, SessionRunAdmissionObservation, SessionRunAdmissionReads as _,
+        DispatchControlReads as _, DispatchReads as _, SessionRunAdmissionObservation,
+        SessionRunAdmissionReads as _,
     };
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, ResourceRegistryError, RetentionPolicy,
         SkillBundleFile, SkillVersion, skill_bundle_sha256,
     };
+    use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
     use awaken_session_configuration_contract::SkillBundleSourceError;
     use awaken_session_configuration_contract::resource::{
         ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
@@ -380,6 +392,7 @@ mod tests {
     use awaken_session_execution_contract::{
         ChildRunCoordination as _, SessionRunExecutionRequirements,
     };
+    use awaken_time::WallClockExt as _;
 
     fn skill() -> SkillVersion {
         let files = vec![SkillBundleFile {
@@ -515,16 +528,22 @@ mod tests {
     }
 
     pub(super) async fn delivery(stored: Option<SkillVersion>) -> WorkerPlacedSessions {
-        delivery_with_process(stored).await.0
+        let clock = awaken_time::system_clock();
+        let owner = Arc::new(AnyCoordinatorDispatch::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
+            None,
+        ));
+        delivery_with_process(stored, clock, owner).await.0
     }
 
     async fn delivery_with_process(
         stored: Option<SkillVersion>,
+        clock: Arc<dyn awaken_time::WallClock>,
+        owner: Arc<AnyCoordinatorDispatch>,
     ) -> (
         WorkerPlacedSessions,
         Arc<awaken_dispatch_execution::ProcessDispatch>,
     ) {
-        let clock = awaken_time::system_clock();
         let memory_content = awaken_resource_contract::MemoryExecutionContent::new(Arc::new(
             awaken_memory_store::VolatileMemoryRepository::new(clock.clone()),
         ));
@@ -558,10 +577,7 @@ mod tests {
         let sessions = WorkerPlacedSessions::new(WorkerPlacement {
             projections: projections.clone(),
             publication: process.publication(),
-            owner: Arc::new(AnyCoordinatorDispatch::from_durable_store(
-                awaken_dispatch::MemoryDispatchStore::new(clock),
-                None,
-            )),
+            owner,
             reads: Arc::new(CommittedReads::new(
                 Arc::new(MemoryCommits::default()),
                 projections,
@@ -582,7 +598,7 @@ mod tests {
             memory_extractions,
             skill_catalog: None,
             wake: None,
-            clock: awaken_time::system_clock(),
+            clock,
             default_model: "provider/default".into(),
         });
         (sessions, process)
@@ -820,6 +836,71 @@ mod tests {
         }
     }
 
+    async fn settle_task_origin(
+        delivery: &WorkerPlacedSessions,
+        session: &str,
+        run: &str,
+        mut activation: RunActivation,
+        publications: Vec<ExecutableAgentSnapshot>,
+        physical_session: Option<&str>,
+    ) {
+        use awaken_dispatch_contract::{
+            DispatchClaims as _, DispatchEnqueue as _, DispatchOutcome, DispatchSettlement as _,
+        };
+        // This existing queue owns the source fact. Real Done settles the exact
+        // selected value; the fixture never seeds a separate publication ledger.
+        activation.run_id = RunId(run.into());
+        activation.thread_id = ThreadId(session.into());
+        if !activation
+            .snapshot
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == "background_task")
+        {
+            activation
+                .snapshot
+                .resolved_spec
+                .plugin_ids
+                .push("background_task".into());
+            activation.snapshot.recompute_fingerprint().unwrap();
+        }
+        let mut request = awaken_dispatch_contract::RunDispatch::new(activation)
+            .with_agent_publications(publications);
+        if let Some(parent) = physical_session {
+            request = request
+                .for_session(ThreadId(parent.into()))
+                .with_session_activity_epoch(7);
+        }
+        // C0 Task inputs and optional physical Session/epoch are now final.
+        // Publish intrinsic demand once before the same owner enqueues/settles.
+        request = request.with_worker_codec_requirements();
+        delivery.ports.owner.enqueue(request).await.unwrap();
+        let claimed = delivery
+            .ports
+            .owner
+            .claim_run(
+                &RunId(run.into()),
+                "task-origin-owner",
+                30_000,
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        delivery
+            .ports
+            .owner
+            .settle(
+                &RunId(run.into()),
+                claimed.lease.epoch(),
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn coordinator_reservation_follows_its_decision_table() {
         let stored = skill();
@@ -915,10 +996,24 @@ mod tests {
         // R7 (remote Task control): a Task attention's private input rides on
         // the row unchanged.
         install(&delivery, "attention", vec![memory_input(4)], Vec::new());
-        let input = awaken_session_application_contract::PrivateTaskInput::new(vec![
-            serde_json::json!({"version": 1, "task_id": "task"}),
-        ])
-        .expect("R7 input");
+        let input: awaken_session_application_contract::PrivateTaskInput = serde_json::from_value(serde_json::json!({
+            "version":1, "observations":[{"version":1,"task_id":"task"}],
+            "tenure":{"thread":"attention","partition":{"kind":"thread"},"run":"attention-origin","task":"task","holder":"holder","epoch":3}
+        })).unwrap();
+        settle_task_origin(
+            &delivery,
+            "attention",
+            "attention-origin",
+            RunActivation::new(
+                RunId("attention-origin".into()),
+                ThreadId("attention".into()),
+                reviewing_agent(),
+                Vec::new(),
+            ),
+            Vec::new(),
+            None,
+        )
+        .await;
         let mut attention = command("attention", "Background task has news.");
         attention.private_task_input = Some(input.clone());
         assert_eq!(
@@ -934,6 +1029,197 @@ mod tests {
 
     async fn delivery_without_store() -> WorkerPlacedSessions {
         delivery(None).await
+    }
+
+    #[tokio::test]
+    async fn task_receipt_reads_the_original_live_and_completed_dispatch_identity() {
+        // R1 missing -> no receipt; R2 Reserved -> Unavailable, never an ACK;
+        // R3 activated exact input -> original activity epoch; R4 each Task
+        // subject axis changes -> conflict; R5 Completed -> original immutable
+        // receipt without any current Task-owner query or new queue write.
+        // This is the real queue/read-role boundary; Session application tests
+        // independently require its matching original activity receipt.
+        use awaken_dispatch_contract::{
+            DispatchClaims as _, DispatchOutcome, DispatchSettlement as _,
+        };
+        use awaken_session_execution_contract::SessionCoordinationReads as _;
+        let delivery = delivery(Some(skill())).await;
+        install(&delivery, "task-receipt", Vec::new(), Vec::new());
+        let mut input = command("task-receipt", "background attention");
+        input.private_task_input = Some(
+            serde_json::from_value(serde_json::json!({"version":1, "observations":[],
+            "tenure":{"thread":"task-receipt", "partition":{"kind":"thread"}, "run":"origin",
+                "task":"task", "holder":"holder", "epoch":3}}))
+            .unwrap(),
+        );
+        settle_task_origin(
+            &delivery,
+            "task-receipt",
+            "origin",
+            RunActivation::new(
+                RunId("origin".into()),
+                ThreadId("task-receipt".into()),
+                reviewing_agent(),
+                Vec::new(),
+            ),
+            Vec::new(),
+            None,
+        )
+        .await;
+        assert_eq!(
+            delivery
+                .threads
+                .session_run_command_receipt(&input)
+                .await
+                .unwrap(),
+            None,
+            "R1"
+        );
+        delivery.reserve_session_run(input.clone()).await.unwrap();
+        assert_eq!(
+            delivery
+                .threads
+                .session_run_command_receipt(&input)
+                .await
+                .unwrap_err()
+                .kind,
+            awaken_session_types::RunErrorKind::Unavailable,
+            "R2"
+        );
+        delivery
+            .activate_session_run(SessionRunDelivery {
+                session_id: input.session_id.clone(),
+                run_id: input.run_id.clone(),
+                session_activity_epoch: 7,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            delivery
+                .threads
+                .session_run_command_receipt(&input)
+                .await
+                .unwrap(),
+            Some(SessionRunReservation::AlreadyActivated {
+                session_activity_epoch: 7
+            }),
+            "R3"
+        );
+        for completed in [false, true] {
+            if completed {
+                // R0 the actual reservation is RemoteOnly: the old local
+                // claimant must get None. Declare the compatible candidate in
+                // the shared data fixture and check the original strict kernel;
+                // Memory's independent exact-claim regression cannot certify it.
+                assert!(
+                    delivery
+                        .ports
+                        .owner
+                        .claim_run(
+                            &input.run_id,
+                            "task-receipt-owner",
+                            30_000,
+                            &Default::default(),
+                        )
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "R0 local claim cannot consume a Worker-only callback",
+                );
+                let worker = crate::test_support::task_callback_worker("task-receipt-owner");
+                let SessionRunAdmissionObservation::Live(request) = delivery
+                    .ports
+                    .owner
+                    .observe_session_run_admission(&input.run_id)
+                    .await
+                    .unwrap()
+                else {
+                    panic!("R0 original activated callback");
+                };
+                awaken_worker_contract::can_assign(
+                    &worker,
+                    &request.placement,
+                    None,
+                    false,
+                    delivery.ports.clock.now_ms(),
+                )
+                .unwrap_or_else(|failure| {
+                    panic!(
+                        "R0 declared candidate satisfies the same SQLite placement law: {failure:?}; static_eligibility={:?}; placement={:?}; worker={:?}",
+                        awaken_worker_contract::can_claim(&worker.manifest, &request.placement),
+                        request.placement,
+                        worker,
+                    )
+                });
+                let claim = delivery
+                    .ports
+                    .owner
+                    .claim_run_compatible(&input.run_id, &worker, 30_000)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                delivery
+                    .ports
+                    .owner
+                    .settle(
+                        &input.run_id,
+                        claim.lease.epoch(),
+                        DispatchOutcome::Done,
+                        &[],
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    delivery
+                        .threads
+                        .session_run_command_receipt(&input)
+                        .await
+                        .unwrap(),
+                    Some(SessionRunReservation::Completed),
+                    "R5"
+                );
+            }
+            let original = delivery
+                .ports
+                .owner
+                .observe_session_run_admission(&input.run_id)
+                .await
+                .unwrap();
+            for axis in ["task", "run", "holder", "epoch", "thread", "partition"] {
+                let mut changed = input.clone();
+                let mut wire =
+                    serde_json::to_value(changed.private_task_input.as_ref().unwrap()).unwrap();
+                if axis == "epoch" {
+                    wire["tenure"][axis] = serde_json::json!(4);
+                } else if axis == "partition" {
+                    wire["tenure"][axis] =
+                        serde_json::json!({"kind":"session", "session_thread":"other"});
+                } else {
+                    wire["tenure"][axis] = serde_json::json!(format!("other-{axis}"));
+                }
+                changed.private_task_input = Some(serde_json::from_value(wire).unwrap());
+                assert_eq!(
+                    delivery
+                        .threads
+                        .session_run_command_receipt(&changed)
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    awaken_session_types::RunErrorKind::Conflict,
+                    "R4 axis={axis} completed={completed}"
+                );
+                assert_eq!(
+                    delivery
+                        .ports
+                        .owner
+                        .observe_session_run_admission(&input.run_id)
+                        .await
+                        .unwrap(),
+                    original,
+                    "read never mutates original"
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -1412,7 +1698,12 @@ mod tests {
         // L1=C1+C2 -> service owner released despite all application roles;
         // L2=L1+C3 -> same successful reads and outbox, no replacement service.
         // This checks the complete placement, not merely a narrow trait cast.
-        let (sessions, process) = delivery_with_process(None).await;
+        let clock = awaken_time::system_clock();
+        let owner = Arc::new(AnyCoordinatorDispatch::from_durable_store(
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
+            None,
+        ));
+        let (sessions, process) = delivery_with_process(None, clock, owner).await;
         let sessions = Arc::new(sessions);
         let weak = Arc::downgrade(&process);
         let publication = process.publication();
@@ -1540,5 +1831,802 @@ mod tests {
                 .await
                 .expect("requeue")
         );
+    }
+
+    #[tokio::test]
+    async fn task_callback_membership_reads_native_descendants_from_one_physical_session() {
+        use awaken_agent_contract::agent::delegation::{
+            DelegationId, DelegationLimits, DelegationRegistry, RequestDelegation,
+        };
+        use awaken_agent_contract::agent::state::StateKey as _;
+        use awaken_agent_contract::thread::commit::RunDisposition;
+        use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+        use awaken_runtime_contract::RunDelegations;
+        use awaken_session_execution_contract::SessionCoordinationReads as _;
+        // M1 root -> direct child -> grandchild are original committed Native
+        // registry edges, exact canonical child Run/Thread identities. M2 root
+        // advances and its old registry is logically cleared => historical
+        // membership remains for ACKs; no new relationship is granted. M3 the
+        // same child is reattributed in a later otherwise-valid registry =>
+        // uncertainty, never latest-Agent wins. M4 another partition/unknown
+        // Thread is not a callback target. The public observed-root projection
+        // retains its original nonrecursive semantics and fence. Actual Memory
+        // commits and existing Session-scoped reader are used, not scripted links.
+        let sessions = delivery(None).await;
+        let parent = awaken_session_types::SessionId::from("native-callback-parent");
+        let root_thread = ThreadId(parent.to_string());
+        // M0 the common projection fixture freezes Agent `agent`; this case
+        // deliberately selects `parent`. Compile the matching baseline from
+        // the same selected inputs before installation, including its original
+        // fingerprint law. Do not overwrite a fingerprint or relax identity.
+        let mut root_projection = projection(1, "provider/model", Some(publication("parent")));
+        let baseline = &root_projection.baseline;
+        root_projection.baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment: baseline.environment.clone(),
+                runtime_placement: baseline.runtime_placement,
+                mcp_authoring: baseline.mcp_authoring.clone(),
+                agent_id: "parent".into(),
+                agent_revision: baseline.agent_revision,
+                model: baseline.model.clone(),
+                model_override: baseline.model_override.clone(),
+                runtime: baseline.runtime.clone(),
+                delegate_ids: baseline.delegate_ids.clone(),
+                toolsets: baseline.toolsets.clone(),
+                mounts: baseline.mounts.clone(),
+                env: baseline.env.clone(),
+                prompts: baseline.prompts.clone(),
+                transcript_prefix: baseline.transcript_prefix.clone(),
+            },
+        );
+        sessions
+            .projections()
+            .install(parent.as_str(), root_projection)
+            .unwrap();
+        let root_run = RunId("native-parent-run".into());
+        let registry = |run: &RunId,
+                        agent: &str,
+                        call: &str,
+                        target: &str,
+                        parent_origin: Option<
+            &awaken_agent_contract::agent::delegation::DelegationOrigin,
+        >| {
+            let id = DelegationId::for_parent_call(run, call);
+            let mut registry = DelegationRegistry::new(
+                run.clone(),
+                agent,
+                parent_origin
+                    .map(|origin| origin.agent_lineage.clone())
+                    .unwrap_or_default(),
+                parent_origin.map_or(0, |origin| origin.depth),
+                DelegationLimits::default(),
+            );
+            registry
+                .request(RequestDelegation {
+                    id: id.clone(),
+                    parent_call_id: call.into(),
+                    target_agent_id: target.into(),
+                    recursive_self: false,
+                    child_run_id: id.child_run_id(),
+                })
+                .unwrap();
+            (registry, id.child_run_id())
+        };
+        let (mut first, child_run) = registry(&root_run, "parent", "first", "child-agent", None);
+        let child = ThreadId(child_run.0.clone());
+        let child_origin = first
+            .child_origin(&DelegationId::for_parent_call(&root_run, "first"))
+            .unwrap();
+        let (nested, grand_run) = registry(
+            &child_run,
+            "child-agent",
+            "nested",
+            "grand-agent",
+            Some(&child_origin),
+        );
+        let grand = ThreadId(grand_run.0.clone());
+        let commit = sessions
+            .ports
+            .reads
+            .commit_for_read(parent.as_str())
+            .await
+            .unwrap();
+        for (thread, run, registry) in [
+            (root_thread.clone(), root_run.clone(), Some(first.clone())),
+            (child.clone(), child_run.clone(), Some(nested)),
+            (grand.clone(), grand_run.clone(), None),
+        ] {
+            commit
+                .commit(awaken_agent_contract::ThreadCommit::assemble(
+                    thread.clone(),
+                    // M0 the root remains active until its one M2 terminal
+                    // commit. Native descendants are already terminal and
+                    // remain legitimate callback members of this Session.
+                    if thread == root_thread {
+                        RunDisposition::running(run)
+                    } else {
+                        RunDisposition::ended(
+                            run,
+                            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                        )
+                    },
+                    true,
+                    Vec::new(),
+                    registry
+                        .map(|registry| RunDelegations::write(&Some(registry)))
+                        .into_iter()
+                        .collect(),
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &child, "parent")
+                .await
+                .unwrap()
+                .map(|(agent, _)| agent),
+            Some("child-agent".into()),
+            "M1 direct"
+        );
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &grand, "parent")
+                .await
+                .unwrap()
+                .map(|(agent, _)| agent),
+            Some("grand-agent".into()),
+            "M1 nested"
+        );
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &ThreadId("not-a-child".into()), "parent")
+                .await
+                .unwrap(),
+            None,
+            "M4 unknown"
+        );
+        let root_prefix = sessions
+            .ports
+            .reads
+            .session_thread_recovery_snapshot(parent.as_str(), &root_thread)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            sessions
+                .ports
+                .reads
+                .coordinated_threads(parent.as_str(), Some(&root_prefix))
+                .await
+                .unwrap()
+                .is_empty(),
+            "M1 public fenced query unchanged"
+        );
+        // M5 a retained accepted SEND batch survives transcript compaction.
+        // Its original coordinated creation origin remains independent from
+        // the subsequent Native child's actual lineage/depth.
+        // The original grandchild Run has ended. Its next legal FollowUp
+        // Run owns this SEND; do not append to a terminal Run or replace the
+        // Thread's immutable Native creation origin.
+        let sending_run = awaken_session_execution_contract::session_run_id(
+            &grand.0.as_str().into(),
+            "grandchild-send-follow-up",
+        );
+        let call = "send-reset";
+        let operation =
+            awaken_tool_contract::ToolBatch::operation_id_for_step(&sending_run, 0, call);
+        let sent_thread = awaken_session_execution_contract::coordinated_thread_id(
+            &parent,
+            &sending_run,
+            &operation,
+        );
+        let sent_run = awaken_session_execution_contract::coordinated_run_id(
+            &parent,
+            &sent_thread,
+            &sending_run,
+            &operation,
+        );
+        let send_origin = awaken_dispatch_execution::coordinated_run_origin(
+            parent.as_str(),
+            &operation,
+            sending_run.clone(),
+            call.into(),
+            "parent".into(),
+        );
+        let mut batch = awaken_tool_contract::ToolBatch::for_step(
+            sending_run.clone(),
+            0,
+            [(
+                awaken_tool_contract::tool::ToolCall {
+                    call_id: call.into(),
+                    tool_id: awaken_ext_builtin_tools::SEND_MESSAGE.into(),
+                    arguments: serde_json::json!({"agent_id":"roster-agent", "message":"spawn"}),
+                },
+                awaken_tool_contract::tool::ToolRecoveryPolicy::durable_request(),
+            )],
+        )
+        .unwrap();
+        batch.mark_executing(call).unwrap();
+        batch
+            .complete(awaken_tool_contract::tool::ToolOutput::ok(call, "accepted"))
+            .unwrap();
+        batch
+            .set_result_messages(
+                call,
+                vec![Message::new(
+                    MessageId::tool_result(call),
+                    Role::Tool,
+                    vec![
+                        awaken_agent_contract::agent::content::ContentBlock::tool_result_with_error(
+                            call,
+                            vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                                serde_json::to_string(
+                                    &awaken_ext_builtin_tools::AgentMessageReceipt {
+                                        session_thread_id: sent_thread.0.clone(),
+                                        accepted: true,
+                                    },
+                                )
+                                .unwrap(),
+                            )],
+                            false,
+                        ),
+                    ],
+                )],
+            )
+            .unwrap();
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                grand.clone(),
+                RunDisposition::ended(
+                    sending_run.clone(),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                vec![
+                    awaken_tool_contract::ActiveToolBatch::write(&Some(batch)),
+                    awaken_tool_contract::ActiveToolBatch::write(&None),
+                ],
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        let (after_send, leaf_run) = registry(
+            &sent_run,
+            "roster-agent",
+            "leaf",
+            "leaf-agent",
+            Some(&send_origin),
+        );
+        let leaf = ThreadId(leaf_run.0.clone());
+        let leaf_origin = after_send
+            .child_origin(&DelegationId::for_parent_call(&sent_run, "leaf"))
+            .unwrap();
+        for (thread, run, state) in [
+            (
+                sent_thread.clone(),
+                sent_run,
+                vec![RunDelegations::write(&Some(after_send))],
+            ),
+            (leaf.clone(), leaf_run, Vec::new()),
+        ] {
+            commit
+                .commit(awaken_agent_contract::ThreadCommit::assemble(
+                    thread,
+                    RunDisposition::ended(
+                        run,
+                        awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                    ),
+                    true,
+                    Vec::new(),
+                    state,
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &sent_thread, "parent")
+                .await
+                .unwrap(),
+            Some(("roster-agent".into(), send_origin)),
+            "M5 original SEND creation metadata"
+        );
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &leaf, "parent")
+                .await
+                .unwrap(),
+            Some(("leaf-agent".into(), leaf_origin)),
+            "M5 original Native lineage after coordinated creation"
+        );
+        // M6 direct/recursive/after-SEND callbacks choose the original queued
+        // snapshot, including a None-version descendant frozen at v1. The
+        // process has no live publication source: any accidental current lookup
+        // fails. Actual graph membership and the original child compiler/queue
+        // are used; the new Run keeps this Thread's original creation origin.
+        for logical in [&child, &grand, &sent_thread, &leaf] {
+            let (agent, creation) = sessions
+                .threads
+                .task_callback_source(&parent, logical, "parent")
+                .await
+                .unwrap()
+                .unwrap();
+            let original_run = sessions
+                .ports
+                .reads
+                .session_thread_recovery_snapshot(parent.as_str(), logical)
+                .await
+                .unwrap()
+                .unwrap()
+                .latest_run_id
+                .unwrap();
+            let mut snapshot = publication(&agent);
+            snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
+            snapshot.metadata.source.revision = 1;
+            snapshot.resolved_spec.plugin_config.agent.delegates.push(
+                awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                    agent_id: awaken_runtime_contract::snapshot::AgentId("none-child".into()),
+                    source_revision: None,
+                    recursive_self: false,
+                },
+            );
+            snapshot
+                .resolved_spec
+                .plugin_ids
+                .push("background_task".into());
+            snapshot.recompute_fingerprint().unwrap();
+            let mut selected = publication("none-child");
+            selected.metadata.source.agent_id = selected.root_agent_id.clone();
+            selected.metadata.source.revision = 1;
+            selected.recompute_fingerprint().unwrap();
+            let inherited =
+                awaken_agent_contract::toolset::InheritedToolsets::with_caller(Vec::new(), None);
+            let activation = RunActivation::new(
+                original_run.clone(),
+                logical.clone(),
+                snapshot.clone(),
+                Vec::new(),
+            )
+            .with_delegation_origin(creation.clone())
+            .with_inherited_toolsets(Some(inherited.clone()))
+            .with_data_subject(Some(awaken_runtime_contract::DataSubjectId(
+                "child-content-owner".into(),
+            )));
+            settle_task_origin(
+                &sessions,
+                &logical.0,
+                &original_run.0,
+                activation.clone(),
+                vec![selected.clone()],
+                Some(parent.as_str()),
+            )
+            .await;
+            let source = sessions
+                .threads
+                .task_origin_execution(&parent, logical, &original_run)
+                .await
+                .unwrap();
+            assert_eq!(source.0, activation, "M6 original queued execution");
+            let operation = format!("callback:{}", logical.0);
+            let new_run = awaken_session_execution_contract::session_run_id(
+                &logical.0.as_str().into(),
+                &operation,
+            );
+            let task = AdmitSessionRun {
+                session_id: parent.clone(),
+                agent_id: agent.clone(),
+                operation_id: operation.clone(),
+                run_id: new_run.clone(),
+                messages: vec![Message::text(MessageId(format!("input:{}",logical.0)), Role::System, "Task needs input")],
+                data_subject_id: None,
+                traceparent: None,
+                execution_requirements: Default::default(),
+                replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
+                private_task_input: Some(serde_json::from_value(serde_json::json!({
+                    "version":1,"observations":[],"tenure": {
+                        "thread":logical.0,"partition":{"kind":"session","session_thread":parent},
+                        "run":original_run.0,"task":"task","holder":"holder","epoch":1,
+                    }
+                })).unwrap()),
+            };
+            let fingerprint = task.command_fingerprint();
+            sessions
+                .threads
+                .admit_coordinated_run(awaken_session_execution_contract::CoordinatedRunCommand {
+                    intent: awaken_session_execution_contract::CoordinatedRunIntent::FollowUp,
+                    session_id: parent.clone(),
+                    thread_id: logical.clone(),
+                    run_id: new_run.clone(),
+                    parent_run_id: original_run,
+                    parent_call_id: "task".into(),
+                    operation_id: operation,
+                    snapshot: snapshot.clone(),
+                    message: String::new(),
+                    session_activity_epoch: Some(9),
+                    max_unarchived_threads: 24,
+                    task_attention: Some(task),
+                    task_attention_execution: Some(source),
+                })
+                .await
+                .unwrap();
+            let SessionRunAdmissionObservation::Live(row) = sessions
+                .ports
+                .owner
+                .observe_session_run_admission(&new_run)
+                .await
+                .unwrap()
+            else {
+                panic!("M6 callback admitted");
+            };
+            assert_eq!(
+                row.activation.snapshot, snapshot,
+                "M6 correct original Agent/revision"
+            );
+            assert_eq!(
+                row.agent_publications,
+                vec![selected],
+                "M6 ordinary None selection remains v1"
+            );
+            assert_eq!(
+                row.activation.delegation_origin,
+                Some(creation),
+                "M6 callback does not reset lineage/depth"
+            );
+            assert_eq!(
+                row.activation.inherited_toolsets(),
+                Some(&inherited),
+                "M6 inherited constraints"
+            );
+            assert_eq!(
+                row.activation.data_subject_id, activation.data_subject_id,
+                "M6 content owner"
+            );
+            assert_eq!(
+                row.session_command_fingerprint,
+                Some(fingerprint),
+                "M6 original Task input fingerprint"
+            );
+            assert_eq!(
+                row.session_thread_id().0,
+                parent.as_str(),
+                "M6 same physical partition"
+            );
+        }
+        first.end_parent();
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                root_thread.clone(),
+                RunDisposition::ended(
+                    root_run.clone(),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                vec![
+                    RunDelegations::write(&Some(first)),
+                    RunDelegations::write(&None),
+                ],
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                root_thread.clone(),
+                RunDisposition::ended(
+                    RunId("later-parent-run".into()),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &grand, "parent")
+                .await
+                .unwrap()
+                .map(|(agent, _)| agent),
+            Some("grand-agent".into()),
+            "M2 retained ancestry after end/clear/new Run"
+        );
+        let other = awaken_session_types::SessionId::from("another-callback-parent");
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&other, &grand, "parent")
+                .await
+                .unwrap(),
+            None,
+            "M4 no cross-partition inference"
+        );
+        // M3 the earlier parent has already ended. A fresh active Run may
+        // record state, and its same canonical child cannot be reattributed.
+        // The positive observation below proves this is a valid additional
+        // Native edge before the mutation, not a forged post-terminal write.
+        let mutation_run = awaken_session_execution_contract::session_run_id(
+            &parent,
+            "membership-mutation-parent",
+        );
+        let (original_membership, child_run) =
+            registry(&mutation_run, "parent", "first", "child-agent", None);
+        let mutation_child = ThreadId(child_run.0.clone());
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                root_thread.clone(),
+                RunDisposition::running(mutation_run.clone()),
+                true,
+                Vec::new(),
+                vec![RunDelegations::write(&Some(original_membership))],
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                mutation_child.clone(),
+                RunDisposition::ended(
+                    child_run.clone(),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &mutation_child, "parent")
+                .await
+                .unwrap()
+                .map(|(agent, _)| agent),
+            Some("child-agent".into()),
+            "M3 original active registry is readable before reattribution",
+        );
+        let (reattributed, same_child) =
+            registry(&mutation_run, "parent", "first", "different-agent", None);
+        assert_eq!(same_child, child_run, "M3 same canonical identity");
+        commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                root_thread,
+                RunDisposition::ended(
+                    mutation_run,
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                vec![RunDelegations::write(&Some(reattributed))],
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            sessions
+                .threads
+                .task_callback_source(&parent, &grand, "parent")
+                .await
+                .is_err(),
+            "M3 history cannot reassign a child"
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_task_receipts_survive_null_or_corrupt_sqlite_source_while_fresh_input_is_unavailable()
+     {
+        use awaken_dispatch_contract::{
+            DispatchClaims as _, DispatchOutcome, DispatchSettlement as _,
+        };
+        use awaken_session_execution_contract::SessionCoordinationReads as _;
+        // A1 origin and target callback both reach real SQLite Done; A2 the
+        // target's retained payload later corrupts => same exact lightweight
+        // receipt, not another reservation. A3 origin source is NULL/corrupt =>
+        // accepted target still has its receipt; a fresh operation is retryable
+        // Unavailable with zero new dispatch/feed. No current source backfill.
+        // This exercises Core receipt + frozen-source roles on one exact Store.
+        // App's real-SQLite-activity test owns the separate matching activity
+        // requirement; this is not claimed as a complete HTTP/product journey.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("task-source-receipts.sqlite");
+        let clock = awaken_time::system_clock();
+        let store =
+            awaken_dispatch::SqliteDispatchStore::open(path.to_str().unwrap(), clock.clone())
+                .await
+                .unwrap();
+        let owner = Arc::new(AnyCoordinatorDispatch::from_durable_store(store, None));
+        let (delivery, _) = delivery_with_process(None, clock, owner).await;
+        let session = "sqlite-source-ack";
+        install(&delivery, session, Vec::new(), Vec::new());
+        let origin = "sqlite-source-origin";
+        settle_task_origin(
+            &delivery,
+            session,
+            origin,
+            RunActivation::new(
+                RunId(origin.into()),
+                ThreadId(session.into()),
+                reviewing_agent(),
+                Vec::new(),
+            ),
+            Vec::new(),
+            None,
+        )
+        .await;
+        let mut task = command(session, "Task requires input");
+        task.private_task_input = Some(serde_json::from_value(serde_json::json!({"version":1,"observations":[],"tenure":{"thread":session,"partition":{"kind":"thread"},"run":origin,"task":"task","holder":"holder","epoch":1}})).unwrap());
+        delivery.reserve_session_run(task.clone()).await.unwrap();
+        delivery
+            .activate_session_run(SessionRunDelivery {
+                session_id: session.into(),
+                run_id: task.run_id.clone(),
+                session_activity_epoch: 7,
+            })
+            .await
+            .unwrap();
+        // A0 the same real SQLite callback is RemoteOnly, so a local
+        // claimer is ineligible. The shared candidate advertises these fixed
+        // formats, not physical Task execution; retain all A1-A3 source/ACK
+        // assertions and use the existing strict compatible claim transition.
+        assert!(
+            delivery
+                .ports
+                .owner
+                .claim_run(
+                    &task.run_id,
+                    "source-ack-worker",
+                    30_000,
+                    &Default::default(),
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "A0 local claim cannot consume a Worker-only callback",
+        );
+        let worker = crate::test_support::task_callback_worker("source-ack-worker");
+        let SessionRunAdmissionObservation::Live(request) = delivery
+            .ports
+            .owner
+            .observe_session_run_admission(&task.run_id)
+            .await
+            .unwrap()
+        else {
+            panic!("A0 original activated callback");
+        };
+        awaken_worker_contract::can_assign(
+            &worker,
+            &request.placement,
+            None,
+            false,
+            delivery.ports.clock.now_ms(),
+        )
+        .unwrap_or_else(|failure| {
+                    panic!(
+                        "A0 declared candidate satisfies the original SQLite placement law: {failure:?}; static_eligibility={:?}; placement={:?}; worker={:?}",
+                        awaken_worker_contract::can_claim(&worker.manifest, &request.placement),
+                        request.placement,
+                        worker,
+                    )
+                });
+        let claimed = delivery
+            .ports
+            .owner
+            .claim_run_compatible(&task.run_id, &worker, 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        delivery
+            .ports
+            .owner
+            .settle(
+                &task.run_id,
+                claimed.lease.epoch(),
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap();
+        let sql = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+        let before = delivery
+            .ports
+            .owner
+            .completion_events_after(0, usize::MAX)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE runtime_dispatch_completion SET retained_request='{}' WHERE run_id=?1")
+            .bind(&task.run_id.0)
+            .execute(&sql)
+            .await
+            .unwrap();
+        assert_eq!(
+            delivery
+                .threads
+                .session_run_command_receipt(&task)
+                .await
+                .unwrap(),
+            Some(SessionRunReservation::Completed),
+            "A2 target source corruption does not invalidate receipt"
+        );
+        assert_eq!(
+            delivery
+                .threads
+                .task_origin_execution(&session.into(), &ThreadId(session.into()), &task.run_id)
+                .await
+                .unwrap_err()
+                .kind,
+            awaken_session_types::RunErrorKind::Unavailable,
+            "A2 fresh source demand is Unknown"
+        );
+        for payload in [None, Some("{}"), Some("broken-json")] {
+            sqlx::query(
+                "UPDATE runtime_dispatch_completion SET retained_request=?1 WHERE run_id=?2",
+            )
+            .bind(payload)
+            .bind(origin)
+            .execute(&sql)
+            .await
+            .unwrap();
+            assert_eq!(
+                delivery
+                    .threads
+                    .session_run_command_receipt(&task)
+                    .await
+                    .unwrap(),
+                Some(SessionRunReservation::Completed),
+                "A3 original receipt independent of origin source"
+            );
+            let mut fresh = task.clone();
+            fresh.operation_id.push_str("-fresh");
+            fresh.run_id.0.push_str("-fresh");
+            fresh.messages[0].id.0.push_str("-fresh");
+            assert_eq!(
+                delivery
+                    .reserve_session_run(fresh.clone())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "A3 no current fallback"
+            );
+            assert!(
+                delivery
+                    .ports
+                    .owner
+                    .dispatch_summary(&fresh.run_id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "A3 zero new work"
+            );
+            assert_eq!(
+                delivery
+                    .ports
+                    .owner
+                    .completion_events_after(0, usize::MAX)
+                    .await
+                    .unwrap(),
+                before,
+                "A2/A3 same public completion feed"
+            );
+        }
+        sql.close().await;
     }
 }

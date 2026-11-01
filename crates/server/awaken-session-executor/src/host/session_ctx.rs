@@ -208,11 +208,12 @@ impl RuntimePublicationIdentity {
     }
 }
 
-/// Ephemeral input reconstructed from one guarded `RunDispatch`. Publication
-/// snapshots are deliberately passed down the call stack rather than cached in
-/// `InstalledSession`.
+/// Pure ephemeral input reconstructed from one verified original `RunDispatch`.
+/// Claimed execution and Task coordination share these frozen values, never a
+/// claim or effect permit. Purpose/physical admission remain separate. Publication
+/// snapshots are passed down the call stack, not cached in another registry.
 #[derive(Clone)]
-pub(crate) struct ClaimedRuntimeInput {
+pub(crate) struct FrozenRuntimeInput {
     pub(crate) identity: RuntimePublicationIdentity,
     pub(crate) publications: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
     pub(crate) effective_model_ref: String,

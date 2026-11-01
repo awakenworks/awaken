@@ -108,6 +108,17 @@ impl SessionRunBackgroundApplication for UnusedApplications {
     ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
         panic!("unused Task attention role was invoked")
     }
+
+    // This binding fixture owns lifetimes only; no receipt authority is installed.
+    async fn task_attention_receipt(
+        &self,
+        _: awaken_session_application_contract::TaskAttention,
+    ) -> Result<
+        Option<awaken_session_application_contract::TaskAttentionAck>,
+        awaken_session_application_contract::RunApplicationError,
+    > {
+        panic!("unused Task attention receipt role was invoked")
+    }
 }
 fn unused() -> Arc<UnusedApplications> {
     static PORTS: OnceLock<Arc<UnusedApplications>> = OnceLock::new();

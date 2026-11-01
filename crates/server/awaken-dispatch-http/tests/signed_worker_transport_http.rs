@@ -723,8 +723,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
     }
 }
 
-#[derive(Default)]
-struct TestWorkerDirectory(Mutex<Option<RegisteredWorker>>);
+use registry_incarnation::TestWorkerDirectory;
 
 struct StaticEnvironmentWarmups(Vec<awaken_session_configuration_contract::EnvironmentSnapshot>);
 

@@ -12,5 +12,7 @@ Notable changes to `awaken-tool-contract`. Versions follow the [SDK versioning p
 
 ### Added
 
+- `tool::background_task` is the single Task observation codec and pure identity/tenure/wait/end vocabulary, consumed directly by the extension and authenticated Task admission. It reuses `awaken-lease-contract` for its original exact fence.
+
 - `tool_configuration` module: `ToolConfigurationCompiler`, `ToolConfigurationInput`, `ToolConfigurationError`, `compile_toolset_configurations`.
 - `tool_batch::ToolExecutionDomainFootprint`.

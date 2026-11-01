@@ -5,12 +5,12 @@
 //! registered [`WorkerIdentity`], so the Coordinator's holder check (rows
 //! A2/A3, H4) admits exactly the Tasks this incarnation holds.
 
-use awaken_dispatch_contract::WorkerIdentity;
 use awaken_session_application_contract::{
     RegisteredTaskControl, TaskAttention, TaskAttentionAck, TaskTenureRead, TaskTenureRecord,
     registered_task_holder,
 };
 use awaken_session_types::RunError;
+use awaken_worker_contract::WorkerIdentity;
 
 use crate::WorkerControlClient;
 

@@ -1121,7 +1121,7 @@ mod tests {
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
                 .expect("DH1 claimed publication source"),
         );
-        let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
+        let attempt = crate::host::session_ctx::FrozenRuntimeInput {
             identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
                 &snapshot,
                 &[],

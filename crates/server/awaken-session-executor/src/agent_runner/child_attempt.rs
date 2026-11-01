@@ -21,6 +21,20 @@ pub(crate) fn validate_child_tool_configuration(
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
     inherited: Option<&awaken_agent_contract::toolset::InheritedToolsets>,
 ) -> Result<(), AgentRunError> {
+    if snapshot
+        .resolved_spec
+        .plugin_ids
+        .iter()
+        .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
+        && awaken_runtime_contract::resolved::Backend::from_ref(
+            snapshot.resolved_spec.model_binding.identity().2,
+        )
+        .is_acp()
+    {
+        return Err(AgentRunError::Configuration(
+            "child BackgroundTask requires the Native tool executor".into(),
+        ));
+    }
     if inherited.is_none()
         && snapshot.resolved_spec.plugin_ids.iter().any(|id| {
             id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
@@ -102,6 +116,10 @@ pub(crate) fn configure_child_native_runtime(
 /// second target directory or backend-selection rule.
 #[derive(Clone, Default)]
 pub(crate) struct ChildExecutionAdapters {
+    /// The physical Session selected by the original Host constructor. Recursive
+    /// delegation clones this coordinate; its logical parent is never a store.
+    /// Standalone compositions without a Session leave it absent.
+    pub(crate) session_thread_id: Option<awaken_agent_contract::ThreadId>,
     pub(crate) acp: Option<ChildAcpExecutorFactory>,
     pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
     pub(crate) credential_capabilities: credential::CredentialRealizationCapabilities,
@@ -116,9 +134,18 @@ pub(crate) struct ChildExecutionAdapters {
     /// requires this existing clock before any Fresh provider effect; absence
     /// is a typed configuration refusal, never a process-clock fallback.
     pub(crate) clock: Option<Arc<dyn awaken_time::WallClock>>,
+    /// The same process-selected execution backing as a Session Runtime
+    /// (ADR-0052 D3). These original RawTool handles carry no permission grant.
+    pub(crate) admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
     /// The Host-owned installed Session registry also installed on the root Native Runtime.
     pub(crate) background_supervisor:
         Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
+    pub(crate) background_runs: Option<Arc<awaken_session_run_delivery::BackgroundRuns>>,
+    pub(crate) background_commit: Option<Arc<awaken_session_run_delivery::SessionCommit>>,
+    pub(crate) background_attention: Option<crate::background_task::TaskAttentionRoute>,
+    pub(crate) task_control:
+        Option<Arc<dyn awaken_session_application_contract::RegisteredTaskControl>>,
+    pub(crate) background_generation: Option<String>,
 }
 
 /// Materializes the already-selected ACP execution edge for a child snapshot.
@@ -409,11 +436,12 @@ mod tests {
         for (rule, host, sources, rebuilt, expected_requests) in [
             ("N1", "127.0.0.1", allowed.clone(), false, 1),
             ("N2", "localhost", allowed.clone(), true, 1),
-            ("N3", "127.0.0.1", blocked, true, 1),
+            ("N3", "127.0.0.1", blocked.clone(), true, 1),
+            ("N3-callback", "127.0.0.1", blocked, true, 1),
             ("N5", "127.0.0.1", allowed, true, 1),
         ] {
             let url = format!("http://{host}:{port}/");
-            let activation = RunActivation::new(
+            let mut activation = RunActivation::new(
                 awaken_agent_contract::agent::run::Id(format!("http-{rule}")),
                 awaken_agent_contract::agent::thread::Id(format!("http-{rule}")),
                 snapshot.clone(),
@@ -424,6 +452,60 @@ mod tests {
                 })],
             )
             .with_inherited_toolsets(Some(sources));
+            if rule == "N3-callback" {
+                // N3b passes the ORIGINAL multi-level inherited chain through
+                // the actual callback lowerer before the same Web materializer.
+                // A fresh controlled User URL isolates this policy cause; the
+                // transport/held-Task cases separately own System notification
+                // provenance. Replacing it with root allow would add real HTTP.
+                let origin =
+                    awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(
+                        awaken_agent_contract::RunId("web-parent-origin".into()),
+                        "native-web",
+                        "web-parent",
+                    );
+                let original_run = origin.child_run_id();
+                let logical = awaken_agent_contract::ThreadId(original_run.0.clone());
+                activation.run_id = original_run.clone();
+                activation.thread_id = logical.clone();
+                activation.delegation_origin = Some(origin);
+                let physical = awaken_session_types::SessionId::from("web-parent-session");
+                let operation = "web-task-callback";
+                let new_run = awaken_session_execution_contract::session_run_id(
+                    &logical.0.as_str().into(),
+                    operation,
+                );
+                let input = vec![awaken_agent_contract::agent::message::Message::text(
+                    awaken_agent_contract::agent::message::Id("fresh-callback-user-url".into()),
+                    Role::User,
+                    format!("fetch {url}"),
+                )];
+                let task = awaken_session_execution_contract::AdmitSessionRun {
+                    session_id:physical.clone(), agent_id:activation.snapshot.root_agent_id.0.clone(), operation_id:operation.into(), run_id:new_run.clone(), messages:input,
+                    data_subject_id:None, traceparent:None, execution_requirements:Default::default(), replacement:awaken_session_types::SessionRunReplacement::PreservePrior,
+                    private_task_input:Some(serde_json::from_value(serde_json::json!({"version":1,"observations":[],"tenure":{"thread":logical.0,"partition":{"kind":"session","session_thread":physical},"run":original_run.0,"task":"web-task","holder":"holder","epoch":1}})).unwrap()),
+                };
+                let command = awaken_session_execution_contract::CoordinatedRunCommand {
+                    intent: awaken_session_execution_contract::CoordinatedRunIntent::FollowUp,
+                    session_id: physical,
+                    thread_id: logical,
+                    run_id: new_run,
+                    parent_run_id: original_run,
+                    parent_call_id: "web-task".into(),
+                    operation_id: operation.into(),
+                    snapshot: activation.snapshot.clone(),
+                    message: String::new(),
+                    session_activity_epoch: Some(1),
+                    max_unarchived_threads: 24,
+                    task_attention: Some(task),
+                    task_attention_execution: Some(Box::new((activation, Vec::new()))),
+                };
+                activation = awaken_dispatch_execution::coordinated_run_activation(
+                    command,
+                    "web-parent".into(),
+                    source("allow"),
+                );
+            }
             let activation: RunActivation = if rebuilt {
                 serde_json::from_slice(&serde_json::to_vec(&activation).unwrap()).unwrap()
             } else {

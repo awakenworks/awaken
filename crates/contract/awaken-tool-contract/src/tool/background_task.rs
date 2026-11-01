@@ -1,3 +1,13 @@
+// @formal surface requirement=runtime.background_tool_execution.durable_session_scope
+// @formal reason: This single wire/value contract strictly decodes versioned observations and exact
+// @formal reason: tenures for HTTP and StepStart. Aggregate transitions, lease decisions and durable
+// @formal reason: writes remain with their existing owners; decoding alone grants no execution.
+//! The canonical wire vocabulary of a detached ordinary tool's Task observation.
+//!
+//! The BackgroundTask extension owns the aggregate and its transitions. Both
+//! authenticated attention admission and the claiming Runtime decode this same
+//! versioned record; neither transport defines a permissive parallel parser.
+
 //! The durable form of one Task observation a process hands to the Session.
 //!
 //! A Task's tool runs in the process that holds its tenure. When the Run that
@@ -15,15 +25,132 @@
 //! | C5c | an unknown field, here or inside the observation | `Decode` |
 //! | C5d | empty Task id or holder, or a zero epoch | `Decode` / `EmptyHolder` |
 
-use awaken_lease_contract::fence::{Epoch, Tenure};
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_lease_contract::fence::{Epoch, Tenure, TenureScope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{
-    BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskWaitCandidate,
-    BackgroundWait, TaskTenure,
-};
+use super::ToolTaskHandle;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BackgroundTaskId(String);
+
+impl BackgroundTaskId {
+    pub fn new(value: impl Into<String>) -> Result<Self, BackgroundTaskError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            Err(BackgroundTaskError::InvalidIdentity)
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for BackgroundTaskId {
+    type Error = BackgroundTaskError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<BackgroundTaskId> for String {
+    fn from(value: BackgroundTaskId) -> Self {
+        value.0
+    }
+}
+
+/// The lease family of a background task: the task (subject) held by one
+/// worker. Consumer: [`TaskTenure`].
+#[derive(Debug)]
+pub struct BackgroundTaskScope;
+
+impl TenureScope for BackgroundTaskScope {
+    type Subject = BackgroundTaskId;
+    type Holder = String;
+}
+
+/// The exact authority a worker presents for a fenced task mutation: the
+/// task, the worker and the attempt epoch. It replaces a worker/epoch pair
+/// that named no task, so a fence minted for one task could pass for another
+/// task's attempt at the same epoch.
+pub type TaskTenure = Tenure<BackgroundTaskScope>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackgroundWait {
+    Remote(ToolTaskHandle),
+    ExternalInput {},
+    Resource {},
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackgroundTaskEnd {
+    Completed {
+        content: Vec<ContentBlock>,
+        #[serde(default)]
+        is_error: bool,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled {},
+    Indeterminate {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskCompletion {
+    pub fence: TaskTenure,
+    pub end: BackgroundTaskEnd,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskWaitCandidate {
+    pub fence: TaskTenure,
+    pub wait: BackgroundWait,
+    /// True only for a poll watchdog checkpoint that must extend the same
+    /// durable attempt lease before resuming observation.
+    pub renew_lease: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum BackgroundTaskError {
+    #[error("background task id must not be empty")]
+    InvalidIdentity,
+    #[error("background task claim requires a worker and a positive lease")]
+    InvalidClaim,
+    #[error("background task is already owned")]
+    Busy,
+    #[error("background task is terminal")]
+    Terminal,
+    #[error("background task transition is invalid")]
+    InvalidTransition,
+    #[error("background task fence is stale")]
+    StaleFence,
+    #[error("background task lease must advance monotonically")]
+    NonMonotonicLease,
+    #[error(
+        "remote continuation requires an owner, binding, task id, and a positive poll interval when present"
+    )]
+    InvalidContinuation,
+    #[error("background task clock overflow")]
+    ClockOverflow,
+    #[error("background task epoch overflow")]
+    EpochOverflow,
+    #[error("background task revision overflow")]
+    RevisionOverflow,
+    #[error("background task persisted state violates its aggregate invariants")]
+    InvalidPersistedState,
+}
 
 /// The one admitted record version. A record of any other version is refused,
 /// never read as an older or newer shape.
@@ -130,6 +257,24 @@ impl TaskObservationRecord {
         serde_json::to_value(self).expect("a Task observation record serializes")
     }
 
+    /// Decode and validate the complete delivered batch before a caller may
+    /// admit or offer any member. The same codec law serves HTTP and StepStart.
+    pub fn decode_bound_batch(
+        values: &[Value],
+        expected: &TaskTenure,
+    ) -> Result<Vec<Self>, TaskObservationCodecError> {
+        let records = values
+            .iter()
+            .map(Self::decode)
+            .collect::<Result<Vec<_>, _>>()?;
+        if records.iter().any(|record| record.tenure() != *expected) {
+            return Err(TaskObservationCodecError::Decode(
+                "observation batch names another Task tenure".into(),
+            ));
+        }
+        Ok(records)
+    }
+
     /// Decode one record. The version is read first, so a record of another
     /// version is refused as such rather than as a shape mismatch.
     pub fn decode(value: &Value) -> Result<Self, TaskObservationCodecError> {
@@ -161,7 +306,7 @@ impl TaskObservationRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_tool_contract::tool::ToolTaskHandle;
+    use crate::tool::ToolTaskHandle;
     use serde_json::json;
 
     fn fence(generation: u64) -> TaskTenure {
@@ -276,5 +421,100 @@ mod tests {
             TaskObservationRecord::decode(&empty_holder),
             Err(TaskObservationCodecError::EmptyHolder)
         );
+        // U1/U2/U3: the same version1 codec admits each documented no-payload
+        // leaf (external_input/resource/cancelled), encodes its exact legal JSON
+        // bytes and tenure, but refuses an unknown sibling beside that leaf tag.
+        // The outer record and observation stay valid: only the deepest sibling
+        // changes. Input is JSON, so these SAME tests compile against the old
+        // bare-unit model and the corrected empty-struct model; no constructor
+        // syntax or alternate decoder can turn the intended Serde red into a
+        // compiler/selection failure. Existing version/coordinate/Remote rules
+        // above remain their own unchanged controls.
+        for (rule, nested, observation) in [
+            (
+                "U1 external_input",
+                "wait",
+                json!({"kind":"waiting","wait":{"reason":"external_input"},"renew_lease":false}),
+            ),
+            (
+                "U2 resource",
+                "wait",
+                json!({"kind":"waiting","wait":{"reason":"resource"},"renew_lease":false}),
+            ),
+            (
+                "U3 cancelled",
+                "end",
+                json!({"kind":"ended","end":{"outcome":"cancelled"}}),
+            ),
+        ] {
+            let wire = json!({
+                "version":1, "task_id":"task", "holder":"holder", "epoch":2,
+                "observation":observation,
+            });
+            let decoded = TaskObservationRecord::decode(&wire).expect(rule);
+            assert_eq!(decoded.tenure(), fence(2), "{rule} exact tenure");
+            assert_eq!(decoded.encode(), wire, "{rule} legal v1 shape");
+            assert_eq!(
+                serde_json::to_vec(&decoded.encode()).unwrap(),
+                serde_json::to_vec(&wire).unwrap(),
+                "{rule} legal v1 bytes"
+            );
+            let mut unknown = wire;
+            unknown["observation"][nested]["future"] = json!(true);
+            assert!(
+                matches!(
+                    TaskObservationRecord::decode(&unknown),
+                    Err(TaskObservationCodecError::Decode(_))
+                ),
+                "{rule} unknown leaf sibling must not disappear"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bound_batch_refuses_every_foreign_tenure_and_nested_unknown_before_delivery() {
+        // B1 exact terminal/waiting records, including duplicate delivery =>
+        // complete decoded batch; B2 any changed task/holder/epoch or unknown
+        // nested End/Wait field in any member => no returned partial batch.
+        // B3 empty batch is structurally valid: the carrying PrivateTaskInput
+        // separately requires a complete authenticated meta-only subject.
+        for record in [ended(), waiting()] {
+            let wire = record.encode();
+            let expected = record.tenure();
+            assert_eq!(
+                TaskObservationRecord::decode_bound_batch(&[wire.clone(), wire.clone()], &expected)
+                    .unwrap(),
+                vec![record.clone(), record.clone()],
+                "B1"
+            );
+            for axis in ["task_id", "holder", "epoch", "nested"] {
+                let mut changed = wire.clone();
+                match axis {
+                    "task_id" => changed[axis] = json!("foreign-task"),
+                    "holder" => changed[axis] = json!("foreign-holder"),
+                    "epoch" => changed[axis] = json!(expected.epoch().get() + 1),
+                    "nested" => {
+                        let nested = if changed["observation"]["kind"] == "ended" {
+                            "end"
+                        } else {
+                            "wait"
+                        };
+                        changed["observation"][nested]["future"] = json!(true);
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    TaskObservationRecord::decode_bound_batch(&[wire.clone(), changed], &expected)
+                        .is_err(),
+                    "B2 {axis}"
+                );
+            }
+            assert!(
+                TaskObservationRecord::decode_bound_batch(&[], &expected)
+                    .unwrap()
+                    .is_empty(),
+                "B3 no result or grant is fabricated"
+            );
+        }
     }
 }

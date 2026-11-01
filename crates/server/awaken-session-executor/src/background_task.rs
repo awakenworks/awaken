@@ -16,9 +16,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_background_task::{
-    BackgroundTask, BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
-    TaskObservationCodecError, TaskObservationRecord, TaskTenure, tasks_from_state,
+    BackgroundTask, BackgroundTaskLifecycle, BackgroundTaskSupervisor, tasks_from_state,
 };
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -30,6 +28,10 @@ use awaken_runtime_contract::terminal::{
 use awaken_session_application_contract::{PrivateTaskInput, TaskAttention};
 use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
+use awaken_tool_contract::tool::background_task::{
+    BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskWaitCandidate,
+    BackgroundWait, TaskObservationCodecError, TaskObservationRecord, TaskTenure,
+};
 use awaken_tool_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 
 #[cfg(test)]
@@ -41,7 +43,7 @@ mod placement;
 
 pub(crate) use placement::{TaskAttentionRoute, TaskCommittedReads};
 
-const OBSERVER_ID: &str = "awaken.background-task.executor.v1";
+pub(crate) const OBSERVER_ID: &str = "awaken.background-task.executor.v1";
 const ATTENTION_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(50),
     Duration::from_millis(100),
@@ -159,16 +161,28 @@ fn attention_input(
 /// | C5 | any record is refused by the Task codec | refused; nothing offered |
 pub(crate) fn accept_claimed_task_input(
     supervisor: &BackgroundTaskSupervisor,
-    input: Option<&PrivateTaskInput>,
+    dispatch: &awaken_dispatch_contract::RunDispatch,
 ) -> Result<(), TaskObservationCodecError> {
-    let Some(input) = input else {
+    let Some(input) = dispatch.private_task_input.as_ref() else {
         return Ok(());
     };
-    let records = input
-        .observations()
-        .iter()
-        .map(TaskObservationRecord::decode)
-        .collect::<Result<Vec<_>, _>>()?;
+    // Old v1 without tenure remains inspectable, never an authenticated remote
+    // permission. No current attention producer persists an unbound input.
+    let read = input.tenure().ok_or_else(|| {
+        TaskObservationCodecError::Decode("private Task input has no authenticated tenure".into())
+    })?;
+    read.validate().map_err(TaskObservationCodecError::Decode)?;
+    if read.thread != dispatch.thread_id().0
+        || read.session_thread() != dispatch.session_thread_id().0
+    {
+        return Err(TaskObservationCodecError::Decode(
+            "private Task input names another dispatch partition".into(),
+        ));
+    }
+    let task = BackgroundTaskId::new(read.task.clone())
+        .map_err(|error| TaskObservationCodecError::Decode(error.to_string()))?;
+    let expected = TaskTenure::granted(task, read.holder.clone(), read.epoch);
+    let records = TaskObservationRecord::decode_bound_batch(input.observations(), &expected)?;
     for record in &records {
         supervisor.accept_delivered(record);
     }
@@ -178,7 +192,7 @@ pub(crate) fn accept_claimed_task_input(
 async fn publish_attention(
     route: Option<TaskAttentionRoute>,
     supervisor: &BackgroundTaskSupervisor,
-    thread_id: &awaken_agent_contract::agent::thread::Id,
+    tenure: &awaken_session_application_contract::TaskTenureRead,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
     kind: BackgroundAttention,
@@ -186,11 +200,11 @@ async fn publish_attention(
     let Some(target) = route.as_ref().and_then(TaskAttentionRoute::target) else {
         return;
     };
-    let (operation_id, message) = attention_message(thread_id, task_id, fence, &kind);
+    let thread_id = awaken_agent_contract::agent::thread::Id(tenure.thread.clone());
+    let (operation_id, message) = attention_message(&thread_id, task_id, fence, &kind);
     let attention = TaskAttention {
         operation_id: operation_id.clone(),
-        thread: thread_id.0.clone(),
-        holder: fence.holder().clone(),
+        tenure: tenure.clone(),
         message,
         input: attention_input(supervisor, task_id, fence, &kind),
     };
@@ -322,6 +336,7 @@ impl BackgroundTaskTerminalObserver {
     async fn launch(&self, task: BackgroundTask, observed: &RunId) {
         let attempt = task.attempt().expect("committed Running attempt");
         let fence = attempt.tenure(&task.id);
+        let attention_tenure = placement::task_tenure_read(&task, &self.session_id);
         let expected = attempt.policy.clone();
         let Some(cancellation) = self.supervisor.register(&task.id, &fence) else {
             return;
@@ -339,7 +354,7 @@ impl BackgroundTaskTerminalObserver {
                     publish_attention(
                         self.attention.clone(),
                         &self.supervisor,
-                        &thread_id,
+                        &attention_tenure,
                         &task_id,
                         &fence,
                         BackgroundAttention::Terminal,
@@ -356,7 +371,7 @@ impl BackgroundTaskTerminalObserver {
                 publish_attention(
                     self.attention.clone(),
                     &self.supervisor,
-                    &thread_id,
+                    &attention_tenure,
                     &task_id,
                     &fence,
                     BackgroundAttention::Terminal,
@@ -376,7 +391,7 @@ impl BackgroundTaskTerminalObserver {
             publish_attention(
                 self.attention.clone(),
                 &self.supervisor,
-                &thread_id,
+                &attention_tenure,
                 &task_id,
                 &fence,
                 BackgroundAttention::Terminal,
@@ -398,7 +413,7 @@ impl BackgroundTaskTerminalObserver {
                 publish_attention(
                     self.attention.clone(),
                     &self.supervisor,
-                    &thread_id,
+                    &attention_tenure,
                     &task_id,
                     &fence,
                     BackgroundAttention::Terminal,
@@ -440,7 +455,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Waiting,
@@ -458,7 +473,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Terminal,
@@ -472,7 +487,7 @@ impl BackgroundTaskTerminalObserver {
                         publish_attention(
                             attention,
                             &supervisor,
-                            &thread_id,
+                            &attention_tenure,
                             &task_id,
                             &fence,
                             BackgroundAttention::Terminal,
@@ -485,7 +500,7 @@ impl BackgroundTaskTerminalObserver {
                         publish_attention(
                             attention,
                             &supervisor,
-                            &thread_id,
+                            &attention_tenure,
                             &task_id,
                             &fence,
                             BackgroundAttention::Terminal,
@@ -500,7 +515,7 @@ impl BackgroundTaskTerminalObserver {
                         publish_attention(
                             attention,
                             &supervisor,
-                            &thread_id,
+                            &attention_tenure,
                             &task_id,
                             &fence,
                             BackgroundAttention::Terminal,
@@ -525,6 +540,7 @@ impl BackgroundTaskTerminalObserver {
             _ => unreachable!("committed remote continuation"),
         };
         let fence = attempt.tenure(&task.id);
+        let attention_tenure = placement::task_tenure_read(&task, &self.session_id);
         let expected = attempt.policy.clone();
         let lease_expires_at_ms = attempt.lease_expires_at_ms;
         let cancellation = self
@@ -555,7 +571,7 @@ impl BackgroundTaskTerminalObserver {
                     publish_attention(
                         self.attention.clone(),
                         &self.supervisor,
-                        &thread_id,
+                        &attention_tenure,
                         &task_id,
                         &fence,
                         BackgroundAttention::Terminal,
@@ -577,7 +593,7 @@ impl BackgroundTaskTerminalObserver {
                 publish_attention(
                     self.attention.clone(),
                     &self.supervisor,
-                    &thread_id,
+                    &attention_tenure,
                     &task_id,
                     &fence,
                     BackgroundAttention::Terminal,
@@ -597,7 +613,7 @@ impl BackgroundTaskTerminalObserver {
             publish_attention(
                 self.attention.clone(),
                 &self.supervisor,
-                &thread_id,
+                &attention_tenure,
                 &task_id,
                 &fence,
                 BackgroundAttention::Terminal,
@@ -617,7 +633,7 @@ impl BackgroundTaskTerminalObserver {
             publish_attention(
                 self.attention.clone(),
                 &self.supervisor,
-                &thread_id,
+                &attention_tenure,
                 &task_id,
                 &fence,
                 BackgroundAttention::Terminal,
@@ -638,7 +654,7 @@ impl BackgroundTaskTerminalObserver {
                 publish_attention(
                     self.attention.clone(),
                     &self.supervisor,
-                    &thread_id,
+                    &attention_tenure,
                     &task_id,
                     &fence,
                     BackgroundAttention::Terminal,
@@ -683,7 +699,7 @@ impl BackgroundTaskTerminalObserver {
                         publish_attention(
                             attention,
                             &supervisor,
-                            &thread_id,
+                            &attention_tenure,
                             &task_id,
                             &fence,
                             BackgroundAttention::Watchdog { change },
@@ -747,7 +763,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Terminal,
@@ -774,7 +790,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Terminal,
@@ -801,7 +817,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention.clone(),
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::InputRequired { change },
@@ -816,7 +832,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Terminal,
@@ -835,7 +851,7 @@ impl BackgroundTaskTerminalObserver {
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Terminal,
@@ -848,13 +864,13 @@ impl BackgroundTaskTerminalObserver {
                                 task_id.clone(),
                                 BackgroundTaskCompletion {
                                     fence: fence.clone(),
-                                    end: BackgroundTaskEnd::Cancelled,
+                                    end: BackgroundTaskEnd::Cancelled {},
                                 },
                             );
                             publish_attention(
                                 attention,
                                 &supervisor,
-                                &thread_id,
+                                &attention_tenure,
                                 &task_id,
                                 &fence,
                                 BackgroundAttention::Terminal,
@@ -1035,19 +1051,38 @@ mod tests {
             awaken_session_application_contract::TaskAttentionAck,
             awaken_session_application_contract::RunApplicationError,
         > {
+            let attention = attention
+                .bind_input()
+                .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
             let run_id = awaken_session_execution_contract::session_run_id(
-                &awaken_session_types::SessionId::from(attention.thread.as_str()),
+                &awaken_session_types::SessionId::from(attention.tenure.thread.as_str()),
                 &attention.operation_id,
             );
             self.record(AttentionCall {
                 operation_id: attention.operation_id,
-                thread: attention.thread,
+                thread: attention.tenure.thread,
                 agent: None,
                 messages: vec![attention.message],
                 traceparent: None,
                 input: attention.input,
             })?;
             Ok(awaken_session_application_contract::TaskAttentionAck { run_id })
+        }
+
+        // This fixture records direct submission attempts, not durable acceptance.
+        // A recorded call cannot fabricate an immutable Task receipt.
+        async fn task_attention_receipt(
+            &self,
+            _: awaken_session_application_contract::TaskAttention,
+        ) -> Result<
+            Option<awaken_session_application_contract::TaskAttentionAck>,
+            awaken_session_application_contract::RunApplicationError,
+        > {
+            Err(
+                awaken_session_application_contract::RunApplicationError::unavailable(
+                    "Task attention receipt read is unavailable",
+                ),
+            )
         }
     }
 
@@ -1186,7 +1221,7 @@ mod tests {
                     record.tenure().epoch().get(),
                     matches!(
                         record.observation(),
-                        awaken_ext_background_task::TaskObservation::Ended { .. }
+                        awaken_tool_contract::tool::background_task::TaskObservation::Ended { .. }
                     ),
                 )
             })
@@ -1243,7 +1278,7 @@ mod tests {
             task.clone(),
             BackgroundTaskCompletion {
                 fence: tenure(1),
-                end: BackgroundTaskEnd::Cancelled,
+                end: BackgroundTaskEnd::Cancelled {},
             },
         );
         // P1 Terminal; P4 another tenure.
@@ -1278,25 +1313,79 @@ mod tests {
         );
         let record = TaskObservationRecord::ended(&BackgroundTaskCompletion {
             fence: fence.clone(),
-            end: BackgroundTaskEnd::Cancelled,
+            end: BackgroundTaskEnd::Cancelled {},
         });
         let supervisor = BackgroundTaskSupervisor::new("local", awaken_time::system_clock());
+        let tenure = awaken_session_application_contract::TaskTenureRead {
+            thread: "thread".into(),
+            partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+            run: "origin".into(),
+            task: task.as_str().into(),
+            holder: "remote-worker".into(),
+            epoch: fence.epoch(),
+        };
+        let dispatch = |input| {
+            let mut request = awaken_dispatch_contract::RunDispatch::new(
+                awaken_runtime_contract::RunActivation::new(
+                    RunId("attention-run".into()),
+                    ThreadId("thread".into()),
+                    snapshot(),
+                    Vec::new(),
+                ),
+            );
+            request.private_task_input = input;
+            request
+        };
         // C2
-        accept_claimed_task_input(&supervisor, None).expect("C2");
+        accept_claimed_task_input(&supervisor, &dispatch(None)).expect("C2");
         assert!(supervisor.completion(&task).is_none(), "C2 nothing offered");
         // C5: one refused record refuses the whole input before any offer.
         let mut refused = record.encode();
         refused["version"] = serde_json::json!(2);
-        let mixed = PrivateTaskInput::new(vec![record.encode(), refused]).unwrap();
+        let mixed =
+            PrivateTaskInput::with_tenure(tenure.clone(), vec![record.encode(), refused]).unwrap();
         assert_eq!(
-            accept_claimed_task_input(&supervisor, Some(&mixed)),
+            accept_claimed_task_input(&supervisor, &dispatch(Some(mixed))),
             Err(TaskObservationCodecError::Version(2)),
             "C5"
         );
         assert!(supervisor.completion(&task).is_none(), "C5 nothing offered");
+        // C3: retained legacy data is inspectable but carries no verified
+        // remote/local subject. It cannot silently fill an authenticated tenure.
+        let legacy = PrivateTaskInput::new(vec![record.encode()]).unwrap();
+        assert!(
+            accept_claimed_task_input(&supervisor, &dispatch(Some(legacy))).is_err(),
+            "C3 unbound legacy refused"
+        );
+        assert!(supervisor.completion(&task).is_none(), "C3 no offer");
+        // C6: actual dispatch partition and every decoded record must agree;
+        // failures are atomic even when an earlier record is otherwise valid.
+        let bound = PrivateTaskInput::with_tenure(tenure.clone(), vec![record.encode()]).unwrap();
+        let mut foreign = dispatch(Some(bound.clone()));
+        foreign.session_thread_id = Some(ThreadId("another-session".into()));
+        assert!(
+            accept_claimed_task_input(&supervisor, &foreign).is_err(),
+            "C6 partition"
+        );
+        let mut other = record.encode();
+        other["holder"] = serde_json::json!("other-holder");
+        let mixed =
+            PrivateTaskInput::with_tenure(tenure.clone(), vec![record.encode(), other]).unwrap();
+        assert!(
+            accept_claimed_task_input(&supervisor, &dispatch(Some(mixed))).is_err(),
+            "C6 whole batch"
+        );
+        assert!(
+            supervisor.completion(&task).is_none(),
+            "C6 no partial offer"
+        );
+        // C7: explicitly bound meta-only input is a wake, never a completion.
+        let meta = PrivateTaskInput::with_tenure(tenure.clone(), Vec::new()).unwrap();
+        accept_claimed_task_input(&supervisor, &dispatch(Some(meta))).unwrap();
+        assert!(supervisor.completion(&task).is_none(), "C7 zero offers");
         // C4
-        let valid = PrivateTaskInput::new(vec![record.encode()]).unwrap();
-        accept_claimed_task_input(&supervisor, Some(&valid)).expect("C4");
+        let valid = PrivateTaskInput::with_tenure(tenure.clone(), vec![record.encode()]).unwrap();
+        accept_claimed_task_input(&supervisor, &dispatch(Some(valid))).expect("C4");
         assert_eq!(
             supervisor
                 .completion(&task)
@@ -1316,7 +1405,7 @@ mod tests {
         // definitive. Exact operation identity makes response-loss retry safe.
         let thread = ThreadId("attention-thread".into());
         let task = BackgroundTaskId::new("attention-task").expect("task id");
-        let fence = awaken_lease_contract::fence::Tenure::granted(
+        let fence = TaskTenure::granted(
             BackgroundTaskId::new("task").expect("task id"),
             "worker".into(),
             awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
@@ -1326,7 +1415,14 @@ mod tests {
         publish_attention(
             None,
             &supervisor,
-            &thread,
+            &awaken_session_application_contract::TaskTenureRead {
+                thread: thread.0.clone(),
+                partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+                run: "origin".into(),
+                task: task.as_str().into(),
+                holder: fence.holder().clone(),
+                epoch: fence.epoch(),
+            },
             &task,
             &fence,
             BackgroundAttention::Terminal,
@@ -1340,7 +1436,14 @@ mod tests {
                 accepting_port.clone(),
             )),
             &supervisor,
-            &thread,
+            &awaken_session_application_contract::TaskTenureRead {
+                thread: thread.0.clone(),
+                partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+                run: "origin".into(),
+                task: task.as_str().into(),
+                holder: fence.holder().clone(),
+                epoch: fence.epoch(),
+            },
             &task,
             &fence,
             BackgroundAttention::Terminal,
@@ -1369,7 +1472,14 @@ mod tests {
                 rejecting_port.clone(),
             )),
             &supervisor,
-            &thread,
+            &awaken_session_application_contract::TaskTenureRead {
+                thread: thread.0.clone(),
+                partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+                run: "origin".into(),
+                task: task.as_str().into(),
+                holder: fence.holder().clone(),
+                epoch: fence.epoch(),
+            },
             &task,
             &fence,
             BackgroundAttention::Terminal,
@@ -1392,7 +1502,14 @@ mod tests {
                 exhausted_port.clone(),
             )),
             &supervisor,
-            &thread,
+            &awaken_session_application_contract::TaskTenureRead {
+                thread: thread.0.clone(),
+                partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+                run: "origin".into(),
+                task: task.as_str().into(),
+                holder: fence.holder().clone(),
+                epoch: fence.epoch(),
+            },
             &task,
             &fence,
             BackgroundAttention::Terminal,
@@ -1488,7 +1605,7 @@ mod tests {
         // acknowledgement stops; a definitive refusal stops at once.
         let thread = ThreadId("registered-thread".into());
         let task = BackgroundTaskId::new("registered-task").expect("task id");
-        let fence = awaken_lease_contract::fence::Tenure::granted(
+        let fence = TaskTenure::granted(
             BackgroundTaskId::new("registered-task").expect("task id"),
             "registered-holder".into(),
             awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
@@ -1500,7 +1617,14 @@ mod tests {
         publish_attention(
             Some(TaskAttentionRoute::Registered(accepting.clone())),
             &supervisor,
-            &thread,
+            &awaken_session_application_contract::TaskTenureRead {
+                thread: thread.0.clone(),
+                partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+                run: "origin".into(),
+                task: task.as_str().into(),
+                holder: fence.holder().clone(),
+                epoch: fence.epoch(),
+            },
             &task,
             &fence,
             BackgroundAttention::Terminal,
@@ -1509,14 +1633,21 @@ mod tests {
         let sent = accepting.sent();
         assert_eq!(sent.len(), 3, "K5 two retries, then K1");
         assert!(sent.windows(2).all(|pair| pair[0] == pair[1]), "K2");
-        assert_eq!(sent[0].holder, "registered-holder", "W3 holder");
-        assert_eq!(sent[0].thread, thread.0, "W3 Thread");
+        assert_eq!(sent[0].tenure.holder, "registered-holder", "W3 holder");
+        assert_eq!(sent[0].tenure.thread, thread.0, "W3 Thread");
 
         let rejecting = Arc::new(RecordingDelivery::new(0, true));
         publish_attention(
             Some(TaskAttentionRoute::Registered(rejecting.clone())),
             &supervisor,
-            &thread,
+            &awaken_session_application_contract::TaskTenureRead {
+                thread: thread.0.clone(),
+                partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+                run: "origin".into(),
+                task: task.as_str().into(),
+                holder: fence.holder().clone(),
+                epoch: fence.epoch(),
+            },
             &task,
             &fence,
             BackgroundAttention::Terminal,
@@ -1788,6 +1919,212 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_parent_created_child_launches_once_and_its_claimed_result_folds_in_the_same_partition()
+     {
+        // C1 the child factory and original DispatchWorker share the parent's
+        // real commit object, supervisor, lifetime and exact child snapshot;
+        // C2 the origin is already committed Ended; C3 duplicate delivery;
+        // C4 the foreground claim settles before result folding on another
+        // supervisor. E1 exactly one ordinary tool effect; E2 one private
+        // attention names child+parent+origin+holder+epoch; E3 only that carrying
+        // dispatch offers it; E4 ordinary StepStart folds once into the same
+        // parent's committed store. No scripted Task read or extra Task store.
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
+        use awaken_dispatch_contract::DispatchEnqueue as _;
+        use awaken_worker_contract::PlacementRequirements;
+        let clock = awaken_time::system_clock();
+        let supervisor = Arc::new(BackgroundTaskSupervisor::new("child-holder", clock.clone()));
+        let counter = Arc::new(CountingTool(AtomicUsize::new(0)));
+        let config = snapshot();
+        let runtime = Arc::new(
+            Runtime::new()
+                .with_tool(counter.clone())
+                .with_plugin(Arc::new(BackgroundTaskPlugin::with_supervisor(
+                    BackgroundTaskConfig {
+                        tools: BTreeSet::from(["count".into()]),
+                        ..Default::default()
+                    },
+                    supervisor.clone(),
+                ))),
+        );
+        let memory = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+            clock.clone(),
+        ));
+        let commit = Arc::new(SessionCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected_shared(memory.clone()),
+        )));
+        let queue = Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone()));
+        let background = Arc::new(BackgroundRuns::new());
+        let application = Arc::new(RecordingAttentionApplication::accepting(0));
+        let application_port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
+        let mut task = BackgroundTask::requested(
+            BackgroundTaskId::new("child-task").unwrap(),
+            BackgroundTaskOrigin {
+                thread_id: ThreadId("child".into()),
+                run_id: RunId("child-origin".into()),
+                operation_id: "operation".into(),
+            },
+            BackgroundInvocation {
+                call: ToolCall {
+                    call_id: "call".into(),
+                    tool_id: "count".into(),
+                    arguments: serde_json::json!({}),
+                },
+            },
+        );
+        task.start(
+            supervisor.worker_id(),
+            supervisor.clock().now_ms(),
+            BackgroundTaskSupervisor::lease_ms(),
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::default(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .unwrap();
+        super::ownership::tests::persist(&commit, &task, "child-origin").await;
+        let adapters = crate::agent_runner::ChildExecutionAdapters {
+            session_thread_id: Some(ThreadId("parent".into())),
+            background_supervisor: Some(supervisor.clone()),
+            background_runs: Some(background.clone()),
+            background_attention: Some(crate::test_application_bindings::background_route(
+                application_port,
+            )),
+            background_generation: Some("generation".into()),
+            background_commit: Some(commit.clone()),
+            ..Default::default()
+        };
+        let (context, reads) = crate::agent_runner::ChildWorkerFactory::background_context(
+            runtime.clone(),
+            &config,
+            Some(&commit),
+            RuntimeRunContext::new(),
+            &adapters,
+        )
+        .unwrap();
+        let scheduler = crate::agent_runner::RunScheduler {
+            clock: clock.clone(),
+            // Erase the SAME selected queue; enqueue/claim/asserts below keep
+            // their original Memory handle and its original injected Clock.
+            binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
+                awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_dispatch(
+                    queue.clone(),
+                ),
+            )),
+            commit: commit.clone(),
+            reader: memory.clone(),
+            owner: "child-holder".into(),
+            session_resources: None,
+            publication_source: None,
+            claimed_model_request_gate: None,
+        };
+        let executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            runtime.clone();
+        let (worker, _) = crate::agent_runner::ChildWorkerFactory::parent_execution(
+            runtime,
+            &scheduler,
+            memory.clone(),
+            context,
+            Default::default(),
+            executor,
+            reads,
+        );
+        let activation = awaken_runtime_contract::RunActivation::new(
+            RunId("child-origin".into()),
+            ThreadId("child".into()),
+            config.clone(),
+            Vec::new(),
+        );
+        let request = awaken_dispatch_contract::RunDispatch::new(activation)
+            .for_session(ThreadId("parent".into()))
+            .with_placement(PlacementRequirements::remote_preferred())
+            .with_worker_codec_requirements();
+        queue.enqueue(request).await.unwrap();
+        worker
+            .tick_run(&RunId("child-origin".into()), clock.clone())
+            .await
+            .unwrap();
+        assert!(background.drain(Duration::from_secs(2)).await);
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "E1");
+        let carried = {
+            let calls = application.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1, "E2");
+            let carried = calls[0].input.clone().unwrap();
+            assert_eq!(
+                carried.tenure().unwrap().partition,
+                awaken_session_application_contract::TaskReadPartition::Session {
+                    session_thread: "parent".into()
+                }
+            );
+            carried
+        };
+        let receiver = Arc::new(BackgroundTaskSupervisor::new("receiver", clock));
+        let mut delivery = awaken_dispatch_contract::RunDispatch::new(
+            awaken_runtime_contract::RunActivation::new(
+                RunId("attention".into()),
+                ThreadId("child".into()),
+                config,
+                Vec::new(),
+            ),
+        )
+        .for_session(ThreadId("parent".into()));
+        delivery.private_task_input = Some(carried);
+        accept_claimed_task_input(&receiver, &delivery).unwrap();
+        // The original extension hook is the sole fold owner, on a different
+        // supervisor from the tool holder; it does not inherit the old claim.
+        let plugin = BackgroundTaskPlugin::with_supervisor(
+            BackgroundTaskConfig {
+                tools: BTreeSet::from(["count".into()]),
+                ..Default::default()
+            },
+            receiver.clone(),
+        );
+        use awaken_runtime_contract::plugin::{
+            PhaseContext, PhaseHookPoint, PhaseKind, Plugin as _, ResolvedExecutionEnv,
+        };
+        let env = ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())]).unwrap();
+        let hook = env
+            .hooks_for(PhaseHookPoint::StepStart)
+            .into_iter()
+            .next()
+            .unwrap();
+        let state = Store::rebuild(&memory.committed_state(&ThreadId("child".into())));
+        let phase = PhaseContext {
+            run_id: RunId("attention".into()),
+            step: 0,
+            kind: PhaseKind::StepStart,
+        };
+        let reaction = hook.on_phase(&phase, &[], &state).await.unwrap();
+        commit
+            .commit(ThreadCommit::assemble(
+                ThreadId("child".into()),
+                RunDisposition::ended(
+                    RunId("attention".into()),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                true,
+                reaction.messages,
+                reaction.state,
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        let after = Store::rebuild(&memory.committed_state(&ThreadId("child".into())));
+        assert!(
+            task_state_cell(&task.id)
+                .load(&after)
+                .unwrap()
+                .unwrap()
+                .lifecycle
+                .is_terminal(),
+            "E4 original StepStart persisted"
+        );
+        let replay = hook.on_phase(&phase, &[], &after).await.unwrap();
+        assert!(replay.state.is_empty(), "E4 no duplicate fold/notification");
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "E1 no repeated tool");
+    }
+
+    #[tokio::test]
     async fn committed_claim_launches_once_and_records_completion_without_a_second_store() {
         // Cause/effect table: C1 authoritative State and the process projection
         // are empty -> E1 observer launches nothing; C2 authoritative State has
@@ -1942,7 +2279,7 @@ mod tests {
         assert!(
             matches!(
                 record.observation(),
-                awaken_ext_background_task::TaskObservation::Ended { .. }
+                awaken_tool_contract::tool::background_task::TaskObservation::Ended { .. }
             ),
             "P1 Ended record"
         );
@@ -2228,5 +2565,334 @@ mod tests {
             "remote handle never reaches Agent"
         );
         assert_eq!(fence.epoch().get(), 1);
+    }
+
+    #[tokio::test]
+    async fn process_tool_backing_preserves_the_prepared_catalog_and_run_narrowing() {
+        // The existing Host Runtime factory registers process-selected backing;
+        // it does not grant execution. This PreparedToolExecutor table isolates
+        // that seam; the following cold/warm case owns real claimed Task delivery.
+        // | Rule | frozen count descriptor | explicit Agent allow | Run ceiling | effect |
+        // | S1 | present | yes | Configured | original default/Parallel facts, one effect |
+        // | S2 | absent | yes | Configured | NotExecutable, zero effects |
+        // | S3 | present | yes | DenyAll | facts still resolve, NotAuthorized, zero effects |
+        // No model, fake permission gate, duplicated registry or Task state owner
+        // is supplied. The child factory's extra_allowed input remains empty.
+        use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
+        for (rule, declared, narrowing, expected) in [
+            ("S1", true, ToolCapabilityNarrowing::Configured, 1),
+            ("S2", false, ToolCapabilityNarrowing::Configured, 0),
+            ("S3", true, ToolCapabilityNarrowing::DenyAll, 0),
+        ] {
+            let counter = Arc::new(CountingTool(AtomicUsize::new(0)));
+            let tools: Vec<Arc<dyn RawTool>> = vec![counter.clone()];
+            let mut frozen = snapshot();
+            // This is an ordinary prepared tool: no BackgroundTask plugin or
+            // committed Task is claimed by the bounded registration test.
+            frozen.resolved_spec.plugin_ids.clear();
+            if !declared {
+                frozen.resolved_spec.tool_descriptors.clear();
+            }
+            frozen.resolved_spec.plugin_config.agent.toolsets =
+                vec![crate::config::test_agent_toolset_permission(
+                    "count",
+                    awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
+                )];
+            frozen.recompute_fingerprint().unwrap();
+            let authorization = crate::config::effective_tool_authorization(
+                &frozen.resolved_spec.plugin_config,
+                &[],
+                &frozen.resolved_spec.plugin_config.agent.toolsets,
+            );
+            let runtime = Arc::new(crate::config::build_runtime_with_authorization(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                Arc::new(awaken_lease_testkit::ManualClock::new(1_234)),
+                &crate::config::DeferredHandToolSource,
+                &authorization,
+                None,
+                &tools,
+            ));
+            let prepared = PreparedToolExecutor::new(
+                runtime,
+                &frozen,
+                RuntimeRunContext::new().with_tool_capability_narrowing(narrowing),
+            )
+            .unwrap();
+            let call = ToolCall {
+                call_id: format!("process-tool-{rule}"),
+                tool_id: "count".into(),
+                arguments: serde_json::json!({}),
+            };
+            let execution = prepared.execution(&call);
+            if declared {
+                let facts = execution.unwrap();
+                assert_eq!(facts.recovery, ToolRecoveryPolicy::default(), "{rule}");
+                assert_eq!(facts.concurrency, ToolConcurrency::Parallel, "{rule}");
+                let result = prepared
+                    .start_task(
+                        &RunId(format!("process-tool-run-{rule}")),
+                        &ThreadId("process-tool-thread".into()),
+                        "process-tool-operation".into(),
+                        &call,
+                        &Store::new(),
+                    )
+                    .await;
+                if expected == 1 {
+                    assert!(matches!(result, Ok(ToolTaskStart::Completed(_))), "{rule}");
+                } else {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(awaken_runtime::DetachedToolError::NotAuthorized { .. })
+                        ),
+                        "{rule} the original Run ceiling precedes the executor"
+                    );
+                }
+            } else {
+                assert!(
+                    matches!(
+                        execution,
+                        Err(awaken_runtime::DetachedToolError::NotExecutable(_))
+                    ),
+                    "{rule} backing registration cannot supply a missing frozen descriptor"
+                );
+            }
+            assert_eq!(counter.0.load(Ordering::SeqCst), expected, "{rule}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_and_warm_claimed_child_reconstruct_the_same_task_observer_without_child_storage()
+    {
+        use awaken_dispatch::{DispatchClaims as _, DispatchEnqueue as _, WorkerResolver as _};
+        // C1 parent physical Root/Environment/commit are real and the child
+        // origin is committed Ended with its original Task tenure; C2 parent
+        // Runtime context is absent/present; C3 the existing resolver reconstructs
+        // the child's frozen publication under its own Run claim. R1 cold and
+        // R2 warm => one tool effect, one bound private attention and no child
+        // physical Session. The warm parent has its own BackgroundTask observer:
+        // it must not observe the child's terminal as parent authority. This
+        // local Host/Worker/commit/tool test controls only the final application
+        // ACK; Task HTTP and durable admission are independently covered.
+        for warm in [false, true] {
+            let parent = format!("recovered-task-parent-{warm}");
+            let child = ThreadId(format!("recovered-task-child-{warm}"));
+            let origin = RunId(format!("recovered-task-origin-{warm}"));
+            let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
+            let counter = Arc::new(CountingTool(AtomicUsize::new(0)));
+            let queue = Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+                awaken_time::system_clock(),
+            ));
+            let host = roots
+                .configure(
+                    crate::SessionExecutorBuilder::ephemeral(
+                        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                        "stub",
+                    )
+                    .await
+                    .with_admin_tools(vec![counter.clone()])
+                    // Only the existing owner projection changes; no second
+                    // queue/feed or new Clock is constructed for cold/warm.
+                    .with_ephemeral_dispatch(Arc::new(
+                        awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_dispatch(
+                            queue.clone(),
+                        ),
+                    )),
+                )
+                .build()
+                .unwrap();
+            let application = Arc::new(RecordingAttentionApplication::accepting(0));
+            // C4 the epoch-bearing child settles through the normal application
+            // boundary before/after the Dispatch CAS. Reuse its existing recorder
+            // and retain both complete local roles; an unused-role port is invalid
+            // here. Only the final Task attention ACK remains controlled above.
+            let coordination =
+                Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
+            let _applications = host
+                .session_application_binding()
+                .bind(
+                    &awaken_session_execution_contract::SessionApplications::Local {
+                        coordination: coordination.clone(),
+                        background_runs: application.clone(),
+                    },
+                )
+                .unwrap();
+            let mut config = snapshot();
+            config.resolved_spec.plugin_config.insert(
+                awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.into(),
+                serde_json::json!({"tools":["count"]}),
+            );
+            // The process registry supplies the executable, not a grant. Freeze
+            // this fixture's explicit Agent permission before child compilation;
+            // child authorization keeps its original empty extra_allowed input.
+            config.resolved_spec.plugin_config.agent.toolsets =
+                vec![crate::config::test_agent_toolset_permission(
+                    "count",
+                    awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
+                )];
+            config.recompute_fingerprint().unwrap();
+            let mut projection = crate::host::empty_frozen_projection_for_snapshot(
+                host.local_workspace(),
+                crate::host::eager_environment(),
+                &config,
+            );
+            projection.agent_publication = Some(config.clone());
+            let projection = roots
+                .install_projection(&host, &parent, projection)
+                .await
+                .unwrap();
+            // An already-ended origin implies prior physical realization. Make
+            // that real prerequisite through the original owner before seeding
+            // its committed Runtime Task facts, without constructing a Runtime.
+            drop(
+                host.run_assembly
+                    .session_child_execution_substrate(&parent, None)
+                    .await
+                    .unwrap(),
+            );
+            if warm {
+                host.run_assembly.ctx_for(&parent, None).await.unwrap();
+            }
+            assert_eq!(
+                host.run_assembly
+                    .installed_sessions
+                    .read_run(&parent, |run| run.context.is_some())
+                    .unwrap(),
+                Some(warm),
+                "C2 actual Runtime residency"
+            );
+            let commit = host.thread_reads.commit_for_read(&parent).await.unwrap();
+            let supervisor = host.capabilities.background_supervisor.clone();
+            let mut task = BackgroundTask::requested(
+                BackgroundTaskId::new(format!("recovered-task-{warm}")).unwrap(),
+                BackgroundTaskOrigin {
+                    thread_id: child.clone(),
+                    run_id: origin.clone(),
+                    operation_id: "background-tool-operation".into(),
+                },
+                BackgroundInvocation {
+                    call: ToolCall {
+                        call_id: "original-tool-call".into(),
+                        tool_id: "count".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                },
+            );
+            task.start(
+                supervisor.worker_id(),
+                supervisor.clock().now_ms(),
+                BackgroundTaskSupervisor::lease_ms(),
+                TaskExecutionPolicy {
+                    recovery: ToolRecoveryPolicy::default(),
+                    concurrency: ToolConcurrency::Parallel,
+                },
+            )
+            .unwrap();
+            super::ownership::tests::persist(&commit, &task, &origin.0).await;
+            let resources = projection
+                .resource_transition(
+                    awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
+                )
+                .unwrap()
+                .desired()
+                .clone();
+            let request = awaken_session_run_delivery::child_dispatch_request(
+                awaken_runtime_contract::RunActivation::new(
+                    origin.clone(),
+                    child.clone(),
+                    config,
+                    Vec::new(),
+                ),
+                ThreadId(parent.clone()),
+                Some(resources),
+                host.capabilities.agent.agent_publications.as_deref(),
+                None,
+            )
+            .unwrap()
+            .with_session_activity_epoch(7);
+            queue.enqueue(request).await.unwrap();
+            let claimed = queue
+                .claim(
+                    host.run_assembly.dispatch_owner(),
+                    awaken_dispatch_execution::DEFAULT_LEASE_MS,
+                    &Default::default(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let resolver =
+                crate::host::session_worker_resolver(&host.run_assembly, &host.dispatch).unwrap();
+            let worker = resolver.worker_for_claimed(&claimed).await.unwrap();
+            worker
+                .drive_claimed(claimed, host.clock())
+                .await
+                .unwrap()
+                .expect("original terminal settles");
+            // C4 => the original epoch-bearing child boundary reached the
+            // selected recorder once with its actual physical/logical coordinates.
+            {
+                let boundaries = coordination.boundaries.lock().unwrap();
+                assert_eq!(boundaries.len(), 1, "R1/R2 one child settlement");
+                assert_eq!(boundaries[0].session_id.as_str(), parent, "C4 parent");
+                assert_eq!(boundaries[0].source_thread_id, child, "C4 child");
+                assert_eq!(boundaries[0].source_run_id, origin, "C4 origin Run");
+                assert_eq!(
+                    boundaries[0].source_agent_id, "background-agent",
+                    "C4 Agent"
+                );
+                assert_eq!(boundaries[0].session_activity_epoch, 7, "C4 original epoch");
+            }
+            assert!(
+                host.resources
+                    .memory
+                    .background()
+                    .drain(std::time::Duration::from_secs(5))
+                    .await,
+                "R1/R2 Task effect and attention finish"
+            );
+            assert_eq!(
+                counter.0.load(Ordering::SeqCst),
+                1,
+                "R1/R2 one actual tool effect; warm={warm}, completion={:?}, wait={:?}",
+                supervisor.completion(&task.id),
+                supervisor.wait_candidate(&task.id),
+            );
+            {
+                let calls = application.calls.lock().unwrap();
+                assert_eq!(calls.len(), 1, "R1/R2 no inherited parent observer");
+                assert_eq!(calls[0].thread, child.0, "R1/R2 logical target");
+                let input = calls[0].input.as_ref().unwrap();
+                let tenure = input.tenure().unwrap();
+                assert_eq!(tenure.thread, child.0, "R1/R2 bound logical Thread");
+                assert_eq!(
+                    tenure.session_thread(),
+                    parent,
+                    "R1/R2 original physical partition"
+                );
+                assert_eq!(tenure.run, origin.0, "R1/R2 original Task Run");
+                assert_eq!(
+                    tenure.holder,
+                    supervisor.worker_id(),
+                    "R1/R2 exact Task holder"
+                );
+            }
+            assert!(
+                !host
+                    .run_assembly
+                    .authority
+                    .durable_thread_exists(&child.0)
+                    .await
+                    .unwrap(),
+                "R1/R2 no child store"
+            );
+            assert!(
+                host.run_assembly
+                    .installed_sessions
+                    .read(&child.0, |_| ())
+                    .unwrap()
+                    .is_none(),
+                "R1/R2 no child installed Session"
+            );
+        }
     }
 }

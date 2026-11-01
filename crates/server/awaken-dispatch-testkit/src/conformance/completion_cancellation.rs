@@ -44,7 +44,10 @@ async fn completion_retains_the_settled_cancel_request(store: &dyn ConformanceDi
                 .observe_session_run_admission(run)
                 .await
                 .expect("admission observation"),
-            awaken_dispatch_contract::SessionRunAdmissionObservation::Completed(fed.clone()),
+            awaken_dispatch_contract::SessionRunAdmissionObservation::Completed {
+                completion: fed.clone(),
+                retained_request: Ok(None)
+            },
             "K3 both completion reads agree"
         );
         fed

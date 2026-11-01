@@ -218,6 +218,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
             clock.clone(),
             execution.clone(),
             realization_executor.clone(),
+            resources.memory.background(),
         )),
         capabilities: capabilities.clone(),
         local_workspace: local_workspace.clone(),

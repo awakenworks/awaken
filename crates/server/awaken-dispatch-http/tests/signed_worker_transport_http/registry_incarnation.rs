@@ -1,6 +1,16 @@
 //! Registry-incarnation fixtures and terminal-cleanup admission tests.
 use super::*;
 
+// Keep the existing directory fixture and its authoritative record together.
+// The extra leaves inject only a read failure and count that same read; old
+// fixtures retain their original healthy Default and mutation implementations.
+#[derive(Default)]
+pub(super) struct TestWorkerDirectory(
+    pub(super) Mutex<Option<RegisteredWorker>>,
+    std::sync::atomic::AtomicBool,
+    AtomicUsize,
+);
+
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_draining_cleanup_keeps_its_original_renewal_authority() {
     // Causes: the exact existing cleanup Actor is Ready/Draining; Registry
@@ -154,6 +164,12 @@ impl awaken_worker_contract::WorkerObservationSource for TestWorkerDirectory {
 #[async_trait::async_trait]
 impl awaken_worker_contract::WorkerCurrentSource for TestWorkerDirectory {
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        self.2.fetch_add(1, Ordering::SeqCst);
+        if self.1.load(Ordering::SeqCst) {
+            return Err(RegistryError::Persistence(
+                "registry temporarily unavailable".into(),
+            ));
+        }
         Ok(self
             .0
             .lock()
@@ -228,4 +244,150 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
         session_control.cleanup_claims.lock().unwrap().is_empty(),
         "D1/E1"
     );
+}
+
+/// Causes/effects: U1 exact authenticated Worker + Registry read unavailable
+/// must return 503 before a claim or Session Work effect; U2 the SAME queued
+/// Run/request after recovery is claimable; U3 a mismatched transport/body
+/// Worker is definitive 400 before even reading Registry. This exercises the
+/// actual HTTP/MemoryDispatch/claim pipeline with the existing local-header
+/// test authenticator; the original signed-credential matrix remains separate.
+/// A read outage is not proof of Foreign/Expired, and this test grants no Task
+/// authority (the Task route's own held-slot/admission case is a separate test).
+#[tokio::test]
+async fn registry_outage_does_not_consume_a_dispatch_claim_or_reclassify_identity() {
+    let clock = Arc::new(ManualClock::new(10_000));
+    let directory = Arc::new(TestWorkerDirectory::default());
+    let registered = directory
+        .register(
+            WorkerRegistration {
+                worker_id: "outage-worker".into(),
+                incarnation_id: "outage-boot".into(),
+                manifest: current_dispatch_codec_manifest(),
+                create_ledger: None,
+            },
+            10_000,
+            30_000,
+        )
+        .await
+        .unwrap();
+    let identity = registered.snapshot.identity;
+    directory
+        .heartbeat(
+            &identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
+            },
+            10_000,
+            30_000,
+        )
+        .await
+        .unwrap();
+    let dispatch = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let mut request = standard_worker_dispatch(activation());
+    let resources =
+        awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+            "signed-workspace",
+            7,
+            Default::default(),
+        );
+    request.session_resources = Some(awaken_dispatch::SessionResourceEnvelope::at_revision(
+        resources.workspace_id.clone(),
+        resources.revision,
+        resources.encode_resources().unwrap(),
+    ));
+    dispatch.enqueue(request).await.unwrap();
+    let before = dispatch.list_dispatches().await.unwrap();
+    let work = Arc::new(RecordingSessionWorkAuthority::default());
+    let service = WorkerDispatchService::local(dispatch.clone(), clock)
+        .with_worker_directory(directory.clone(), 30_000)
+        .with_session_work_authority(work.clone());
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/v1/worker/dispatch/claim");
+    directory.1.store(true, Ordering::SeqCst);
+    let response = client
+        .post(&url)
+        .header("x-awaken-worker-id", "outage-worker")
+        .json(&serde_json::json!({"identity": &identity}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "U1"
+    );
+    assert_eq!(
+        directory.2.load(Ordering::SeqCst),
+        1,
+        "U1 one Registry read"
+    );
+    assert_eq!(
+        work.acquisitions.load(Ordering::SeqCst),
+        0,
+        "U1 no Work effect"
+    );
+    assert_eq!(
+        dispatch.list_dispatches().await.unwrap(),
+        before,
+        "U1 no claim transition"
+    );
+    let response = client
+        .post(&url)
+        .header("x-awaken-worker-id", "another-worker")
+        .json(&serde_json::json!({"identity": &identity}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST, "U3");
+    assert_eq!(
+        directory.2.load(Ordering::SeqCst),
+        1,
+        "U3 identity precedes Registry"
+    );
+    assert_eq!(
+        work.acquisitions.load(Ordering::SeqCst),
+        0,
+        "U3 no Work effect"
+    );
+    directory.1.store(false, Ordering::SeqCst);
+    let response = client
+        .post(&url)
+        .header("x-awaken-worker-id", "outage-worker")
+        .json(&serde_json::json!({"identity": &identity}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "U2 same request retry"
+    );
+    let claimed: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        claimed["claimed"]["request"]["activation"]["run_id"], "signed-run",
+        "U2"
+    );
+    assert_eq!(
+        directory.2.load(Ordering::SeqCst),
+        2,
+        "U2 one new Registry read"
+    );
+    assert_eq!(
+        work.acquisitions.load(Ordering::SeqCst),
+        1,
+        "U2 exactly one Work effect"
+    );
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
 }

@@ -30,13 +30,14 @@ use serde_json::{Value, json};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::background_task::{committed_task_holder, committed_task_slot};
+use awaken_agent_contract::thread::background_task::{committed_task_attempt, committed_task_slot};
 use awaken_dispatch::{WorkerDirectory, WorkerIdentity};
 use awaken_session_application_contract::{
     SessionRunBackgroundApplication, TaskAttention, TaskReadPartition, TaskTenureRead,
     TaskTenureRecord, WORKER_TASK_ATTENTION_PATH, WORKER_TASK_TENURE_PATH, registered_task_holder,
 };
 use awaken_time::{WallClock, WallClockExt};
+use awaken_tool_contract::tool::background_task::TaskObservationRecord;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity,
@@ -80,7 +81,7 @@ fn admit_task_holder(identity: &WorkerIdentity, holder: &str) -> Result<(), Appl
 /// |---|---|---|
 /// | H2 | its current attempt names the holder | the slot |
 /// | H3 | absent, Requested, Ended, or another holder's attempt | none |
-/// | H5 | does not decode, or names another Task | refused (internal) |
+/// | H5 | ownership projection does not decode, or names another Task | refused (internal) |
 fn held_task_slot(
     state: &[StateCommand],
     read: &TaskTenureRead,
@@ -88,22 +89,21 @@ fn held_task_slot(
     let Some(slot) = committed_task_slot(state, &read.task) else {
         return Ok(None);
     };
-    let holder = committed_task_holder(&read.task, &slot).map_err(ApplicationError::internal)?;
-    Ok((holder.as_deref() == Some(read.holder.as_str())).then_some(slot))
+    let attempt = committed_task_attempt(&read.task, &read.thread, &read.run, &slot)
+        .map_err(ApplicationError::internal)?;
+    Ok(attempt
+        .is_some_and(|(holder, epoch)| holder == read.holder && epoch.get() == read.epoch.get())
+        .then_some(slot))
 }
 
 /// The Session partition a tenure read addresses (rows P1-P3): `None` for a
 /// Thread that is its own partition, the Session Thread for a child Thread.
 fn partition_read(read: &TaskTenureRead) -> Result<Option<ThreadId>, ApplicationError> {
-    match &read.partition {
-        TaskReadPartition::Thread {} => Ok(None),
-        TaskReadPartition::Session { session_thread } if session_thread == &read.thread => {
-            Err(ApplicationError::invalid(
-                "a Task on its Session's own Thread is read with the `thread` partition",
-            ))
-        }
-        TaskReadPartition::Session { session_thread } => Ok(Some(ThreadId(session_thread.clone()))),
-    }
+    read.validate().map_err(ApplicationError::invalid)?;
+    Ok(match &read.partition {
+        TaskReadPartition::Thread {} => None,
+        TaskReadPartition::Session { session_thread } => Some(ThreadId(session_thread.clone())),
+    })
 }
 
 /// Whether a committed read answered from the partition the Task was committed
@@ -129,6 +129,48 @@ fn admit_partition_snapshot(
     }
 }
 
+/// One partition selection/read/identity gate for tenure and attention. It is
+/// a read of the canonical source, not a cached or process-local permission.
+async fn read_task_snapshot(
+    source: &dyn RunRecoverySource,
+    read: &TaskTenureRead,
+) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, ApplicationError> {
+    let thread = ThreadId(read.thread.clone());
+    let run = RunId(read.run.clone());
+    let snapshot = match partition_read(read)? {
+        None => source.recovery_snapshot(&thread, &run).await,
+        Some(session) => {
+            source
+                .recovery_snapshot_in_session(&session, &thread, &run)
+                .await
+        }
+    }
+    .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    admit_partition_snapshot(&snapshot, &thread, &run)?;
+    Ok(snapshot)
+}
+
+/// A1 all records decode and exactly name the addressed Task/holder/epoch;
+/// A2 any foreign/unknown/malformed member refuses the whole batch before any
+/// receipt or admission. InputRequired has no record but still has its tenure.
+fn admit_attention_records(attention: &TaskAttention) -> Result<(), ApplicationError> {
+    let read = &attention.tenure;
+    read.validate().map_err(ApplicationError::invalid)?;
+    if let Some(input) = &attention.input {
+        let task =
+            awaken_tool_contract::tool::background_task::BackgroundTaskId::new(read.task.clone())
+                .map_err(|error| ApplicationError::invalid(error.to_string()))?;
+        let expected = awaken_tool_contract::tool::background_task::TaskTenure::granted(
+            task,
+            read.holder.clone(),
+            read.epoch,
+        );
+        TaskObservationRecord::decode_bound_batch(input.observations(), &expected)
+            .map_err(|error| ApplicationError::invalid(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Map the application's refusal once: a definitive refusal stays definitive
 /// (the Worker stops retrying, row K4); anything else is retryable (K5).
 fn attention_failure(error: awaken_session_types::RunError) -> ApplicationError {
@@ -136,8 +178,10 @@ fn attention_failure(error: awaken_session_types::RunError) -> ApplicationError 
         awaken_session_types::RunErrorKind::BadRequest => {
             ApplicationError::invalid(error.to_string())
         }
-        awaken_session_types::RunErrorKind::Conflict
-        | awaken_session_types::RunErrorKind::Internal
+        awaken_session_types::RunErrorKind::Conflict => {
+            ApplicationError::conflict(error.to_string())
+        }
+        awaken_session_types::RunErrorKind::Internal
         | awaken_session_types::RunErrorKind::Unavailable => {
             ApplicationError::unavailable(error.to_string())
         }
@@ -177,11 +221,32 @@ pub fn worker_task_control_router(
                 false,
             )
             .await
-            .map_err(ApplicationError::invalid)?;
-            admit_task_holder(&request.identity, &request.attention.holder)?;
+            .map_err(super::worker_identity_failure)?;
+            let attention = request
+                .attention
+                .bind_input()
+                .map_err(|error| ApplicationError::invalid(error.to_string()))?;
+            admit_task_holder(&request.identity, &attention.tenure.holder)?;
+            admit_attention_records(&attention)?;
+            // Exact persisted input outranks the Task's later phase. Unknown or
+            // conflicting evidence never becomes a fresh Task authorization.
+            if let Some(ack) = state
+                .attention
+                .task_attention_receipt(attention.clone())
+                .await
+                .map_err(attention_failure)?
+            {
+                return Ok(json!({ "ack": ack }));
+            }
+            let snapshot = read_task_snapshot(state.committed.as_ref(), &attention.tenure).await?;
+            if held_task_slot(&snapshot.state, &attention.tenure)?.is_none() {
+                return Err(ApplicationError::invalid(
+                    "the addressed Task is not held by this exact Worker tenure",
+                ));
+            }
             let ack = state
                 .attention
-                .submit_task_attention(request.attention)
+                .submit_task_attention(attention)
                 .await
                 .map_err(attention_failure)?;
             Ok(json!({ "ack": ack }))
@@ -204,24 +269,10 @@ pub fn worker_task_control_router(
                 false,
             )
             .await
-            .map_err(ApplicationError::invalid)?;
+            .map_err(super::worker_identity_failure)?;
             // H4: only this incarnation's own holder is read.
             admit_task_holder(&request.identity, &request.read.holder)?;
-            let thread = ThreadId(request.read.thread.clone());
-            let run = RunId(request.read.run.clone());
-            // P1/P2 address the partition the Task was committed in; P3 refused.
-            let snapshot = match partition_read(&request.read)? {
-                None => state.committed.recovery_snapshot(&thread, &run).await,
-                Some(session_thread) => {
-                    state
-                        .committed
-                        .recovery_snapshot_in_session(&session_thread, &thread, &run)
-                        .await
-                }
-            }
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
-            // P4: the origin Run must be committed in the addressed partition.
-            admit_partition_snapshot(&snapshot, &thread, &run)?;
+            let snapshot = read_task_snapshot(state.committed.as_ref(), &request.read).await?;
             let slot = held_task_slot(&snapshot.state, &request.read)?;
             Ok(json!({ "tenure": slot.map(TaskTenureRecord::new) }))
         }
@@ -292,8 +343,10 @@ mod tests {
             run: "run".into(),
             task: "task-1".into(),
             holder: holder.clone(),
+            epoch: awaken_lease_contract::fence::Epoch::from_persisted(2)
+                .expect("nonzero Task epoch"),
         };
-        let slot = |task: &str, lifecycle: Value| json!({"id": task, "lifecycle": lifecycle, "revision": 1});
+        let slot = |task: &str, lifecycle: Value| json!({"id": task, "origin":{"thread_id":"thread", "run_id":"run", "operation_id":"op"}, "lifecycle": lifecycle, "revision": 1});
         let attempt = |worker: &str| json!({"worker_id": worker, "epoch": 2, "lease_expires_at_ms": 10, "policy": {}});
         let state = |value: Value| {
             vec![StateCommand {
@@ -354,6 +407,8 @@ mod tests {
             run: "origin".into(),
             task: "task".into(),
             holder: "holder".into(),
+            epoch: awaken_lease_contract::fence::Epoch::from_persisted(3)
+                .expect("nonzero Task epoch"),
         };
         // P1 root Thread, P2 child Thread in a Session, P3 a Session naming the
         // Thread itself.

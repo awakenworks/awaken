@@ -36,6 +36,7 @@ pub(crate) struct ClaimedChildAttempt {
     pub(crate) executor: Arc<dyn RunAttemptExecutor>,
     pub(crate) context: RuntimeRunContext,
     pub(crate) credentials: CredentialRealizationCapabilities,
+    pub(crate) terminal_reads: awaken_dispatch_execution::ClaimedTerminalReads,
 }
 
 fn isolated_child_recovery_projection(
@@ -49,6 +50,124 @@ fn isolated_child_recovery_projection(
 }
 
 impl ChildWorkerFactory {
+    /// Install one child-scoped observer over the same physical Session/commit,
+    /// codec supervisor and claim read shared with this exact DispatchWorker.
+    /// Parent observers are never inherited as child authority.
+    pub(crate) fn background_context(
+        runtime: Arc<Runtime>,
+        snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+        commit: Option<&Arc<SessionCommit>>,
+        mut context: RuntimeRunContext,
+        adapters: &super::child_attempt::ChildExecutionAdapters,
+    ) -> Result<
+        (
+            RuntimeRunContext,
+            awaken_dispatch_execution::ClaimedTerminalReads,
+        ),
+        super::AgentRunError,
+    > {
+        let reads = awaken_dispatch_execution::ClaimedTerminalReads::default();
+        context
+            .terminal_observers
+            .retain(|observer| observer.observer_id() != crate::background_task::OBSERVER_ID);
+        if !snapshot
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
+        {
+            return Ok((context, reads));
+        }
+        let missing = |what: &str| {
+            super::AgentRunError::Configuration(format!("child BackgroundTask requires {what}"))
+        };
+        let session_thread = adapters
+            .session_thread_id
+            .as_ref()
+            .map(|thread| thread.0.as_str())
+            .filter(|thread| !thread.trim().is_empty())
+            .ok_or_else(|| missing("the selected physical Session identity"))?;
+        let commit = commit.ok_or_else(|| missing("the original Session commit boundary"))?;
+        let supervisor = adapters
+            .background_supervisor
+            .clone()
+            .ok_or_else(|| missing("its original supervisor"))?;
+        let background = adapters
+            .background_runs
+            .clone()
+            .ok_or_else(|| missing("the original Session background lifetime"))?;
+        let attention = adapters
+            .background_attention
+            .clone()
+            .ok_or_else(|| missing("its Session attention route"))?;
+        let generation = adapters
+            .background_generation
+            .clone()
+            .ok_or_else(|| missing("the current physical Session generation"))?;
+        let committed = crate::background_task::TaskCommittedReads::of(
+            commit,
+            &reads,
+            adapters.task_control.as_ref(),
+            session_thread,
+        )
+        .map_err(|message| super::AgentRunError::Configuration(message.into()))?;
+        let observer = crate::background_task::BackgroundTaskTerminalObserver::new(
+            runtime,
+            snapshot.clone(),
+            context.clone(),
+            committed,
+            background,
+            supervisor,
+            session_thread.to_owned(),
+            generation,
+            Some(attention),
+        );
+        context.terminal_observers.push(Arc::new(observer));
+        Ok((context, reads))
+    }
+
+    pub(crate) async fn deliver_local_terminal(
+        context: &RuntimeRunContext,
+        commit: Option<&Arc<SessionCommit>>,
+        thread: &ThreadId,
+        run: &awaken_agent_contract::RunId,
+    ) -> Result<(), super::AgentRunError> {
+        if context.terminal_observers.is_empty() {
+            return Ok(());
+        }
+        let error = |message: String| super::AgentRunError::Configuration(message);
+        let commit = commit.filter(|commit| commit.committed_authority().is_some())
+            .ok_or_else(|| error("direct child terminal observers require the original local committed authority".into()))?;
+        let record = commit
+            .authoritative_run(run)
+            .await
+            .map_err(error)?
+            .ok_or_else(|| error("direct child terminal is not committed".into()))?;
+        if &record.thread_id != thread {
+            return Err(error(
+                "direct child terminal belongs to another Thread".into(),
+            ));
+        }
+        if let awaken_agent_contract::agent::run::RunState::Ended(cause) = record.state {
+            let terminal = awaken_runtime_contract::terminal::CommittedTerminalRun {
+                run_id: run.clone(),
+                thread_id: thread.clone(),
+                cause,
+            };
+            let failures = awaken_runtime_contract::terminal::deliver_committed_terminal(
+                &context.terminal_observers,
+                &terminal,
+            )
+            .await;
+            if !failures.is_empty() {
+                return Err(error(format!(
+                    "direct child terminal delivery failed: {failures:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn split(
         runtime: Arc<Runtime>,
         binding: DispatchBinding,
@@ -69,6 +188,7 @@ impl ChildWorkerFactory {
         context: RuntimeRunContext,
         credentials: CredentialRealizationCapabilities,
         executor: Arc<dyn RunAttemptExecutor>,
+        terminal_reads: awaken_dispatch_execution::ClaimedTerminalReads,
     ) -> (
         DispatchWorker<AnyDispatchStore>,
         Arc<dyn CommittedThreadView>,
@@ -85,6 +205,7 @@ impl ChildWorkerFactory {
             scheduler.owner.clone(),
         )
         .with_context(context.clone())
+        .with_claimed_terminal_reads(terminal_reads)
         .with_local_credential_capabilities(credentials);
         if context
             .model_request_gate
@@ -150,6 +271,7 @@ impl ChildWorkerFactory {
         if let Some(materializer) = host.worker_inference_materializer() {
             worker = worker.with_inference_materializer(materializer);
         }
+        worker = worker.with_claimed_terminal_reads(attempt.terminal_reads);
         worker.install_attempt_executor(attempt.executor);
         worker = worker.with_local_credential_capabilities(attempt.credentials);
         if has_model_request_gate && let Some(endpoint) = host.capabilities.coordination_endpoint()
@@ -193,7 +315,9 @@ mod tests {
         let scheduler = |binding, reader| RunScheduler {
             clock: clock.clone(),
             binding,
-            commit: commit.clone(),
+            commit: Arc::new(SessionCommit::Local(Arc::new(
+                crate::LocalCommitAdapter::projected_shared(commit.clone()),
+            ))),
             reader,
             owner: "child-owner".to_string(),
             session_resources: None,
@@ -207,6 +331,7 @@ mod tests {
             RuntimeRunContext::new(),
             Default::default(),
             executor.clone(),
+            Default::default(),
         );
         assert!(Arc::ptr_eq(&selected_local, &local_reader), "R1/E1");
 
@@ -231,6 +356,7 @@ mod tests {
             RuntimeRunContext::new(),
             Default::default(),
             executor,
+            Default::default(),
         );
         assert!(!Arc::ptr_eq(&selected_remote, &parent_reader), "R2/E2");
         assert!(parent.current().is_none(), "R2 parent unchanged");

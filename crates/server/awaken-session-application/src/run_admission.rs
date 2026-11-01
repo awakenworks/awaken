@@ -932,6 +932,34 @@ impl SessionRunApplication {
         self
     }
 
+    async fn task_attention_root_command(
+        &self,
+        attention: &awaken_session_application_contract::TaskAttention,
+    ) -> Result<AdmitSessionRun, RunError> {
+        let session = self
+            .admissions
+            .queries
+            .session(&awaken_session_types::SessionId::from(
+                attention.tenure.thread.as_str(),
+            ))
+            .await
+            .map_err(crate::session_repository_error)?;
+        let agent = &session
+            .frozen_baseline()
+            .ok_or_else(|| RunError::unavailable("Task Session has no frozen Agent"))?
+            .agent_id;
+        let mut command = self.admission_command(
+            &attention.operation_id,
+            &attention.tenure.thread,
+            Some(agent),
+            vec![attention.message.clone()],
+            None,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
+        )?;
+        command.private_task_input = attention.input.clone();
+        Ok(command)
+    }
+
     fn agent_for(&self, thread: &str, requested_agent: Option<&str>) -> Result<String, RunError> {
         if let Some(requested) = requested_agent {
             return Ok(requested.to_string());
@@ -1229,6 +1257,39 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         Ok(run_id)
     }
 
+    async fn task_attention_receipt(
+        &self,
+        attention: awaken_session_application_contract::TaskAttention,
+    ) -> Result<Option<awaken_session_application_contract::TaskAttentionAck>, RunApplicationError>
+    {
+        let attention = attention
+            .bind_input()
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
+        if matches!(
+            attention.tenure.partition,
+            awaken_session_application_contract::TaskReadPartition::Session { .. }
+        ) {
+            let command = self
+                .coordination
+                .task_attention_child_command(&attention)
+                .await?;
+            return Ok(self
+                .coordination
+                .task_attention_receipt(&command)
+                .await?
+                .then_some(awaken_session_application_contract::TaskAttentionAck {
+                    run_id: command.run_id.clone(),
+                }));
+        }
+        let command = self.task_attention_root_command(&attention).await?;
+        let run_id = command.run_id.clone();
+        Ok(self
+            .coordination
+            .task_attention_receipt(&command)
+            .await?
+            .then_some(awaken_session_application_contract::TaskAttentionAck { run_id }))
+    }
+
     /// Decision table (remote Task control, ACK rows):
     /// | Rule | cause | effect |
     /// |---|---|---|
@@ -1240,17 +1301,32 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         &self,
         attention: awaken_session_application_contract::TaskAttention,
     ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
-        let mut command = self.admission_command(
-            &attention.operation_id,
-            &attention.thread,
-            None,
-            vec![attention.message],
-            None,
-            awaken_session_types::SessionRunReplacement::PreservePrior,
-        )?;
-        command.private_task_input = attention.input;
+        let attention = attention
+            .bind_input()
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
+        // Local co-located delivery follows the same receipt-before-policy
+        // order as the authenticated HTTP endpoint after a lost response.
+        if let Some(receipt) = self.task_attention_receipt(attention.clone()).await? {
+            return Ok(receipt);
+        }
+        if matches!(
+            attention.tenure.partition,
+            awaken_session_application_contract::TaskReadPartition::Session { .. }
+        ) {
+            let command = self
+                .coordination
+                .task_attention_child_command(&attention)
+                .await?;
+            return self.coordination.submit_child_task_attention(command).await;
+        }
+        let command = self.task_attention_root_command(&attention).await?;
         let run_id = command.run_id.clone();
-        let owner_scope = (self.workspace)(&attention.thread)?;
+        let owner_scope = self
+            .admissions
+            .mutations
+            .owner(&command.session_id)
+            .await
+            .map_err(mutation_error)?;
         let admitted = Box::pin(
             self.admissions
                 .admit_or_create_session_run(&owner_scope, command),

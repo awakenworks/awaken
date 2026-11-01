@@ -57,17 +57,25 @@ impl MemoryDispatchStore {
                         row.cancellation_requested,
                     )
                 });
-                state.completions.push(DispatchCompletion {
-                    sequence,
-                    run_id: run_id.clone(),
-                    thread_id: request.as_ref().map(|(thread, _, _, _)| thread.clone()),
-                    session_thread_id: request
-                        .as_ref()
-                        .and_then(|(_, parent, _, _)| parent.clone()),
-                    cancellation_requested: request
-                        .as_ref()
-                        .is_some_and(|(_, _, _, cancelled)| *cancelled),
-                    request_fingerprint: request.map(|(_, _, fingerprint, _)| fingerprint),
+                let retained_request = state
+                    .rows
+                    .get(run_id)
+                    .filter(|row| row.request.needs_background_task_control())
+                    .map(|row| Box::new(row.request.clone()));
+                state.completions.push(CompletionRecord {
+                    receipt: DispatchCompletion {
+                        sequence,
+                        run_id: run_id.clone(),
+                        thread_id: request.as_ref().map(|(thread, _, _, _)| thread.clone()),
+                        session_thread_id: request
+                            .as_ref()
+                            .and_then(|(_, parent, _, _)| parent.clone()),
+                        cancellation_requested: request
+                            .as_ref()
+                            .is_some_and(|(_, _, _, cancelled)| *cancelled),
+                        request_fingerprint: request.map(|(_, _, fingerprint, _)| fingerprint),
+                    },
+                    retained_request,
                 });
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
@@ -94,5 +102,132 @@ impl MemoryDispatchStore {
         }
         push_operation(&mut state, operation);
         Ok(SettleOutcome::Applied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{MemoryDispatchStore, lock};
+    use awaken_dispatch_contract::{
+        DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchError,
+        DispatchOutcome, DispatchSettlement as _, RunDispatch, SessionRunAdmissionObservation,
+        SessionRunAdmissionReads as _,
+    };
+
+    #[tokio::test]
+    async fn memory_retained_source_uncertainty_does_not_erase_or_repair_the_completion() {
+        // M1 original Task request Done in the SAME record => exact retained
+        // value. M2 NULL/foreign retained source => original completion receipt
+        // and feed survive, source is absent/Unavailable. M3 caller replay can
+        // neither heal it with supplied data nor recreate a claimable row.
+        let store = MemoryDispatchStore::new(awaken_time::system_clock());
+        let mut activation =
+            awaken_dispatch_testkit::worker_http::activation("memory-retained-source");
+        activation
+            .snapshot
+            .resolved_spec
+            .plugin_ids
+            .push("background_task".into());
+        activation.snapshot.recompute_fingerprint().unwrap();
+        // C0 final Native/Task inputs publish their intrinsic codec demands
+        // through the canonical producer before enqueue. This remains a Task
+        // row; the local claim below advertises no registered Worker manifest.
+        let request = RunDispatch::new(activation).with_worker_codec_requirements();
+        store.enqueue(request.clone()).await.unwrap();
+        let claimed = store
+            .claim_run(
+                request.run_id(),
+                "original-source-owner",
+                30_000,
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .settle(
+                request.run_id(),
+                claimed.lease.epoch(),
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap();
+        let SessionRunAdmissionObservation::Completed {
+            completion,
+            retained_request,
+        } = store
+            .observe_session_run_admission(request.run_id())
+            .await
+            .unwrap()
+        else {
+            panic!("M1 completion");
+        };
+        assert_eq!(
+            retained_request.unwrap().as_deref(),
+            Some(&request),
+            "M1 exact original"
+        );
+        let feed = store.completion_events_after(0, 100).await.unwrap();
+        for foreign in [false, true] {
+            {
+                let mut state = lock(&store.state).unwrap();
+                let record = state.completions.last_mut().unwrap();
+                record.retained_request = if foreign {
+                    let mut wrong = request.clone();
+                    wrong.activation.thread_id.0.push_str("-foreign");
+                    Some(Box::new(wrong))
+                } else {
+                    None
+                };
+            }
+            let observed = store
+                .observe_session_run_admission(request.run_id())
+                .await
+                .unwrap();
+            let SessionRunAdmissionObservation::Completed {
+                completion: receipt,
+                retained_request,
+            } = &observed
+            else {
+                panic!("M2 receipt");
+            };
+            assert_eq!(receipt, &completion, "M2 valid receipt unaffected");
+            if foreign {
+                assert!(
+                    matches!(retained_request, Err(DispatchError::Unavailable(_))),
+                    "M2 corrupt source Unknown"
+                );
+            } else {
+                assert_eq!(retained_request, &Ok(None), "M2 absent source not guessed");
+            }
+            store.enqueue(request.clone()).await.unwrap();
+            assert_eq!(
+                store
+                    .observe_session_run_admission(request.run_id())
+                    .await
+                    .unwrap(),
+                observed,
+                "M3 no caller-source repair"
+            );
+            assert_eq!(
+                store.completion_events_after(0, 100).await.unwrap(),
+                feed,
+                "M3 no feed change"
+            );
+            assert!(
+                store
+                    .claim_run(
+                        request.run_id(),
+                        "foreign-owner",
+                        30_000,
+                        &Default::default()
+                    )
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "M3 no resurrection"
+            );
+        }
     }
 }

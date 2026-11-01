@@ -383,7 +383,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
             // refused record refuses the Run rather than dropping a result.
             crate::background_task::accept_claimed_task_input(
                 &host.capabilities.background_supervisor,
-                dispatch.private_task_input.as_ref(),
+                dispatch,
             )
             .map_err(|error| {
                 execution_error(format!(
@@ -391,7 +391,7 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
                 ))
             })?;
             let effective_model_ref = dispatch.activation.effective_model_ref().to_owned();
-            let input = ClaimedRuntimeInput {
+            let input = FrozenRuntimeInput {
                 identity: RuntimePublicationIdentity::from_publications(
                     &dispatch.activation.snapshot,
                     &dispatch.agent_publications,
@@ -424,6 +424,15 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
         session_thread: &ThreadId,
         publications: Arc<StaticPublishedAgentSnapshots>,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
+        crate::background_task::accept_claimed_task_input(
+            &self.assembly.capabilities.background_supervisor,
+            &claimed.request,
+        )
+        .map_err(|error| {
+            execution_error(format!(
+                "claimed child carries a refused Task observation: {error}"
+            ))
+        })?;
         super::claimed_run::construct_claimed_child(
             self.assembly.as_ref(),
             claimed,

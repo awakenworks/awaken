@@ -21,6 +21,7 @@ pub fn child_dispatch_request(
         awaken_session_configuration_contract::resource::SessionResourceManifest,
     >,
     publication_source: Option<&dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    frozen_publications: Option<&[awaken_runtime_contract::ExecutableAgentSnapshot]>,
 ) -> Result<RunDispatch, ChildDispatchRefusal> {
     // Delegated publications are frozen FROM a Workspace, so this coordinate
     // selects whose published Agent a child may inherit. A compiled-in default
@@ -47,9 +48,17 @@ pub fn child_dispatch_request(
             ));
         }
     };
-    let child_publications = crate::RUN_PUBLICATIONS
-        .freeze(&activation.snapshot, publication_source, workspace)
-        .map_err(|error| ChildDispatchRefusal(error.to_string()))?;
+    let child_publications = match frozen_publications {
+        Some(publications) => {
+            crate::RUN_PUBLICATIONS
+                .exact_source(&activation.snapshot, publications, workspace)
+                .map_err(ChildDispatchRefusal)?;
+            publications.to_vec()
+        }
+        None => crate::RUN_PUBLICATIONS
+            .freeze(&activation.snapshot, publication_source, workspace)
+            .map_err(ChildDispatchRefusal)?,
+    };
     let inference_holder =
         awaken_dispatch_execution::placement::self_hosted_inference_holder(&activation)
             .map_err(|error| ChildDispatchRefusal(error.to_string()))?;

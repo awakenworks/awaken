@@ -544,6 +544,7 @@ async fn a_task_tenure_read_carries_the_partition_its_task_was_committed_in() {
         run: "origin-run".into(),
         task: "task-1".into(),
         holder: "holder".into(),
+        epoch: awaken_lease_contract::fence::Epoch::from_persisted(3).expect("nonzero Task epoch"),
     };
     let session = |session: &str| TaskReadPartition::Session {
         session_thread: session.into(),

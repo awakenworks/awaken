@@ -6,6 +6,7 @@ use awaken_dispatch::{
     DispatchClaims as _, DispatchEnqueue as _, DispatchError, PlacementRequirements,
     PostgresDispatchStore, RunDispatch,
 };
+use awaken_worker_contract::WorkerCurrentSource as _;
 use sqlx::postgres::PgPoolOptions;
 
 #[tokio::test]

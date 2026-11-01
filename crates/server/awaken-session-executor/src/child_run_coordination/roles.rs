@@ -46,6 +46,18 @@ impl awaken_session_execution_contract::ChildRunCoordination for ChildRunCoordin
     ) -> Result<awaken_session_execution_contract::SessionRunReservation, RunError> {
         awaken_session_run_delivery::validate_session_run_command(&command)?;
         let session_id = command.session_id.clone();
+        let (origin, original_dispatch) = if command.private_task_input.is_some() {
+            let dispatch = self
+                .session_runs
+                .coordinator_dispatch()
+                .map_err(to_run_error)?;
+            let origin =
+                awaken_session_run_delivery::select_session_run_origin(&command, dispatch.as_ref())
+                    .await?;
+            (origin, Some(dispatch))
+        } else {
+            (None, None)
+        };
         // The Session application's Run reservation enters this host for the
         // Session: its install path, so the Session-dispatch mark has an installed Session.
         self.installed_sessions
@@ -56,27 +68,37 @@ impl awaken_session_execution_contract::ChildRunCoordination for ChildRunCoordin
             .await?;
         let ctx = self
             .run_assembly
-            .ctx_for_session_coordination(session_id.as_str(), Some(&command.agent_id))
+            .ctx_for_session_coordination(
+                session_id.as_str(),
+                Some(&command.agent_id),
+                origin.as_deref(),
+            )
             .await
             .map_err(to_run_error)?;
         let reservation_context_is_ephemeral = ctx.is_coordination_envelope();
         let reservation = async {
-            let model_ref_override = self
-                .capabilities
-                .agent
-                .inference_routing
-                .override_for(session_id.as_str())?;
-            let dispatch = self
-                .session_runs
-                .coordinator_dispatch()
-                .map_err(to_run_error)?;
-            awaken_session_run_delivery::reserve_session_run(
-                command,
-                awaken_session_run_delivery::SessionRunInputs {
+            let inputs = match origin {
+                Some(source) => awaken_session_run_delivery::SessionRunInputs::Task(source),
+                None => awaken_session_run_delivery::SessionRunInputs::Session {
                     snapshot: &ctx.config,
                     skills: ctx.skill_registry.as_deref(),
-                    model_ref_override,
+                    model_ref_override: self
+                        .capabilities
+                        .agent
+                        .inference_routing
+                        .override_for(session_id.as_str())?,
                 },
+            };
+            let dispatch = match original_dispatch {
+                Some(dispatch) => dispatch,
+                None => self
+                    .session_runs
+                    .coordinator_dispatch()
+                    .map_err(to_run_error)?,
+            };
+            awaken_session_run_delivery::reserve_session_run(
+                command,
+                inputs,
                 |activation| self.run_assembly.prepare_dispatch(activation),
                 dispatch.as_ref(),
             )

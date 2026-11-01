@@ -962,8 +962,8 @@ async fn insert_completion(
 ) -> Result<(), DispatchError> {
     sqlx::query(&format!(
         "INSERT INTO {NS}_dispatch_completion \
-         (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+         (run_id, request_fingerprint, thread_id, session_thread_id, cancel_requested, retained_request) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
          ON CONFLICT(run_id) DO NOTHING"
     ))
     .bind(run_id)
@@ -971,6 +971,8 @@ async fn insert_completion(
     .bind(&request.thread_id().0)
     .bind(request.session_thread_id.as_ref().map(|thread| &thread.0))
     .bind(i64::from(cancellation_requested))
+    .bind(request.needs_background_task_control().then(|| serde_json::to_string(request))
+        .transpose().map_err(|error| DispatchError::Unavailable(error.to_string()))?)
     .execute(tx)
     .await
     .map(|_| ())

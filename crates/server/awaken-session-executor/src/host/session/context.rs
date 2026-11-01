@@ -35,7 +35,7 @@ pub(super) async fn construct(
 ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
     let super::SessionOpenRequest {
         published_snapshot,
-        claimed_attempt,
+        frozen_runtime_input,
         force_defer_environment,
         recover_revoked_legacy,
     } = request;
@@ -44,7 +44,7 @@ pub(super) async fn construct(
         thread,
         agent,
         published_snapshot,
-        claimed_attempt.as_ref(),
+        frozen_runtime_input.as_ref(),
         force_defer_environment,
     )
     .await?;

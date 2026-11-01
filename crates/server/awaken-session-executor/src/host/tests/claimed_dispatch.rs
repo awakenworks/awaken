@@ -185,7 +185,7 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
             thread,
             Some("claim-judge"),
             published,
-            ClaimedRuntimeInput {
+            FrozenRuntimeInput {
                 identity: identity.clone(),
                 publications,
                 effective_model_ref: "stub".into(),
