@@ -1179,6 +1179,8 @@ export async function allowManagedToolBoundaries({
 // C1. Effects: E1 return the official runner's durable reconciliation input;
 // E2 never execute or acknowledge the tool. Rules: T1 !C1|!C2=>retry;
 // T2 C1+C2=>E1+E2. This observation helper owns no Worker lifecycle state.
+// Caller options only select the existing receipt wait budget; defaults and
+// the one predicate/receipt custody path are unchanged.
 export function waitForSessionCustomToolBoundary(
   client,
   sessionId,
@@ -1186,6 +1188,7 @@ export function waitForSessionCustomToolBoundary(
   betas,
   toolName,
   description,
+  options,
 ) {
   return waitForSessionEventReceipt(
     client,
@@ -1198,6 +1201,7 @@ export function waitForSessionCustomToolBoundary(
       (event) => event.type === 'session.status_idle',
     )?.stop_reason?.type === 'requires_action',
     description,
+    options,
   );
 }
 

@@ -14,6 +14,7 @@ import {
   listManagedSessionEvents,
   managedFileUploadForm,
   retryableReadStatus,
+  waitForSessionCustomToolBoundary,
   waitForSessionEventReceipt,
   waitForValue,
 } from '../harness.mjs';
@@ -545,11 +546,22 @@ async function prepareNativeCrash(base: string, environmentId: string, marker: s
     skills: [],
   });
   await expectRawStatus(base, 'POST', `/v1/config/agents/${agentId}/publish`, 200);
+  return sendNativeFaultInput(base, environmentId, agentId, marker);
+}
+
+async function sendNativeFaultInput(
+  base: string,
+  environmentId: string,
+  agentId: string,
+  marker: string,
+  resources: any[] = [],
+) {
   const client = clientFor(base);
   const session = await client.beta.sessions.create({
     agent: agentId,
     environment_id: environmentId,
     betas: BETAS,
+    ...(resources.length ? { resources } : {}),
   });
   const receipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: marker }] }],
@@ -560,6 +572,88 @@ async function prepareNativeCrash(base: string, environmentId: string, marker: s
   assert.equal(typeof receiptId, 'string', 'Native crash Event receipt id');
   console.log(`OK ${session.id} ${receiptId}`);
   return { sessionId: session.id, receiptId: receiptId as string };
+}
+
+// Reuse the original public fixture source; this immutable commit/README was
+// read independently, but only the live Container clone/readback qualifies it.
+const CHECKPOINT_TOOL = 'adr71_recovery_checkpoint';
+const CHECKPOINT_REPOSITORY = 'https://github.com/octocat/Hello-World';
+const CHECKPOINT_COMMIT = '7fd1a60b01f91b314f59955a4e4d4e80d8edf11d';
+
+async function prepareNativeCheckpoint(base: string, environmentId: string, marker: string) {
+  // A1 one published client tool + fixed real Repository -> one original Event.
+  // A2 the shell freezes the actual Awaiting commit/ticket under held ACK.
+  // Public qualification follows recovery; neither step executes/acknowledges
+  // the tool or invents a remote effect/private pending-table write.
+  const client = clientFor(base);
+  const agent = await client.beta.agents.create({
+    name: 'ADR71 original Awaiting recovery checkpoint',
+    model: 'adr71-echo',
+    tools: [{ type: 'custom', name: CHECKPOINT_TOOL,
+      description: 'Wait for the original test client before continuing.',
+      input_schema: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] },
+    }],
+    betas: BETAS,
+  });
+  const input = await sendNativeFaultInput(base, environmentId, agent.id, marker, [{
+    type: 'github_repository', url: CHECKPOINT_REPOSITORY,
+    mount_path: '/workspace/source', checkout: { type: 'commit', sha: CHECKPOINT_COMMIT },
+  }]);
+  // Do not await public projection while its finish ACK is deliberately held.
+  // The shell freezes the canonical Awaiting commit/ticket before faulting;
+  // only after recovery does the original public observer qualify the tool id.
+  console.log(`OK ${input.sessionId} ${input.receiptId} ${CHECKPOINT_COMMIT}`);
+  return input;
+}
+
+async function observeNativeCheckpoint(base: string, sessionId: string, receiptId: string) {
+  const client = clientFor(base);
+  const observation = await waitForSessionCustomToolBoundary(
+    client, sessionId, receiptId, BETAS, CHECKPOINT_TOOL,
+    'original qualified client input reaches its committed Awaiting checkpoint',
+    { timeoutMs: 240_000, pollMs: 500, retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
+  );
+  const uses = observation.delta.filter((event: any) =>
+    event.type === 'agent.custom_tool_use' && event.name === CHECKPOINT_TOOL);
+  assert.equal(uses.length, 1, 'one original custom tool Event');
+  assert.equal(typeof uses[0].id, 'string', 'qualified original tool Event id');
+  const idle = [...observation.delta].reverse().find((event: any) => event.type === 'session.status_idle');
+  assert.ok(idle?.stop_reason?.event_ids?.includes(uses[0].id), 'checkpoint owns that exact qualified Event');
+  console.log(`OK ${sessionId} ${receiptId} ${uses[0].id}`);
+  return uses[0].id as string;
+}
+
+async function resumeNativeCheckpoint(
+  base: string, sessionId: string, receiptId: string, toolUseId: string, marker: string,
+) {
+  // A3 after the physical gate has independently checked the original Run/ticket,
+  // return the same public qualified tool input exactly once. This is not a new
+  // User message/Event replay and supplies no source-access or closure Boolean.
+  const client = clientFor(base);
+  const originalToolId = await observeNativeCheckpoint(base, sessionId, receiptId);
+  assert.equal(originalToolId, toolUseId, 'resume uses the one original qualified Event');
+  const result = await client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.custom_tool_result', custom_tool_use_id: toolUseId,
+      content: [{ type: 'text', text: 'resume-original-checkpoint' }] }],
+    betas: BETAS,
+  });
+  assert.equal(result.data?.length, 1, 'one exact custom-result receipt');
+  const resultId = result.data?.[0]?.id;
+  assert.equal(typeof resultId, 'string');
+  const observed = await waitForSessionEventReceipt(
+    client, sessionId, resultId, BETAS,
+    ({ delta }: { delta: any[] }) => delta.some((event) => event.type === 'agent.message'
+      && JSON.stringify(event.content).includes(`ADR71-PROVIDER:${marker}:resume-original-checkpoint`))
+      && delta.some((event) => event.type === 'session.status_idle' && event.stop_reason?.type === 'end_turn'),
+    'same original checkpoint Run resumes to its one real terminal response',
+    { timeoutMs: 240_000, pollMs: 500, retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
+  );
+  assert.equal(observed.events.filter((event: any) => event.type === 'agent.custom_tool_use'
+    && event.name === CHECKPOINT_TOOL).length, 1, 'no regenerated custom call');
+  assert.equal(observed.events.filter((event: any) => event.type === 'user.custom_tool_result'
+    && event.custom_tool_use_id === toolUseId).length, 1, 'one matching original result');
+  assert.ok(!observed.delta.some((event: any) => event.type === 'session.error'), 'recovery did not fabricate a terminal error');
+  console.log(`OK original Awaiting checkpoint resumed ${sessionId} ${resultId}`);
 }
 
 export function nativeProviderInvocationErrors(value: any, marker: string, completed: boolean) {
@@ -1022,6 +1116,9 @@ async function main() {
     case 'verify-durable': return verifyDurable(base, args[0], args[1], args[2]);
     case 'read-durable': return readDurableDuringFault(base, args[0], args[1], args[2]);
     case 'prepare-native-crash': return prepareNativeCrash(base, args[0], args[1]);
+    case 'prepare-native-checkpoint': return prepareNativeCheckpoint(base, args[0], args[1]);
+    case 'observe-native-checkpoint': return observeNativeCheckpoint(base, args[0], args[1]);
+    case 'resume-native-checkpoint': return resumeNativeCheckpoint(base, args[0], args[1], args[2], args[3]);
     case 'verify-native-crash': return verifyNativeCrash(base, args[0], args[1], args[2]);
     case 'observe-provider-inflight': return observeNativeProvider(base, args[0], false);
     case 'observe-provider-completed': return observeNativeProvider(base, args[0], true);

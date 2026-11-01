@@ -21,6 +21,8 @@ API_PF_LOG="${TMPDIR:-/tmp}/${CLUSTER}_api_pf.log"
 API_PF=""
 PROVIDER_PF=""
 CAPACITY_SAMPLER=""
+COORDINATOR_RESTORE_UID=""
+COORDINATOR_RESTORE_REPLICAS=""
 STOPPED_NODE=""
 STOPPED_CONTAINER=""
 PARTITIONED_NODE=""
@@ -36,6 +38,10 @@ NATIVE_CRASH_NEXT="native-crash-next"
 NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"
 NATIVE_INFLIGHT_NEXT="native-inflight-next"
 NATIVE_INFLIGHT_MARKER="ADR71-NATIVE-INFLIGHT-CRASH"
+NATIVE_INPLACE="native-inplace"
+NATIVE_INPLACE_MARKER="ADR71-NATIVE-INPLACE-CRASH"
+NATIVE_CHECKPOINT="native-checkpoint"
+NATIVE_CHECKPOINT_MARKER="ADR71-NATIVE-CHECKPOINT-REPOSITORY"
 BATCH_CLEANUP_TIMEOUT_SECONDS="${ADR71_BATCH_CLEANUP_TIMEOUT_SECONDS:-120}"
 export CARGO_CACHE_AUTOCLEAN=0
 
@@ -158,15 +164,180 @@ if [[ "${1:-}" = "--self-test" ]]; then
   exit 0
 fi
 
-coordinator_worker_log_count() {
-  local pattern="$1"
-  local pod count total=0
-  while IFS= read -r pod; do
-    count=$(kubectl -n "$NS" logs "$pod" -c worker-tls --since=10m \
-      | grep -Ec "$pattern" || true)
-    total=$((total + count))
-  done < <(kubectl -n "$NS" get pods -l app=coordinator -o name)
-  printf '%s\n' "$total"
+# One observation owner for both original role-log callers. The Provider's
+# lifetime totals freeze EVERY original participant, not the surviving replica.
+# GET/log failures are not absence, and a rotated/truncated prefix is Unknown.
+role_log_participants() {
+  local role="$1" container="$2"
+  run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" \
+    get deployment,pod -l "app=$role" -o json | python3 -c '
+import json, sys
+container = sys.argv[1]
+items = json.load(sys.stdin)["items"]
+deployments = [item for item in items if item["kind"] == "Deployment"]
+pods = [item for item in items if item["kind"] == "Pod"]
+if len(deployments) != 1:
+    raise SystemExit(2)
+deployment = deployments[0]
+metadata, status = deployment["metadata"], deployment.get("status", {})
+replicas = deployment["spec"]["replicas"]
+if (not isinstance(replicas, int) or replicas < 1 or metadata.get("deletionTimestamp")
+        or status.get("observedGeneration", 0) < metadata["generation"]
+        or any(status.get(key, 0) != replicas for key in
+               ("replicas", "updatedReplicas", "readyReplicas", "availableReplicas"))
+        or len(pods) != replicas):
+    raise SystemExit(2)
+rows = []
+for pod in pods:
+    meta = pod["metadata"]
+    selected = [value for value in pod.get("status", {}).get("containerStatuses", [])
+                if value["name"] == container]
+    if meta.get("deletionTimestamp") or len(selected) != 1:
+        raise SystemExit(2)
+    value = selected[0]
+    started = value.get("state", {}).get("running", {}).get("startedAt")
+    if (not value.get("ready") or not value.get("containerID") or not started
+            or not isinstance(value.get("restartCount"), int)):
+        raise SystemExit(2)
+    rows.append((meta["name"], meta["uid"], value["containerID"],
+                 str(value["restartCount"]), started))
+if len({row[0] for row in rows}) != replicas or len({row[1] for row in rows}) != replicas:
+    raise SystemExit(2)
+print("\t".join(("@deployment", metadata["uid"], str(metadata["generation"]), str(replicas))))
+for row in sorted(rows):
+    if any(not field or any(char in field for char in "\t\r\n") for field in row):
+        raise SystemExit(2)
+    print("\t".join(row))
+' "$container"
+}
+
+role_logs() {
+  (
+    local role="$1" container="$2" evidence="${3:-}" phase="${4:-read}"
+    local before after saved pod rest temporary existing frozen=0
+    [[ "$phase" = freeze || "$phase" = read ]] || return 2
+    # Provider history has exactly one explicit startup freeze. A missing marker
+    # on later reads is lost evidence, never permission to sample a new cohort.
+    [[ "$role" != provider || -n "$evidence" ]] || return 2
+    if [[ -n "$evidence" ]]; then
+      [[ -d "$evidence" ]] || return 2
+      if [[ "$phase" = freeze ]]; then
+        existing=$(ls -A -- "$evidence") || return "$?"
+        [[ -z "$existing" ]] || return 2
+      else
+        [[ -f "$evidence/participants" ]] || return 2
+        saved=$(cat "$evidence/participants") || return "$?"
+        [[ -n "$saved" ]] || return 2
+        frozen=1
+      fi
+    else
+      [[ "$phase" = read ]] || return 2
+    fi
+    temporary=$(mktemp -d) || return "$?"
+    trap 'rm -rf -- "$temporary"' EXIT
+    before=$(role_log_participants "$role" "$container") || return "$?"
+    if [[ "$frozen" = 1 ]]; then
+      [[ "$saved" = "$before" ]] || return 2
+    fi
+    : >"$temporary/all"
+    while IFS=$'\t' read -r pod rest; do
+      [[ "$pod" != @deployment ]] || continue
+      run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+        kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" \
+        logs "$pod" -c "$container" --prefix --tail=-1 >"$temporary/$pod.log" || return "$?"
+      if [[ "$frozen" = 1 ]]; then
+        [[ -f "$evidence/$pod.log" ]] || return 2
+        # Preserve exact previously observed bytes per original process. An API
+        # success after log rotation cannot erase an earlier accepted invocation.
+        python3 - "$evidence/$pod.log" "$temporary/$pod.log" <<'PYLOG'
+from pathlib import Path
+import sys
+if not Path(sys.argv[2]).read_bytes().startswith(Path(sys.argv[1]).read_bytes()):
+    raise SystemExit(2)
+PYLOG
+        [[ "$?" = 0 ]] || return 2
+      fi
+      cat "$temporary/$pod.log" >>"$temporary/all" || return "$?"
+      printf '\n' >>"$temporary/all" || return "$?"
+    done <<<"$before"
+    after=$(role_log_participants "$role" "$container") || return "$?"
+    [[ "$after" = "$before" ]] || return 2
+    if [[ -n "$evidence" ]]; then
+      # Gate-local log evidence only; no production Registry/metric/store. Keep
+      # successful full reads so the next observation can detect lost history.
+      cp "$temporary/"*.log "$evidence/" || return "$?"
+      if [[ "$phase" = freeze ]]; then
+        # This is the existing completion marker: publish it LAST, once all
+        # original process prefixes have been obtained and saved successfully.
+        printf '%s\n' "$before" >"$evidence/participants" || return "$?"
+      fi
+    fi
+    cat "$temporary/all"
+  )
+}
+
+role_log_matches() {
+  local role="$1" container="$2" mode="$3" output="$4" pattern="$5" evidence="${6:-}"
+  local logs result status=0 flags=("$mode")
+  [[ "$mode" = -F || "$mode" = -E ]] || return 2
+  [[ "$output" = lines || "$output" = count ]] || return 2
+  [[ "$output" != count ]] || flags+=(-c)
+  logs=$(role_logs "$role" "$container" "$evidence") || return "$?"
+  result=$(grep "${flags[@]}" -- "$pattern" <<<"$logs") || status=$?
+  # grep 1 means no matching line; no API/transport/parser failure reaches here
+  # as an empty log. Preserve grep errors (including invalid expressions).
+  [[ "$status" = 0 || "$status" = 1 ]] || return "$status"
+  printf '%s\n' "$result"
+}
+
+# The same owned Deployment pause/restore serves the original outage and the
+# later lost-history fault. It changes no Registry/Dispatch record or evidence.
+# Save restoration coordinates BEFORE scale IO, including an ambiguous failure.
+pause_coordinator_observation() {
+  local facts uid replicas version
+  [[ -z "$COORDINATOR_RESTORE_UID" ]] || return 2
+  facts=$(run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" get deploy/coordinator \
+    -o jsonpath='{.metadata.uid}|{.spec.replicas}|{.metadata.resourceVersion}') || return "$?"
+  IFS='|' read -r uid replicas version <<<"$facts"
+  [[ -n "$uid" && "$replicas" =~ ^[1-9][0-9]*$ && -n "$version" ]] || return 2
+  COORDINATOR_RESTORE_UID="$uid" COORDINATOR_RESTORE_REPLICAS="$replicas"
+  run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" scale deploy/coordinator \
+    --current-replicas="$replicas" --resource-version="$version" --replicas=0 >/dev/null || return "$?"
+  kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" wait --for=delete pod -l app=coordinator --timeout=120s || return "$?"
+}
+
+restore_coordinator_observation() {
+  local facts uid replicas version
+  [[ -n "$COORDINATOR_RESTORE_UID" ]] || return 0
+  facts=$(run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" get deploy/coordinator \
+    -o jsonpath='{.metadata.uid}|{.spec.replicas}|{.metadata.resourceVersion}') || return "$?"
+  IFS='|' read -r uid replicas version <<<"$facts"
+  [[ "$uid" = "$COORDINATOR_RESTORE_UID" && -n "$version" ]] || return 2
+  if [[ "$replicas" != "$COORDINATOR_RESTORE_REPLICAS" ]]; then
+    [[ "$replicas" = 0 ]] || return 2
+    run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+      kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" scale deploy/coordinator \
+      --current-replicas=0 --resource-version="$version" --replicas="$COORDINATOR_RESTORE_REPLICAS" >/dev/null || return "$?"
+  fi
+  kubectl -n "$NS" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" rollout status deploy/coordinator --timeout=240s || return "$?"
+  COORDINATOR_RESTORE_UID="" COORDINATOR_RESTORE_REPLICAS=""
+}
+
+# One readback command checks the actual producer's checkout and exact bytes;
+# both observations use it. This never enumerates .git with the safe file walker
+# or substitutes a Provider reply for actual Repository content.
+verify_checkpoint_repository() {
+  local pod="$1" uid="$2" commit="$3" current
+  [[ -n "$pod" && -n "$uid" && "$commit" =~ ^[0-9a-f]{40}$ ]] || return 2
+  current=$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.metadata.uid}') || return "$?"
+  [[ "$current" = "$uid" ]] || return 2
+  kubectl -n "$NS" exec "$pod" -c agent -- sh -ec \
+    'test "$(git -C /workspace/source rev-parse HEAD)" = "$1"; printf "Hello World!\n" | cmp -s - /workspace/source/README' \
+    awaken-checkpoint-source "$commit"
 }
 
 cleanup() {
@@ -175,12 +346,13 @@ cleanup() {
     wait "$CAPACITY_SAMPLER" 2>/dev/null || true
     CAPACITY_SAMPLER=""
   fi
-  local status="$1"
+  local status="$1" coordinator_status=0
+  restore_coordinator_observation || coordinator_status=$?
   [ -z "$WORKER_TLS_DIR" ] || rm -rf -- "$WORKER_TLS_DIR"
   [ -z "$ROLE_OVERLAY" ] || rm -rf -- "$ROLE_OVERLAY"
   if [ "$status" -ne 0 ] && [ "${ADR71_KEEP_FAILED_CLUSTER:-0}" = "1" ]; then
     err "retaining failed k3d cluster $CLUSTER and kubeconfig $KUBECONFIG_FILE for diagnostics"
-    return
+    return "$coordinator_status"
   fi
   [ -z "$PARTITIONED_NODE" ] || k3d_set_node_network_partition \
     "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open "$PARTITION_DIRECTION" >/dev/null 2>&1 || true
@@ -199,6 +371,7 @@ cleanup() {
   # above. k3d_delete_cluster already removed it with the node volumes it
   # captured, so a failed postcondition cannot orphan it; this covers the rest.
   [ -z "$CONTINUATION_VOLUME" ] || docker volume rm "$CONTINUATION_VOLUME" >/dev/null 2>&1 || true
+  return "$coordinator_status"
 }
 
 k3d_admit_or_exit "ADR-0071 distributed E2E"
@@ -295,12 +468,15 @@ YAML
 }
 
 create_native_worker_pod() {
-  local pod_name="$1"
-  # One canonical Pod template covers predecessor and successor. The projected
-  # coordinate is authenticated independently by TokenReview; restartPolicy
-  # Never, the finalizer the Coordinator retains at registration and a private
-  # non-privileged process namespace are prerequisites for exact termination
-  # evidence, not test conveniences. No template carries that finalizer.
+  local pod_name="$1" restart_policy="${2:-Never}"
+  # One canonical Pod template covers both original Never predecessors and the
+  # explicit Always in-place rule. TokenReview authenticates the projected Pod;
+  # the Coordinator retains evidence before registration. No template creates
+  # that finalizer or promotes readiness/restart policy into an exit receipt.
+  case "$restart_policy" in
+    Never|Always) ;;
+    *) err "unsupported owned Native fixture restart policy"; return 2 ;;
+  esac
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: v1
 kind: Pod
@@ -310,7 +486,7 @@ metadata:
 spec:
   serviceAccountName: worker-runtime
   automountServiceAccountToken: true
-  restartPolicy: Never
+  restartPolicy: ${restart_policy}
   terminationGracePeriodSeconds: 5
   securityContext:
     fsGroup: 10001
@@ -382,7 +558,8 @@ YAML
 }
 
 hard_crash_native_worker() {
-  local pod="$1" expected_uid="$2" mode="${3:-ended}" facts uid node container restarts phase observed_container observed_uid observed_exit observed_restarts
+  local pod="$1" expected_uid="$2" mode="${3:-ended}" expected_container="${4:-}"
+  local facts uid node container restarts phase observed_container observed_uid observed_exit observed_restarts
   # One API observation binds UID, node and CRI id before the destructive
   # injection. Completion joins the exact retained UID/container, never a bare
   # name/404. Every Worker fault phase reuses this one physical injection owner.
@@ -390,9 +567,12 @@ hard_crash_native_worker() {
   # Mode `in-place`: an Always Pod keeps its UID, kubelet restarts the
   # container, and `lastState` names the killed container with exit 137.
   facts=$(kubectl -n "$NS" get pod "$pod" \
-    -o jsonpath='{.metadata.uid}|{.spec.nodeName}|{.status.containerStatuses[0].containerID}|{.status.containerStatuses[0].restartCount}')
+    -o jsonpath='{.metadata.uid}|{.spec.nodeName}|{.status.containerStatuses[?(@.name=="worker")].containerID}|{.status.containerStatuses[?(@.name=="worker")].restartCount}')
   IFS='|' read -r uid node container restarts <<<"$facts"
   container=${container#containerd://}
+  expected_container=${expected_container#containerd://}
+  [ -z "$expected_container" ] || [ "$container" = "$expected_container" ] \
+    || { err "the frozen Native Worker container changed before its fault"; return 1; }
   [ "$uid" = "$expected_uid" ] && [[ "$node" == "k3d-${CLUSTER}-"* ]] \
     && [[ "$container" =~ ^[0-9a-f]{64}$ ]] && [[ "$restarts" =~ ^[0-9]+$ ]] \
     || { err "invalid exact Native Worker CRI crash target"; return 1; }
@@ -400,13 +580,13 @@ hard_crash_native_worker() {
   for _ in $(seq 1 90); do
     if [ "$mode" = in-place ]; then
       facts=$(kubectl -n "$NS" get pod "$pod" \
-        -o jsonpath='{.metadata.uid}|{.status.containerStatuses[0].restartCount}|{.status.containerStatuses[0].lastState.terminated.containerID}|{.status.containerStatuses[0].lastState.terminated.exitCode}')
+        -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].restartCount}|{.status.containerStatuses[?(@.name=="worker")].lastState.terminated.containerID}|{.status.containerStatuses[?(@.name=="worker")].lastState.terminated.exitCode}')
       IFS='|' read -r observed_uid observed_restarts observed_container observed_exit <<<"$facts"
       [ "$observed_uid" = "$expected_uid" ] && [ "$observed_restarts" = "$((restarts + 1))" ] \
         && [ "$observed_container" = "containerd://${container}" ] && [ "$observed_exit" = 137 ] && return 0
     else
       facts=$(kubectl -n "$NS" get pod "$pod" \
-        -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[0].state.terminated.containerID}|{.status.containerStatuses[0].state.terminated.exitCode}')
+        -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[?(@.name=="worker")].state.terminated.containerID}|{.status.containerStatuses[?(@.name=="worker")].state.terminated.exitCode}')
       IFS='|' read -r observed_uid phase observed_container observed_exit <<<"$facts"
       [ "$observed_uid" = "$expected_uid" ] && [ "$phase" = "Failed" ] \
         && [ "$observed_container" = "containerd://${container}" ] && [ "$observed_exit" = 137 ] && return 0
@@ -676,8 +856,7 @@ log "6/11 remove the entire Coordinator tier, then recover the same publication"
 WORKER_CONTAINERS_BEFORE=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
 WORKER_0_UID_BEFORE=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.metadata.uid}')
 WORKER_1_UID_BEFORE=$(kubectl -n "$NS" get pod worker-1 -o jsonpath='{.metadata.uid}')
-kubectl -n "$NS" scale deploy/coordinator --replicas=0 >/dev/null
-kubectl -n "$NS" wait --for=delete pod -l app=coordinator --timeout=120s
+pause_coordinator_observation
 node "$DRIVER" unavailable-publication "$API_URL"
 for _ in $(seq 1 90); do
   DRAINED=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' | grep -c '^false$' || true)
@@ -699,8 +878,7 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 [ "$LIVE_WORKER_LEASES" = "0" ] || { err "Coordinator outage did not expire Worker authority"; exit 1; }
-kubectl -n "$NS" scale deploy/coordinator --replicas=2 >/dev/null
-kubectl -n "$NS" rollout status deploy/coordinator --timeout=240s
+restore_coordinator_observation
 node "$DRIVER" retry-publication "$API_URL"
 kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
 WORKER_CONTAINERS_AFTER=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{range .items[*]}{.status.containerStatuses[0].containerID}{"\n"}{end}')
@@ -1092,18 +1270,20 @@ log "11/11 hard-crash a Pod-bound Native Worker and recover without model replay
 # E4 the successor Pod remains live and the old deletion evidence stays retained.
 # Rules K1 C1+C2+C3=>E1; K2 C4+C5+C6=>E2; K3 E2+C6=>E3+E4. Missing evidence,
 # stale UID, opaque execution history or response timeout must retain the slot.
+# The existing target/required-execution owners retain the caller's private
+# target and bind one independently listed, executed and non-skipped case.
+source "$REPO_ROOT/scripts/ci/_cargo_target.sh"
+awaken_configure_cargo_target "$REPO_ROOT"
+source "$REPO_ROOT/scripts/ci/_rust_test_execution.sh"
 TRANSPORT_TEST=worker_transport::kubernetes::tests::live::real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt
-# T1 physical transport lives in the process composition; a stale filter otherwise
-# exits successfully with zero tests. Enumerate this exact feature/target first;
-# only the one current test enters the existing real Kubernetes qualification.
-TRANSPORT_TESTS=$(cargo test --locked -p awaken-process-startup --features container-k8s --lib \
-  "$TRANSPORT_TEST" -- --list --exact)
-grep -Fqx "$TRANSPORT_TEST: test" <<<"$TRANSPORT_TESTS" \
-  || { err "exact Kubernetes transport qualification test was not selected"; exit 1; }
+# T1 current package/feature/lib target + full case + live switches must all
+# remain. The canonical required executor lists and runs this same argv, rejects
+# zero selection/skip/failure and retains its original result/receipt. A second
+# TRANSPORT_TESTS/grep selector would duplicate that observation authority.
 AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE" \
   AWAKEN_K8S_CONTROL_IMAGE="$SANDBOX_IMAGE" \
-  cargo test --locked -p awaken-process-startup --features container-k8s --lib \
-  "$TRANSPORT_TEST" -- --exact --nocapture
+  run_required_rust_tests -p awaken-process-startup --features container-k8s --lib --locked \
+  "$TRANSPORT_TEST" --require-case="$TRANSPORT_TEST" -- --exact
 kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s
 
@@ -1119,6 +1299,12 @@ for pod_verb in get delete; do
   [ "$(kubectl auth can-i "$pod_verb" pods --as="$COORDINATOR_SUBJECT" -n "$NS")" = "yes" ] \
     || { err "coordinator-runtime cannot ${pod_verb} Pods"; exit 1; }
 done
+# L1-L8 below observe the same fresh-cluster Provider cohort from BEFORE the
+# first unique Native marker through the final Q4 count. Keep full log evidence
+# beside this run's existing local logs; no rolling time window can hide replay.
+PROVIDER_LOG_EVIDENCE=$(mktemp -d "${TMPDIR:-/tmp}/${CLUSTER}_provider_logs.XXXXXX")
+role_logs provider provider "$PROVIDER_LOG_EVIDENCE" freeze >/dev/null
+printf 'PROVIDER_LOG_EVIDENCE_PATH=%s\n' "$PROVIDER_LOG_EVIDENCE"
 create_native_worker_pod "$NATIVE_CRASH_OLD"
 kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CRASH_OLD" --timeout=240s
 NATIVE_OLD_UID=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.metadata.uid}')
@@ -1138,15 +1324,14 @@ for _ in $(seq 1 60); do
   # `kubectl logs -l` may select only one replica. Join every named Coordinator
   # Pod so a request handled by either TLS sidecar is observable; absence from
   # one replica is not evidence that the distributed boundary was not crossed.
-  FINISH_REJECTED=$(coordinator_worker_log_count \
+  FINISH_REJECTED=$(role_log_matches coordinator worker-tls -E count \
     'POST /v1/worker/dispatch/attempt/finish.* 503 ')
   [ "$FINISH_REJECTED" -gt 0 ] && break
   sleep 1
 done
 [ "$FINISH_REJECTED" -gt 0 ] \
   || { err "old Native Worker never reached the held finish ACK boundary"; exit 1; }
-NATIVE_PROVIDER_BEFORE_CRASH=$(kubectl -n "$NS" logs -l app=provider -c provider --tail=-1 --since=30m \
-  | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
+NATIVE_PROVIDER_BEFORE_CRASH=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
 [ "$NATIVE_PROVIDER_BEFORE_CRASH" = "1" ] \
   || { err "Native crash Run reached Provider ${NATIVE_PROVIDER_BEFORE_CRASH} times before crash"; exit 1; }
 
@@ -1177,8 +1362,7 @@ NATIVE_NEXT_DELETION=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_NEXT" \
   -o jsonpath='{.metadata.deletionTimestamp}')
 [ -z "$NATIVE_NEXT_DELETION" ] \
   || { err "exact predecessor evidence release affected the successor"; exit 1; }
-NATIVE_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --tail=-1 --since=30m \
-  | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
+NATIVE_PROVIDER_REQUESTS=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
 [ "$NATIVE_PROVIDER_REQUESTS" = "1" ] \
   || { err "Native crash Run reached Provider ${NATIVE_PROVIDER_REQUESTS} times"; exit 1; }
 ok "Pod-bound Native hard crash retired only the exact predecessor and settled without model replay"
@@ -1202,8 +1386,7 @@ read -r NATIVE_PREPARED NATIVE_INFLIGHT_SESSION NATIVE_INFLIGHT_RECEIPT <<<"$NAT
 # the ORIGINAL process; a Service forwarder could query the other replica and
 # falsely report absence. No replicated mock store or second model route.
 for _ in $(seq 1 60); do
-  PROVIDER_ARRIVAL=$(kubectl -n "$NS" logs -l app=provider -c provider --prefix --tail=-1 --since=10m \
-    | grep -F "ADR71_PROVIDER_REQUEST \"${NATIVE_INFLIGHT_MARKER}\"" || true)
+  PROVIDER_ARRIVAL=$(role_log_matches provider provider -F lines "ADR71_PROVIDER_REQUEST \"${NATIVE_INFLIGHT_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
   [ "$(grep -c . <<<"$PROVIDER_ARRIVAL" || true)" = "1" ] && break
   sleep 1
 done
@@ -1262,9 +1445,362 @@ NATIVE_INFLIGHT_JOURNAL=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U po
 node "$DRIVER" observe-provider-completed "$PROVIDER_URL" "$NATIVE_INFLIGHT_MARKER"
 [ "$(kubectl -n "$NS" get pod "$PROVIDER_ORIGINAL_POD" -o jsonpath='{.metadata.uid}')" = "$PROVIDER_ORIGINAL_UID" ] \
   || { err "Provider double process changed during Worker crash qualification"; exit 1; }
-NATIVE_INFLIGHT_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --tail=-1 --since=10m \
-  | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_INFLIGHT_MARKER}\"" || true)
+NATIVE_INFLIGHT_PROVIDER_REQUESTS=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_INFLIGHT_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
 [ "$NATIVE_INFLIGHT_PROVIDER_REQUESTS" = "1" ] || { err "in-flight invocation was replayed across Provider replicas"; exit 1; }
 ok "independent Provider double completed; original unknown journal/slot retained, no replay, independent successor work passed"
+
+log "11c/11 recover the original terminal Run through one same-UID container restart"
+# In-place decision table: IP0 one original SDK Event, one Provider response,
+# durable NaturalEnd commit and generation1 finish503 freeze the occupied Run,
+# receipt, Thread, owner/epoch, Pod UID and container A before the fault. IP1 the
+# canonical CRI owner kills only A -> same UID/new B/lastState A137 and a greater
+# registered generation. IP2 existing recovery settles that same Run/receipt:
+# no new Event, no second Provider call, no Cancelled or replacement terminal
+# commit, and no Pod deletion. Missing/multiple/changed coordinates refuse before
+# injection or fail the observation; Ready/404 never substitutes for evidence.
+# This is terminal-commit/ACK recovery, not a Working/Awaiting resume or a claim
+# that an opaque remote effect completed (11b remains Unknown unchanged).
+NATIVE_IDLE_UID=$(kubectl -n "$NS" get pod "$NATIVE_INFLIGHT_NEXT" -o jsonpath='{.metadata.uid}')
+hard_crash_native_worker "$NATIVE_INFLIGHT_NEXT" "$NATIVE_IDLE_UID"
+create_native_worker_pod "$NATIVE_INPLACE" Always
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_INPLACE" --timeout=240s
+NATIVE_INPLACE_FACTS=$(kubectl -n "$NS" get pod "$NATIVE_INPLACE" \
+  -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].containerID}')
+IFS='|' read -r NATIVE_INPLACE_UID NATIVE_INPLACE_CONTAINER <<<"$NATIVE_INPLACE_FACTS"
+NATIVE_INPLACE_INCARNATION=${NATIVE_INPLACE_CONTAINER#containerd://}
+[[ "$NATIVE_INPLACE_UID" =~ ^[0-9a-f-]+$ ]] && [[ "$NATIVE_INPLACE_INCARNATION" =~ ^[0-9a-f]{64}$ ]] \
+  || { err "IP0 has no exact original Pod/container"; exit 1; }
+NATIVE_INPLACE_WORKER="k8s:${NS}:${NATIVE_INPLACE}:${NATIVE_INPLACE_UID}"
+for _ in $(seq 1 120); do
+  NATIVE_INPLACE_GENERATION=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT generation FROM worker_registry_worker
+       WHERE worker_id='${NATIVE_INPLACE_WORKER}' AND incarnation_id='${NATIVE_INPLACE_INCARNATION}'
+         AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)")
+  [ "$NATIVE_INPLACE_GENERATION" = "1" ] && break
+  sleep 1
+done
+[ "$NATIVE_INPLACE_GENERATION" = "1" ] || { err "IP0 original generation1 never registered"; exit 1; }
+NATIVE_INPLACE_OWNER="${NATIVE_INPLACE_WORKER}:1:${NATIVE_INPLACE_INCARNATION}"
+NATIVE_PREPARE=$(node "$DRIVER" prepare-native-crash \
+  "$API_URL" "$ENVIRONMENT_ID" "$NATIVE_INPLACE_MARKER" | tail -1)
+read -r NATIVE_PREPARED NATIVE_INPLACE_SESSION NATIVE_INPLACE_RECEIPT <<<"$NATIVE_PREPARE"
+[ "$NATIVE_PREPARED" = "OK" ] && [ -n "$NATIVE_INPLACE_SESSION" ] && [ -n "$NATIVE_INPLACE_RECEIPT" ] \
+  || { err "IP0 original Event identities are incomplete"; exit 1; }
+for _ in $(seq 1 60); do
+  NATIVE_INPLACE_FINISH=$(role_log_matches coordinator worker-tls -E count \
+    "POST /v1/worker/dispatch/attempt/finish.* 503 .*${NATIVE_INPLACE_WORKER}.*${NATIVE_INPLACE_INCARNATION}")
+  [ "$NATIVE_INPLACE_FINISH" -gt 0 ] && break
+  sleep 1
+done
+[ "$NATIVE_INPLACE_FINISH" -gt 0 ] || { err "IP0 exact incarnation never reached held finish503"; exit 1; }
+NATIVE_INPLACE_PROVIDER=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_INPLACE_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
+[ "$NATIVE_INPLACE_PROVIDER" = "1" ] || { err "IP0 did not execute exactly one Provider request"; exit 1; }
+NATIVE_INPLACE_DISPATCH=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT run_id || '|' || active_attempt_epoch::text FROM runtime_dispatch
+     WHERE request::text LIKE '%${NATIVE_INPLACE_SESSION}%' AND active_attempt_owner='${NATIVE_INPLACE_OWNER}'")
+[ "$(grep -c . <<<"$NATIVE_INPLACE_DISPATCH")" = "1" ] || { err "IP0 requires one exact occupied Run"; exit 1; }
+IFS='|' read -r NATIVE_INPLACE_RUN NATIVE_INPLACE_EPOCH <<<"$NATIVE_INPLACE_DISPATCH"
+[ -n "$NATIVE_INPLACE_RUN" ] && [[ "$NATIVE_INPLACE_EPOCH" =~ ^[1-9][0-9]*$ ]] \
+  || { err "IP0 original Run/epoch malformed"; exit 1; }
+NATIVE_INPLACE_ADMITTED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM runtime_dispatch_operation WHERE run_id='${NATIVE_INPLACE_RUN}'
+     AND operation->>'type'='attempt_admitted'
+     AND operation->'attempt'->'claim'->>'owner'='${NATIVE_INPLACE_OWNER}'
+     AND operation->'attempt'->'claim'->>'epoch'='${NATIVE_INPLACE_EPOCH}'")
+[ "$NATIVE_INPLACE_ADMITTED" = "1" ] || { err "IP0 lacks the original exact physical admission"; exit 1; }
+NATIVE_INPLACE_COMMIT=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT sequence::text || '|' || thread_id FROM runtime_commit
+     WHERE run_id='${NATIVE_INPLACE_RUN}' AND phase::jsonb=jsonb_build_object('Ended','NaturalEnd')")
+[ "$(grep -c . <<<"$NATIVE_INPLACE_COMMIT")" = "1" ] || { err "IP0 lacks the one original NaturalEnd commit"; exit 1; }
+IFS='|' read -r NATIVE_INPLACE_SEQUENCE NATIVE_INPLACE_THREAD <<<"$NATIVE_INPLACE_COMMIT"
+[[ "$NATIVE_INPLACE_SEQUENCE" =~ ^[0-9]+$ ]] && [ -n "$NATIVE_INPLACE_THREAD" ] \
+  || { err "IP0 original commit coordinates malformed"; exit 1; }
+hard_crash_native_worker "$NATIVE_INPLACE" "$NATIVE_INPLACE_UID" in-place "$NATIVE_INPLACE_CONTAINER"
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_INPLACE" --timeout=240s
+NATIVE_RESTART_FACTS=$(kubectl -n "$NS" get pod "$NATIVE_INPLACE" \
+  -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].containerID}|{.metadata.deletionTimestamp}')
+IFS='|' read -r NATIVE_RESTART_UID NATIVE_RESTART_CONTAINER NATIVE_RESTART_DELETION <<<"$NATIVE_RESTART_FACTS"
+NATIVE_RESTART_INCARNATION=${NATIVE_RESTART_CONTAINER#containerd://}
+[ "$NATIVE_RESTART_UID" = "$NATIVE_INPLACE_UID" ] && [ -z "$NATIVE_RESTART_DELETION" ] \
+  && [[ "$NATIVE_RESTART_INCARNATION" =~ ^[0-9a-f]{64}$ ]] \
+  && [ "$NATIVE_RESTART_INCARNATION" != "$NATIVE_INPLACE_INCARNATION" ] \
+  || { err "IP1 replaced/deleted the Pod or reused container A"; exit 1; }
+for _ in $(seq 1 120); do
+  NATIVE_RESTART_REGISTERED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT count(*) FROM worker_registry_worker
+       WHERE worker_id='${NATIVE_INPLACE_WORKER}' AND incarnation_id='${NATIVE_RESTART_INCARNATION}'
+         AND generation > ${NATIVE_INPLACE_GENERATION}
+         AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)")
+  [ "$NATIVE_RESTART_REGISTERED" = "1" ] && break
+  sleep 1
+done
+[ "$NATIVE_RESTART_REGISTERED" = "1" ] || { err "IP1 new container never registered a greater generation"; exit 1; }
+node "$DRIVER" verify-native-crash \
+  "$API_URL" "$NATIVE_INPLACE_SESSION" "$NATIVE_INPLACE_RECEIPT" "$NATIVE_INPLACE_MARKER"
+NATIVE_INPLACE_FINAL=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT
+    (SELECT count(*) FROM runtime_dispatch WHERE run_id='${NATIVE_INPLACE_RUN}')::text || '|' ||
+    (SELECT count(*) FROM runtime_dispatch_operation WHERE run_id='${NATIVE_INPLACE_RUN}'
+       AND operation->>'type'='settled' AND operation->>'outcome'='Done')::text || '|' ||
+    (SELECT count(*) FROM runtime_commit WHERE run_id='${NATIVE_INPLACE_RUN}'
+       AND thread_id='${NATIVE_INPLACE_THREAD}' AND sequence=${NATIVE_INPLACE_SEQUENCE}
+       AND phase::jsonb=jsonb_build_object('Ended','NaturalEnd'))::text || '|' ||
+    (SELECT count(*) FROM runtime_commit WHERE run_id='${NATIVE_INPLACE_RUN}' AND phase::jsonb ? 'Ended')::text || '|' ||
+    (SELECT count(*) FROM worker_registry_worker WHERE worker_id='${NATIVE_INPLACE_WORKER}'
+       AND incarnation_id='${NATIVE_INPLACE_INCARNATION}' AND generation=${NATIVE_INPLACE_GENERATION}
+       AND process_exit_json LIKE '%k8s-container-exit%'
+       AND process_exit_json LIKE '%${NATIVE_INPLACE_INCARNATION}%' AND process_exit_json LIKE '%exit_code%137%')::text")
+[ "$NATIVE_INPLACE_FINAL" = "0|1|1|1|1" ] \
+  || { err "IP2 original Run/terminal/physical evidence changed: $NATIVE_INPLACE_FINAL"; exit 1; }
+NATIVE_INPLACE_PROVIDER=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_INPLACE_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
+[ "$NATIVE_INPLACE_PROVIDER" = "1" ] || { err "IP2 original Run reissued its Provider request"; exit 1; }
+NATIVE_RESTART_FACTS=$(kubectl -n "$NS" get pod "$NATIVE_INPLACE" \
+  -o jsonpath='{.metadata.uid}|{.metadata.deletionTimestamp}')
+[ "$NATIVE_RESTART_FACTS" = "${NATIVE_INPLACE_UID}|" ] \
+  || { err "IP2 original Pod was removed/replaced while retiring only A"; exit 1; }
+ok "same Pod UID/new registered incarnation recovered the original terminal Run and receipt without Cancelled/model replay"
+
+log "11d/11 keep the original occupied Awaiting Run through Superseded and source Rebuild"
+# Matrix causes/effects: Q0 one real client-tool request has Returned and the
+# original Runtime Awaiting commit/ticket is durable, while A's finish ACK is
+# held. Q1 all owned Coordinator observers are absent; exact A->B->C CRI faults
+# overwrite lastState with B under the SAME Pod UID. B is running, not Registry
+# Ready. Q2 restore only the original Coordinator UID/replicas -> A Superseded,
+# C is the next registered generation, original Run/ticket still Awaiting with
+# no Cancelled or duplicate model step. Q3 source is the real pinned HTTPS Repo;
+# close only its original Pod with UID+RV, then exact C->D while producers are
+# absent. Q4 restored D consumes the SAME qualified client result -> original
+# Run NaturalEnd, Root Rebuild, new exact environment binding and real README.
+# Every failure restores the original cohort before owned cleanup. No Store
+# row, Source boolean, finalizer or PVC is rewritten/deleted to obtain evidence.
+# The prior Always fixture has completed its required Run; remove only that
+# exact auxiliary Pod AFTER its no-deletion/recovery assertions above. This is
+# fixture retirement, never an exit/closure/recovery oracle for the new case.
+CHECKPOINT_IDLE_META=$(kubectl -n "$NS" get pod "$NATIVE_INPLACE" \
+  -o jsonpath='{.metadata.uid}|{.metadata.resourceVersion}')
+IFS='|' read -r CHECKPOINT_IDLE_UID CHECKPOINT_IDLE_RV <<<"$CHECKPOINT_IDLE_META"
+[ "$CHECKPOINT_IDLE_UID" = "$NATIVE_INPLACE_UID" ] && [ -n "$CHECKPOINT_IDLE_RV" ] \
+  || { err "Q0 auxiliary fixture identity changed"; exit 1; }
+k3d_delete_exact_pod "$CLUSTER" "$NS" "$NATIVE_INPLACE" "$CHECKPOINT_IDLE_UID" "$CHECKPOINT_IDLE_RV"
+kubectl -n "$NS" wait --for=delete "pod/$NATIVE_INPLACE" --timeout=120s
+create_native_worker_pod "$NATIVE_CHECKPOINT" Always
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CHECKPOINT" --timeout=240s
+CHECKPOINT_A_META=$(kubectl -n "$NS" get pod "$NATIVE_CHECKPOINT" \
+  -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].containerID}|{.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}|{.status.containerStatuses[?(@.name=="worker")].restartCount}')
+IFS='|' read -r CHECKPOINT_UID CHECKPOINT_A_CONTAINER CHECKPOINT_A_STARTED CHECKPOINT_A_RESTARTS <<<"$CHECKPOINT_A_META"
+CHECKPOINT_A_INCARNATION=${CHECKPOINT_A_CONTAINER#containerd://}
+[[ "$CHECKPOINT_UID" =~ ^[0-9a-f-]+$ ]] && [[ "$CHECKPOINT_A_INCARNATION" =~ ^[0-9a-f]{64}$ ]] \
+  && [ -n "$CHECKPOINT_A_STARTED" ] && [[ "$CHECKPOINT_A_RESTARTS" =~ ^[0-9]+$ ]] \
+  || { err "Q0 has no exact running A"; exit 1; }
+CHECKPOINT_WORKER="k8s:${NS}:${NATIVE_CHECKPOINT}:${CHECKPOINT_UID}"
+for _ in $(seq 1 120); do
+  CHECKPOINT_A_GENERATION=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT generation FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+       AND incarnation_id='${CHECKPOINT_A_INCARNATION}'
+       AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)")
+  [ "$CHECKPOINT_A_GENERATION" = 1 ] && break
+  sleep 1
+done
+[ "$CHECKPOINT_A_GENERATION" = 1 ] || { err "Q0 requires actual registered generation1"; exit 1; }
+CHECKPOINT_A_OWNER="${CHECKPOINT_WORKER}:1:${CHECKPOINT_A_INCARNATION}"
+CHECKPOINT_PREPARE=$(node "$DRIVER" prepare-native-checkpoint \
+  "$API_URL" "$ENVIRONMENT_ID" "$NATIVE_CHECKPOINT_MARKER" | tail -1)
+read -r CHECKPOINT_PREPARED CHECKPOINT_SESSION CHECKPOINT_RECEIPT CHECKPOINT_SOURCE_COMMIT <<<"$CHECKPOINT_PREPARE"
+[ "$CHECKPOINT_PREPARED" = OK ] && [ -n "$CHECKPOINT_SESSION" ] && [ -n "$CHECKPOINT_RECEIPT" ] \
+  && [[ "$CHECKPOINT_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+  || { err "Q0 original checkpoint Event identities missing"; exit 1; }
+for _ in $(seq 1 120); do
+  CHECKPOINT_HELD=$(role_log_matches coordinator worker-tls -E count \
+    "POST /v1/worker/dispatch/attempt/finish.* 503 .*${CHECKPOINT_WORKER}.*${CHECKPOINT_A_INCARNATION}")
+  [ "$CHECKPOINT_HELD" -gt 0 ] && break
+  sleep 1
+done
+[ "$CHECKPOINT_HELD" -gt 0 ] || { err "Q0 original A never reached held finish"; exit 1; }
+CHECKPOINT_CLAIM=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT run_id || '|' || active_attempt_epoch::text FROM runtime_dispatch
+     WHERE request::text LIKE '%${CHECKPOINT_SESSION}%' AND active_attempt_owner='${CHECKPOINT_A_OWNER}'")
+[ "$(grep -c . <<<"$CHECKPOINT_CLAIM")" = 1 ] || { err "Q0 did not retain one original physical admission"; exit 1; }
+IFS='|' read -r CHECKPOINT_RUN CHECKPOINT_EPOCH <<<"$CHECKPOINT_CLAIM"
+[ -n "$CHECKPOINT_RUN" ] && [[ "$CHECKPOINT_EPOCH" =~ ^[1-9][0-9]*$ ]] \
+  || { err "Q0 original Run/epoch malformed"; exit 1; }
+CHECKPOINT_ADMITTED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM runtime_dispatch_operation WHERE run_id='${CHECKPOINT_RUN}'
+     AND operation->>'type'='attempt_admitted'
+     AND operation->'attempt'->'claim'->>'owner'='${CHECKPOINT_A_OWNER}'
+     AND operation->'attempt'->'claim'->>'epoch'='${CHECKPOINT_EPOCH}'")
+[ "$CHECKPOINT_ADMITTED" = 1 ] || { err "Q0 lacks the original exact physical admission record"; exit 1; }
+CHECKPOINT_AWAITING_COMMIT=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT sequence::text || '|' || thread_id FROM runtime_commit
+     WHERE run_id='${CHECKPOINT_RUN}' AND phase::jsonb=to_jsonb('Awaiting'::text)")
+[ "$(grep -c . <<<"$CHECKPOINT_AWAITING_COMMIT")" = 1 ] || { err "Q0 lacks exactly one safe Awaiting commit"; exit 1; }
+IFS='|' read -r CHECKPOINT_SEQUENCE CHECKPOINT_THREAD <<<"$CHECKPOINT_AWAITING_COMMIT"
+[[ "$CHECKPOINT_SEQUENCE" =~ ^[1-9][0-9]*$ ]] && [ -n "$CHECKPOINT_THREAD" ] \
+  || { err "Q0 original Awaiting commit coordinates malformed"; exit 1; }
+CHECKPOINT_TICKET=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT ticket::text FROM runtime_waiting WHERE run_id='${CHECKPOINT_RUN}'")
+[ "$(grep -c . <<<"$CHECKPOINT_TICKET")" = 1 ] || { err "Q0 has no exact committed resume ticket"; exit 1; }
+CHECKPOINT_SOURCE_POD=$(k3d_sandbox_pod_for_session "$NS" "$CHECKPOINT_SESSION")
+CHECKPOINT_SOURCE_UID=$(kubectl -n "$NS" get pod "$CHECKPOINT_SOURCE_POD" -o jsonpath='{.metadata.uid}')
+# This fixed-Retained topology has a real claim. Its presence alone is not a
+# source-access fact; record identity without deleting it to manufacture M5.
+CHECKPOINT_SOURCE_CLAIM=$(kubectl -n "$NS" get pod "$CHECKPOINT_SOURCE_POD" -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}')
+[[ -n "$CHECKPOINT_SOURCE_CLAIM" && "$CHECKPOINT_SOURCE_CLAIM" != *' '* ]] \
+  || { err "Q0 retained topology did not expose its one actual claim"; exit 1; }
+CHECKPOINT_SOURCE_CLAIM_UID=$(kubectl -n "$NS" get pvc "$CHECKPOINT_SOURCE_CLAIM" -o jsonpath='{.metadata.uid}')
+[ -n "$CHECKPOINT_SOURCE_CLAIM_UID" ] || { err "Q0 retained source claim lacks identity"; exit 1; }
+verify_checkpoint_repository "$CHECKPOINT_SOURCE_POD" "$CHECKPOINT_SOURCE_UID" "$CHECKPOINT_SOURCE_COMMIT"
+CHECKPOINT_BINDING_BEFORE=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT aggregate_json::jsonb #>> '{aggregate,environment,binding}' FROM managed_session
+     WHERE session_id='${CHECKPOINT_SESSION}' AND aggregate_json::jsonb->>'format'='awaken.session.v2'
+       AND aggregate_json::jsonb #>> '{aggregate,environment,phase}'='resident'")
+[ -n "$CHECKPOINT_SOURCE_UID" ] && [ -n "$CHECKPOINT_BINDING_BEFORE" ] \
+  || { err "Q0 original source has no physical UID/Root-owned binding"; exit 1; }
+pause_coordinator_observation
+CHECKPOINT_COORDINATOR_UID="$COORDINATOR_RESTORE_UID"
+CHECKPOINT_COORDINATOR_REPLICAS="$COORDINATOR_RESTORE_REPLICAS"
+CHECKPOINT_UNRECORDED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+     AND incarnation_id='${CHECKPOINT_A_INCARNATION}' AND process_exit_json IS NULL")
+[ "$CHECKPOINT_UNRECORDED" = 1 ] || { err "Q1 A's history was already recorded before withholding"; exit 1; }
+hard_crash_native_worker "$NATIVE_CHECKPOINT" "$CHECKPOINT_UID" in-place "$CHECKPOINT_A_CONTAINER"
+kubectl -n "$NS" wait '--for=jsonpath={.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}' \
+  "pod/$NATIVE_CHECKPOINT" --timeout=90s
+CHECKPOINT_B_META=$(kubectl -n "$NS" get pod "$NATIVE_CHECKPOINT" \
+  -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].containerID}|{.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}')
+IFS='|' read -r CHECKPOINT_B_UID CHECKPOINT_B_CONTAINER CHECKPOINT_B_STARTED <<<"$CHECKPOINT_B_META"
+[ "$CHECKPOINT_B_UID" = "$CHECKPOINT_UID" ] && [ "$CHECKPOINT_B_CONTAINER" != "$CHECKPOINT_A_CONTAINER" ] \
+  && [ -n "$CHECKPOINT_B_STARTED" ] || { err "Q1 B is not a real same-UID running instance"; exit 1; }
+CHECKPOINT_B_INCARNATION=${CHECKPOINT_B_CONTAINER#containerd://}
+CHECKPOINT_B_REGISTERED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}' AND incarnation_id='${CHECKPOINT_B_INCARNATION}'")
+[ "$CHECKPOINT_B_REGISTERED" = 0 ] || { err "Q1 withheld B unexpectedly registered"; exit 1; }
+hard_crash_native_worker "$NATIVE_CHECKPOINT" "$CHECKPOINT_UID" in-place "$CHECKPOINT_B_CONTAINER"
+kubectl -n "$NS" wait '--for=jsonpath={.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}' \
+  "pod/$NATIVE_CHECKPOINT" --timeout=90s
+CHECKPOINT_C_META=$(kubectl -n "$NS" get pod "$NATIVE_CHECKPOINT" \
+  -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].containerID}|{.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}|{.status.containerStatuses[?(@.name=="worker")].restartCount}|{.status.containerStatuses[?(@.name=="worker")].lastState.terminated.containerID}|{.status.containerStatuses[?(@.name=="worker")].lastState.terminated.exitCode}')
+python3 - "$CHECKPOINT_UID" "$CHECKPOINT_A_CONTAINER" "$CHECKPOINT_A_STARTED" "$CHECKPOINT_A_RESTARTS" "$CHECKPOINT_B_CONTAINER" "$CHECKPOINT_C_META" <<'PYCHECK'
+import datetime,sys
+uid,a,started,count,b,facts=sys.argv[1:]
+actual,c,c_started,restarts,last,code=facts.split('|')
+assert actual==uid and c not in (a,b) and last==b and code=='137'
+assert int(restarts)==int(count)+2
+assert datetime.datetime.fromisoformat(c_started.replace('Z','+00:00')) > datetime.datetime.fromisoformat(started.replace('Z','+00:00'))
+PYCHECK
+IFS='|' read -r _ CHECKPOINT_C_CONTAINER _ _ _ _ <<<"$CHECKPOINT_C_META"
+CHECKPOINT_C_INCARNATION=${CHECKPOINT_C_CONTAINER#containerd://}
+CHECKPOINT_UNRECORDED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+     AND incarnation_id='${CHECKPOINT_A_INCARNATION}' AND process_exit_json IS NULL")
+[ "$CHECKPOINT_UNRECORDED" = 1 ] || { err "Q1 A gained an observation while all producers were absent"; exit 1; }
+restore_coordinator_observation
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CHECKPOINT" --timeout=240s
+for _ in $(seq 1 120); do
+  CHECKPOINT_RECOVERED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT
+      (SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+        AND incarnation_id='${CHECKPOINT_C_INCARNATION}' AND generation=2
+        AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000))::text || '|' ||
+      (SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+        AND incarnation_id='${CHECKPOINT_A_INCARNATION}' AND generation=1
+        AND process_exit_json::jsonb->>'end'='superseded'
+        AND process_exit_json LIKE '%k8s-container-superseded%' AND process_exit_json LIKE '%${CHECKPOINT_A_INCARNATION}%')::text || '|' ||
+      (SELECT count(*) FROM runtime_dispatch WHERE run_id='${CHECKPOINT_RUN}' AND status='awaiting' AND active_attempt_owner IS NULL)::text")
+  [ "$CHECKPOINT_RECOVERED" = '1|1|1' ] && break
+  sleep 1
+done
+[ "$CHECKPOINT_RECOVERED" = '1|1|1' ] || { err "Q2 old exact supersession/original Awaiting did not recover: $CHECKPOINT_RECOVERED"; exit 1; }
+CHECKPOINT_CURRENT_TICKET=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT ticket::text FROM runtime_waiting WHERE run_id='${CHECKPOINT_RUN}'")
+[ "$CHECKPOINT_CURRENT_TICKET" = "$CHECKPOINT_TICKET" ] || { err "Q2 original resume ticket changed"; exit 1; }
+CHECKPOINT_PUBLIC=$(node "$DRIVER" observe-native-checkpoint "$API_URL" "$CHECKPOINT_SESSION" "$CHECKPOINT_RECEIPT" | tail -1)
+read -r CHECKPOINT_OBSERVED CHECKPOINT_OBSERVED_SESSION CHECKPOINT_OBSERVED_RECEIPT CHECKPOINT_TOOL_USE <<<"$CHECKPOINT_PUBLIC"
+[ "$CHECKPOINT_OBSERVED" = OK ] && [ "$CHECKPOINT_OBSERVED_SESSION" = "$CHECKPOINT_SESSION" ] \
+  && [ "$CHECKPOINT_OBSERVED_RECEIPT" = "$CHECKPOINT_RECEIPT" ] && [ -n "$CHECKPOINT_TOOL_USE" ] \
+  || { err "Q2 original public checkpoint identity missing"; exit 1; }
+CHECKPOINT_PROVIDER_CALLS=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_CHECKPOINT_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
+[ "$CHECKPOINT_PROVIDER_CALLS" = 1 ] || { err "Q2 safe checkpoint model step was reissued"; exit 1; }
+# A second owned producer pause prevents D from eagerly adopting the still-live
+# source before its fault. Retained PVCs are NEVER deleted to manufacture M5.
+pause_coordinator_observation
+[ "$COORDINATOR_RESTORE_UID" = "$CHECKPOINT_COORDINATOR_UID" ] \
+  && [ "$COORDINATOR_RESTORE_REPLICAS" = "$CHECKPOINT_COORDINATOR_REPLICAS" ] \
+  || { err "Q3 original Coordinator cohort changed between faults"; exit 1; }
+CHECKPOINT_SOURCE_META=$(kubectl -n "$NS" get pod "$CHECKPOINT_SOURCE_POD" \
+  -o jsonpath='{.metadata.uid}|{.metadata.resourceVersion}')
+IFS='|' read -r CHECKPOINT_SOURCE_CURRENT_UID CHECKPOINT_SOURCE_RV <<<"$CHECKPOINT_SOURCE_META"
+[ "$CHECKPOINT_SOURCE_CURRENT_UID" = "$CHECKPOINT_SOURCE_UID" ] && [ -n "$CHECKPOINT_SOURCE_RV" ] \
+  || { err "Q3 source identity changed before its one fault"; exit 1; }
+k3d_delete_exact_pod "$CLUSTER" "$NS" "$CHECKPOINT_SOURCE_POD" "$CHECKPOINT_SOURCE_UID" "$CHECKPOINT_SOURCE_RV"
+hard_crash_native_worker "$NATIVE_CHECKPOINT" "$CHECKPOINT_UID" in-place "$CHECKPOINT_C_CONTAINER"
+kubectl -n "$NS" wait '--for=jsonpath={.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}' \
+  "pod/$NATIVE_CHECKPOINT" --timeout=90s
+CHECKPOINT_D_META=$(kubectl -n "$NS" get pod "$NATIVE_CHECKPOINT" \
+  -o jsonpath='{.metadata.uid}|{.status.containerStatuses[?(@.name=="worker")].containerID}|{.status.containerStatuses[?(@.name=="worker")].state.running.startedAt}|{.status.containerStatuses[?(@.name=="worker")].restartCount}|{.status.containerStatuses[?(@.name=="worker")].lastState.terminated.containerID}|{.status.containerStatuses[?(@.name=="worker")].lastState.terminated.exitCode}')
+python3 - "$CHECKPOINT_UID" "$CHECKPOINT_C_CONTAINER" "$CHECKPOINT_C_META" "$CHECKPOINT_D_META" <<'PYCHECK'
+import datetime,sys
+uid,c,old,facts=sys.argv[1:]
+_,_,started,count,_,_=old.split('|')
+actual,d,d_started,restarts,last,code=facts.split('|')
+assert actual==uid and d!=c and last==c and code=='137'
+assert int(restarts)==int(count)+1
+assert datetime.datetime.fromisoformat(d_started.replace('Z','+00:00')) > datetime.datetime.fromisoformat(started.replace('Z','+00:00'))
+PYCHECK
+IFS='|' read -r _ CHECKPOINT_D_CONTAINER _ _ _ _ <<<"$CHECKPOINT_D_META"
+CHECKPOINT_D_INCARNATION=${CHECKPOINT_D_CONTAINER#containerd://}
+restore_coordinator_observation
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CHECKPOINT" --timeout=240s
+for _ in $(seq 1 120); do
+  CHECKPOINT_D_REGISTERED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    "SELECT
+      (SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+        AND incarnation_id='${CHECKPOINT_D_INCARNATION}' AND generation=3
+        AND expires_at_ms > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000))::text || '|' ||
+      (SELECT count(*) FROM worker_registry_worker WHERE worker_id='${CHECKPOINT_WORKER}'
+        AND incarnation_id='${CHECKPOINT_C_INCARNATION}' AND generation=2
+        AND process_exit_json LIKE '%k8s-container-exit%' AND process_exit_json LIKE '%${CHECKPOINT_C_INCARNATION}%'
+        AND process_exit_json LIKE '%exit_code%137%')::text")
+  [ "$CHECKPOINT_D_REGISTERED" = '1|1' ] && break
+  sleep 1
+done
+[ "$CHECKPOINT_D_REGISTERED" = '1|1' ] || { err "Q3 D registration/exact C exit did not join: $CHECKPOINT_D_REGISTERED"; exit 1; }
+node "$DRIVER" resume-native-checkpoint "$API_URL" "$CHECKPOINT_SESSION" "$CHECKPOINT_RECEIPT" \
+  "$CHECKPOINT_TOOL_USE" "$NATIVE_CHECKPOINT_MARKER"
+CHECKPOINT_SOURCE_REPLACEMENT=$(k3d_sandbox_pod_for_session "$NS" "$CHECKPOINT_SESSION")
+CHECKPOINT_SOURCE_NEW_UID=$(kubectl -n "$NS" get pod "$CHECKPOINT_SOURCE_REPLACEMENT" -o jsonpath='{.metadata.uid}')
+[ -n "$CHECKPOINT_SOURCE_NEW_UID" ] && [ "$CHECKPOINT_SOURCE_NEW_UID" != "$CHECKPOINT_SOURCE_UID" ] \
+  || { err "Q4 source was not actually replaced"; exit 1; }
+verify_checkpoint_repository "$CHECKPOINT_SOURCE_REPLACEMENT" "$CHECKPOINT_SOURCE_NEW_UID" "$CHECKPOINT_SOURCE_COMMIT"
+CHECKPOINT_BINDING_AFTER=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT aggregate_json::jsonb #>> '{aggregate,environment,binding}' FROM managed_session
+     WHERE session_id='${CHECKPOINT_SESSION}' AND aggregate_json::jsonb->>'format'='awaken.session.v2'
+       AND aggregate_json::jsonb #>> '{aggregate,environment,phase}'='resident'
+       AND (aggregate_json::jsonb #> '{aggregate,environment_materialization,origin,kind}') ? 'rebuild'")
+[ -n "$CHECKPOINT_BINDING_AFTER" ] && [ "$CHECKPOINT_BINDING_AFTER" != "$CHECKPOINT_BINDING_BEFORE" ] \
+  || { err "Q4 original Root has no new authorized Rebuild binding"; exit 1; }
+CHECKPOINT_FINAL=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+  "SELECT
+    (SELECT count(*) FROM runtime_dispatch WHERE run_id='${CHECKPOINT_RUN}')::text || '|' ||
+    (SELECT count(*) FROM runtime_waiting WHERE run_id='${CHECKPOINT_RUN}')::text || '|' ||
+    (SELECT count(*) FROM runtime_commit WHERE run_id='${CHECKPOINT_RUN}' AND thread_id='${CHECKPOINT_THREAD}'
+      AND phase::jsonb=jsonb_build_object('Ended','NaturalEnd'))::text || '|' ||
+    (SELECT count(*) FROM runtime_commit WHERE run_id='${CHECKPOINT_RUN}' AND phase::jsonb ? 'Ended')::text || '|' ||
+    (SELECT count(DISTINCT run_id) FROM runtime_commit WHERE thread_id='${CHECKPOINT_THREAD}')::text")
+[ "$CHECKPOINT_FINAL" = '0|0|1|1|1' ] || { err "Q4 original Run ended differently or remained pending: $CHECKPOINT_FINAL"; exit 1; }
+CHECKPOINT_PROVIDER_CALLS=$(role_log_matches provider provider -F count "ADR71_PROVIDER_REQUEST \"${NATIVE_CHECKPOINT_MARKER}\"" "$PROVIDER_LOG_EVIDENCE")
+[ "$CHECKPOINT_PROVIDER_CALLS" = 2 ] || { err "Q4 original two model steps were replayed/missing"; exit 1; }
+[ "$(kubectl -n "$NS" get pod "$NATIVE_CHECKPOINT" -o jsonpath='{.metadata.uid}')" = "$CHECKPOINT_UID" ] \
+  || { err "Q4 logical Worker Pod was replaced"; exit 1; }
+python3 - "$CHECKPOINT_SESSION" "$CHECKPOINT_RECEIPT" "$CHECKPOINT_TOOL_USE" "$CHECKPOINT_RUN" "$CHECKPOINT_EPOCH" \
+  "$CHECKPOINT_UID" "$CHECKPOINT_A_INCARNATION" "$CHECKPOINT_B_INCARNATION" "$CHECKPOINT_C_INCARNATION" "$CHECKPOINT_D_INCARNATION" \
+  "$CHECKPOINT_SOURCE_UID" "$CHECKPOINT_SOURCE_NEW_UID" "$CHECKPOINT_SOURCE_CLAIM" "$CHECKPOINT_SOURCE_CLAIM_UID" "$CHECKPOINT_SOURCE_COMMIT" <<'PYAUDIT'
+import json,sys
+keys=('session','original_receipt','qualified_tool','run','original_epoch','worker_pod_uid',
+      'A_incarnation','B_unregistered_incarnation','C_generation2_incarnation','D_generation3_incarnation',
+      'original_source_pod_uid','new_source_pod_uid','original_retained_claim','original_retained_claim_uid','repository_commit')
+print('CHECKPOINT_AUDIT '+json.dumps(dict(zip(keys,sys.argv[1:])),sort_keys=True))
+PYAUDIT
+ok "original occupied Awaiting Run survived same-UID Superseded/restart and completed a source-bearing Retained Rebuild"
+log "NoSource409 is not manufactured in this fixed-Retained Container topology; its Host decision table is a separate required proof"
 
 ok "K3D/K3S FULL E2E PASS: one public API covered configuration, resources, credentials, publication, deployment, real Worker execution and response; completed Pod-bound Native crash recovered and opaque in-flight crash retained safely without duplicate execution; concurrent load met the public latency/error gates."
