@@ -354,17 +354,30 @@ impl crate::environment_holding::EnvironmentHolding {
         // Threads keep the original recovery policy.
         let rebuild_evidence = match policy {
             SessionEnvironmentUnavailablePolicy::Rebuild => {
+                let domain = crate::rebuild_source::RebuildSourceDomain::of(provider);
+                let incarnation_end = if resident.is_some() || revoked_durable.is_some() {
+                    crate::rebuild_source::BoundIncarnationEnd::Supervised
+                } else if domain == crate::rebuild_source::RebuildSourceDomain::WorkerProcess {
+                    match self.sessions.recorded_source_end(thread, handle)? {
+                        Some(
+                            awaken_session_realization_contract::RecordedProcessEnd::ExactExit,
+                        ) => crate::rebuild_source::BoundIncarnationEnd::ExactExit,
+                        Some(
+                            awaken_session_realization_contract::RecordedProcessEnd::Superseded,
+                        ) => crate::rebuild_source::BoundIncarnationEnd::Superseded,
+                        None => crate::rebuild_source::BoundIncarnationEnd::Unrecorded,
+                    }
+                } else {
+                    crate::rebuild_source::BoundIncarnationEnd::Unrecorded
+                };
                 let evidence = crate::rebuild_source::RebuildSourceObservation {
                     observation,
-                    domain: crate::rebuild_source::RebuildSourceDomain::of(provider),
+                    domain,
                     // Holding the source's owner means it ran in this live
                     // incarnation, whose own supervision observed its end; a
-                    // cold source's incarnation end is not recorded here.
-                    incarnation_end: if resident.is_some() || revoked_durable.is_some() {
-                        crate::rebuild_source::BoundIncarnationEnd::Supervised
-                    } else {
-                        crate::rebuild_source::BoundIncarnationEnd::Unrecorded
-                    },
+                    // cold source instead consumes only its handle-fenced,
+                    // frozen process-end fact; a failed read is not absence.
+                    incarnation_end,
                     filesystem_continuity: spec.filesystem_continuity,
                     has_repository: session_has_repository_input(&self.sessions, thread)?,
                 }

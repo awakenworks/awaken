@@ -351,6 +351,11 @@ async fn poisoned_registry_denies_every_view_path_without_panicking() {
         denied(view.end_terminal_disposal("s")),
         denied(view.enter_session_dispatch("s")),
         denied(view.frozen("s")),
+        // Source-end absence must not hide the same typed registry failure.
+        denied(view.recorded_source_end(
+            "s",
+            &awaken_provisioning_contract::SandboxHandle::new("test-poison", "s"),
+        )),
         denied(view.workspace("s", "fallback")),
         denied(view.dispatch_claim("s")),
         denied(view.prompts("s", None, false, true)),
