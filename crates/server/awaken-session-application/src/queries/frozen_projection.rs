@@ -5,7 +5,7 @@
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::PersistedSession;
-use awaken_session_realization_contract::FrozenSessionProjection;
+use awaken_session_execution_contract::FrozenSessionProjection;
 use awaken_session_types::RunError;
 
 use crate::{SessionProjectionReads, SessionQueries};
@@ -83,20 +83,20 @@ impl SessionQueries {
                     &baseline.agent_id,
                     source_revision,
                 );
-                match awaken_session_realization_contract::frozen_agent_publication_decision(
+                match awaken_session_execution_contract::frozen_agent_publication_decision(
                     &baseline,
                     snapshot.as_ref(),
                 ) {
-                    awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
-                    | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
-                    | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
-                    awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
+                    awaken_session_execution_contract::FrozenAgentPublicationDecision::Unpinned
+                    | awaken_session_execution_contract::FrozenAgentPublicationDecision::OptionalMissing
+                    | awaken_session_execution_contract::FrozenAgentPublicationDecision::Exact => {}
+                    awaken_session_execution_contract::FrozenAgentPublicationDecision::MissingRequired => {
                         return Err(RunError::unavailable(format!(
                             "Agent '{}' publication revision {} is unavailable for Worker realization",
                             baseline.agent_id, source_revision
                         )));
                     }
-                    awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
+                    awaken_session_execution_contract::FrozenAgentPublicationDecision::Mismatch => {
                         return Err(RunError::internal(
                             "exact Agent publication does not match the frozen Session baseline",
                         ));
@@ -104,7 +104,7 @@ impl SessionQueries {
                 }
                 snapshot
                     .map(|snapshot| {
-                        awaken_session_realization_contract::project_effective_agent_publication(
+                        awaken_session_execution_contract::project_effective_agent_publication(
                             baseline.model_override.as_ref(),
                             &baseline.system_prompt,
                             Some(resources.skills()),

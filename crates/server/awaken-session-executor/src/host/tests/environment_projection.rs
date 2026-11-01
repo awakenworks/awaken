@@ -1423,7 +1423,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
                 transcript_prefix: None,
             },
         );
-        awaken_session_realization_contract::FrozenSessionProjection {
+        awaken_session_execution_contract::FrozenSessionProjection {
             bound_source_end: None,
             workspace_id: host.run_assembly.local_workspace().into(),
             revision: awaken_session_types::SessionRevision(1),

@@ -163,7 +163,7 @@ pub(crate) trait SessionAuthority: SessionCommitSource {
     /// The Control client that hands out cold terminal-cleanup assignments.
     fn terminal_cleanup_control(
         &self,
-    ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>;
+    ) -> Option<Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>>;
 
     /// The durable dispatch store this process owns, if any.
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding>;
@@ -261,7 +261,7 @@ impl SessionAuthority for LocalAuthority {
 
     fn terminal_cleanup_control(
         &self,
-    ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>> {
+    ) -> Option<Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>> {
         None
     }
 
@@ -309,7 +309,7 @@ pub struct UpstreamAuthority {
     dispatch: Option<awaken_dispatch_erasure::DispatchBinding>,
     stream_publisher: Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
     terminal_cleanup_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>>,
     memory_reference_encoder: Option<Arc<dyn SessionMemoryReferenceEncoder>>,
 }
 
@@ -366,7 +366,7 @@ impl UpstreamAuthority {
     #[must_use]
     pub fn with_terminal_cleanup_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
     ) -> Self {
         self.terminal_cleanup_control = Some(control);
         self
@@ -380,7 +380,7 @@ impl UpstreamAuthority {
         E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_dispatch_contract::RunClaim,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_session_realization_contract::SessionResourceMaterializationIntent,
+                awaken_session_execution_contract::SessionResourceMaterializationIntent,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_session_contract::SessionTerminalMemoryIntent,
             > + 'static,
@@ -451,7 +451,7 @@ impl SessionAuthority for UpstreamAuthority {
 
     fn terminal_cleanup_control(
         &self,
-    ) -> Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>> {
+    ) -> Option<Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>> {
         self.terminal_cleanup_control.clone()
     }
 

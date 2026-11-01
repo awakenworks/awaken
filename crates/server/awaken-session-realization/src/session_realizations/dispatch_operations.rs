@@ -97,7 +97,7 @@ impl SessionRealizations {
         claim: &RunClaim,
     ) -> Result<
         (
-            awaken_session_realization_contract::SessionRealizationPermit,
+            awaken_session_execution_contract::SessionRealizationPermit,
             Option<SessionRealizationLease>,
         ),
         RealizationError,

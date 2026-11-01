@@ -92,7 +92,7 @@ use crate::sandbox_layout::{
 };
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::{environment_projection, resource as session_resource};
-use awaken_session_realization_contract::{CanonicalSessionProjection, FrozenSessionProjection};
+use awaken_session_execution_contract::{CanonicalSessionProjection, FrozenSessionProjection};
 
 impl EnvironmentHolding {
     /// Read original source retention without installing or changing a Session:

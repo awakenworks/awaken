@@ -3,6 +3,7 @@
 // @formal reason: cfg(test) only; strict unused-role ports for existing mechanism fixtures. Production startup tests use the public complete constructor.
 use awaken_agent_contract::agent::{message::Message, run::Id as RunId, thread::Id as ThreadId};
 use awaken_session_application_contract::{RunApplicationError, SessionRunBackgroundApplication};
+use awaken_session_contract::SessionThreadToolReplyCommand;
 use awaken_session_execution_contract::*;
 use awaken_session_types::{RunError, SessionId};
 use std::sync::{Arc, OnceLock};

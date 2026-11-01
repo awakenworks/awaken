@@ -42,7 +42,7 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
         let (lease, effect) = terminal_recovery_effect(thread, "new-cleanup-worker");
         let fence = effect.sandbox_effect_fence().unwrap();
         let (host, _managed) = cold_host(provider, &fence).await;
-        let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        let assignment = awaken_session_execution_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection,
             environment_creation_not_attempted: false,
@@ -144,7 +144,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
         let worker_fence = effect.sandbox_effect_fence().unwrap();
         let (host, managed) = cold_host(provider.clone(), &worker_fence).await;
         let projection = remote_terminal_cleanup_projection();
-        let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        let assignment = awaken_session_execution_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
             environment_creation_not_attempted: witness,
@@ -156,7 +156,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             witness,
             "H5 historical omission"
         );
-        let assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment =
+        let assignment: awaken_session_execution_contract::SessionTerminalCleanupAssignment =
             serde_json::from_value(wire).unwrap();
         assert_eq!(
             assignment.environment_creation_not_attempted, witness,

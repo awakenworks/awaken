@@ -37,7 +37,7 @@ use awaken_dispatch_execution::{ProcessDispatch, ProcessDispatchLifecycle};
 use awaken_resource_contract::FileContentSource;
 use awaken_session_application::SessionRunApplication;
 use awaken_session_execution_contract::DurableRunOperations;
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 
 /// The executor's ports the Coordinator consumes, each given once at
 /// construction. Consumers: [`crate::build_coordinator_component`] and the
@@ -148,26 +148,26 @@ pub struct ColocatedExecutionInputs {
     pub credential_refresh: Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     pub file_content: Arc<
         dyn awaken_resource_contract::FileContentSource<
-                awaken_session_realization_contract::ResourceOperationFence,
+                awaken_session_execution_contract::ResourceOperationFence,
             >,
     >,
     pub memory_content: awaken_resource_contract::MemoryExecutionContent,
     pub memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
     pub artifact_publisher: Arc<
         dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_session_realization_contract::ResourceOperationFence,
+                awaken_session_execution_contract::ResourceOperationFence,
             >,
     >,
     pub skill_bundles: Arc<
         dyn awaken_session_configuration_contract::SkillBundleSource<
-                awaken_session_realization_contract::ResourceOperationFence,
+                awaken_session_execution_contract::ResourceOperationFence,
             >,
     >,
     pub skill_catalog: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
     pub resource_validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
     pub repository_bindings: Arc<
         dyn awaken_resource_contract::RepositoryBindingVerifier<
-                awaken_session_realization_contract::ResourceOperationFence,
+                awaken_session_execution_contract::ResourceOperationFence,
             >,
     >,
     pub memory_source: awaken_resource_contract::MemoryMountSource,

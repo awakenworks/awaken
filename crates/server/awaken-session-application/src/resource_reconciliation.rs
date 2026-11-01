@@ -749,8 +749,8 @@ mod placement_regression_tests {
         async fn install_dispatch_projection(
             &self,
             _: &str,
-            _: awaken_session_realization_contract::FrozenSessionProjection,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+            _: awaken_session_execution_contract::FrozenSessionProjection,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure>
         {
             panic!("no input effect")
         }

@@ -591,7 +591,7 @@ struct StagingFixture {
     host: Arc<ExecutorComponents>,
     control: Arc<RemoteTerminalCleanupControl>,
     source: Arc<GatedFileSource>,
-    projection: awaken_session_realization_contract::FrozenSessionProjection,
+    projection: awaken_session_execution_contract::FrozenSessionProjection,
     lease: crate::session_resource::SessionRealizationLease,
     now: u64,
 }
@@ -628,7 +628,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             .installed_sessions
             .install_realization(SESSION, |r| r.staging().projection.clone());
         let held = resource_lock.lock().await;
-        let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
+        let proof = awaken_session_execution_contract::SessionRealizationLeaseReceipt {
             lease: f.lease.clone(),
             remaining_ms: std::num::NonZeroU64::new(3).unwrap(),
         }
@@ -711,7 +711,7 @@ async fn projection_installation_coherent_default_source_keeps_every_zero_resour
         projection.resource_revision = 0;
         projection.resources = Default::default();
         let expected_receipt =
-            awaken_session_realization_contract::FrozenProjectionReceipt::from_projection(
+            awaken_session_execution_contract::FrozenProjectionReceipt::from_projection(
                 &projection,
             )
             .unwrap();
@@ -725,7 +725,7 @@ async fn projection_installation_coherent_default_source_keeps_every_zero_resour
             }
             "terminal" => {
                 let assignment =
-                    awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                         environment_creation_not_attempted: false,
                         session_id: SESSION.into(),
                         projection,
@@ -880,7 +880,7 @@ async fn projection_installation_refuses_foreign_registration_before_resource_ef
                     }
                     "terminal" => {
                         let assignment =
-                            awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                            awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                                 environment_creation_not_attempted: false,
                                 session_id: SESSION.into(),
                                 projection: incoming,
@@ -1165,16 +1165,14 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
             .is_err(),
         "E2"
     );
-    let epoch = match awaken_session_realization_contract::session_realization_assignment(
+    let epoch = match awaken_session_execution_contract::session_realization_assignment(
         Some(old.epoch),
         true,
         true,
         true,
         true,
     ) {
-        awaken_session_realization_contract::SessionRealizationAssignment::Assign { epoch } => {
-            epoch
-        }
+        awaken_session_execution_contract::SessionRealizationAssignment::Assign { epoch } => epoch,
         other => panic!("R2 requires a successor, got {other:?}"),
     };
     f.lease.epoch = epoch;
@@ -1871,7 +1869,7 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         }
         let task = f.start().await;
         *f.control.renewal_failure.lock().unwrap() = Some(
-            awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+            awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
         );
         let renewal = tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -1905,7 +1903,7 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
     let f = StagingFixture::new().await;
     let task = f.start().await;
     *f.control.renewal_failure.lock().unwrap() = Some(
-        awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+        awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
             "injected outage".into(),
         ),
     );

@@ -140,7 +140,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         1,
         resources.clone(),
     );
-    let projection = awaken_session_realization_contract::FrozenSessionProjection {
+    let projection = awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: workspace.clone(),
         revision: awaken_session_types::SessionRevision(1),
@@ -165,7 +165,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         managed.run_assembly.as_ref(),
         thread,
         projection,
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .unwrap();

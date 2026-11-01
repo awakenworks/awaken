@@ -20,7 +20,7 @@ use awaken_session_configuration_contract::SkillBundleSource as _;
 use awaken_session_configuration_contract::resource::{
     ResolvedSessionResources, ResolvedSkillBinding,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_skill_store::{
     InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore as _, SkillVersion,
     bundle_sha256,

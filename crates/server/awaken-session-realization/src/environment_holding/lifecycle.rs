@@ -360,10 +360,10 @@ impl crate::environment_holding::EnvironmentHolding {
                 } else if domain == crate::rebuild_source::RebuildSourceDomain::WorkerProcess {
                     match self.sessions.recorded_source_end(thread, handle)? {
                         Some(
-                            awaken_session_realization_contract::RecordedProcessEnd::ExactExit,
+                            awaken_session_execution_contract::RecordedProcessEnd::ExactExit,
                         ) => crate::rebuild_source::BoundIncarnationEnd::ExactExit,
                         Some(
-                            awaken_session_realization_contract::RecordedProcessEnd::Superseded,
+                            awaken_session_execution_contract::RecordedProcessEnd::Superseded,
                         ) => crate::rebuild_source::BoundIncarnationEnd::Superseded,
                         None => crate::rebuild_source::BoundIncarnationEnd::Unrecorded,
                     }
@@ -1151,7 +1151,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         peers: crate::peers::Peers<'_>,
         thread: &str,
-        incoming: &awaken_session_realization_contract::ObservedSessionRealizationLease,
+        incoming: &awaken_session_execution_contract::ObservedSessionRealizationLease,
         mcp: (&awaken_session_mcp::McpSessions, &S),
     ) -> Result<(), RealizationError> {
         let realizations = self.sessions.clone();
@@ -1179,8 +1179,8 @@ impl crate::environment_holding::EnvironmentHolding {
                     _ => return None,
                 };
                 let same_generation = r.execution().authority.lease().is_some_and(|old| {
-                    awaken_session_realization_contract::realization_lease_generation_authorizes(old, &incoming.lease)
-                    || awaken_session_realization_contract::realization_lease_generation_authorizes(&incoming.lease, old)
+                    awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(old, &incoming.lease)
+                    || awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(&incoming.lease, old)
                 });
                 (!same_generation).then(|| environment.clone())
             })?.flatten();

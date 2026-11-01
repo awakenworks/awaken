@@ -25,8 +25,8 @@ use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_
 use awaken_session_contract::{
     LifecycleOutbox as _, SessionRepository as _, SessionRepositoryReads as _,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_realization_contract::SessionFileReadAuthorization as _;
+use awaken_session_execution_contract::ResourceOperationFence;
+use awaken_session_execution_contract::SessionFileReadAuthorization as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(

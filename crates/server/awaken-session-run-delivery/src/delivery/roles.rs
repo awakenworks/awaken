@@ -10,11 +10,11 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::LiveInboxError;
 use awaken_session_application_contract::{DelegatedRunSnapshot, RunResume, StepOutcome};
+use awaken_session_contract::SessionThreadToolReplyDelivery;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, ChildRunCoordination, CoordinatedRunCommand,
     SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionRunActivation,
     SessionRunDelivery, SessionRunReservation, SessionThreadLiveSubscription,
-    SessionThreadToolReplyDelivery,
 };
 use awaken_session_types::{RunError, SessionId};
 
@@ -331,7 +331,7 @@ impl awaken_session_execution_contract::SessionRuns for WorkerPlacedSessions {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: awaken_session_execution_contract::ToolPermissionDecision,
+        decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         self.resume_thread(thread, tool_use_id, RunResume::Permission(decision), None)
             .await

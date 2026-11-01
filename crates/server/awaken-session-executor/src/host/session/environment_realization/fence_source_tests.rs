@@ -6,7 +6,7 @@ use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+use awaken_session_execution_contract::SessionRealizationLeaseReceipt;
 use std::{io, sync::Mutex, time::Duration};
 
 struct Worker(Mutex<Option<Duration>>);

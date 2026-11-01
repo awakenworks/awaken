@@ -188,15 +188,15 @@
   },
   "crate-budget": {
     "awaken-protocol-managed": {
-      "deps": 32,
+      "deps": 31,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-application": {
-      "deps": 21,
+      "deps": 20,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     },
     "awaken-session-executor": {
-      "deps": 40,
+      "deps": 39,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root; +127 2026-10-18 for typed poison refusals and their decision tables at every read role, plan v4 P6/P7); host_lines may only fall; target < 20000 lines, about 26-28 dependencies"
     }
   },
@@ -322,12 +322,11 @@
     "awaken-session-dream-contract": 1365,
     "awaken-session-environment": 6023,
     "awaken-session-environment-contract": 1921,
-    "awaken-session-execution-contract": 4265,
+    "awaken-session-execution-contract": 6591,
     "awaken-session-executor": 21323,
     "awaken-session-executor-testkit": 1174,
     "awaken-session-mcp": 5101,
     "awaken-session-realization": 14604,
-    "awaken-session-realization-contract": 3213,
     "awaken-session-realization-driver": 2135,
     "awaken-session-run-delivery": 9688,
     "awaken-session-store": 6345,
@@ -539,12 +538,11 @@
       "awaken-session-dream-contract": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-environment": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-environment-contract": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
-      "awaken-session-execution-contract": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
+      "awaken-session-execution-contract": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}; then: {\"reason\":\"V4 merges awaken-session-realization-contract into the execution contract: same Coordinator/Worker boundary and callers (docs/design/contract-convergence.md)\",\"approved_by\":\"integrator (Claude) under the user's 2026-10-31 approval of plan v5\",\"date\":\"2026-10-31\",\"remove_when\":\"the merged realization vocabulary moves to its own context by a later reviewed design\"}",
       "awaken-session-executor": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-executor-testkit": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-mcp": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-realization": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
-      "awaken-session-realization-contract": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-realization-driver": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-run-delivery": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",
       "awaken-session-store": "{\"reason\":\"Per-crate approved line ceilings replace shrink-only line measurements: functional lines plus max(10%,1000) headroom, awaken-runtime 5% (runtime stays minimal; package D runtime fixes kept by user decision A)\",\"approved_by\":\"Zhenhua Chai\",\"date\":\"2026-10-31\",\"remove_when\":\"a crate's responsibility changes; raise again only with a new review record\"}",

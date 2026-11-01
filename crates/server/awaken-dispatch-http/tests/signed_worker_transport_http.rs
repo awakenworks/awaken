@@ -50,30 +50,30 @@ use awaken_worker_transport_security::{
 #[derive(Default)]
 struct RecordingSessionControl {
     clock: Option<Arc<ManualClock>>,
-    projection: Mutex<Option<awaken_session_realization_contract::FrozenSessionProjection>>,
+    projection: Mutex<Option<awaken_session_execution_contract::FrozenSessionProjection>>,
     activations: Mutex<usize>,
     acknowledgements: Mutex<usize>,
     failures: Mutex<usize>,
-    begins: Mutex<Vec<awaken_session_realization_contract::BeginSessionRealization>>,
-    renewals: Mutex<Vec<awaken_session_realization_contract::RenewSessionRealization>>,
+    begins: Mutex<Vec<awaken_session_execution_contract::BeginSessionRealization>>,
+    renewals: Mutex<Vec<awaken_session_execution_contract::RenewSessionRealization>>,
     renewal_failure:
-        Mutex<Option<awaken_session_realization_contract::SessionRealizationControlFailure>>,
+        Mutex<Option<awaken_session_execution_contract::SessionRealizationControlFailure>>,
     agent_lists: AtomicUsize,
     agent_messages: Mutex<Vec<awaken_session_execution_contract::SessionAgentMessageCommand>>,
     agent_boundaries: Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
     terminal_control_calls: AtomicUsize,
-    cleanup_claims: Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
+    cleanup_claims: Mutex<Vec<awaken_session_execution_contract::SessionRealizationTarget>>,
     cleanup_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
     cleanup_action: Mutex<Option<awaken_session_contract::SessionTerminalCleanupAction>>,
     preparation_authorization: Mutex<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization>,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization>,
     >,
     authorized_preparations: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
     cleanup_preparations: Mutex<Vec<awaken_session_contract::SessionCleanupPreparation>>,
     authorized_disposals: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupDisposalEffect>>,
     cleanup_disposals: Mutex<Vec<awaken_session_contract::SessionCleanupDisposalReceipt>>,
     repository_publication_projection:
-        Mutex<Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>>,
+        Mutex<Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>>,
     repository_publication_receipts:
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
     repository_publication_rejections:
@@ -85,13 +85,13 @@ impl RecordingSessionControl {
         &self,
         lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         use awaken_time::WallClockExt as _;
         // The same injected authority clock drives HTTP admission and response
         // publication. Fixtures rejected before Control need no clock at all.
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
             lease,
             self.clock
                 .as_ref()
@@ -263,7 +263,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority
     }
 }
 
-fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProjection {
+fn frozen_projection() -> awaken_session_execution_contract::FrozenSessionProjection {
     let holder = awaken_agent_contract::credential::PlaintextHolder::new(
         awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "test.worker",
@@ -304,7 +304,7 @@ fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProj
             transcript_prefix: None,
         },
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: "workspace".into(),
         revision: awaken_session_types::SessionRevision(2),
@@ -321,20 +321,21 @@ fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProj
     }
 }
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionRealizationControl for RecordingSessionControl {
+impl awaken_session_execution_contract::SessionRealizationControl for RecordingSessionControl {
     async fn begin_session_realization(
         &self,
-        command: awaken_session_realization_contract::BeginSessionRealization,
+        command: awaken_session_execution_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.begins.lock().unwrap().push(command.clone());
-        let projection = self.projection.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let projection =
+            self.projection.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         Ok(
-            awaken_session_realization_contract::SessionRealizationDirective {
+            awaken_session_execution_contract::SessionRealizationDirective {
                 projection,
                 authority: self.receipt(
                     awaken_session_configuration_contract::resource::SessionRealizationLease {
@@ -344,17 +345,17 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
                         expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
                     },
                 )?,
-                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
             },
         )
     }
 
     async fn renew_session_realization(
         &self,
-        command: awaken_session_realization_contract::RenewSessionRealization,
+        command: awaken_session_execution_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.renewals.lock().unwrap().push(command.clone());
         if let Some(error) = self.renewal_failure.lock().unwrap().clone() {
@@ -367,62 +368,64 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
 
     async fn activate_session_realization(
         &self,
-        command: awaken_session_realization_contract::ActivateSessionRealization,
+        command: awaken_session_execution_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         *self.activations.lock().unwrap() += 1;
-        let projection = self.projection.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let projection =
+            self.projection.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         Ok(
-            awaken_session_realization_contract::SessionRealizationDirective {
+            awaken_session_execution_contract::SessionRealizationDirective {
                 projection,
                 authority: self.receipt(command.lease)?,
-                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
             },
         )
     }
 
     async fn acknowledge_session_realization(
         &self,
-        command: awaken_session_realization_contract::AcknowledgeSessionRealization,
+        command: awaken_session_execution_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         *self.acknowledgements.lock().unwrap() += 1;
-        let projection = self.projection.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let projection =
+            self.projection.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         Ok(
-            awaken_session_realization_contract::SessionRealizationDirective {
+            awaken_session_execution_contract::SessionRealizationDirective {
                 projection,
                 authority: self.receipt(command.lease)?,
-                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
             },
         )
     }
 
     async fn fail_session_realization(
         &self,
-        _command: awaken_session_realization_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+        _command: awaken_session_execution_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         *self.failures.lock().unwrap() += 1;
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalCleanupQueue for RecordingSessionControl {
+impl awaken_session_execution_contract::SessionTerminalCleanupQueue for RecordingSessionControl {
     async fn claim_next_terminal_cleanup(
         &self,
-        target: awaken_session_realization_contract::SessionRealizationTarget,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
         after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_claims.lock().unwrap().push(target.clone());
@@ -430,11 +433,12 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
             .lock()
             .unwrap()
             .push(after_session_id.cloned());
-        let projection = self.projection.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let projection =
+            self.projection.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         Ok(Some(
-            awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: "signed-terminal-recovery".into(),
                 projection,
@@ -455,19 +459,20 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
         session_id: &SessionId,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupWork>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         let Some(action) = self.cleanup_action.lock().unwrap().clone() else {
             return Ok(None);
         };
-        let projection = self.projection.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let projection =
+            self.projection.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         Ok(Some(
-            awaken_session_realization_contract::SessionTerminalCleanupWork {
-                assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            awaken_session_execution_contract::SessionTerminalCleanupWork {
+                assignment: awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: session_id.clone(),
                     projection,
@@ -480,15 +485,15 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalPreparationControl
+impl awaken_session_execution_contract::SessionTerminalPreparationControl
     for RecordingSessionControl
 {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.authorized_preparations
@@ -499,14 +504,14 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
             .lock()
             .unwrap()
             .clone()
-            .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn record_terminal_cleanup_preparation(
         &self,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_preparations.lock().unwrap().push(preparation);
         Ok(())
@@ -514,13 +519,11 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalDisposalControl
-    for RecordingSessionControl
-{
+impl awaken_session_execution_contract::SessionTerminalDisposalControl for RecordingSessionControl {
     async fn authorize_terminal_cleanup_disposal(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<String, awaken_session_execution_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.authorized_disposals
             .lock()
@@ -533,7 +536,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
         &self,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_disposals.lock().unwrap().push(receipt);
         Ok(())
@@ -541,7 +544,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+impl awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl
     for RecordingSessionControl
 {
     async fn terminal_repository_publication_command(
@@ -549,8 +552,8 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         _session_id: &SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self
@@ -565,7 +568,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         _session_id: &SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.repository_publication_receipts
             .lock()
@@ -579,7 +582,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         _session_id: &SessionId,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.repository_publication_rejections
             .lock()
@@ -709,7 +712,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::internal(
             "signed Worker transport does not own public Thread replies",
@@ -1552,7 +1555,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | K4 | current + explicit v2 | prepare authorize/record | exact bytes |
     // | K5 | current + explicit v2 | dispose authorize/record | exact bytes |
     // | K6 | current | old complete route | 404 + zero Control calls |
-    let cleanup_target = awaken_session_realization_contract::SessionRealizationTarget {
+    let cleanup_target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: registered.snapshot.identity.worker_id.clone(),
         runtime_incarnation: registered.snapshot.identity.lease_owner(),
         lease_expires_at_unix_ms: 30_000,
@@ -1682,7 +1685,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .unwrap();
     let preparation_authorization =
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             preparation_effect.clone(),
             "workspace".into(),
             Some(inherited_provider_disposal.clone()),
@@ -1899,7 +1902,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("P1 command projection")
         .expect("P1 pending publication");
     let publication_projection =
-        awaken_session_realization_contract::SessionRepositoryPublicationProjection {
+        awaken_session_execution_contract::SessionRepositoryPublicationProjection {
             workspace_id: "workspace".into(),
             command: publication_command.clone(),
             current_lease: realization_lease.clone(),
@@ -2077,7 +2080,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "P5"
     );
 
-    let renewal = awaken_session_realization_contract::RenewSessionRealization {
+    let renewal = awaken_session_execution_contract::RenewSessionRealization {
         session_id: "signed-thread".into(),
         asserted_lease: awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: registered.snapshot.identity.worker_id.clone(),
@@ -2109,7 +2112,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             client
                 .renew_session_realization(&registered.snapshot.identity, renewal.clone())
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::Retired)
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::Retired)
         ),
         "T24"
     );
@@ -2237,7 +2240,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "RC2"
     );
     *session_control.renewal_failure.lock().unwrap() =
-        Some(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+        Some(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership);
     assert!(
         client
             .resume_session(
@@ -2280,7 +2283,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         client
             .activate_session_realization(
                 &registered.snapshot.identity,
-                awaken_session_realization_contract::ActivateSessionRealization {
+                awaken_session_execution_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: realization_lease.clone(),
                     prepared_resource_revision: None,
@@ -2296,7 +2299,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     client
         .activate_session_realization(
             &registered.snapshot.identity,
-            awaken_session_realization_contract::ActivateSessionRealization {
+            awaken_session_execution_contract::ActivateSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease.clone(),
                 prepared_resource_revision: None,
@@ -2312,7 +2315,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         client
             .activate_session_realization(
                 &wrong_identity,
-                awaken_session_realization_contract::ActivateSessionRealization {
+                awaken_session_execution_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: realization_lease.clone(),
                     prepared_resource_revision: None,
@@ -2331,7 +2334,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         client
             .activate_session_realization(
                 &registered.snapshot.identity,
-                awaken_session_realization_contract::ActivateSessionRealization {
+                awaken_session_execution_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: expired_lease,
                     prepared_resource_revision: None,
@@ -2347,7 +2350,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     client
         .acknowledge_session_realization(
             &registered.snapshot.identity,
-            awaken_session_realization_contract::AcknowledgeSessionRealization {
+            awaken_session_execution_contract::AcknowledgeSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease.clone(),
                 published: Vec::new(),
@@ -2361,7 +2364,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     client
         .fail_session_realization(
             &registered.snapshot.identity,
-            awaken_session_realization_contract::FailSessionRealization {
+            awaken_session_execution_contract::FailSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease,
                 prepared_resource_revision: None,
@@ -3070,7 +3073,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             "rejection_fingerprint": "rejection"
         }))
         .unwrap();
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -3116,7 +3119,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             "claim",
             "/v1/worker/session/cleanup/claim-next",
             serde_json::json!({ "identity": &identity, "target": target,
-                "sweep_cursor_version": awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+                "sweep_cursor_version": awaken_session_execution_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
                 "after_session_id": null }),
         ),
         (

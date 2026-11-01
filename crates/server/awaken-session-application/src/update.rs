@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use awaken_agent_contract::stable_fingerprint;
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
+use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 use awaken_session_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
 use awaken_session_contract::{SessionFieldUpdate, SessionUpdateChanges};
-use awaken_session_realization_contract::realization_lease_is_live_at;
 use awaken_session_types::{RunError, SessionRevision};
 
 use std::sync::Arc;
@@ -95,7 +95,7 @@ pub enum SessionUpdateError {
     #[error("Session update was rejected: {0}")]
     Rejected(#[source] RunError),
     #[error("Session realization failed: {}", crate::realization::realization_failure_message(.0))]
-    Realization(#[source] awaken_session_realization_contract::SessionRealizationDriveError),
+    Realization(#[source] awaken_session_execution_contract::SessionRealizationDriveError),
     /// Durable truth and its command receipt committed before realization or a
     /// disposable Runtime projection failed. The outcome lets interface
     /// adapters project the committed fact once and an idempotent replay repairs
@@ -144,19 +144,19 @@ fn mcp_projection_requires_realization(
 }
 
 fn realization_failure_after_commit(
-    error: awaken_session_realization_contract::SessionRealizationDriveError,
+    error: awaken_session_execution_contract::SessionRealizationDriveError,
 ) -> RunError {
     match error {
-        awaken_session_realization_contract::SessionRealizationDriveError::Effect(source) => {
+        awaken_session_execution_contract::SessionRealizationDriveError::Effect(source) => {
             source.into()
         }
-        awaken_session_realization_contract::SessionRealizationDriveError::Control(
-            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(message),
+        awaken_session_execution_contract::SessionRealizationDriveError::Control(
+            awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(message),
         ) => RunError::bad_request(message),
-        awaken_session_realization_contract::SessionRealizationDriveError::Control(error) => {
+        awaken_session_execution_contract::SessionRealizationDriveError::Control(error) => {
             RunError::internal(error.to_string())
         }
-        awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
+        awaken_session_execution_contract::SessionRealizationDriveError::DidNotConverge => {
             RunError::internal("Session realization did not converge")
         }
     }

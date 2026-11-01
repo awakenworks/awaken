@@ -40,7 +40,7 @@ impl crate::RunAssembly {
                             "a cold child requires the frozen parent Session publication",
                         )
                     })?;
-                if !awaken_session_realization_contract::requires_local_environment(
+                if !awaken_session_execution_contract::requires_local_environment(
                     &parent.resolved_spec,
                 ) {
                     return Err(SessionExecutionError::internal(
@@ -206,7 +206,7 @@ mod tests {
             .expect("S1 actual parent Root and current lease");
         let transition = projection
             .resource_transition(
-                awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+                awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
             )
             .unwrap();
         // C4 requires real parent authority while preserving the child-only

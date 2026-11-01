@@ -3,7 +3,7 @@
 //! source retention the Worker reported for the exact subjects it was given.
 use super::*;
 
-use awaken_session_realization_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
+use awaken_session_execution_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
 use awaken_worker_contract::WorkerSourceRetention;
 use std::collections::BTreeSet;
 

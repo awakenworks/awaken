@@ -4,7 +4,7 @@ use super::{generation_set_authorizes, projection, unavailable};
 use awaken_session_configuration_contract::mcp::{
     McpAttachmentState, McpGenerationRef, SessionMcpAttachment,
 };
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationAction, SessionRealizationControlFailure,
 };
 
@@ -62,7 +62,7 @@ pub(super) fn publication_action(
         .into_iter()
         .filter(|receipt| {
             expected_publish.iter().any(|current| {
-                awaken_session_realization_contract::realization_generation_authorizes(
+                awaken_session_execution_contract::realization_generation_authorizes(
                     current, receipt,
                 )
             })

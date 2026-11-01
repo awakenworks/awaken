@@ -12,7 +12,7 @@ use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck};
 use awaken_agent_contract::credential::PlaintextBoundary;
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 
 fn repository_http_basic_credential(
     material: awaken_credential_contract::CredentialMaterial,

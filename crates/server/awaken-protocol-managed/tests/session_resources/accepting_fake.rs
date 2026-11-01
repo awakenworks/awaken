@@ -1,8 +1,9 @@
 //! Original Resource-route execution fixture; one instance and one set of roles.
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SessionInit;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_execution_contract::{
     SessionCoordinationReads as _, StreamingRuns as _, ThreadReads as _,
 };
@@ -62,7 +63,7 @@ impl SessionRuns for AcceptingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _d: ToolPermissionDecision,
+        _d: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -105,7 +106,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -118,9 +119,9 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         if self
             .stall_projection_install
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -145,7 +146,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -357,7 +358,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for AcceptingFake {
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -372,7 +373,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for AcceptingFake {
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -501,11 +502,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for AcceptingFa
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
@@ -870,7 +869,7 @@ impl awaken_session_execution_contract::TerminalCleanup for AcceptingFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
@@ -924,8 +923,8 @@ impl awaken_session_execution_contract::TerminalCleanup for AcceptingFake {
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        _assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        _assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }

@@ -167,14 +167,14 @@ pub fn worker_environment_warmup_router(
 /// occupancy read; this adapter verifies the exact current incarnation and
 /// owns no report, cache or decision.
 pub fn worker_source_retention_router(
-    source: Arc<dyn awaken_session_realization_contract::WorkerSourceRetentionSubjects>,
+    source: Arc<dyn awaken_session_execution_contract::WorkerSourceRetentionSubjects>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WallClock>,
 ) -> Router {
     #[derive(Clone)]
     struct RetentionState {
-        source: Arc<dyn awaken_session_realization_contract::WorkerSourceRetentionSubjects>,
+        source: Arc<dyn awaken_session_execution_contract::WorkerSourceRetentionSubjects>,
         directory: Arc<dyn WorkerDirectory>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn WallClock>,
@@ -219,7 +219,7 @@ pub fn worker_source_retention_router(
     };
     Router::new()
         .route(
-            awaken_session_realization_contract::WORKER_SOURCE_RETENTION_SUBJECTS_PATH,
+            awaken_session_execution_contract::WORKER_SOURCE_RETENTION_SUBJECTS_PATH,
             post(subjects),
         )
         .route_layer(axum::middleware::from_fn_with_state(
@@ -243,12 +243,11 @@ pub struct WorkerDispatchService {
     completion: Option<Arc<dyn CompletionSink>>,
     terminal_observer: Option<Arc<dyn DispatchSettlementObserver>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
-    session_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionRealizationControl>>,
+    session_control: Option<Arc<dyn awaken_session_execution_contract::SessionRealizationControl>>,
     session_preparation_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionPreparationControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionPreparationControl>>,
     terminal_cleanup_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>>,
     session_environment_bindings:
         Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     session_coordination:
@@ -357,7 +356,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
     ) -> Self {
         self.session_control = Some(control);
         self
@@ -366,7 +365,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_preparation_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionPreparationControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionPreparationControl>,
     ) -> Self {
         self.session_preparation_control = Some(control);
         self
@@ -376,7 +375,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_terminal_cleanup_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
     ) -> Self {
         self.terminal_cleanup_control = Some(control);
         self
@@ -546,7 +545,7 @@ async fn verify_session_realization_authority(
     if lease.owner != identity.worker_id
         || lease.runtime_incarnation != identity.lease_owner()
         || (matches!(purpose, RealizationAuthorityPurpose::ActiveControl)
-            && !awaken_session_realization_contract::realization_lease_is_live_at(
+            && !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 lease.expires_at_unix_ms,
                 authority.now_ms,
             ))
@@ -603,11 +602,9 @@ pub struct RegisteredDispatchDependencies {
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
-    pub realizations: Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
-    pub terminal_cleanup:
-        Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
-    pub session_preparation:
-        Arc<dyn awaken_session_realization_contract::SessionPreparationControl>,
+    pub realizations: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
+    pub terminal_cleanup: Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
+    pub session_preparation: Arc<dyn awaken_session_execution_contract::SessionPreparationControl>,
     pub session_environment_bindings:
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
@@ -848,7 +845,7 @@ pub fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Val
 
 enum RealizationHttpError {
     Boundary(ApplicationError),
-    Control(awaken_session_realization_contract::SessionRealizationControlFailure),
+    Control(awaken_session_execution_contract::SessionRealizationControlFailure),
     Binding(awaken_session_types::RunError),
 }
 
@@ -858,10 +855,10 @@ impl From<ApplicationError> for RealizationHttpError {
     }
 }
 
-impl From<awaken_session_realization_contract::SessionRealizationControlFailure>
+impl From<awaken_session_execution_contract::SessionRealizationControlFailure>
     for RealizationHttpError
 {
-    fn from(error: awaken_session_realization_contract::SessionRealizationControlFailure) -> Self {
+    fn from(error: awaken_session_execution_contract::SessionRealizationControlFailure) -> Self {
         Self::Control(error)
     }
 }
@@ -889,7 +886,7 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
             )
         }
         Err(RealizationHttpError::Control(error)) => {
-            use awaken_session_realization_contract::SessionRealizationControlFailure;
+            use awaken_session_execution_contract::SessionRealizationControlFailure;
             let status = match &error {
                 SessionRealizationControlFailure::NotFound => StatusCode::NOT_FOUND,
                 SessionRealizationControlFailure::NotReady

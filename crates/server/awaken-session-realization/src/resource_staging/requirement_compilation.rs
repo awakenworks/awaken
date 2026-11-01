@@ -8,7 +8,7 @@
 use super::ResourceStaging;
 use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 
 use awaken_session_types::RunError;
 
@@ -49,7 +49,7 @@ impl ResourceStaging {
                 Ok(match (claim, realization) {
                     (_, Some((session_id, revision, lease))) => Some(
                         ResourceOperationFence::SessionMaterialization(
-                            awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
+                            awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new_skill(
                                 session_id,
                                 revision,
                                 binding.clone(),
@@ -216,7 +216,7 @@ impl ResourceStaging {
             (realization, self.fetches_resources_upstream)
         {
             Some(ResourceOperationFence::SessionMaterialization(
-                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+                awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
                     session_id,
                     resource_revision,
                     input.clone(),
@@ -357,7 +357,7 @@ impl ResourceStaging {
                         };
                         Some(
                             awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
-                                awaken_session_realization_contract::SessionResourceMaterializationIntent,
+                                awaken_session_execution_contract::SessionResourceMaterializationIntent,
                             >::encode(
                                 self.memory_reference_encoder.as_deref()
                                     .ok_or_else(|| {

@@ -5,9 +5,9 @@
 //! The Session application's `SessionRuns` and `StreamingRuns` roles,
 //! served by [`SessionRuns`].
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::{Pending, StepOutcome};
-use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_types::RunError;
 
 use super::SessionRuns;
@@ -37,7 +37,7 @@ impl awaken_session_execution_contract::SessionRuns for SessionRuns {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: ToolPermissionDecision,
+        decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         self.run_assembly
             .realization_executor

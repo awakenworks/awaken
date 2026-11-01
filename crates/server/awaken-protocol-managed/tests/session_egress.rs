@@ -8,12 +8,13 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
     ManagedState, environment_authoring_router, environment_work_router,
 };
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
@@ -41,7 +42,7 @@ impl SessionRuns for CapturingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _d: ToolPermissionDecision,
+        _d: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -95,7 +96,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -108,9 +109,9 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         if let Some(init) = awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -129,7 +130,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)

@@ -26,7 +26,7 @@ impl crate::terminal_effects::TerminalEffects {
         &self,
         peers: crate::peers::Peers<'_>,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         delegated: D,
         quiesce_background: B,
         mcp: (&awaken_session_mcp::McpSessions, &S),
@@ -220,9 +220,7 @@ impl crate::terminal_effects::TerminalEffects {
         let artifact_receipts = if let Some(capture_mode) = artifact_capture_mode {
             let harvester = self.artifacts.clone();
             let fence = Some(
-                awaken_session_realization_contract::ResourceOperationFence::Terminal(
-                    effect.clone(),
-                ),
+                awaken_session_execution_contract::ResourceOperationFence::Terminal(effect.clone()),
             );
             // Live root preparation has already moved the exact owner behind
             // the Retiring fence, so the generic Resident lookup cannot recover
@@ -581,7 +579,7 @@ impl crate::terminal_effects::TerminalEffects {
         let authorized = realizations
             .read_realization(session_id, |r| {
                 r.execution().authority.lease().is_some_and(|current| {
-                    awaken_session_realization_contract::realization_lease_generation_authorizes(
+                    awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                         current, lease,
                     )
                 })
@@ -621,7 +619,7 @@ impl crate::terminal_effects::TerminalEffects {
             let authorized = realizations
                 .read_realization(session_id, |r| {
                     r.execution().authority.lease().is_some_and(|current| {
-                        awaken_session_realization_contract::realization_lease_generation_authorizes(
+                        awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                             current, lease,
                         )
                     })

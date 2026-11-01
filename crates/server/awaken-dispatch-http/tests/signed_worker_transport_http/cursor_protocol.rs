@@ -6,7 +6,7 @@ pub(super) async fn verify_claim_cursor_protocol(
     upstream: &WorkerUpstream,
     address: std::net::SocketAddr,
     identity: &WorkerIdentity,
-    target: &awaken_session_realization_contract::SessionRealizationTarget,
+    target: &awaken_session_execution_contract::SessionRealizationTarget,
     after: &SessionId,
     control: &Arc<RecordingSessionControl>,
 ) {
@@ -74,7 +74,7 @@ pub(super) async fn verify_claim_cursor_protocol(
             let mut body = serde_json::json!({
                 "identity": identity,
                 "target": target,
-                "sweep_cursor_version": awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+                "sweep_cursor_version": awaken_session_execution_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
                 "after_session_id": after,
             });
             body[field] = value;

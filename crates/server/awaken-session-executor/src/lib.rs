@@ -107,7 +107,7 @@ mod uninstalled_environment;
 mod web_search;
 mod worker_services;
 
-pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
+pub(crate) use awaken_session_execution_contract::ResourceOperationFence;
 
 pub use crate::authority::UpstreamAuthority;
 pub(crate) use crate::authority::{LocalAuthority, SessionAuthority};

@@ -33,7 +33,6 @@ awaken-runtime-contract.workspace = true
 awaken-authority-clock.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-contract.workspace = true
 # Per-Session MCP lifecycle and Worker relay; the installed Session holds its state.

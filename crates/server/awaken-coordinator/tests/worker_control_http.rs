@@ -54,15 +54,13 @@ struct RecordingSessionPreparation {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionPreparationControl
-    for RecordingSessionPreparation
-{
+impl awaken_session_execution_contract::SessionPreparationControl for RecordingSessionPreparation {
     async fn claim_next_session_preparation(
         &self,
-        _target: awaken_session_realization_contract::SessionRealizationTarget,
+        _target: awaken_session_execution_contract::SessionRealizationTarget,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionPreparationAssignment>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionPreparationAssignment>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.claims.fetch_add(1, Ordering::SeqCst);
         Ok(None)
@@ -108,7 +106,7 @@ async fn initial_session_preparation_requires_exact_ready_worker_authority() {
         .await
         .unwrap();
     let identity = registered.worker.snapshot.identity;
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         lease_expires_at_unix_ms: 120,

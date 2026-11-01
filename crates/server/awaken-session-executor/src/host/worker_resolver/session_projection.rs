@@ -247,13 +247,13 @@ mod tests {
     }
 
     pub(super) struct RecoveryControl {
-        projection: Arc<Mutex<awaken_session_realization_contract::FrozenSessionProjection>>,
+        projection: Arc<Mutex<awaken_session_execution_contract::FrozenSessionProjection>>,
         failure_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl RecoveryControl {
         pub(super) fn fixed(
-            projection: awaken_session_realization_contract::FrozenSessionProjection,
+            projection: awaken_session_execution_contract::FrozenSessionProjection,
         ) -> Self {
             Self {
                 projection: Arc::new(Mutex::new(projection)),
@@ -263,13 +263,13 @@ mod tests {
 
         pub(super) fn current_projection(
             &self,
-        ) -> awaken_session_realization_contract::FrozenSessionProjection {
+        ) -> awaken_session_execution_contract::FrozenSessionProjection {
             self.projection.lock().unwrap().clone()
         }
     }
 
     pub(super) struct RecoveryEnvironmentBindingSink {
-        projection: Arc<Mutex<awaken_session_realization_contract::FrozenSessionProjection>>,
+        projection: Arc<Mutex<awaken_session_execution_contract::FrozenSessionProjection>>,
         calls: std::sync::atomic::AtomicUsize,
         root_authority: Option<(
             Arc<ManagedSessionRootFixture>,
@@ -327,7 +327,7 @@ mod tests {
             // its pending transition from that root, never from the intent
             // being admitted (which would tautologically accept a foreign one).
             let transition = projection.resource_transition(
-                awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+                awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
             )?;
             let transition_fingerprint = transition.operation_fingerprint();
             projection
@@ -379,7 +379,7 @@ mod tests {
     }
 
     struct RenewalDuringStageControl {
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
         stage: awaken_session_configuration_contract::mcp::StageMcpAttachment,
         lease: Mutex<awaken_session_configuration_contract::resource::SessionRealizationLease>,
         renewal_calls: std::sync::atomic::AtomicUsize,
@@ -388,34 +388,34 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionRealizationControl for RenewalDuringStageControl {
+    impl awaken_session_execution_contract::SessionRealizationControl for RenewalDuringStageControl {
         async fn begin_session_realization(
             &self,
-            _command: awaken_session_realization_contract::BeginSessionRealization,
+            _command: awaken_session_execution_contract::BeginSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationDirective,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn renew_session_realization(
             &self,
-            command: awaken_session_realization_contract::RenewSessionRealization,
+            command: awaken_session_execution_contract::RenewSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
             self.renewal_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut lease = self.lease.lock().unwrap();
-            if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &lease,
                 &command.asserted_lease,
             ) || command.requested_expires_at_unix_ms < lease.expires_at_unix_ms
             {
                 return Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
                 );
             }
             lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
@@ -424,20 +424,20 @@ mod tests {
 
         async fn activate_session_realization(
             &self,
-            command: awaken_session_realization_contract::ActivateSessionRealization,
+            command: awaken_session_execution_contract::ActivateSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationDirective,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
             if self.repeat_stage_without_progress {
                 return Ok(
-                    awaken_session_realization_contract::SessionRealizationDirective {
+                    awaken_session_execution_contract::SessionRealizationDirective {
                         projection: self.projection.clone(),
                         authority: awaken_session_realization::test_support::test_lease_receipt(
                             self.lease.lock().unwrap().clone(),
                         ),
                         action:
-                            awaken_session_realization_contract::SessionRealizationAction::Stage {
+                            awaken_session_execution_contract::SessionRealizationAction::Stage {
                                 prepare_session: false,
                                 mcp_stages: vec![self.stage.clone()],
                             },
@@ -463,12 +463,12 @@ mod tests {
                 let mut stage = self.stage.clone();
                 stage.generation = stage.generation.expiring_at(lease.expires_at_unix_ms);
                 stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
-                awaken_session_realization_contract::SessionRealizationAction::Stage {
+                awaken_session_execution_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
                     mcp_stages: vec![stage],
                 }
             } else {
-                awaken_session_realization_contract::SessionRealizationAction::Publish {
+                awaken_session_execution_contract::SessionRealizationAction::Publish {
                     publish: command
                         .mcp_receipts
                         .into_iter()
@@ -478,7 +478,7 @@ mod tests {
                 }
             };
             Ok(
-                awaken_session_realization_contract::SessionRealizationDirective {
+                awaken_session_execution_contract::SessionRealizationDirective {
                     projection: self.projection.clone(),
                     authority: awaken_session_realization::test_support::test_lease_receipt(lease),
                     action,
@@ -488,10 +488,10 @@ mod tests {
 
         async fn acknowledge_session_realization(
             &self,
-            command: awaken_session_realization_contract::AcknowledgeSessionRealization,
+            command: awaken_session_execution_contract::AcknowledgeSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationDirective,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
             let lease = self.lease.lock().unwrap().clone();
             let action =
@@ -501,15 +501,15 @@ mod tests {
                     let mut stage = self.stage.clone();
                     stage.generation = stage.generation.expiring_at(lease.expires_at_unix_ms);
                     stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
-                    awaken_session_realization_contract::SessionRealizationAction::Stage {
+                    awaken_session_execution_contract::SessionRealizationAction::Stage {
                         prepare_session: false,
                         mcp_stages: vec![stage],
                     }
                 } else {
-                    awaken_session_realization_contract::SessionRealizationAction::Complete
+                    awaken_session_execution_contract::SessionRealizationAction::Complete
                 };
             Ok(
-                awaken_session_realization_contract::SessionRealizationDirective {
+                awaken_session_execution_contract::SessionRealizationDirective {
                     projection: self.projection.clone(),
                     authority: awaken_session_realization::test_support::test_lease_receipt(lease),
                     action,
@@ -519,15 +519,15 @@ mod tests {
 
         async fn fail_session_realization(
             &self,
-            _command: awaken_session_realization_contract::FailSessionRealization,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure>
+            _command: awaken_session_execution_contract::FailSessionRealization,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure>
         {
             Ok(())
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+    impl awaken_session_execution_contract::ClaimedSessionRealizationControl
         for RenewalDuringStageControl
     {
         async fn resume_frozen(
@@ -541,11 +541,11 @@ mod tests {
                 &awaken_session_configuration_contract::resource::SessionRealizationLease,
             >,
         ) -> Result<
-            Option<awaken_session_realization_contract::SessionRealizationDirective>,
-            awaken_session_realization_contract::ClaimedSessionControlError,
+            Option<awaken_session_execution_contract::SessionRealizationDirective>,
+            awaken_session_execution_contract::ClaimedSessionControlError,
         > {
             Err(
-                awaken_session_realization_contract::ClaimedSessionControlError::new(
+                awaken_session_execution_contract::ClaimedSessionControlError::new(
                     "not used by the renewal concurrency fixture",
                 ),
             )
@@ -556,7 +556,7 @@ mod tests {
         thread: &str,
         expires_at_unix_ms: u64,
     ) -> (
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_configuration_contract::resource::SessionRealizationLease,
         awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) {
@@ -622,10 +622,10 @@ mod tests {
     /// un-erased `DidNotConverge` result.
     async fn drive_test_session_realization(
         host: &ExecutorComponents,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         session_id: &awaken_session_types::SessionId,
-        directive: awaken_session_realization_contract::SessionRealizationDirective,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
+        directive: awaken_session_execution_contract::SessionRealizationDirective,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationDriveError> {
         let realization = host
             .run_assembly
             .installed_sessions
@@ -656,65 +656,64 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionRealizationControl for RecoveryControl {
+    impl awaken_session_execution_contract::SessionRealizationControl for RecoveryControl {
         async fn begin_session_realization(
             &self,
-            _command: awaken_session_realization_contract::BeginSessionRealization,
+            _command: awaken_session_execution_contract::BeginSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationDirective,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn activate_session_realization(
             &self,
-            command: awaken_session_realization_contract::ActivateSessionRealization,
+            command: awaken_session_execution_contract::ActivateSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationDirective,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
             Ok(
-                awaken_session_realization_contract::SessionRealizationDirective {
+                awaken_session_execution_contract::SessionRealizationDirective {
                     projection: self.current_projection(),
                     authority: awaken_session_realization::test_support::test_lease_receipt(
                         command.lease,
                     ),
-                    action:
-                        awaken_session_realization_contract::SessionRealizationAction::Publish {
-                            publish: command
-                                .mcp_receipts
-                                .into_iter()
-                                .map(|receipt| receipt.generation)
-                                .collect(),
-                            drain: Vec::new(),
-                        },
+                    action: awaken_session_execution_contract::SessionRealizationAction::Publish {
+                        publish: command
+                            .mcp_receipts
+                            .into_iter()
+                            .map(|receipt| receipt.generation)
+                            .collect(),
+                        drain: Vec::new(),
+                    },
                 },
             )
         }
 
         async fn acknowledge_session_realization(
             &self,
-            command: awaken_session_realization_contract::AcknowledgeSessionRealization,
+            command: awaken_session_execution_contract::AcknowledgeSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationDirective,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationDirective,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
             Ok(
-                awaken_session_realization_contract::SessionRealizationDirective {
+                awaken_session_execution_contract::SessionRealizationDirective {
                     projection: self.current_projection(),
                     authority: awaken_session_realization::test_support::test_lease_receipt(
                         command.lease,
                     ),
-                    action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                    action: awaken_session_execution_contract::SessionRealizationAction::Complete,
                 },
             )
         }
 
         async fn fail_session_realization(
             &self,
-            _command: awaken_session_realization_contract::FailSessionRealization,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure>
+            _command: awaken_session_execution_contract::FailSessionRealization,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure>
         {
             self.failure_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -723,16 +722,16 @@ mod tests {
 
         async fn renew_session_realization(
             &self,
-            _command: awaken_session_realization_contract::RenewSessionRealization,
+            _command: awaken_session_execution_contract::RenewSessionRealization,
         ) -> Result<
-            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-            awaken_session_realization_contract::SessionRealizationControlFailure,
+            awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
         }
     }
 
-    pub(super) fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProjection
+    pub(super) fn frozen_projection() -> awaken_session_execution_contract::FrozenSessionProjection
     {
         let holder = awaken_agent_contract::credential::PlaintextHolder::new(
             awaken_agent_contract::credential::PlaintextBoundary::Worker,
@@ -777,7 +776,7 @@ mod tests {
                 transcript_prefix: None,
             },
         );
-        awaken_session_realization_contract::FrozenSessionProjection {
+        awaken_session_execution_contract::FrozenSessionProjection {
             bound_source_end: None,
             workspace_id: "workspace".into(),
             revision: awaken_session_types::SessionRevision(2),
@@ -815,7 +814,7 @@ mod tests {
     /// | M4 | any | yes | any | yes | E3 |
     #[tokio::test]
     async fn lease_only_renewal_never_cold_materializes_remote_skills() {
-        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_execution_contract::SessionProjectionSynchronizer as _;
 
         let thread = "resident-renewal-resources";
         let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
@@ -935,7 +934,7 @@ mod tests {
     /// Decision rules: P1 C1=>E1, P2 E1+C2=>E2, P3 E1+C3=>E3, P4 C4=>E4.
     #[tokio::test]
     async fn session_projection_delivers_publication_before_first_run_claim() {
-        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_execution_contract::SessionProjectionSynchronizer as _;
 
         let thread = "dynamic-publication-renewal";
         let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
@@ -1187,10 +1186,10 @@ mod tests {
         .build()
         .expect("validated Host dependencies");
         let _managed = host.clone();
-        let directive = awaken_session_realization_contract::SessionRealizationDirective {
+        let directive = awaken_session_execution_contract::SessionRealizationDirective {
             projection,
             authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-            action: awaken_session_realization_contract::SessionRealizationAction::Stage {
+            action: awaken_session_execution_contract::SessionRealizationAction::Stage {
                 prepare_session: true,
                 mcp_stages: vec![stage],
             },
@@ -1304,10 +1303,10 @@ mod tests {
             &host,
             control.as_ref(),
             &awaken_session_types::SessionId::from(thread),
-            awaken_session_realization_contract::SessionRealizationDirective {
+            awaken_session_execution_contract::SessionRealizationDirective {
                 projection,
                 authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-                action: awaken_session_realization_contract::SessionRealizationAction::Stage {
+                action: awaken_session_execution_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
                     mcp_stages: vec![stage],
                 },
@@ -1351,10 +1350,10 @@ mod tests {
             &host,
             control.as_ref(),
             &awaken_session_types::SessionId::from(thread),
-            awaken_session_realization_contract::SessionRealizationDirective {
+            awaken_session_execution_contract::SessionRealizationDirective {
                 projection,
                 authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-                action: awaken_session_realization_contract::SessionRealizationAction::Stage {
+                action: awaken_session_execution_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
                     mcp_stages: vec![stage],
                 },
@@ -1364,7 +1363,7 @@ mod tests {
         .expect_err("D2/E3 exact repetition fails closed");
         assert!(matches!(
             error,
-            awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge
+            awaken_session_execution_contract::SessionRealizationDriveError::DidNotConverge
         ));
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
@@ -1392,7 +1391,7 @@ mod tests {
     ) -> (
         Arc<ExecutorComponents>,
         RecoveryControl,
-        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationDirective,
         awaken_provisioning_contract::SandboxHandle,
         Arc<ManagedSessionRootFixture>,
     ) {
@@ -1453,7 +1452,7 @@ mod tests {
             &*source.run_assembly,
             thread,
             resident.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease: awaken_session_realization::test_support::test_observed_lease(old_lease),
                 prepare_session: true,
             },
@@ -1517,10 +1516,10 @@ mod tests {
             ("worker-a", "worker-a"),
             "C4 consumer remains a separate Actor"
         );
-        let directive = awaken_session_realization_contract::SessionRealizationDirective {
+        let directive = awaken_session_execution_contract::SessionRealizationDirective {
             projection: frozen.clone(),
             authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-            action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+            action: awaken_session_execution_contract::SessionRealizationAction::Complete,
         };
         let control = RecoveryControl::fixed(frozen);
         let delegate = host
@@ -1602,7 +1601,7 @@ mod tests {
             &*original_managed.run_assembly,
             thread,
             original_projection,
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease: awaken_session_realization::test_support::test_observed_lease(lease.clone()),
                 prepare_session: true,
             },
@@ -1653,10 +1652,10 @@ mod tests {
             prompts_as_skills: false,
             selected_plaintext_holder: None,
         };
-        let directive = awaken_session_realization_contract::SessionRealizationDirective {
+        let directive = awaken_session_execution_contract::SessionRealizationDirective {
             projection: frozen.clone(),
             authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-            action: awaken_session_realization_contract::SessionRealizationAction::Stage {
+            action: awaken_session_execution_contract::SessionRealizationAction::Stage {
                 prepare_session: true,
                 mcp_stages: vec![stage.clone()],
             },
@@ -1801,12 +1800,12 @@ mod tests {
                 &host, thread,
             );
             let missing_directive =
-                awaken_session_realization_contract::SessionRealizationDirective {
+                awaken_session_execution_contract::SessionRealizationDirective {
                     projection: control.current_projection(),
                     // R9 preserves the existing response-relative receipt, not a
                     // second Worker-local deadline synthesized from Control UTC.
                     authority: recovery_authority.clone(),
-                    action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                    action: awaken_session_execution_contract::SessionRealizationAction::Complete,
                 };
             let error = crate::application::worker_projection::realize_session(
                 &host.run_assembly,
@@ -1884,7 +1883,7 @@ mod tests {
             recovery_authority =
                 awaken_session_realization::test_support::test_lease_receipt(next_lease);
             let missing_directive =
-                awaken_session_realization_contract::SessionRealizationDirective {
+                awaken_session_execution_contract::SessionRealizationDirective {
                     authority: recovery_authority.clone(),
                     ..missing_directive
                 };
@@ -1911,10 +1910,10 @@ mod tests {
                 old_handle,
                 "R10 new physical incarnation"
             );
-            let replay = awaken_session_realization_contract::SessionRealizationDirective {
+            let replay = awaken_session_execution_contract::SessionRealizationDirective {
                 projection: control.current_projection(),
                 authority: recovery_authority.clone(),
-                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
             };
             crate::application::worker_projection::realize_session(
                 &host.run_assembly,
@@ -1954,22 +1953,21 @@ mod tests {
             stage_idempotency_key: "stage-browser-first-use".into(),
             ..stage.clone()
         };
-        let first_use_directive =
-            awaken_session_realization_contract::SessionRealizationDirective {
-                projection: first_use_projection.clone(),
-                authority: awaken_session_realization::test_support::test_lease_receipt(
-                    awaken_session_configuration_contract::resource::SessionRealizationLease {
-                        owner: "worker-a".into(),
-                        runtime_incarnation: "worker-a".into(),
-                        epoch: 1,
-                        expires_at_unix_ms: u64::MAX,
-                    },
-                ),
-                action: awaken_session_realization_contract::SessionRealizationAction::Stage {
-                    prepare_session: true,
-                    mcp_stages: vec![first_use_stage],
+        let first_use_directive = awaken_session_execution_contract::SessionRealizationDirective {
+            projection: first_use_projection.clone(),
+            authority: awaken_session_realization::test_support::test_lease_receipt(
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: u64::MAX,
                 },
-            };
+            ),
+            action: awaken_session_execution_contract::SessionRealizationAction::Stage {
+                prepare_session: true,
+                mcp_stages: vec![first_use_stage],
+            },
+        };
         let first_use_realizer = Arc::new(RecordingMcpRealizer::default());
         let first_use_host =
             ((crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
@@ -2215,7 +2213,7 @@ mod tests {
     #[tokio::test]
     async fn cold_recorded_source_end_reaches_the_original_root_before_rebuild() {
         use awaken_runtime_contract::diagnostic::RuntimeErrorKind;
-        use awaken_session_realization_contract::{BoundSourceEnd, RecordedProcessEnd};
+        use awaken_session_execution_contract::{BoundSourceEnd, RecordedProcessEnd};
         use awaken_worker_contract::{WorkerProcessEnd, WorkerProcessExit};
 
         // Actual Host/SQLite-Root decision table, not a pure evidence test:
@@ -2453,7 +2451,7 @@ mod tests {
     #[tokio::test]
     async fn cold_recorded_source_end_rebuilds_from_its_real_repository_source() {
         use awaken_session_environment::test_support::SandboxEnvironmentAccess as _;
-        use awaken_session_realization_contract::{BoundSourceEnd, RecordedProcessEnd};
+        use awaken_session_execution_contract::{BoundSourceEnd, RecordedProcessEnd};
         use awaken_worker_contract::{WorkerProcessEnd, WorkerProcessExit};
 
         // CP1/CP2: exact frozen Exit/Superseded + the original provider's

@@ -3,7 +3,7 @@
 // @formal reason: cfg(test) only; verifies failure classes and permanent versus transient effects at the application boundary.
 use super::*;
 use awaken_session_contract::SessionRepositoryError as R;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure as C, SessionRealizationDriveError as D,
 };
 use awaken_session_types::RunErrorKind;

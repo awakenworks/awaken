@@ -7,7 +7,7 @@ use crate::test_support::InMemorySessionRealizations;
 use awaken_lease_contract::fence::Epoch;
 use awaken_provisioning_contract::CurrentExecutionAuthority;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+use awaken_session_execution_contract::SessionRealizationLeaseReceipt;
 use std::{io, time::Duration};
 
 fn lease(epoch: Epoch) -> SessionRealizationLease {

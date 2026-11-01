@@ -108,7 +108,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     host.run_assembly.installed_sessions.install_realization(thread, |r| {
                         r.environment_mut().owner = resident(thread, environment.clone());
                         r.execution_mut().authority = Authority::Live(
-                            awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                            awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                 lease.clone(),
                                 0,
                             )
@@ -182,7 +182,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         renewed.expires_at_unix_ms += 1;
                         host.run_assembly.installed_sessions.realizations().update_realization(thread, |r| {
                             r.execution_mut().authority = Authority::Live(
-                                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                                awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                     renewed, 0,
                                 )
                                 .unwrap()
@@ -418,7 +418,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
  {
     use crate::realization_state::SessionRealizationAuthority as Authority;
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+    use awaken_session_execution_contract::SessionRealizationLeaseReceipt;
 
     // Cause/effect table: C1 absent/Uninstalled/Live/Closed root; C2 operation
     // fenced/unfenced; C3 exact/foreign/older/newer assertion; C4 observed proof

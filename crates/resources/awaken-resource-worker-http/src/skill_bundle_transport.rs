@@ -18,7 +18,7 @@ use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_configuration_contract::{
     SkillBundleSource, SkillBundleSourceError, validate_skill_bundle,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -62,7 +62,7 @@ pub struct WorkerSkillBundleService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     materialization_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -89,9 +89,7 @@ impl WorkerSkillBundleService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<
-            dyn awaken_session_realization_contract::SessionResourceMaterializationControl,
-        >,
+        control: Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>,
     ) -> Self {
         self.materialization_control = Some(control);
         self
@@ -178,11 +176,11 @@ async fn read_skill_bundle(
                 .await
             {
                 Ok(workspace) => workspace,
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))
-                | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_execution_contract::SessionRealizationControlFailure::Conflict) => {
                     return StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership) => {
                     return StatusCode::CONFLICT.into_response();
                 }
                 Err(_) => return StatusCode::FORBIDDEN.into_response(),
@@ -190,7 +188,7 @@ async fn read_skill_bundle(
             if workspace != request.workspace_id
                 || !matches!(
                     intent.target(),
-                    awaken_session_realization_contract::SessionResourceMaterializationTarget::Skill(binding)
+                    awaken_session_execution_contract::SessionResourceMaterializationTarget::Skill(binding)
                         if binding == &request.binding
                 )
             {

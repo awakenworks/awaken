@@ -80,7 +80,6 @@ awaken-worker-fleet-kubernetes = { workspace = true, optional = true }
 awaken-tool-relay.workspace = true
 awaken-authority-clock.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }

@@ -13,8 +13,8 @@ use std::sync::Arc;
 use crate::session_realizations::SessionRealizations;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, resolved::ResolvedModelCandidate};
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization_contract::CanonicalPublicationError;
-use awaken_session_realization_contract::CanonicalSessionProjection;
+use awaken_session_execution_contract::CanonicalPublicationError;
+use awaken_session_execution_contract::CanonicalSessionProjection;
 
 pub struct SessionPublicationSelection {
     sessions: SessionRealizations,
@@ -70,7 +70,7 @@ impl SessionPublicationSelection {
         ),
         RealizationError,
     > {
-        awaken_session_realization_contract::resolve_canonical_session_projection(
+        awaken_session_execution_contract::resolve_canonical_session_projection(
             self.publications.as_deref(),
             workspace,
             coordinates,

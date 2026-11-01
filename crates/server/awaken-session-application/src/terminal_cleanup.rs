@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_execution_contract::{ChildRunCoordination, SessionCoordinationReads};
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionTerminalCleanupAssignment,
 };
 use awaken_time::WallClockExt as _;
@@ -92,10 +92,10 @@ impl SessionTerminalCleanups {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalCleanupQueue for SessionTerminalCleanups {
+impl awaken_session_execution_contract::SessionTerminalCleanupQueue for SessionTerminalCleanups {
     async fn claim_next_terminal_cleanup(
         &self,
-        target: awaken_session_realization_contract::SessionRealizationTarget,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
         after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target, self.clock.now_ms())?;
@@ -119,7 +119,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Sessio
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupWork>,
         SessionRealizationControlFailure,
     > {
         self.terminal_cleanup_work_for_lease(session_id, lease)
@@ -128,14 +128,14 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Sessio
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalPreparationControl
+impl awaken_session_execution_contract::SessionTerminalPreparationControl
     for SessionTerminalCleanups
 {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         SessionRealizationControlFailure,
     > {
         self.authorize_terminal_cleanup_effect_from_root(effect)
@@ -153,9 +153,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalDisposalControl
-    for SessionTerminalCleanups
-{
+impl awaken_session_execution_contract::SessionTerminalDisposalControl for SessionTerminalCleanups {
     async fn authorize_terminal_cleanup_disposal(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
@@ -175,7 +173,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+impl awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl
     for SessionTerminalCleanups
 {
     async fn terminal_repository_publication_command(
@@ -183,7 +181,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
+        Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
         self.terminal_repository_publication_command_for_lease(session_id, lease)

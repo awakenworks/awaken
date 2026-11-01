@@ -44,8 +44,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_session_application_contract::{LiveInboxError, LiveInboxSnapshot};
 
-/// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
-pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermissionDecision;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 
 /// One evaluation round of a goal: the agent's revision messages committed this
 /// round (empty when grading the existing deliverable), and the verdict.
@@ -190,7 +189,7 @@ pub trait SessionRuns: Send + Sync {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: ToolPermissionDecision,
+        decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError>;
 
     /// Deliver a client-executed tool's result to the awaiting run and continue.
@@ -332,7 +331,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
+            _decision: PermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!("not exercised by the default-method tests")
         }
@@ -451,7 +450,7 @@ mod tests {
                 &self,
                 thread: &str,
                 tool_use_id: &str,
-                decision: ToolPermissionDecision,
+                decision: PermissionDecision,
             ) -> Result<StepOutcome, RunError> {
                 MinimalRuntime.resume(thread, tool_use_id, decision).await
             }

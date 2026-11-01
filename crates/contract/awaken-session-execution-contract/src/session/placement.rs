@@ -29,7 +29,7 @@ pub trait SessionInputAdmission: Send + Sync {
         &self,
         thread: &str,
         projection: crate::FrozenSessionProjection,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>;
+    ) -> Result<(), crate::SessionRealizationEffectFailure>;
 
     /// Validate a Session's sandbox layout by its structural rules.
     fn validate_session_sandbox_layout(
@@ -119,7 +119,7 @@ impl SessionPlacementRoles {
         &self,
         thread: &str,
         projection: crate::FrozenSessionProjection,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+    ) -> Result<(), crate::SessionRealizationEffectFailure> {
         match self {
             Self::Colocated(roles) => {
                 roles
@@ -222,8 +222,7 @@ mod tests {
             &self,
             _thread: &str,
             _projection: crate::FrozenSessionProjection,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
-        {
+        ) -> Result<(), crate::SessionRealizationEffectFailure> {
             Err(RunError::bad_request("input admission install").into())
         }
 

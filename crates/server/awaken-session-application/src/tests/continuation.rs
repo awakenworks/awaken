@@ -31,8 +31,8 @@ struct ContinuationRuntime {
     projection_installs: Mutex<
         Vec<(
             String,
-            awaken_session_realization_contract::FrozenSessionProjection,
-            awaken_session_realization_contract::SessionProjectionInstallMode,
+            awaken_session_execution_contract::FrozenSessionProjection,
+            awaken_session_execution_contract::SessionProjectionInstallMode,
         )>,
     >,
     adoptions: Mutex<Vec<(String, String, String)>>,
@@ -66,7 +66,7 @@ impl SessionRuns for ContinuationRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         unreachable!("continuation tests do not resume")
     }
@@ -113,7 +113,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -126,9 +126,9 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.projection_attempts.fetch_add(1, Ordering::SeqCst);
         let successful_install = (thread.to_string(), projection.clone(), mode.clone());
         install_complete_test_projection(self, thread, projection, mode).await?;
@@ -147,7 +147,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -564,7 +564,7 @@ impl awaken_session_execution_contract::TerminalCleanup for ContinuationRuntime 
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        _authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        _authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         let provider_prepared_effect_fence = effect
             .sandbox_effect_fence()
@@ -623,8 +623,8 @@ impl awaken_session_execution_contract::TerminalCleanup for ContinuationRuntime 
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         if assignment.projection.environment.checkpoint().is_some() {
             self.terminal_checkpoint_projections
@@ -1100,7 +1100,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         "D1 quiescence CAS requires reprojection"
     );
 
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -1108,16 +1108,16 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     };
     assert!(
         matches!(
-            awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
+            awaken_session_execution_contract::SessionRealizationControl::begin_session_realization(
                 app.realizations.as_ref(),
-                awaken_session_realization_contract::BeginSessionRealization {
+                awaken_session_execution_contract::BeginSessionRealization {
                     expected_resources: None,
                     session_id: "suspend-with-mcp".into(),
                     target: target.clone(),
                 },
             )
             .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
         ),
         "D2 direct realization gate"
     );
@@ -1140,9 +1140,9 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         .await
         .unwrap();
     let staged =
-        awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
+        awaken_session_execution_contract::SessionRealizationControl::begin_session_realization(
             app.realizations.as_ref(),
-            awaken_session_realization_contract::BeginSessionRealization {
+            awaken_session_execution_contract::BeginSessionRealization {
                 expected_resources: None,
                 session_id: "suspend-with-mcp".into(),
                 target,
@@ -1150,7 +1150,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         )
         .await
         .expect("D3 restored Resident may reproject");
-    let awaken_session_realization_contract::SessionRealizationAction::Stage {
+    let awaken_session_execution_contract::SessionRealizationAction::Stage {
         prepare_session,
         mcp_stages,
     } = staged.action
@@ -1169,9 +1169,9 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         receipt_fingerprint: request.fingerprint(),
     };
     let published =
-        awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
+        awaken_session_execution_contract::SessionRealizationControl::activate_session_realization(
             app.realizations.as_ref(),
-            awaken_session_realization_contract::ActivateSessionRealization {
+            awaken_session_execution_contract::ActivateSessionRealization {
                 session_id: "suspend-with-mcp".into(),
                 lease: staged.authority.lease.clone(),
                 prepared_resource_revision: None,
@@ -1180,7 +1180,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         )
         .await
         .expect("D3 staged generation is publishable");
-    let awaken_session_realization_contract::SessionRealizationAction::Publish { publish, drain } =
+    let awaken_session_execution_contract::SessionRealizationAction::Publish { publish, drain } =
         published.action
     else {
         panic!("D3 expected Publish")
@@ -1192,9 +1192,9 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     );
     assert!(drain.is_empty(), "D3");
     let completed =
-        awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
+        awaken_session_execution_contract::SessionRealizationControl::acknowledge_session_realization(
             app.realizations.as_ref(),
-            awaken_session_realization_contract::AcknowledgeSessionRealization {
+            awaken_session_execution_contract::AcknowledgeSessionRealization {
                 session_id: "suspend-with-mcp".into(),
                 lease: staged.authority.lease,
                 published: vec![generation],
@@ -1206,7 +1206,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     assert!(
         matches!(
             completed.action,
-            awaken_session_realization_contract::SessionRealizationAction::Complete
+            awaken_session_execution_contract::SessionRealizationAction::Complete
         ),
         "D3"
     );
@@ -1278,7 +1278,7 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -1292,16 +1292,16 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
         let before = repo.get(&SessionId::from(session_id)).await.unwrap();
         assert!(
             matches!(
-                awaken_session_realization_contract::SessionRealizationControl::begin_session_realization(
+                awaken_session_execution_contract::SessionRealizationControl::begin_session_realization(
                     app.realizations.as_ref(),
-                    awaken_session_realization_contract::BeginSessionRealization {
+                    awaken_session_execution_contract::BeginSessionRealization {
                         expected_resources: None,
                         session_id: session_id.into(),
                         target: target.clone(),
                     },
                 )
                 .await,
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
             ),
             "{rule}/E1 direct"
         );
@@ -1446,7 +1446,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         panic!("C1 fixture is not suspending")
     };
     assert_eq!(
-        awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
+        awaken_session_execution_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             app.resource_effect_authorization().as_ref(),
             &SessionId::from("checkpoint-artifact-auth"),
             operation,
@@ -1462,13 +1462,13 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
     wire["effect_id"] = serde_json::json!(format!("{}-stale", stale.effect_id()));
     stale = serde_json::from_value(wire).expect("stale operation fixture");
     assert_eq!(
-        awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
+        awaken_session_execution_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             app.resource_effect_authorization().as_ref(),
             &SessionId::from("checkpoint-artifact-auth"),
             &stale,
         )
         .await,
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership),
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership),
         "C2"
     );
 
@@ -1486,13 +1486,13 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert_eq!(
-        awaken_session_realization_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
+        awaken_session_execution_contract::SessionCheckpointArtifactControl::authorize_checkpoint_release_artifact_effect(
             resident_app.resource_effect_authorization().as_ref(),
             &SessionId::from("checkpoint-artifact-not-ready"),
             operation,
         )
         .await,
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady),
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady),
         "C3"
     );
 }
@@ -1896,7 +1896,7 @@ async fn driving_ingress_restores_once_before_activity() {
         assert!(
             matches!(
                 &installs[0].2,
-                awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+                awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                     lease,
                     prepare_session: true,
                 } if Some(&lease.lease) == restored.realization.as_ref()

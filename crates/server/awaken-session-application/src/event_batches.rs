@@ -14,6 +14,7 @@ use crate::SessionRootReads as _;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
+use awaken_session_contract::SessionThreadTarget;
 use awaken_session_contract::{
     OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchAdmissionAction,
     SessionEventBatchAdmissionClass, SessionEventBatchAdmissionPlan, SessionEventCommand,
@@ -24,7 +25,7 @@ use awaken_session_contract::{
 use awaken_session_contract::{PersistedSession, SessionEventHistory as EventHistory};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
-    SessionThreadTarget, admit_event_batch_topology,
+    admit_event_batch_topology,
 };
 use awaken_session_types::{RunError, SessionRevision};
 use awaken_time::WallClockExt as _;
@@ -1640,7 +1641,7 @@ impl SessionEventBatchCommands {
                         root.activity_epoch,
                         observation.clone(),
                         &latest.id,
-                        awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
+                        awaken_session_contract::SessionAgentRunBoundary::Awaiting,
                     )
                     .await
                     .map_err(crate::SessionActivityError::run_error)?;

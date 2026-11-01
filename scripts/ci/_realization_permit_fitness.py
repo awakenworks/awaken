@@ -20,7 +20,7 @@ REALIZATION_DRIVER_DEFINITION = (
     "crates/server/awaken-session-realization-driver/src/session_realization_driver.rs"
 )
 REALIZATION_PERMIT_DEFINITION = (
-    "crates/contract/awaken-session-realization-contract/src/session_realization/exclusion.rs"
+    "crates/contract/awaken-session-execution-contract/src/session_realization/exclusion.rs"
 )
 # The exclusion identity sources: the Worker-side installed Session
 # allocation, the co-located driver's per-Session registry, and the test-only

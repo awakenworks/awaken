@@ -1,9 +1,9 @@
 use super::*;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 pub(in crate::state) use awaken_protocol_managed_testkit::sample_persisted;
 use awaken_session_contract::{
     LifecycleOutbox as _, SessionReconciliation, SessionRepositoryReads,
 };
-use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_types::SessionId;
 use awaken_tool_contract::tool_batch::ToolBatch;
 
@@ -1792,7 +1792,7 @@ impl SessionRuns for EndSessionFailer {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: ToolPermissionDecision,
+        _decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
@@ -1839,7 +1839,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -1852,9 +1852,9 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -1871,7 +1871,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -1916,11 +1916,8 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -1929,13 +1926,11 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
-        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -1944,11 +1939,9 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
@@ -1956,11 +1949,8 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::RestoreReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -1969,8 +1959,8 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
@@ -1979,8 +1969,8 @@ impl awaken_session_execution_contract::RealizationEffects for EndSessionFailer 
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
             .await
@@ -2172,7 +2162,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EndSessionFaile
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -2187,7 +2177,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EndSessionFaile
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -2301,11 +2291,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EndSessionF
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
@@ -2443,7 +2431,7 @@ impl awaken_session_execution_contract::TerminalCleanup for EndSessionFailer {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
@@ -2497,8 +2485,8 @@ impl awaken_session_execution_contract::TerminalCleanup for EndSessionFailer {
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        _assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        _assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }

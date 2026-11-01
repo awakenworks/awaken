@@ -127,14 +127,14 @@ impl Drop for ControlRequestPermit {
 
 #[derive(Clone)]
 pub struct DeadlineSessionRealizationControl<'a> {
-    inner: &'a dyn awaken_session_realization_contract::SessionRealizationControl,
+    inner: &'a dyn awaken_session_execution_contract::SessionRealizationControl,
     request_timeout: std::time::Duration,
     scheduler: SessionRealizationControlScheduler,
 }
 
 impl<'a> DeadlineSessionRealizationControl<'a> {
     pub fn new(
-        inner: &'a dyn awaken_session_realization_contract::SessionRealizationControl,
+        inner: &'a dyn awaken_session_execution_contract::SessionRealizationControl,
         request_timeout: std::time::Duration,
     ) -> Self {
         Self {
@@ -152,10 +152,10 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         &self,
     ) -> Result<
         ControlRequestPermit,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.scheduler.acquire().await.map_err(|message| {
-            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                 message.into(),
             )
         })
@@ -166,19 +166,16 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         &self,
         operation: &'static str,
         future: impl std::future::Future<
-            Output = Result<
-                T,
-                awaken_session_realization_contract::SessionRealizationControlFailure,
-            >,
+            Output = Result<T, awaken_session_execution_contract::SessionRealizationControlFailure>,
         >,
-    ) -> Result<T, awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<T, awaken_session_execution_contract::SessionRealizationControlFailure> {
         let deadline = awaken_time::mono::MonoDeadline::after(self.request_timeout);
         let queued_at = awaken_time::mono::now();
         let mut request_started = None;
         let expired = |phase: &str,
                        queue_wait: std::time::Duration,
                        request_time: std::time::Duration| {
-            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                 format!(
                     "Session realization Control `{operation}` exceeded its authority-derived request deadline (phase={phase}, queue_wait_ms={}, request_ms={})",
                     queue_wait.as_millis(),
@@ -278,15 +275,15 @@ fn session_realization_control_permit_ownership_release_is_total_and_exact() {
 /// Deadline decoration only bounds transport waiting. The wrapped Control
 /// remains the sole owner of leases, phases, cleanup commands, and receipts.
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionRealizationControl
+impl awaken_session_execution_contract::SessionRealizationControl
     for DeadlineSessionRealizationControl<'_>
 {
     async fn begin_session_realization(
         &self,
-        command: awaken_session_realization_contract::BeginSessionRealization,
+        command: awaken_session_execution_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.call("begin", self.inner.begin_session_realization(command))
             .await
@@ -294,10 +291,10 @@ impl awaken_session_realization_contract::SessionRealizationControl
 
     async fn renew_session_realization(
         &self,
-        command: awaken_session_realization_contract::RenewSessionRealization,
+        command: awaken_session_execution_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.call("renew", self.inner.renew_session_realization(command))
             .await
@@ -305,10 +302,10 @@ impl awaken_session_realization_contract::SessionRealizationControl
 
     async fn activate_session_realization(
         &self,
-        command: awaken_session_realization_contract::ActivateSessionRealization,
+        command: awaken_session_execution_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.call("activate", self.inner.activate_session_realization(command))
             .await
@@ -316,10 +313,10 @@ impl awaken_session_realization_contract::SessionRealizationControl
 
     async fn acknowledge_session_realization(
         &self,
-        command: awaken_session_realization_contract::AcknowledgeSessionRealization,
+        command: awaken_session_execution_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.call(
             "acknowledge",
@@ -330,8 +327,8 @@ impl awaken_session_realization_contract::SessionRealizationControl
 
     async fn fail_session_realization(
         &self,
-        command: awaken_session_realization_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+        command: awaken_session_execution_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         self.call("fail", self.inner.fail_session_realization(command))
             .await
     }

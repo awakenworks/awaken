@@ -24,7 +24,7 @@ pub(super) async fn session_preparation_claim_next(
             || request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
             || request.target.runtime_incarnation != request.identity.lease_owner()
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 request.target.lease_expires_at_unix_ms,
                 authority.now_ms,
             )
@@ -72,7 +72,7 @@ pub(super) async fn session_cleanup_claim_next(
             .map_err(ApplicationError::invalid)
             .map_err(RealizationHttpError::from)?;
         if request.sweep_cursor_version
-            != awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION
+            != awaken_session_execution_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION
         {
             return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "unsupported Session cleanup sweep cursor protocol",
@@ -85,7 +85,7 @@ pub(super) async fn session_cleanup_claim_next(
         if request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
             || request.target.runtime_incarnation != request.identity.lease_owner()
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 request.target.lease_expires_at_unix_ms,
                 authority.now_ms,
             )
@@ -365,7 +365,7 @@ pub(super) async fn session_resume(
             // never converted into a reassignment; a cold/retired Worker must
             // explicitly take the ordinary assignment path without this proof.
             let renewed = control
-                .renew_session_realization(awaken_session_realization_contract::RenewSessionRealization {
+                .renew_session_realization(awaken_session_execution_contract::RenewSessionRealization {
                     session_id: awaken_session_types::SessionId::from(
                         request.session_id.clone(),
                     ),
@@ -375,20 +375,20 @@ pub(super) async fn session_resume(
                 })
                 .await
                 .map_err(RealizationHttpError::Control)?;
-            if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &renewed.lease,
                 asserted,
             ) {
                 return Err(RealizationHttpError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
                 ));
             }
         }
         let realization = match control
-            .begin_session_realization(awaken_session_realization_contract::BeginSessionRealization {
+            .begin_session_realization(awaken_session_execution_contract::BeginSessionRealization {
                 session_id: awaken_session_types::SessionId::from(&request.session_id),
                 expected_resources,
-                target: awaken_session_realization_contract::SessionRealizationTarget {
+                target: awaken_session_execution_contract::SessionRealizationTarget {
                     owner: request.identity.worker_id.clone(),
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
@@ -419,9 +419,9 @@ pub(super) async fn session_resume(
                     "Session realization directive does not match claimed Work authority",
                 )));
             }
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady) => {
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady) => {
                 return Err(RealizationHttpError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+                    awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
                 ));
             }
             Err(error) => return Err(RealizationHttpError::Control(error)),
@@ -430,13 +430,13 @@ pub(super) async fn session_resume(
         // Reassignment between them must not publish another generation as the
         // requested continuation, even if owner and incarnation are unchanged.
         if let (Some(asserted), Some(directive)) = (&request.continuation, &realization)
-            && !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            && !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &directive.authority.lease,
                 asserted,
             )
         {
             return Err(RealizationHttpError::Control(
-                awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
             ));
         }
         if !guard.is_live_at(service.clock.now_ms()) {
@@ -556,7 +556,7 @@ pub(super) async fn acquire_session_work_owner(
         Ok(())
     } else {
         Err(RealizationHttpError::Control(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+            awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
         ))
     }
 }
@@ -580,10 +580,8 @@ async fn session_work_ownership(
 
 pub(super) fn session_control(
     service: &WorkerDispatchService,
-) -> Result<
-    &Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
-    ApplicationError,
-> {
+) -> Result<&Arc<dyn awaken_session_execution_contract::SessionRealizationControl>, ApplicationError>
+{
     service
         .session_control
         .as_ref()
@@ -593,7 +591,7 @@ pub(super) fn session_control(
 pub(super) fn terminal_cleanup_control(
     service: &WorkerDispatchService,
 ) -> Result<
-    &Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
+    &Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
     ApplicationError,
 > {
     service.terminal_cleanup_control.as_ref().ok_or_else(|| {
@@ -606,7 +604,7 @@ pub(super) async fn renew_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<
-        SessionRealizationReq<awaken_session_realization_contract::RenewSessionRealization>,
+        SessionRealizationReq<awaken_session_execution_contract::RenewSessionRealization>,
     >,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
@@ -624,11 +622,11 @@ pub(super) async fn renew_session_realization(
         let asserted = &command.asserted_lease;
         if asserted.owner != request.identity.worker_id
             || asserted.runtime_incarnation != request.identity.lease_owner()
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 asserted.expires_at_unix_ms,
                 authority.now_ms,
             )
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 command.requested_expires_at_unix_ms,
                 authority.now_ms,
             )
@@ -673,13 +671,13 @@ pub(super) async fn renew_session_realization(
             // quietly revokes only its stale process-local projection.
             let failure = match ownership {
                 awaken_session_application_contract::SessionWorkOwnership::Unowned => {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Retired
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Retired
                 }
                 awaken_session_application_contract::SessionWorkOwnership::Leased(_) => {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
+                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
                 }
                 awaken_session_application_contract::SessionWorkOwnership::NotRequired => {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady
+                    awaken_session_execution_contract::SessionRealizationControlFailure::NotReady
                 }
             };
             return Err(RealizationHttpError::Control(failure));
@@ -698,7 +696,7 @@ pub(super) async fn activate_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<
-        SessionRealizationReq<awaken_session_realization_contract::ActivateSessionRealization>,
+        SessionRealizationReq<awaken_session_execution_contract::ActivateSessionRealization>,
     >,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
@@ -726,7 +724,7 @@ pub(super) async fn acknowledge_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<
-        SessionRealizationReq<awaken_session_realization_contract::AcknowledgeSessionRealization>,
+        SessionRealizationReq<awaken_session_execution_contract::AcknowledgeSessionRealization>,
     >,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
@@ -754,7 +752,7 @@ pub(super) async fn fail_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<
-        SessionRealizationReq<awaken_session_realization_contract::FailSessionRealization>,
+        SessionRealizationReq<awaken_session_execution_contract::FailSessionRealization>,
     >,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {

@@ -1,6 +1,6 @@
 //! Native reads and replies for the existing profiled Session Run boundary.
 
-use awaken_session_execution_contract::{
+use awaken_session_contract::{
     SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
 };
 use axum::{

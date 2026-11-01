@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_contract::{PersistedSession, SessionRepositoryError};
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationLeaseReceipt,
     SessionTerminalCleanupAssignment, terminal_cleanup_worker_requirements,
 };
@@ -83,7 +83,7 @@ pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
     scope: TerminalCleanupClaimScope<'_>,
     owner_scope: &str,
     session: &PersistedSession,
-    target: &awaken_session_realization_contract::SessionRealizationTarget,
+    target: &awaken_session_execution_contract::SessionRealizationTarget,
     now_unix_ms: u64,
 ) -> Option<TerminalCleanupRootClaim> {
     use awaken_session_contract::{
@@ -138,7 +138,7 @@ pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
 fn claim_terminal_cleanup_candidate(
     owner_scope: &str,
     session: &mut SessionAggregate,
-    target: &awaken_session_realization_contract::SessionRealizationTarget,
+    target: &awaken_session_execution_contract::SessionRealizationTarget,
 ) -> Result<TerminalCleanupClaimConflict, SessionRealizationControlFailure> {
     use awaken_lease_contract::fence::Epoch;
     let epoch = session
@@ -296,7 +296,7 @@ impl SessionTerminalCleanups {
 
     async fn revalidate_terminal_cleanup_worker(
         &self,
-        target: &awaken_session_realization_contract::SessionRealizationTarget,
+        target: &awaken_session_execution_contract::SessionRealizationTarget,
         owner_scope: &str,
         session: &PersistedSession,
         action: &awaken_session_contract::SessionTerminalCleanupAction,
@@ -366,7 +366,7 @@ impl SessionTerminalCleanups {
         &self,
         owner_scope: &str,
         mut session: SessionAggregate,
-        target: &awaken_session_realization_contract::SessionRealizationTarget,
+        target: &awaken_session_execution_contract::SessionRealizationTarget,
         scope: TerminalCleanupClaimScope<'_>,
         replay_after_conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupRootClaim {
@@ -429,7 +429,7 @@ impl SessionTerminalCleanups {
         }
 
         let current_is_live = session.realization.as_ref().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_is_live_at(
+            awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 current.expires_at_unix_ms,
                 self.clock.now_ms(),
             )
@@ -538,7 +538,7 @@ impl SessionTerminalCleanups {
 
     pub(super) async fn claim_terminal_cleanup_after_refresh(
         &self,
-        target: awaken_session_realization_contract::SessionRealizationTarget,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
         after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target, self.clock.now_ms())?;
@@ -654,7 +654,7 @@ impl SessionTerminalCleanups {
                     "terminal cleanup lease expiry overflow".into(),
                 )
             })?;
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: self.realizations.local_realization_owner().to_string(),
             runtime_incarnation: self.realizations.runtime_incarnation().to_string(),
             lease_expires_at_unix_ms,

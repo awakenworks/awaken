@@ -153,8 +153,8 @@ fn reply_dispatch_activity(
     dispatch: Option<&awaken_dispatch_contract::DispatchSummary>,
     thread: &ThreadId,
     parent: &ThreadId,
-) -> Result<awaken_session_execution_contract::SessionThreadToolReplyActivity, RunError> {
-    use awaken_session_execution_contract::SessionThreadToolReplyActivity;
+) -> Result<awaken_session_contract::SessionThreadToolReplyActivity, RunError> {
+    use awaken_session_contract::SessionThreadToolReplyActivity;
     match dispatch {
         Some(row) if row.thread_id == *thread => SessionThreadToolReplyActivity::from_dispatch(
             thread,
@@ -234,7 +234,7 @@ impl CoordinatedThreads {
     /// version are only admission fences against delayed or reused call ids.
     pub async fn validated_session_thread_tool_reply(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(ThreadId, ResumeTicket), RunError> {
         if !command.has_complete_coordinates() {
             return Err(RunError::bad_request(
@@ -287,7 +287,7 @@ impl CoordinatedThreads {
             .clone();
         if matches!(
             command.reply,
-            awaken_session_execution_contract::SessionThreadToolReply::Input(_)
+            awaken_session_contract::SessionThreadToolReply::Input(_)
         ) {
             if ticket.call_id().unwrap_or_default() != command.tool_use_id {
                 return Err(RunError::bad_request(
@@ -354,17 +354,17 @@ impl CoordinatedThreads {
     /// closes call-id reuse and concurrent-resume races without another store.
     pub async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
         // Resolve topology before SessionApplication opens a reply activity.
         self.owner()?;
         let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
                 SessionReplyReceipt::Exact => {
-                    return Ok(awaken_session_execution_contract::SessionThreadToolReplyFence {
+                    return Ok(awaken_session_contract::SessionThreadToolReplyFence {
                         activity:
-                            awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+                            awaken_session_contract::SessionThreadToolReplyActivity::Session {
                                 prior_epoch: None,
                             },
                         already_applied: true,
@@ -387,12 +387,10 @@ impl CoordinatedThreads {
             .into_iter()
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
         let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
-        Ok(
-            awaken_session_execution_contract::SessionThreadToolReplyFence {
-                activity,
-                already_applied: false,
-            },
-        )
+        Ok(awaken_session_contract::SessionThreadToolReplyFence {
+            activity,
+            already_applied: false,
+        })
     }
 
     /// Deliver a typed reply to one logical Session Thread while retaining the
@@ -401,9 +399,9 @@ impl CoordinatedThreads {
     /// Session context or store is opened.
     pub async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
-        let awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+        let awaken_session_contract::SessionThreadToolReplyDelivery {
             command,
             fence,
             session_activity_epoch,
@@ -581,7 +579,7 @@ impl CoordinatedThreads {
         let mut snapshot = command.snapshot;
         let inherit_session_overrides = snapshot.root_agent_id.0 == baseline.agent_id;
         if inherit_session_overrides {
-            snapshot = awaken_session_realization_contract::project_effective_agent_publication(
+            snapshot = awaken_session_execution_contract::project_effective_agent_publication(
                 baseline.model_override.as_ref(),
                 &baseline.system_prompt,
                 Some(resources.resources.skills()),
@@ -1162,8 +1160,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
 
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
         CoordinatedThreads::session_thread_tool_reply_fence(self, command).await
     }
 

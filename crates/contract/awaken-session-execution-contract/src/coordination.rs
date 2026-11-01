@@ -171,7 +171,7 @@ pub enum CoordinatedRunIntent {
     FollowUp,
 }
 
-pub use awaken_session_contract::SessionAgentRunBoundary;
+use awaken_session_contract::SessionAgentRunBoundary;
 
 /// Classify only committed states that form an Agent-message activity boundary.
 #[must_use]
@@ -785,7 +785,7 @@ fn session_agent_boundary_requires_a_visible_committed_target() {
     );
 }
 
-pub use awaken_session_contract::{
+use awaken_session_contract::{
     SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyActivity,
     SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
 };

@@ -161,7 +161,7 @@ impl ProcessDispatch {
     /// ```compile_fail,E0277
     /// use std::sync::Arc;
     /// use awaken_dispatch_execution::ProcessDispatch;
-    /// use awaken_session_realization_contract::SessionPreparationPlacement;
+    /// use awaken_session_execution_contract::SessionPreparationPlacement;
     /// fn service_is_not_a_compiler(process: Arc<ProcessDispatch>) -> Arc<dyn SessionPreparationPlacement> {
     ///     process
     /// }

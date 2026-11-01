@@ -7,7 +7,7 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_time::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
 };
@@ -122,9 +122,9 @@ fn terminal_cleanup_path(
 }
 
 fn terminal_driver_failure(
-    error: awaken_session_realization_contract::SessionRealizationDriveError,
+    error: awaken_session_execution_contract::SessionRealizationDriveError,
 ) -> SessionPreparationError {
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         SessionRealizationControlFailure as ControlFailure,
         SessionRealizationDriveError as DriveError,
     };
@@ -176,7 +176,7 @@ impl SessionTerminalCleanups {
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         SessionRealizationControlFailure,
     > {
         let session = self
@@ -217,7 +217,7 @@ impl SessionTerminalCleanups {
             .source_dispatch_observation(&session)
             .await
             .terminal_source_dispatch()?;
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             effect.clone(),
             workspace_id,
             inherited_provider_disposal,
@@ -253,7 +253,7 @@ impl SessionTerminalCleanups {
             ),
             |command| async move {
                 let lease =
-                    awaken_session_realization_contract::SessionRealizationControl::renew_session_realization(
+                    awaken_session_execution_contract::SessionRealizationControl::renew_session_realization(
                         self.realizations.as_ref(),
                         command,
                     )
@@ -551,8 +551,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingTerminalProjectionRuntime {
-        installed:
-            Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
+        installed: Mutex<Vec<awaken_session_execution_contract::SessionTerminalCleanupAssignment>>,
         fail_install: AtomicBool,
         observation: Mutex<Option<awaken_lease_contract::authority::AuthorityProofStarted>>,
         installed_remaining_us: AtomicU64,
@@ -573,7 +572,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: awaken_session_execution_contract::ToolPermissionDecision,
+            _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
         ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
@@ -629,7 +628,7 @@ mod tests {
         /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
         async fn renew_session_realization_projections(
             &self,
-            control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+            control: &dyn awaken_session_execution_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -648,9 +647,9 @@ mod tests {
         async fn install_session_projection(
             &self,
             thread: &str,
-            projection: awaken_session_realization_contract::FrozenSessionProjection,
-            mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+            projection: awaken_session_execution_contract::FrozenSessionProjection,
+            mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure>
         {
             awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
@@ -665,7 +664,7 @@ mod tests {
         async fn renew_session_realization_lease(
             &self,
             thread: &str,
-            lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+            lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
@@ -700,7 +699,7 @@ mod tests {
         async fn prepare_terminal_cleanup_for_effect(
             &self,
             effect: awaken_session_contract::SessionTerminalCleanupEffect,
-            authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+            authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         ) -> Result<
             awaken_session_contract::SessionCleanupPreparation,
             awaken_session_types::RunError,
@@ -756,8 +755,8 @@ mod tests {
 
         async fn install_terminal_cleanup_assignment(
             &self,
-            assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-            proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+            assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+            proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             if self.fail_install.swap(false, Ordering::SeqCst) {
                 return Err(RunError::unavailable(
@@ -840,7 +839,7 @@ mod tests {
         SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: "session".into(),
-            projection: awaken_session_realization_contract::FrozenSessionProjection {
+            projection: awaken_session_execution_contract::FrozenSessionProjection {
                 bound_source_end: None,
                 workspace_id: "workspace".into(),
                 revision: awaken_session_types::SessionRevision(2),
@@ -862,7 +861,7 @@ mod tests {
                 request_context: Vec::new(),
             },
             authority:
-                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                     local_lease(now_unix_ms),
                     now_unix_ms,
                 )
@@ -936,7 +935,7 @@ mod tests {
                                     ));
                                 let mut lease = command.asserted_lease;
                                 lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-                                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                                awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                     lease,
                                     command.requested_expires_at_unix_ms - 30,
                                 )
@@ -1043,7 +1042,7 @@ mod tests {
                             let mut renewed = command.asserted_lease.clone();
                             renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
                             renewals.lock().unwrap().push(command.clone());
-                            awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                            awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                 renewed,
                                 command.requested_expires_at_unix_ms
                                     - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
@@ -1090,7 +1089,7 @@ mod tests {
                 "L1/E2 Runtime receives exact renewed lease B"
             );
             assert!(
-                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                     &installed.authority.lease,
                     &command.asserted_lease,
                 ),
@@ -1118,7 +1117,7 @@ mod tests {
             "L2 time crossed initial TTL"
         );
         assert!(
-            awaken_session_realization_contract::realization_lease_is_live_at(
+            awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 previous_expiry,
                 after_initial_ttl,
             ),
@@ -1267,7 +1266,7 @@ mod tests {
                                         foreign.runtime_incarnation = "foreign-runtime/boot".into();
                                         foreign.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms;
-                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                             foreign,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1277,7 +1276,7 @@ mod tests {
                                         successor.epoch = successor.epoch.saturating_add(1);
                                         successor.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms;
-                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                             successor,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1286,7 +1285,7 @@ mod tests {
                                         let mut regressed = command.asserted_lease;
                                         regressed.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms.saturating_sub(1);
-                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                             regressed,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1295,7 +1294,7 @@ mod tests {
                                         let mut renewed = command.asserted_lease;
                                         renewed.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms;
-                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                                             renewed,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1498,27 +1497,27 @@ mod tests {
         assert_eq!(internal.message, "offline");
         assert!(!internal.is_unclassified_internal());
         assert_eq!(
-            awaken_session_realization_contract::effect_failure_disposition(&internal),
-            awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal
+            awaken_session_execution_contract::effect_failure_disposition(&internal),
+            awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal
         );
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
+                awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::NotFound,
                 )
             ),
             SessionPreparationError::NotFound
         ));
         for failure in [
-            awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
-            awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            awaken_session_realization_contract::SessionRealizationControlFailure::Retired,
-            awaken_session_realization_contract::SessionRealizationControlFailure::Terminal,
+            awaken_session_execution_contract::SessionRealizationControlFailure::Conflict,
+            awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            awaken_session_execution_contract::SessionRealizationControlFailure::Retired,
+            awaken_session_execution_contract::SessionRealizationControlFailure::Terminal,
         ] {
             assert!(matches!(
                 terminal_driver_failure(
-                    awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                    awaken_session_execution_contract::SessionRealizationDriveError::Control(
                         failure
                     )
                 ),
@@ -1527,8 +1526,8 @@ mod tests {
         }
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                         "offline".into(),
                     ),
                 )
@@ -1537,8 +1536,8 @@ mod tests {
         ));
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                         "foreign".into(),
                     ),
                 )
@@ -1547,7 +1546,7 @@ mod tests {
         ));
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge
+                awaken_session_execution_contract::SessionRealizationDriveError::DidNotConverge
             ),
             SessionPreparationError::Unavailable(_)
         ));

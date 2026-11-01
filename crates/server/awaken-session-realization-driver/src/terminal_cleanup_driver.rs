@@ -12,13 +12,14 @@
 //! exact evidence through `SessionRealizationControl`; it persists no cursor,
 //! retry record, receipt, or topology-specific state.
 
+use awaken_session_configuration_contract::resource::realization_lease_generation_authorizes;
 use awaken_session_contract::{
     SessionRepositoryPublicationEffect, SessionTerminalCleanupAction,
     SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupEffect,
 };
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionTerminalCleanupControl,
-    SessionTerminalCleanupWork, realization_lease_generation_authorizes,
+    SessionTerminalCleanupWork,
 };
 use awaken_session_types::RunError;
 
@@ -295,14 +296,14 @@ pub async fn drive_session_terminal_cleanup(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use awaken_agent_contract::agent::awaiting::PermissionDecision;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_session_application_contract::StepOutcome;
     use awaken_session_contract::{
         SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
     };
     use awaken_session_execution_contract::SessionRuns;
-    use awaken_session_execution_contract::ToolPermissionDecision;
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         FrozenSessionProjection, SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
     };
     use std::{
@@ -435,7 +436,7 @@ pub(crate) mod tests {
                 session_id: "session".into(),
                 projection: projection(),
                 authority:
-                    awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                    awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                         lease.clone(),
                         0,
                     )
@@ -448,20 +449,20 @@ pub(crate) mod tests {
     struct RecordingControl {
         work: Mutex<VecDeque<SessionTerminalCleanupWork>>,
         publication: Mutex<
-            Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
+            Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
         >,
         events: Arc<Mutex<Vec<String>>>,
         stale_authorization_once: AtomicBool,
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionTerminalCleanupQueue for RecordingControl {
+    impl awaken_session_execution_contract::SessionTerminalCleanupQueue for RecordingControl {
         async fn claim_next_terminal_cleanup(
             &self,
-            _target: awaken_session_realization_contract::SessionRealizationTarget,
+            _target: awaken_session_execution_contract::SessionRealizationTarget,
             _after_session_id: Option<&awaken_session_types::SessionId>,
         ) -> Result<
-            Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
+            Option<awaken_session_execution_contract::SessionTerminalCleanupAssignment>,
             SessionRealizationControlFailure,
         > {
             Ok(None)
@@ -478,12 +479,12 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionTerminalPreparationControl for RecordingControl {
+    impl awaken_session_execution_contract::SessionTerminalPreparationControl for RecordingControl {
         async fn authorize_terminal_cleanup_effect(
             &self,
             effect: &SessionTerminalCleanupEffect,
         ) -> Result<
-            awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+            awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
             SessionRealizationControlFailure,
         > {
             self.events
@@ -493,7 +494,7 @@ pub(crate) mod tests {
             if self.stale_authorization_once.swap(false, Ordering::SeqCst) {
                 return Err(SessionRealizationControlFailure::NotReady);
             }
-            awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
                 effect.clone(),
                 "workspace".into(),
                 None,
@@ -514,7 +515,7 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionTerminalDisposalControl for RecordingControl {
+    impl awaken_session_execution_contract::SessionTerminalDisposalControl for RecordingControl {
         async fn authorize_terminal_cleanup_disposal(
             &self,
             _effect: &SessionTerminalCleanupDisposalEffect,
@@ -537,7 +538,7 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+    impl awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl
         for RecordingControl
     {
         async fn terminal_repository_publication_command(
@@ -545,7 +546,7 @@ pub(crate) mod tests {
             _session_id: &awaken_session_types::SessionId,
             _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<
-            Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
+            Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
             SessionRealizationControlFailure,
         > {
             self.events
@@ -607,7 +608,7 @@ pub(crate) mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
+            _decision: PermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!("terminal-only fixture")
         }
@@ -663,7 +664,7 @@ pub(crate) mod tests {
         /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
         async fn renew_session_realization_projections(
             &self,
-            control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+            control: &dyn awaken_session_execution_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -682,9 +683,9 @@ pub(crate) mod tests {
         async fn install_session_projection(
             &self,
             thread: &str,
-            projection: awaken_session_realization_contract::FrozenSessionProjection,
-            mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+            projection: awaken_session_execution_contract::FrozenSessionProjection,
+            mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure>
         {
             awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
@@ -699,7 +700,7 @@ pub(crate) mod tests {
         async fn renew_session_realization_lease(
             &self,
             thread: &str,
-            lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+            lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
@@ -744,11 +745,9 @@ pub(crate) mod tests {
         async fn checkpoint_session_environment(
             &self,
             thread: &str,
-            request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
-        ) -> Result<
-            awaken_session_execution_contract::__macro_support::CheckpointReceipt,
-            awaken_session_execution_contract::__macro_support::RunError,
-        > {
+            request: awaken_session_contract::SandboxCheckpointRequest,
+        ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError>
+        {
             awaken_session_execution_contract::NeutralRuntime
                 .checkpoint_session_environment(thread, request)
                 .await
@@ -757,12 +756,12 @@ pub(crate) mod tests {
         async fn prepare_checkpoint_source_disposal(
             &self,
             thread: &str,
-            preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
-            generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+            preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+            generation: &awaken_session_contract::SandboxGeneration,
             source_binding: &str,
         ) -> Result<
-            awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
-            awaken_session_execution_contract::__macro_support::RunError,
+            awaken_session_contract::SourceReleasePreparedReceipt,
+            awaken_session_types::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
@@ -772,11 +771,9 @@ pub(crate) mod tests {
         async fn dispose_prepared_checkpoint_source(
             &self,
             thread: &str,
-            disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
-        ) -> Result<
-            awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
-            awaken_session_execution_contract::__macro_support::RunError,
-        > {
+            disposal: &awaken_session_contract::SourceReleaseDisposal,
+        ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+        {
             awaken_session_execution_contract::NeutralRuntime
                 .dispose_prepared_checkpoint_source(thread, disposal)
                 .await
@@ -784,11 +781,9 @@ pub(crate) mod tests {
 
         async fn restore_checkpointed_session_environment(
             &self,
-            request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
-        ) -> Result<
-            awaken_session_execution_contract::__macro_support::RestoreReceipt,
-            awaken_session_execution_contract::__macro_support::RunError,
-        > {
+            request: awaken_provisioning_contract::SandboxRestoreRequest,
+        ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError>
+        {
             awaken_session_execution_contract::NeutralRuntime
                 .restore_checkpointed_session_environment(request)
                 .await
@@ -797,8 +792,8 @@ pub(crate) mod tests {
         async fn delete_session_checkpoint(
             &self,
             thread: &str,
-            checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
-        ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+            checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .delete_session_checkpoint(thread, checkpoint)
                 .await
@@ -807,8 +802,8 @@ pub(crate) mod tests {
         async fn apply_session_inputs(
             &self,
             thread: &str,
-            transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
-        ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+            transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
+        ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .apply_session_inputs(thread, transition)
                 .await
@@ -845,7 +840,7 @@ pub(crate) mod tests {
         async fn prepare_terminal_cleanup_for_effect(
             &self,
             effect: SessionTerminalCleanupEffect,
-            authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+            authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
             authorization
                 .verify_for(&effect)
@@ -900,7 +895,7 @@ pub(crate) mod tests {
         async fn install_terminal_cleanup_assignment(
             &self,
             _assignment: &SessionTerminalCleanupAssignment,
-            _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+            _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             self.events.lock().unwrap().push("install".into());
             Ok(())
@@ -1203,7 +1198,7 @@ pub(crate) mod tests {
                     &assigned_lease,
                 )])),
                 publication: Mutex::new(Some(
-                    awaken_session_realization_contract::SessionRepositoryPublicationProjection::try_new(
+                    awaken_session_execution_contract::SessionRepositoryPublicationProjection::try_new(
                         "workspace".into(),
                         command.clone(),
                         current_lease.clone(),
@@ -1288,7 +1283,7 @@ pub(crate) mod tests {
                     &assigned_lease,
                 )])),
                 publication: Mutex::new(Some(
-                    awaken_session_realization_contract::SessionRepositoryPublicationProjection::try_new(
+                    awaken_session_execution_contract::SessionRepositoryPublicationProjection::try_new(
                         "workspace".into(),
                         projected_command,
                         current_lease,

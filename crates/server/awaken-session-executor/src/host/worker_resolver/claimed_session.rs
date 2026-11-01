@@ -233,44 +233,44 @@ mod tests {
         let cases = [
             (
                 "R1",
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
                 "resolution_not_ready",
             ),
             (
                 "R2 stale",
-                awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
                 "execution",
             ),
             (
                 "R2 conflict",
-                awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
+                awaken_session_execution_contract::SessionRealizationControlFailure::Conflict,
                 "execution",
             ),
             (
                 "R2 unavailable",
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                     "dependency".into(),
                 ),
                 "execution",
             ),
             (
                 "R3 not found",
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotFound,
                 "terminal_resolution",
             ),
             (
                 "R3 terminal",
-                awaken_session_realization_contract::SessionRealizationControlFailure::Terminal,
+                awaken_session_execution_contract::SessionRealizationControlFailure::Terminal,
                 "terminal_resolution",
             ),
             (
                 "R3 retired",
-                awaken_session_realization_contract::SessionRealizationControlFailure::Retired,
+                awaken_session_execution_contract::SessionRealizationControlFailure::Retired,
                 "terminal_resolution",
             ),
             (
                 "R3 invalid",
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                     "invalid phase".into(),
                 ),
                 "terminal_resolution",

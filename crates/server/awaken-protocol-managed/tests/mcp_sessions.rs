@@ -11,6 +11,7 @@ mod support;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
@@ -21,7 +22,7 @@ use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_application_contract::{LifecycleFactNotifier, StepOutcome};
 use awaken_session_configuration_contract::SessionInit;
 use awaken_session_contract::{PersistedSession, SessionExecutionState};
-use awaken_session_execution_contract::{OutcomeDrive, SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_session_types::RunError;
 use axum::Router;
@@ -102,7 +103,7 @@ impl SessionRuns for PreparingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _d: ToolPermissionDecision,
+        _d: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -152,7 +153,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -165,13 +166,13 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         if matches!(
             mode,
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch
-                | awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch
+                | awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                     prepare_session: true,
                     ..
                 }
@@ -204,7 +205,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -249,11 +250,8 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -262,13 +260,11 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
-        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -277,11 +273,9 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
@@ -289,11 +283,8 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::RestoreReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -302,8 +293,8 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
@@ -312,8 +303,8 @@ impl awaken_session_execution_contract::RealizationEffects for PreparingFake {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
             .await
@@ -450,7 +441,7 @@ impl awaken_session_execution_contract::TerminalCleanup for PreparingFake {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
@@ -504,8 +495,8 @@ impl awaken_session_execution_contract::TerminalCleanup for PreparingFake {
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        _assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        _assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -649,7 +640,7 @@ impl SessionRuns for HotRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: ToolPermissionDecision,
+        _decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
@@ -699,7 +690,7 @@ impl awaken_session_execution_contract::RealizationRuntime for HotRuntime {
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -712,9 +703,9 @@ impl awaken_session_execution_contract::RealizationRuntime for HotRuntime {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         let _ = awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
@@ -731,7 +722,7 @@ impl awaken_session_execution_contract::RealizationRuntime for HotRuntime {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -3314,7 +3305,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
+            _decision: PermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
@@ -3366,7 +3357,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
         async fn renew_session_realization_projections(
             &self,
-            control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+            control: &dyn awaken_session_execution_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -3379,9 +3370,9 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         async fn install_session_projection(
             &self,
             thread: &str,
-            projection: awaken_session_realization_contract::FrozenSessionProjection,
-            mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+            projection: awaken_session_execution_contract::FrozenSessionProjection,
+            mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure>
         {
             awaken_protocol_managed_testkit::complete_session_projection_init(
                 thread,
@@ -3399,7 +3390,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         async fn renew_session_realization_lease(
             &self,
             thread: &str,
-            lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+            lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)

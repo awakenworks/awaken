@@ -127,7 +127,7 @@ impl crate::session_realizations::SessionRealizationSource for InstalledSessions
                 ),
     ) -> futures_util::future::BoxFuture<
         'a,
-        Result<awaken_session_realization_contract::SessionRealizationPermit, RealizationLock>,
+        Result<awaken_session_execution_contract::SessionRealizationPermit, RealizationLock>,
     > {
         Box::pin(async move {
             self.acquire_realization_with(session, |installed| {
@@ -611,7 +611,7 @@ impl InstalledSessions {
     ) -> Result<
         Vec<(
             String,
-            awaken_session_realization_contract::ObservedSessionRealizationLease,
+            awaken_session_execution_contract::ObservedSessionRealizationLease,
         )>,
         RealizationLock,
     > {

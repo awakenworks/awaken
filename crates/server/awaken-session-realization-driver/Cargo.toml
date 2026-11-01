@@ -22,7 +22,6 @@ awaken-time.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 awaken-agent-contract.workspace = true
 awaken-lease-contract.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-session-types.workspace = true
@@ -31,7 +30,7 @@ tracing = "0.1"
 
 [features]
 # The realization observation checkpoints scenario tests read.
-test-support = ["awaken-session-realization-contract/test-support"]
+test-support = ["awaken-session-execution-contract/test-support"]
 
 [dev-dependencies]
 awaken-reliability-testkit.workspace = true
@@ -40,7 +39,7 @@ awaken-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract = { workspace = true, features = ["test-support"] }
+awaken-session-execution-contract = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]

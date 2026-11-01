@@ -379,7 +379,7 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
         .realizations()
         .update_realization(thread, |r| {
             r.effects_mut().assignment = Some(
-                awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: thread.into(),
                     projection: remote_terminal_cleanup_projection(),

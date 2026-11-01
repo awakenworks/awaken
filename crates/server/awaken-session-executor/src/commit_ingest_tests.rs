@@ -141,7 +141,7 @@ fn claimed_memory_projection(
     root: &awaken_runtime_contract::ExecutableAgentSnapshot,
     override_candidate: &ResolvedModelCandidate,
     manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let binding = override_candidate.binding();
     let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "claimed-memory-environment".into(),
@@ -187,7 +187,7 @@ fn claimed_memory_projection(
             transcript_prefix: None,
         },
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: manifest.workspace_id.clone(),
         revision: awaken_session_types::SessionRevision(1),

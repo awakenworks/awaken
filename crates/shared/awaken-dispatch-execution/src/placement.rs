@@ -7,7 +7,7 @@ use crate::model_capability::model_realization_capability;
 use awaken_agent_contract::credential::CredentialMaterialSource;
 use awaken_dispatch_contract::PlacementRequirements;
 use awaken_runtime_contract::RunActivation;
-use awaken_session_realization_contract::requires_local_environment;
+use awaken_session_execution_contract::requires_local_environment;
 use std::collections::BTreeSet;
 
 pub fn worker_local_credentials(
@@ -200,7 +200,7 @@ pub fn remote_worker_placement(
         .collect();
     let requires_local_environment = requires_local_environment(models);
     let requires_opaque_process =
-        awaken_session_realization_contract::model_candidates_require_opaque_process(
+        awaken_session_execution_contract::model_candidates_require_opaque_process(
             std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
         );
     apply_session_physical_placement(
@@ -364,13 +364,13 @@ pub fn bind_root_tool_configuration_format(
 #[derive(Default)]
 pub struct PreparationPlacement;
 
-impl awaken_session_realization_contract::SessionPreparationPlacement for PreparationPlacement {
+impl awaken_session_execution_contract::SessionPreparationPlacement for PreparationPlacement {
     fn requirements(
         &self,
         session: &awaken_session_contract::PersistedSession,
     ) -> Result<
         PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         session_preparation_requirements(session)
     }
@@ -381,11 +381,11 @@ pub fn session_preparation_requirements(
     session: &awaken_session_contract::PersistedSession,
 ) -> Result<
     PlacementRequirements,
-    awaken_session_realization_contract::SessionRealizationControlFailure,
+    awaken_session_execution_contract::SessionRealizationControlFailure,
 > {
     let baseline = session
         .frozen_baseline()
-        .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)?;
+        .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
     let requires_opaque_process = session
         .mcp
         .attachments

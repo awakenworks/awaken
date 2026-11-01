@@ -32,7 +32,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         Some(original_lease.clone()),
     )
     .from_binding("original-source");
-    let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+    let proof = awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
         crate::session_resource::SessionRealizationLease {
             expires_at_unix_ms: 120_000,
             ..original_lease

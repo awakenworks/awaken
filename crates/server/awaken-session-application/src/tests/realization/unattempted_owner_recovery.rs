@@ -158,8 +158,8 @@ enum NoCreateEvidence {
     Unknown,
 }
 
-fn target(incumbent_owner: &str) -> awaken_session_realization_contract::SessionRealizationTarget {
-    awaken_session_realization_contract::SessionRealizationTarget {
+fn target(incumbent_owner: &str) -> awaken_session_execution_contract::SessionRealizationTarget {
+    awaken_session_execution_contract::SessionRealizationTarget {
         owner: "new-worker".into(),
         // Preserve the original foreign-owner generation1 fixture. A restart
         // of that same logical owner is a distinct generation2 installation,
@@ -341,7 +341,7 @@ async fn no_create_affinity_claim_preserves_unavailable_authority_and_lost_cas_r
             let after = repository.get(&SessionId::from(&id)).await.unwrap();
             match fault {
                 "receipt" => {
-                    assert!(matches!(result, Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))), "F3");
+                    assert!(matches!(result, Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_))), "F3");
                     assert_eq!(after, before, "F3 authority failure cannot alter affinity");
                 }
                 "response-loss" => {

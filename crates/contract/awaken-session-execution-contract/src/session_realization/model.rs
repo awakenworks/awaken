@@ -5,8 +5,11 @@
 //! Immutable realization commands, projections and exact receipt vocabulary.
 //! Control roles remain at the parent boundary; no state authority moves.
 
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
-use super::*;
+use super::{
+    McpGenerationRef, McpRealizationReceipt, ObservedSessionRealizationLease, RunError,
+    SessionRealizationControlFailure, SessionRealizationEffectFailure, SessionRealizationLease,
+    SessionRealizationLeaseReceipt, StageMcpAttachment,
+};
 /// Exact durable Session projection consumed by local and remote realization.
 /// A Worker may cache it only as rebuildable execution input; the Session
 /// aggregate remains the sole authority.
