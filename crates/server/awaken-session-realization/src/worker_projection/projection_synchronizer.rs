@@ -304,10 +304,26 @@ where
         // publication installed before it may realize sandbox stdio. Only the
         // physical substrate is needed here; parent Agent plugins remain owned
         // by the exact root attempt and must not be constructed as a side effect.
+        // Run-free preparation also owns the frozen Eager policy. An HTTP MCP
+        // stage may need no sandbox itself, but completing that stage must not
+        // leave an Eager Session permanently unmaterialized. Reuse the same
+        // publication-pinned substrate path and binding sink as stdio/adoption;
+        // lease-only renewals never initiate this physical work. Claimed Runs
+        // retain their existing adoption/recovery path, which also owns any
+        // unacknowledged candidate left by a cancelled binding commit.
+        let eager_preparation = self.claim.is_none()
+            && prepare_session
+            && projection.baseline.environment.sandbox_provisioning
+                == awaken_provisioning_contract::SandboxProvisioning::Eager
+            && published_snapshot
+                .as_ref()
+                .is_some_and(|publication| requires_local_environment(&publication.resolved_spec));
         let reconciled_by_substrate = if adopted_ready {
             true
         } else if published_snapshot.is_some()
-            && (has_environment_binding || self.requires_runtime_before_effects)
+            && (has_environment_binding
+                || self.requires_runtime_before_effects
+                || eager_preparation)
         {
             self.execution
                 .ensure_session_substrate(session_id.as_str(), published_snapshot.as_ref())

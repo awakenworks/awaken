@@ -836,6 +836,18 @@ impl awaken_session_execution_contract::SessionRunActivityAdmitter for PreparedR
 
 #[async_trait::async_trait]
 impl crate::ProfiledSessionCommands for SessionRunAdmissions {
+    async fn request_run_free_initial_preparation(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<
+        awaken_session_contract::PersistedSession,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.realizations
+            .request_run_free_initial_preparation(session_id)
+            .await
+    }
+
     async fn accept_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
