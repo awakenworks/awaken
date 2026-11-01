@@ -210,7 +210,7 @@ fn renewal_stop_records_the_cause_that_decides_the_run_effect() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
     // Cause/effect table RC: C1 durable cancellation / peer takeover;
     // C2 exact physical slot installed / not started. RC1 C1=cancel+C2=slot
@@ -218,6 +218,7 @@ async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
     // lease owns no executing effect; RC3/RC4 peer takeover => ClaimLost for
     // either slot state. All rows use the real Dispatch store and renewal loop.
     // First-cause absorption is checked again after dropping the renewal guard.
+    // The store authority clock stays independent of the paused Tokio scheduler.
     use awaken_lease_testkit::ManualClock;
     for (durable_cancel, physical_started, expected) in [
         (true, true, CancellationCause::Requested),
@@ -231,7 +232,7 @@ async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
         store
             .enqueue(crate::RunDispatch::new(RunActivation::new(
                 run_id.clone(),
-                ThreadId(format!("renewal-cause-thread-{durable_cancel}")),
+                ThreadId(format!("renewal-cause-thread-{durable_cancel}-{physical_started}")),
                 ExecutableAgentSnapshot::builder("renewal-cause-snapshot")
                     .model(
                         awaken_runtime_contract::resolved::ModelBinding::parse(
