@@ -184,6 +184,10 @@ struct RecordingSessionWorkAuthority {
     reconciliation_requests: AtomicUsize,
 }
 
+/// The Work store owns its lease deadline, granted on its own clock; this
+/// selected observation carries a fixed one that no caller judges.
+const OBSERVED_WORK_EXPIRY_MS: u64 = 60_000;
+
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeaseAuthority
     for RecordingSessionWorkAuthority
@@ -196,7 +200,6 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority
         &self,
         session_id: &SessionId,
         worker_owner: &str,
-        now_ms: u64,
         _acquisition: awaken_session_application_contract::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_application_contract::SessionWorkOwnership,
@@ -219,7 +222,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority
                     session_id.clone(),
                     owner,
                     1,
-                    now_ms + 60_000,
+                    OBSERVED_WORK_EXPIRY_MS,
                 )
                 .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .expect("nonzero epoch"),

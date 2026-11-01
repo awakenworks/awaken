@@ -231,8 +231,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/authority.rs",
-        "line": 3137,
-        "file_sha256": "cd13f233c3939e0870a2cbb89cfbb2279c9d32523081eb14782435ae3bf753f1"
+        "line": 3132,
+        "file_sha256": "ad0b7c574da0edb8656fa64b049031b5c2f762c2d17168578250aad6a1c16dc2"
       }
     ],
     "execution_witnesses": [

@@ -300,7 +300,6 @@ async fn session_carries_the_exact_frozen_environment_network() {
                 environment_execution.work_consumer(),
                 environment_execution.work_metadata(),
                 environment_execution.session_work_leases(),
-                awaken_time::system_clock(),
             )),
     );
 
@@ -415,7 +414,6 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
                 environment_execution.work_consumer(),
                 environment_execution.work_metadata(),
                 environment_execution.session_work_leases(),
-                awaken_time::system_clock(),
             )),
     );
 

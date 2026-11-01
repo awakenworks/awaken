@@ -14,7 +14,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
-use awaken_time::WallClockExt as _;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -468,13 +467,7 @@ async fn archived_environment_keeps_existing_session_bearer_http_scope() {
     let health = fixture
         .execution
         .work_consumer()
-        .claim(
-            &environment.id,
-            "health-owner",
-            "health-poller",
-            clock.now_ms(),
-            None,
-        )
+        .claim(&environment.id, "health-owner", "health-poller", None)
         .await
         .unwrap()
         .unwrap();
@@ -509,7 +502,6 @@ async fn archived_environment_keeps_existing_session_bearer_http_scope() {
             fixture.execution.work_consumer(),
             fixture.execution.work_metadata(),
             fixture.execution.session_work_leases(),
-            clock,
         ))
         .layer(axum::middleware::from_fn_with_state(
             guard,

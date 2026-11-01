@@ -77,10 +77,9 @@ impl WorkQueries {
     pub async fn stats(
         &self,
         environment_id: &str,
-        now_ms: u64,
     ) -> Result<QueueStats, EnvironmentExecutionError> {
         self.context.require_environment(environment_id).await?;
-        Ok(self.port.stats(environment_id, now_ms).await?)
+        Ok(self.port.stats(environment_id).await?)
     }
     pub async fn get(
         &self,
@@ -115,7 +114,6 @@ impl WorkConsumer {
         environment_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<ClaimedWork>, EnvironmentExecutionError> {
         self.context.require_environment(environment_id).await?;
@@ -126,7 +124,6 @@ impl WorkConsumer {
                 environment_id,
                 lease_owner,
                 poller_id,
-                now_ms,
                 reclaim_older_than_ms,
                 &minted.digest,
             )
@@ -166,13 +163,12 @@ impl WorkConsumer {
         environment_id: &str,
         work_id: &str,
         worker_id: &str,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, EnvironmentExecutionError> {
         self.context.require_environment(environment_id).await?;
         Ok(self
             .port
-            .heartbeat(environment_id, work_id, worker_id, now_ms, heartbeat)
+            .heartbeat(environment_id, work_id, worker_id, heartbeat)
             .await?)
     }
     pub async fn stop(
@@ -192,7 +188,7 @@ impl WorkConsumer {
 /// ```compile_fail
 /// use awaken_environment_application::execution::SessionAccessAuthenticator;
 /// async fn cannot_claim(authentication: SessionAccessAuthenticator) {
-///     authentication.claim("env", "owner", "poller", 0, None).await;
+///     authentication.claim("env", "owner", "poller", None).await;
 /// }
 /// ```
 #[derive(Clone)]
@@ -205,14 +201,15 @@ impl SessionAccessAuthenticator {
     pub fn new(port: Arc<dyn storage::SessionAccessAuthenticator>) -> Self {
         Self { port }
     }
+    /// Resolve the bearer against the live lease, judged on the Work store's
+    /// own clock.
     pub async fn authenticate(
         &self,
         presented: &awaken_agent_contract::RedactedString,
-        now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, EnvironmentExecutionError> {
         Ok(self
             .port
-            .authenticate_session_access(&session_access::session_access_digest(presented), now_ms)
+            .authenticate_session_access(&session_access::session_access_digest(presented))
             .await?)
     }
 }
@@ -248,7 +245,6 @@ impl SessionWorkLeaseControl {
     pub async fn heartbeat(
         &self,
         access: &WorkSessionAccess,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, EnvironmentExecutionError> {
         self.context
@@ -256,7 +252,7 @@ impl SessionWorkLeaseControl {
             .await?;
         Ok(self
             .port
-            .heartbeat_with_session_access(access, now_ms, heartbeat)
+            .heartbeat_with_session_access(access, heartbeat)
             .await?)
     }
     pub async fn stop(

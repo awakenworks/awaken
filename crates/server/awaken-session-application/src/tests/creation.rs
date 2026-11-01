@@ -636,7 +636,6 @@ impl awaken_session_application_contract::SessionWorkerLeases for AdmissionEnvir
         _environment_id: &str,
         _session_id: &awaken_session_types::SessionId,
         _worker_owner: &str,
-        _now_ms: u64,
     ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
     {
         Ok(None)

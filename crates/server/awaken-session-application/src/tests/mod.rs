@@ -4593,6 +4593,9 @@ pub(crate) struct RecordingEnvironmentSource {
     retired: Mutex<Vec<String>>,
     failures: Mutex<BTreeSet<String>>,
     released_leases: Mutex<Vec<awaken_session_types::SessionWorkLease>>,
+    /// The Work store's own clock: this fake grants on it, as the real
+    /// stores do, so no caller time reaches the lease.
+    work_clock: awaken_lease_testkit::ManualClock,
 }
 
 #[derive(Default)]
@@ -4817,9 +4820,10 @@ impl awaken_session_application_contract::SessionWorkerLeases for RecordingEnvir
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
     {
+        use awaken_time::WallClockExt as _;
+        let now_ms = self.work_clock.now_ms();
         Ok(self
             .awakened
             .lock()

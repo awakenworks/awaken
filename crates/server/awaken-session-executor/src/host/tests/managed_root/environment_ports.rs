@@ -95,7 +95,6 @@ impl SessionWorkerLeases for UnusedEnvironmentPorts {
         _environment_id: &str,
         _session_id: &SessionId,
         _worker_owner: &str,
-        _now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, RunError> {
         panic!("private Root fixture must not acquire a Work lease")
     }

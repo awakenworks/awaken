@@ -221,7 +221,6 @@ pub(super) async fn mount_with_environments_and_agent_source(
                 environment_execution.work_consumer(),
                 environment_execution.work_metadata(),
                 environment_execution.session_work_leases(),
-                host.clock(),
             ),
         ),
     )

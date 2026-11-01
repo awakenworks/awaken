@@ -198,22 +198,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 132,
-        "file_sha256": "0df4a5d39dd8dae3ad2a0fbc8660d33df35f44d3e8013bc176ceab0798953b21"
+        "line": 131,
+        "file_sha256": "86e2b633ab6ff2a62d622cf583b3ff8e592984f8bf46d8d414a77888b33c8bac"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 165
+        "line": 164
       },
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 170
+        "line": 169
       },
       {
         "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 175
+        "line": 174
       }
     ],
     "execution_witnesses": [

@@ -304,13 +304,16 @@ enum WorkMode {
     ReleaseResponseLost,
 }
 
+/// The Work store owns its lease deadline, granted on its own clock; this
+/// selected observation carries a fixed one that no caller judges.
+const OBSERVED_WORK_EXPIRY_MS: u64 = 60_000;
+
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeaseAuthority for RecordingSessionWork {
     async fn acquire_session_work(
         &self,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
         _acquisition: awaken_session_application_contract::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_application_contract::SessionWorkOwnership,
@@ -340,7 +343,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Record
                         worker_owner
                     },
                     self.epoch.load(Ordering::SeqCst).max(1),
-                    now_ms + 60_000,
+                    OBSERVED_WORK_EXPIRY_MS,
                 )
                 .map(awaken_session_application_contract::SessionWorkGrant::from_transfer)
                 .expect("nonzero epoch"),

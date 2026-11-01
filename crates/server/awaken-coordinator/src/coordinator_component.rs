@@ -424,7 +424,6 @@ pub async fn build_coordinator_component(
         &application_access,
         sessions,
         default_workspace,
-        &clock,
     );
 
     register_application_access_retention(&service_lifecycle, application_access);
@@ -459,7 +458,6 @@ fn management_router(
     application_access: &Arc<ApplicationAccessStore>,
     sessions: Arc<dyn SessionRepository>,
     workspace: String,
-    clock: &Arc<dyn awaken_time::WallClock>,
 ) -> Router {
     let managed = awaken_protocol_managed::with_managed_response_context(
         awaken_protocol_managed::deployments_router(deployments.clone()).merge(
@@ -468,7 +466,6 @@ fn management_router(
                 environments.work_consumer(),
                 environments.work_metadata(),
                 environments.session_work_leases(),
-                clock.clone(),
             ),
         ),
     );

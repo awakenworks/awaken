@@ -205,7 +205,6 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
         &self,
         session_id: &SessionId,
         worker_owner: &str,
-        now_ms: u64,
         acquisition: SessionWorkAcquisition,
     ) -> Result<SessionWorkOwnership, RunError> {
         let Some((environment_id, terminal)) =
@@ -215,7 +214,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
         };
         let acquired = self
             .leases
-            .acquire_session(&environment_id, session_id, worker_owner, now_ms)
+            .acquire_session(&environment_id, session_id, worker_owner)
             .await?;
         if !awaken_session_application_contract::session_work_revival_is_authorized(
             acquisition,
@@ -237,7 +236,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
             .await?;
         Ok(self
             .leases
-            .acquire_session(&environment_id, session_id, worker_owner, now_ms)
+            .acquire_session(&environment_id, session_id, worker_owner)
             .await?
             .map(SessionWorkGrant::from_transfer)
             .map(SessionWorkOwnership::Leased)

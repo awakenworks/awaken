@@ -4,7 +4,6 @@
 // @formal reason: Managed WorkQueue command routes.
 //! Coordinator-owned Environment WorkQueue HTTP adapter.
 
-use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
 use axum::Json;
@@ -35,14 +34,13 @@ fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
     }
 }
 
-/// The Work routes' state: the execution projection and the Coordinator's wall
-/// clock, whose reading every queue operation is stamped and judged with.
+/// The Work routes' state: the execution projection. The routes carry no
+/// clock: every lease is granted, renewed and judged on the Work store's own.
 pub(crate) struct WorkRoutes {
     pub(crate) queries: WorkQueries,
     pub(crate) consumer: WorkConsumer,
     pub(crate) metadata: WorkMetadataPatch,
     pub(crate) session_leases: SessionWorkLeaseControl,
-    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 /// `GET /v1/environments/:id/work` — the environment's work items.
@@ -85,13 +83,7 @@ pub(super) async fn poll_work(
     loop {
         let claimed = routes
             .consumer
-            .claim(
-                &id,
-                &lease_owner,
-                poller_id,
-                routes.clock.now_ms(),
-                poll.reclaim_older_than_ms,
-            )
+            .claim(&id, &lease_owner, poller_id, poll.reclaim_older_than_ms)
             .await
             .map_err(map_execution_error)?;
         if let Some(work) = claimed {
@@ -185,7 +177,7 @@ pub(super) async fn work_stats(
 ) -> Result<Json<WorkQueueStats>, WireError> {
     let s = routes
         .queries
-        .stats(&id, routes.clock.now_ms())
+        .stats(&id)
         .await
         .map_err(map_execution_error)?;
     Ok(Json(WorkQueueStats {
@@ -251,18 +243,11 @@ pub(super) async fn heartbeat_work(
     ManagedQuery(params): ManagedQuery<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     let command = params.into_heartbeat();
-    let now_ms = routes.clock.now_ms();
     let heartbeat = if let Some(access) = access.as_deref() {
-        routes
-            .session_leases
-            .heartbeat(access, now_ms, command)
-            .await
+        routes.session_leases.heartbeat(access, command).await
     } else {
         let owner = work_lease_owner(&headers)?;
-        routes
-            .consumer
-            .heartbeat(&id, &wid, &owner, now_ms, command)
-            .await
+        routes.consumer.heartbeat(&id, &wid, &owner, command).await
     }
     .map_err(map_execution_error)?;
     let hb = match heartbeat {

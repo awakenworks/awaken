@@ -359,12 +359,11 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
     {
         self.work
             .worker_leases
-            .acquire_session(environment_id, session_id, worker_owner, now_ms)
+            .acquire_session(environment_id, session_id, worker_owner)
             .await
             .map_err(session_work_unavailable)
     }
@@ -700,8 +699,20 @@ mod tests {
         CoordinatorEnvironmentRegistrar,
         EnvironmentExecutionApplication,
     ) {
+        fixture_on(awaken_time::system_clock())
+    }
+
+    /// The same composition over a queue that grants and judges leases on `clock`.
+    fn fixture_on(
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> (
+        Arc<ExecutableEnvironmentCatalog>,
+        Arc<InMemoryWorkQueue>,
+        CoordinatorEnvironmentRegistrar,
+        EnvironmentExecutionApplication,
+    ) {
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
-        let work = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+        let work = Arc::new(InMemoryWorkQueue::new(clock));
         let registrar = CoordinatorEnvironmentRegistrar::new(
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
             work.clone(),
@@ -1272,7 +1283,7 @@ mod tests {
         );
         let claimed = application
             .work_consumer()
-            .claim("worker", "worker-a", "worker-a", 10, None)
+            .claim("worker", "worker-a", "worker-a", None)
             .await
             .unwrap()
             .expect("healthcheck is claimable")
@@ -1283,7 +1294,6 @@ mod tests {
                 "worker",
                 &claimed.id,
                 "worker-a",
-                11,
                 LeaseHeartbeat {
                     condition: HeartbeatCondition::First,
                     desired_ttl_seconds: Some(30),
@@ -1298,7 +1308,6 @@ mod tests {
                 "worker",
                 &claimed.id,
                 "worker-a",
-                12,
                 LeaseHeartbeat {
                     condition: HeartbeatCondition::First,
                     desired_ttl_seconds: Some(30),
@@ -1341,8 +1350,8 @@ mod tests {
         async fn get(&self, env: &str, work: &str) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.get(env, work).await
         }
-        async fn stats(&self, env: &str, now: u64) -> Result<QueueStats, WorkQueueError> {
-            self.inner.stats(env, now).await
+        async fn stats(&self, env: &str) -> Result<QueueStats, WorkQueueError> {
+            self.inner.stats(env).await
         }
     }
 
@@ -1353,13 +1362,12 @@ mod tests {
             env: &str,
             owner: &str,
             poller: &str,
-            now: u64,
             reclaim: Option<u64>,
             digest: &awaken_executable_environment_contract::SessionAccessDigest,
         ) -> Result<Option<awaken_executable_environment_contract::WorkClaim>, WorkQueueError>
         {
             self.inner
-                .claim_with_session_access(env, owner, poller, now, reclaim, digest)
+                .claim_with_session_access(env, owner, poller, reclaim, digest)
                 .await
         }
         async fn claim_with_reclaim(
@@ -1367,22 +1375,16 @@ mod tests {
             env: &str,
             lease_owner: &str,
             poller_id: &str,
-            now: u64,
             reclaim_older_than_ms: Option<u64>,
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             // The port requires this: a decorator that forwarded only `claim`
             // would drop the reclaim age and the poll record silently.
             self.inner
-                .claim_with_reclaim(env, lease_owner, poller_id, now, reclaim_older_than_ms)
+                .claim_with_reclaim(env, lease_owner, poller_id, reclaim_older_than_ms)
                 .await
         }
-        async fn claim(
-            &self,
-            env: &str,
-            worker: &str,
-            now: u64,
-        ) -> Result<Option<WorkItem>, WorkQueueError> {
-            self.inner.claim(env, worker, now).await
+        async fn claim(&self, env: &str, worker: &str) -> Result<Option<WorkItem>, WorkQueueError> {
+            self.inner.claim(env, worker).await
         }
         async fn ack(
             &self,
@@ -1398,12 +1400,9 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-            now: u64,
             heartbeat: LeaseHeartbeat,
         ) -> Result<HeartbeatResult, WorkQueueError> {
-            self.inner
-                .heartbeat(env, work, worker, now, heartbeat)
-                .await
+            self.inner.heartbeat(env, work, worker, heartbeat).await
         }
         async fn stop(
             &self,
@@ -1423,10 +1422,9 @@ mod tests {
         async fn authenticate_session_access(
             &self,
             digest: &awaken_executable_environment_contract::SessionAccessDigest,
-            now: u64,
         ) -> Result<Option<awaken_executable_environment_contract::WorkSessionAccess>, WorkQueueError>
         {
-            self.inner.authenticate_session_access(digest, now).await
+            self.inner.authenticate_session_access(digest).await
         }
     }
 
@@ -1442,11 +1440,10 @@ mod tests {
         async fn heartbeat_with_session_access(
             &self,
             access: &awaken_executable_environment_contract::WorkSessionAccess,
-            now: u64,
             heartbeat: LeaseHeartbeat,
         ) -> Result<HeartbeatResult, WorkQueueError> {
             self.inner
-                .heartbeat_with_session_access(access, now, heartbeat)
+                .heartbeat_with_session_access(access, heartbeat)
                 .await
         }
         async fn stop_with_session_access(
@@ -1500,10 +1497,9 @@ mod tests {
             env: &str,
             session: &awaken_session_types::SessionId,
             worker: &str,
-            now: u64,
         ) -> Result<Option<awaken_session_types::SessionWorkLease>, WorkQueueError> {
             self.require_session_storage("acquire")?;
-            self.inner.acquire_session(env, session, worker, now).await
+            self.inner.acquire_session(env, session, worker).await
         }
         async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
             self.require_session_storage("release_owner")?;
@@ -1625,7 +1621,7 @@ mod tests {
             ),
             (
                 "acquire",
-                Leases::acquire_session(&application, "env", &session, "owner", 0)
+                Leases::acquire_session(&application, "env", &session, "owner")
                     .await
                     .unwrap_err(),
             ),
@@ -1878,12 +1874,12 @@ mod tests {
         // | A2 | Session | returned | E2 |
         // | A3 | Session | other | E3 |
         // | A4 | Session | reclaimed first | E4 |
-        let (_, work, registrar, application) = fixture();
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let (_, work, registrar, application) = fixture_on(clock.clone());
         registrar
             .register(registration("worker", 1, EnvironmentConfig::SelfHosted))
             .await
             .unwrap();
-        let mut now = 0;
         let session_work = work
             .enqueue_session("worker", &awaken_session_types::SessionId::from("sesn_a"))
             .await
@@ -1891,7 +1887,7 @@ mod tests {
         let claimed = loop {
             let claimed = application
                 .work_consumer()
-                .claim("worker", "owner-a", "poller", now, None)
+                .claim("worker", "owner-a", "poller", None)
                 .await
                 .unwrap()
                 .expect("queued work");
@@ -1905,12 +1901,12 @@ mod tests {
                     .unwrap()
                     .is_accepted()
             );
-            now += 1;
+            clock.advance(1);
         };
         let token = claimed.sessions_token.expect("A2 bearer");
         let access = application
             .session_access()
-            .authenticate(&token, now)
+            .authenticate(&token)
             .await
             .unwrap()
             .expect("A2 bound digest");
@@ -1922,19 +1918,19 @@ mod tests {
         assert!(
             application
                 .session_access()
-                .authenticate(
-                    &awaken_agent_contract::RedactedString::new("sk-ant-req-other"),
-                    now,
-                )
+                .authenticate(&awaken_agent_contract::RedactedString::new(
+                    "sk-ant-req-other"
+                ))
                 .await
                 .unwrap()
                 .is_none(),
             "A3"
         );
-        let reclaimed_at = now + awaken_work_store::LEASE_TTL_MS;
+        // The store clock reaches the first lease's exact expiry.
+        clock.advance(awaken_work_store::LEASE_TTL_MS);
         let replacement = application
             .work_consumer()
-            .claim("worker", "owner-b", "poller", reclaimed_at, None)
+            .claim("worker", "owner-b", "poller", None)
             .await
             .unwrap()
             .expect("A4 reclaim");
@@ -1942,7 +1938,7 @@ mod tests {
         assert!(
             application
                 .session_access()
-                .authenticate(&token, reclaimed_at)
+                .authenticate(&token)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1951,7 +1947,7 @@ mod tests {
         assert_eq!(
             application
                 .session_access()
-                .authenticate(&replacement_token, reclaimed_at)
+                .authenticate(&replacement_token)
                 .await
                 .unwrap()
                 .expect("A4 replacement")
@@ -2091,7 +2087,7 @@ mod tests {
     #[tokio::test]
     async fn archived_session_work_and_bearer_continue_through_application_roles() {
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-        let work = Arc::new(InMemoryWorkQueue::new(clock));
+        let work = Arc::new(InMemoryWorkQueue::new(clock.clone()));
         let session = work
             .enqueue_session("archived", &"existing".into())
             .await
@@ -2108,15 +2104,16 @@ mod tests {
         let app = EnvironmentExecutionApplication::new(work, catalog);
         let claim = app
             .work_consumer()
-            .claim("archived", "owner", "poller", 0, None)
+            .claim("archived", "owner", "poller", None)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(claim.item.id, session);
         let token = claim.sessions_token.unwrap();
+        clock.set(1);
         let before = app
             .session_access()
-            .authenticate(&token, 1)
+            .authenticate(&token)
             .await
             .unwrap()
             .unwrap();
@@ -2135,11 +2132,11 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
-            app.session_access().authenticate(&token, 1).await.unwrap(),
+            app.session_access().authenticate(&token).await.unwrap(),
             Some(before.clone())
         );
         assert_eq!(app.work_queries().list("archived").await.unwrap().len(), 1);
-        let stats = app.work_queries().stats("archived", 1).await.unwrap();
+        let stats = app.work_queries().stats("archived").await.unwrap();
         assert_eq!(stats.depth, 0, "the retained Session is already claimed");
         assert_eq!(stats.pending, 1, "archive retains the in-flight Session");
         let patched = app
@@ -2167,13 +2164,13 @@ mod tests {
                 .is_none(),
             "history must not admit a new Session"
         );
+        clock.set(2);
         assert!(matches!(
             app.work_consumer()
                 .heartbeat(
                     "archived",
                     &session,
                     "wrong-owner",
-                    2,
                     LeaseHeartbeat::unconditional()
                 )
                 .await
@@ -2182,7 +2179,7 @@ mod tests {
         ));
         assert!(matches!(
             app.session_work_leases()
-                .heartbeat(&before, 2, LeaseHeartbeat::unconditional())
+                .heartbeat(&before, LeaseHeartbeat::unconditional())
                 .await
                 .unwrap(),
             HeartbeatResult::Accepted(_)
@@ -2201,9 +2198,10 @@ mod tests {
                 .unwrap()
                 .is_accepted()
         );
+        clock.set(3);
         assert!(
             app.session_access()
-                .authenticate(&token, 3)
+                .authenticate(&token)
                 .await
                 .unwrap()
                 .is_none()
